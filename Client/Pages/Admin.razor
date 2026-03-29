@@ -1,0 +1,159 @@
+﻿@page "/Admin"
+@layout AppLayout
+
+<!-- ניהול משתמשים - רק אדמין יכול להיכנס -->
+@using Microsoft.AspNetCore.Authorization
+
+@attribute [Authorize(Roles = Roles.Admin)]
+
+
+
+<!-- הצגת יוזרים לפי תפקיד -->
+<button @onclick="@(()=>ShowUsers(""))">משתמשים ממתינים לאישור</button>
+<button @onclick="@(()=>ShowUsers(Roles.User))">משתמשים שאושרו</button>
+<button @onclick="@(()=>ShowUsers(Roles.Admin))">אדמינים</button>
+
+<br />
+
+<button @onclick="@(()=>userToAdd=new UserAddedByAdmin())">הוספת משתמשים</button>
+
+<!-- טבלת משתמשים -->
+<table>
+    <tr>
+        <th>שם פרטי</th>
+        <th>שם משפחה</th>
+        <th>כתובת מייל</th>
+        <th>נרשם בתאריך</th>
+        <th>יכול ליצור?</th>
+        <th>אדמין</th>
+    </tr>
+    @foreach (UserForAdmin user in users)
+    {
+        <tr>
+            <td>@user.FirstName</td>
+            <td>@user.LastName</td>
+            <td>@user.Email</td>
+            <td>@user.RegisterDate</td>
+            <td>
+                <input type="checkbox" id="user-checkbox" checked=@user.Roles.Contains(Roles.User) @onchange='@(()=>toggleRole(user,Roles.User))' />
+            </td>
+
+            <td>
+                <input type="checkbox" id="user-checkbox" checked=@user.Roles.Contains(Roles.Admin) @onchange='@(()=>toggleRole(user,Roles.Admin))' />
+            </td>
+        </tr>
+    }
+</table>
+<!-- הוספת יוזר על ידי האדמין -->
+@if (userToAdd != null)
+{
+    <EditForm Model="userToAdd" OnSubmit="AddUser">
+        <label for="fname">שם פרטי</label>
+        <InputText @bind-Value=@userToAdd.FirstName id="fname"></InputText>
+        <br />
+
+        <label for="lname">שם משפחה</label>
+        <InputText @bind-Value=@userToAdd.LastName id="lname"></InputText>
+        <br />
+        <label for="email">מייל</label>
+        <InputText @bind-Value=@userToAdd.Email id="email"></InputText>
+
+        <button type="submit" disabled=@loading>הוספה</button>
+    </EditForm>
+}
+<p>@message</p>
+
+
+
+@code {
+    List<UserForAdmin> users = new List<UserForAdmin>();
+    string message = "";
+
+    bool loading = false;
+    UserAddedByAdmin userToAdd = null;
+
+    [Inject]
+    public IAuthenticationService _Auth { get; set; }
+
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ShowUsers("");
+    }
+
+    async Task AddUser()
+    {
+        message = "";
+
+        loading = true;
+        AdminResults newUser = await _Auth.AdminAddUser(userToAdd);
+        if (newUser.User != null)
+        {
+            userToAdd = null;
+            users.Add(newUser.User);
+        }
+
+        switch (newUser.Result)
+        {
+            case AuthResults.ChangeRoleFailed:
+                message = "קרתה תקלה באישור המשתמש";
+                break;
+            case AuthResults.Exists:
+                message = "המשתמש כבר קיים";
+                break;
+            case AuthResults.CreateUserFailed:
+                message = "קרתה תקלה ביצירת המשתמש";
+                break;
+            case AuthResults.EmailFailed:
+                message = "שליחת אימייל נכשלה";
+                break;
+            default:
+                message = "המשתמש נוסף בהצלחה";
+                break;
+        }
+
+        loading = false;
+    }
+
+
+    async Task toggleRole(UserForAdmin user, string role)
+    {
+        message = "";
+
+        AdminResults auth = await _Auth.ToggleUserRole(user, role);
+
+        if (auth.User == null)
+        {
+            message = "קרתה תקלה";
+        }
+        else
+        {
+            UserForAdmin user2change =  users.Where(u => u.Id == user.Id).FirstOrDefault();
+            if (user2change == null)
+            {
+                message = "קרתה תקלה";
+                return;
+            }
+            user2change.Roles = auth.User.Roles;
+            if (auth.Result == AuthResults.EmailFailed)
+            {
+                message = "קרתה תקלה בשליחת מייל";
+            }
+            else
+            {
+                message = $"המשתמש {user.FirstName} {user.LastName} עודכן בהצלחה";
+            }
+        }
+    }
+    async Task ShowUsers(string roles)
+    {
+        message = "";
+
+        users = await _Auth.GetUsersByRoles(roles);
+        if (users == null)
+            message = "קרתה תקלה";
+    }
+
+
+}
