@@ -90,7 +90,6 @@ Integration with external systems (Moodle / Airtable)
 Advanced analytics dashboard
 👩‍💻 Authors
 Noa Tenenbaum
-Netta Soreq
 Ofir Sharabi
 📄 License
 
