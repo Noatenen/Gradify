@@ -1,5 +1,3 @@
-# Gradify
-
 # 🎓 Gradify
 
 Gradify is a web-based system for managing academic final projects.  
