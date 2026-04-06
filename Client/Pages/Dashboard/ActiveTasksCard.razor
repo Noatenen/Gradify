@@ -1,0 +1,168 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+<div class="atc-card">
+
+    <!-- ── Card header ── -->
+    <div class="atc-card-header">
+        <div class="atc-title-row">
+            <span class="oi oi-task atc-icon" aria-hidden="true"></span>
+            <h2 class="atc-card-title">משימות פעילות</h2>
+            <span class="atc-total-badge">@_totalTasks משימות</span>
+        </div>
+        <!-- TODO: wire to a real modal / slide-over when adding tasks -->
+        <button class="atc-add-btn" @onclick="OnAddTask">
+            <span class="oi oi-plus" aria-hidden="true"></span>
+            משימה חדשה
+        </button>
+    </div>
+
+    <!-- ── Milestone accordion list ── -->
+    @if (Milestones.Count == 0)
+    {
+        <p class="atc-empty-msg">אין אבני דרך מוגדרות לפרויקט זה.</p>
+    }
+    else
+    {
+        <div class="atc-milestone-list">
+            @foreach (var ms in Milestones)
+            {
+                bool isOpen = _openMilestones.Contains(ms.ProjectMilestoneId);
+                int  done   = ms.Tasks.Count(t => t.Status == "Done");
+
+                <div class="atc-milestone-group @(isOpen ? "atc-ms-open" : "")">
+
+                    <!-- Milestone accordion header -->
+                    <button class="atc-ms-header"
+                            @onclick="() => ToggleMilestone(ms.ProjectMilestoneId)">
+                        <div class="atc-ms-header-start">
+                            <span class="atc-ms-status-dot atc-dot-@MsClass(ms.Status)"></span>
+                            <span class="atc-ms-name">@ms.Title</span>
+                            @if (ms.DueDate.HasValue)
+                            {
+                                <span class="atc-ms-due">@ms.DueDate.Value.ToString("dd/MM/yy")</span>
+                            }
+                        </div>
+                        <div class="atc-ms-header-end">
+                            <span class="atc-ms-count @(done == ms.Tasks.Count && ms.Tasks.Count > 0 ? "atc-count-done" : "")">
+                                @done/@ms.Tasks.Count
+                            </span>
+                            <span class="oi @(isOpen ? "oi-chevron-top" : "oi-chevron-bottom") atc-ms-chevron"
+                                  aria-hidden="true"></span>
+                        </div>
+                    </button>
+
+                    <!-- Task items (shown when expanded) -->
+                    @if (isOpen)
+                    {
+                        <div class="atc-task-list">
+                            @if (!ms.Tasks.Any())
+                            {
+                                <p class="atc-empty-tasks">אין משימות באבן דרך זו.</p>
+                            }
+                            else
+                            {
+                                @foreach (var task in ms.Tasks)
+                                {
+                                    bool overdue = task.DueDate.HasValue
+                                                && task.DueDate.Value.Date < DateTime.Today
+                                                && task.Status != "Done";
+                                    string cls = overdue ? "overdue" : TaskClass(task.Status);
+
+                                    <div class="atc-task-item atc-task-@cls">
+                                        <div class="atc-task-status-icon">
+                                            <span class="oi @TaskIcon(task.Status, overdue)"
+                                                  aria-hidden="true"></span>
+                                        </div>
+                                        <div class="atc-task-body">
+                                            <span class="atc-task-title @(task.Status == "Done" ? "atc-title-done" : "")">
+                                                @task.Title
+                                            </span>
+                                            <div class="atc-task-meta">
+                                                @if (task.DueDate.HasValue)
+                                                {
+                                                    <span class="atc-task-date @(overdue ? "atc-date-overdue" : "")">
+                                                        <span class="oi oi-calendar" aria-hidden="true"></span>
+                                                        @task.DueDate.Value.ToString("dd/MM/yy")
+                                                    </span>
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(task.AssignedToName))
+                                                {
+                                                    <span class="atc-task-assignee">
+                                                        <span class="oi oi-person" aria-hidden="true"></span>
+                                                        @task.AssignedToName
+                                                    </span>
+                                                }
+                                            </div>
+                                        </div>
+                                        <span class="atc-status-badge atc-badge-@cls">
+                                            @TaskLabel(task.Status, overdue)
+                                        </span>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
+
+                </div>
+            }
+        </div>
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones { get; set; } = default!;
+
+    private readonly HashSet<int> _openMilestones = new();
+
+    private int _totalTasks => Milestones.Sum(m => m.Tasks.Count);
+
+    protected override void OnInitialized()
+    {
+        // Default: open the first in-progress milestone
+        var first = Milestones.FirstOrDefault(m => m.Status == "InProgress");
+        if (first is not null)
+            _openMilestones.Add(first.ProjectMilestoneId);
+    }
+
+    private void ToggleMilestone(int id)
+    {
+        if (!_openMilestones.Remove(id))
+            _openMilestones.Add(id);
+    }
+
+    private void OnAddTask() { /* TODO: open add-task modal */ }
+
+    // ── DB string → CSS class ─────────────────────────────────────────────────
+    // Milestone statuses: "NotStarted" | "InProgress" | "Completed" | "Delayed"
+    private static string MsClass(string s) => s switch
+    {
+        "Completed"  => "completed",
+        "InProgress" => "inprogress",
+        "Delayed"    => "delayed",
+        _            => "notstarted",
+    };
+
+    // Task statuses from DB: "Open" | "InProgress" | "Done"
+    // Overdue is computed client-side (DueDate < today && Status != Done)
+    private static string TaskClass(string s) => s switch
+    {
+        "Done"       => "completed",
+        "InProgress" => "inprogress",
+        _            => "notstarted",
+    };
+
+    private static string TaskIcon(string s, bool overdue) => overdue ? "oi-warning" : s switch
+    {
+        "Done"       => "oi-check",
+        "InProgress" => "oi-clock",
+        _            => "oi-media-record",
+    };
+
+    private static string TaskLabel(string s, bool overdue) => overdue ? "באיחור" : s switch
+    {
+        "Done"       => "הושלמה",
+        "InProgress" => "בתהליך",
+        _            => "פתוחה",
+    };
+}

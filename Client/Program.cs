@@ -10,6 +10,12 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
 
+// Dashboard, Tasks, Milestones & shared project context (cached per session)
+builder.Services.AddScoped<IDashboardService, DashboardService>();
+builder.Services.AddScoped<ITasksService, TasksService>();
+builder.Services.AddScoped<IMilestonesService, MilestonesService>();
+builder.Services.AddScoped<IProjectContextService, ProjectContextService>();
+
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();

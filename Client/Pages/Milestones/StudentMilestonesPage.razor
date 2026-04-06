@@ -1,0 +1,212 @@
+@page "/milestones"
+@layout AppLayout
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject IMilestonesService MilestonesService
+@attribute [Authorize]
+
+@if (_isLoading)
+{
+    <div class="msp-loading">
+        <div class="msp-spinner"></div>
+        <span>טוענת אבני דרך…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="msp-state-msg msp-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת אבני הדרך. נסי לרענן את הדף.</p>
+    </div>
+}
+else if (_data is null || _data.TotalCount == 0)
+{
+    <div class="msp-state-msg">
+        <span class="oi oi-info" aria-hidden="true"></span>
+        <p>לא נמצאו אבני דרך לפרויקט זה.</p>
+    </div>
+}
+else
+{
+    <div class="msp-page">
+
+        <!-- ── Page header ── -->
+        <div class="msp-header-card">
+            <div class="msp-header-start">
+                <div class="msp-page-icon">
+                    <span class="oi oi-flag" aria-hidden="true"></span>
+                </div>
+                <h1 class="msp-page-title">אבני דרך</h1>
+            </div>
+        </div>
+
+        <!-- ── Summary cards ── -->
+        <div class="msp-summary-row">
+
+            <div class="msp-summary-card">
+                <div class="msp-summary-icon msp-icon-total">
+                    <span class="oi oi-layers" aria-hidden="true"></span>
+                </div>
+                <div class="msp-summary-body">
+                    <div class="msp-summary-value">@_data.TotalCount</div>
+                    <div class="msp-summary-label">סה״כ אבני דרך</div>
+                </div>
+            </div>
+
+            <div class="msp-summary-card">
+                <div class="msp-summary-icon msp-icon-completed">
+                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                </div>
+                <div class="msp-summary-body">
+                    <div class="msp-summary-value">@_data.CompletedCount</div>
+                    <div class="msp-summary-label">הושלמו</div>
+                </div>
+            </div>
+
+            <div class="msp-summary-card">
+                <div class="msp-summary-icon msp-icon-current">
+                    <span class="oi oi-map-marker" aria-hidden="true"></span>
+                </div>
+                <div class="msp-summary-body">
+                    <div class="msp-summary-value msp-summary-current-name">
+                        @(string.IsNullOrEmpty(_data.CurrentMilestoneName)
+                            ? "כל השלבים הושלמו"
+                            : _data.CurrentMilestoneName)
+                    </div>
+                    <div class="msp-summary-label">שלב נוכחי</div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ── Milestones list ── -->
+        <div class="msp-list">
+            @{int step = 0;}
+            @foreach (var ms in _data.Milestones)
+            {
+                step++;
+                bool isDelayed = ms.Status == "Delayed";
+                bool isDone    = ms.Status == "Completed";
+                bool isPending = ms.Status == "NotStarted";
+
+                <div class="msp-card @(ms.IsCurrent ? "msp-card-current" : "") @(isDone ? "msp-card-done" : "") @(isPending ? "msp-card-pending" : "") @(isDelayed ? "msp-card-delayed" : "")">
+
+                    <!-- Step marker + title row -->
+                    <div class="msp-card-top">
+                        <div class="msp-step-col">
+                            <div class="msp-step-circle msp-step-@StatusClass(ms.Status)">
+                                @if (isDone)
+                                {
+                                    <span class="oi oi-check" aria-hidden="true"></span>
+                                }
+                                else if (isDelayed)
+                                {
+                                    <span class="oi oi-warning" aria-hidden="true"></span>
+                                }
+                                else
+                                {
+                                    <span>@step</span>
+                                }
+                            </div>
+                            @if (step < _data.TotalCount)
+                            {
+                                <div class="msp-connector @(isDone ? "msp-connector-done" : "")"></div>
+                            }
+                        </div>
+
+                        <div class="msp-card-body">
+                            <div class="msp-card-header">
+                                <div class="msp-card-title-group">
+                                    <span class="msp-card-title">@ms.Title</span>
+                                    @if (ms.IsCurrent)
+                                    {
+                                        <span class="msp-current-tag">שלב נוכחי</span>
+                                    }
+                                </div>
+                                <span class="msp-status-badge msp-badge-@StatusClass(ms.Status)">
+                                    @StatusLabel(ms.Status)
+                                </span>
+                            </div>
+
+                            <!-- Dates -->
+                            <div class="msp-card-dates">
+                                @if (ms.DueDate.HasValue)
+                                {
+                                    <span class="msp-date-item">
+                                        <span class="oi oi-calendar" aria-hidden="true"></span>
+                                        יעד: @ms.DueDate.Value.ToString("dd/MM/yy")
+                                    </span>
+                                }
+                                @if (isDone && ms.CompletedAt.HasValue)
+                                {
+                                    <span class="msp-date-item msp-date-done">
+                                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                        הושלמה: @ms.CompletedAt.Value.ToString("dd/MM/yy")
+                                    </span>
+                                }
+                            </div>
+
+                            <!-- Progress bar -->
+                            @{
+                                int displayPct = isDone ? 100 : ms.ProgressPct;
+                            }
+                            <div class="msp-progress-row">
+                                <div class="msp-progress-track">
+                                    <div class="msp-progress-fill msp-fill-@StatusClass(ms.Status)"
+                                         style="width: @displayPct%"></div>
+                                </div>
+                                <span class="msp-progress-pct msp-pct-@StatusClass(ms.Status)">@displayPct%</span>
+                            </div>
+
+                            <!-- Task count -->
+                            @if (ms.TotalTasks > 0)
+                            {
+                                <div class="msp-task-count">
+                                    <span class="oi oi-task" aria-hidden="true"></span>
+                                    @ms.CompletedTasks / @ms.TotalTasks משימות הושלמו
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="msp-task-count msp-no-tasks">אין משימות משויכות</div>
+                            }
+                        </div>
+                    </div>
+
+                </div>
+            }
+        </div>
+
+    </div>
+}
+
+@code {
+    private MilestonesPageDto? _data;
+    private bool _isLoading = true;
+    private bool _loadError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _data      = await MilestonesService.GetMilestonesAsync();
+        _loadError = _data is null;
+        _isLoading = false;
+    }
+
+    // ── Status helpers ────────────────────────────────────────────────────────
+    private static string StatusClass(string s) => s switch
+    {
+        "Completed"  => "completed",
+        "InProgress" => "inprogress",
+        "Delayed"    => "delayed",
+        _            => "notstarted",
+    };
+
+    private static string StatusLabel(string s) => s switch
+    {
+        "Completed"  => "הושלם",
+        "InProgress" => "פעיל",
+        "Delayed"    => "באיחור",
+        _            => "טרם נפתח",
+    };
+}

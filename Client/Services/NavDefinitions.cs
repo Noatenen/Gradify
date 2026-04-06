@@ -32,6 +32,7 @@ public static class NavDefinitions
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
         new NavItem("דשבורד",          "dashboard",   "oi-dashboard",       NavLinkMatch.All),
+        new NavItem("משימות",          "tasks",       "oi-task",            NavLinkMatch.Prefix),
         new NavItem("הגשות",           "submissions", "oi-document",        NavLinkMatch.Prefix),
         new NavItem("יומן",            "journal",     "oi-calendar",        NavLinkMatch.Prefix),
         new NavItem("הודעות ובקשות",  "messages",    "oi-envelope-closed", NavLinkMatch.Prefix),
@@ -39,10 +40,8 @@ public static class NavDefinitions
         new NavItem("קבצים",           "files",       "oi-file",            NavLinkMatch.Prefix),
     };
 
-    private static readonly IReadOnlyList<NavItem> _studentBottom = new[]
-    {
-        new NavItem("הגדרות", "settings", "oi-cog", NavLinkMatch.Prefix),
-    };
+    // Settings for students lives in the sidebar header as a compact icon button.
+    private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
 
     // ── Mentor ───────────────────────────────────────────────────────
     // Currently mirrors admin; kept separate so it can be customised later.

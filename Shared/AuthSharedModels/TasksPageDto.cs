@@ -1,0 +1,90 @@
+namespace AuthWithAdmin.Shared.AuthSharedModels;
+
+// ────────────────────────────────────────────────────────────────────────────
+//  Tasks page DTO  —  GET /api/projects/my-tasks
+//
+//  Design decisions:
+//    • Status values are raw DB strings ("Open"|"InProgress"|"Done").
+//    • MilestoneStatus is embedded on every TaskItemDto so the UI can
+//      determine pending state without re-joining data client-side.
+//    • ActiveGroups and CompletedGroups are pre-split server-side so
+//      the page components are purely presentational.
+//    • Priority is derived from IsMandatory (no separate DB column exists).
+// ────────────────────────────────────────────────────────────────────────────
+
+/// <summary>Full payload for the student tasks page.</summary>
+public class TasksPageDto
+{
+    // ── Student / project identity ────────────────────────────────────────────
+    public string StudentName   { get; set; } = "";
+    public int    ProjectNumber { get; set; }
+    public string ProjectTitle  { get; set; } = "";
+
+    // ── Summary counts ────────────────────────────────────────────────────────
+    /// <summary>
+    /// Tasks with Status != "Done" whose parent milestone is InProgress or Delayed.
+    /// These are actionable right now.
+    /// </summary>
+    public int ActiveCount { get; set; }
+
+    /// <summary>
+    /// Tasks with Status != "Done" whose parent milestone is NotStarted.
+    /// The milestone has not been opened yet, so the student cannot act on them.
+    /// </summary>
+    public int PendingCount { get; set; }
+
+    /// <summary>Tasks with Status == "Done".</summary>
+    public int CompletedCount { get; set; }
+
+    // ── Task groups ───────────────────────────────────────────────────────────
+    /// <summary>
+    /// Milestones that contain at least one non-Done task.
+    /// Each group's Tasks list contains only non-Done tasks.
+    /// </summary>
+    public List<TaskMilestoneGroupDto> ActiveGroups { get; set; } = new();
+
+    /// <summary>
+    /// Milestones that contain at least one Done task.
+    /// Each group's Tasks list contains only Done tasks.
+    /// </summary>
+    public List<TaskMilestoneGroupDto> CompletedGroups { get; set; } = new();
+}
+
+/// <summary>A milestone with its associated tasks for display in an accordion group.</summary>
+public class TaskMilestoneGroupDto
+{
+    public int       ProjectMilestoneId { get; set; }
+    public string    MilestoneTitle     { get; set; } = "";
+    public int       OrderIndex         { get; set; }
+    /// <summary>"NotStarted" | "InProgress" | "Completed" | "Delayed"</summary>
+    public string    MilestoneStatus    { get; set; } = "";
+    public DateTime? DueDate            { get; set; }
+    public int       DoneCount          { get; set; }
+    public int       TotalCount         { get; set; }
+    public List<TaskItemDto> Tasks      { get; set; } = new();
+}
+
+/// <summary>
+/// A single task row, ready for display.
+/// All display-logic inputs are pre-computed or embedded.
+/// </summary>
+public class TaskItemDto
+{
+    public int       Id              { get; set; }
+    public string    Title           { get; set; } = "";
+    /// <summary>"Open" | "InProgress" | "Done"</summary>
+    public string    Status          { get; set; } = "";
+    /// <summary>"Personal" | "System" | "Mentor"</summary>
+    public string    TaskType        { get; set; } = "";
+    /// <summary>True = high priority (IsMandatory in DB).</summary>
+    public bool      IsMandatory     { get; set; }
+    public DateTime? DueDate         { get; set; }
+    /// <summary>ClosedAt from DB — when the task was marked done.</summary>
+    public DateTime? CompletedAt     { get; set; }
+    public string    AssignedToName  { get; set; } = "";
+    /// <summary>
+    /// Parent milestone status, embedded so the UI can determine whether
+    /// this task is "pending" (NotStarted milestone) without extra lookups.
+    /// </summary>
+    public string    MilestoneStatus { get; set; } = "";
+}
