@@ -1,0 +1,565 @@
+@page "/management/cycles"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject IManagementService ManagementService
+
+<div class="cy-page" @onclick="CloseAllMenus">
+
+    <!-- ══════════════════════════════════════════
+         TOP BAR
+         ══════════════════════════════════════════ -->
+    <div class="cy-topbar">
+        <div class="cy-topbar-start">
+            <button class="cy-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))"
+                    @onclick:stopPropagation="true" title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="cy-breadcrumb">ניהול</div>
+                <h1 class="cy-title">ניהול מחזורים אקדמיים</h1>
+            </div>
+        </div>
+
+        <div class="cy-topbar-end" @onclick:stopPropagation="true">
+            <button class="cy-add-btn" @onclick="OpenAddForm">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                מחזור חדש
+            </button>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         ADD / EDIT PANEL
+         ══════════════════════════════════════════ -->
+    @if (_showForm)
+    {
+        <div class="cy-form-panel" @onclick:stopPropagation="true">
+            <div class="cy-form-header">
+                <span class="oi @(_editingId == 0 ? "oi-plus" : "oi-pencil")" aria-hidden="true"></span>
+                @(_editingId == 0 ? "הוספת מחזור חדש" : $"עריכת מחזור: {_formName}")
+            </div>
+
+            <div class="cy-form-grid">
+                <div class="cy-field cy-field-full">
+                    <label class="cy-label">שם המחזור <span class="cy-required">*</span></label>
+                    <input type="text" class="cy-input" @bind="_formName"
+                           placeholder='לדוגמה: 2026-2027' maxlength="50" />
+                </div>
+
+                <div class="cy-field">
+                    <label class="cy-label">תאריך התחלה <span class="cy-required">*</span></label>
+                    <input type="date" class="cy-input" @bind="_formStart" @bind:format="yyyy-MM-dd" />
+                </div>
+
+                <div class="cy-field">
+                    <label class="cy-label">תאריך סיום <span class="cy-required">*</span></label>
+                    <input type="date" class="cy-input" @bind="_formEnd" @bind:format="yyyy-MM-dd" />
+                </div>
+
+                <div class="cy-field">
+                    <div class="cy-check-row">
+                        <input type="checkbox" id="chk-active" class="cy-checkbox" @bind="_formIsActive"
+                               disabled="@(_editingStatus is "Closed" or "Archived")" />
+                        <label for="chk-active" class="cy-check-label">מחזור פעיל</label>
+                    </div>
+                </div>
+
+                <div class="cy-field">
+                    <div class="cy-check-row">
+                        <input type="checkbox" id="chk-current" class="cy-checkbox" @bind="_formIsCurrent"
+                               disabled="@(_editingStatus is "Closed" or "Archived")" />
+                        <label for="chk-current" class="cy-check-label">מחזור נוכחי</label>
+                    </div>
+                    @if (_editingStatus is "Closed" or "Archived")
+                    {
+                        <div class="cy-check-note cy-check-note--locked">
+                            <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                            לא ניתן לשנות סטטוס של מחזור @(_editingStatus == "Closed" ? "סגור" : "בארכיון")
+                        </div>
+                    }
+                    else if (_formIsCurrent)
+                    {
+                        <div class="cy-check-note">
+                            <span class="oi oi-info" aria-hidden="true"></span>
+                            כל שאר המחזורים יוגדרו כ"לא נוכחי"
+                        </div>
+                    }
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_formError))
+            {
+                <div class="cy-form-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_formError
+                </div>
+            }
+
+            <div class="cy-form-actions">
+                <button class="cy-ghost-btn" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
+                <button class="cy-add-btn cy-add-btn--save" @onclick="SubmitForm" disabled="@_formSaving">
+                    @if (_formSaving) { <span class="cy-spinner-sm"></span> }
+                    @(_editingId == 0 ? "הוספה" : "שמירה")
+                </button>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         FILTERS BAR
+         ══════════════════════════════════════════ -->
+    <div class="cy-filters-bar">
+        <div class="cy-search-wrap">
+            <span class="oi oi-magnifying-glass cy-search-icon" aria-hidden="true"></span>
+            <input class="cy-search" type="text"
+                   placeholder="חיפוש לפי שם מחזור..."
+                   @bind="_searchQuery" @bind:event="oninput" />
+        </div>
+        <div class="cy-filters">
+            <select class="cy-filter-select" @bind="_filterStatus">
+                <option value="">כל הסטטוסים</option>
+                <option value="Active">פעיל</option>
+                <option value="Closed">סגור</option>
+                <option value="Archived">בארכיון</option>
+                <option value="Inactive">לא פעיל</option>
+            </select>
+            <select class="cy-filter-select" @bind="_filterCurrent">
+                <option value="">הכל</option>
+                <option value="current">נוכחי בלבד</option>
+                <option value="notcurrent">לא נוכחי</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         TABLE
+         ══════════════════════════════════════════ -->
+    <div class="cy-table-panel">
+        <div class="cy-table-wrap">
+            <table class="cy-table">
+                <thead>
+                    <tr>
+                        <th>שם מחזור</th>
+                        <th>תאריך התחלה</th>
+                        <th>תאריך סיום</th>
+                        <th>סטטוס</th>
+                        <th>מחזור נוכחי</th>
+                        <th>פרויקטים</th>
+                        <th>נוצר</th>
+                        <th class="cy-th-actions">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr>
+                            <td colspan="8" class="cy-empty">
+                                <span class="cy-spinner-inline"></span>
+                                טוען מחזורים...
+                            </td>
+                        </tr>
+                    }
+                    else if (_loadError)
+                    {
+                        <tr>
+                            <td colspan="8" class="cy-empty cy-empty--error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                שגיאה בטעינת המחזורים. רענן את הדף.
+                            </td>
+                        </tr>
+                    }
+                    else if (!FilteredYears.Any())
+                    {
+                        <tr>
+                            <td colspan="8" class="cy-empty">
+                                <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
+                                לא נמצאו מחזורים התואמים את הסינון
+                            </td>
+                        </tr>
+                    }
+                    else
+                    {
+                        foreach (var yr in FilteredYears)
+                        {
+                            <tr class="cy-row @(yr.IsCurrent ? "cy-row--current" : "")">
+                                <td class="cy-cell-name">
+                                    <div class="cy-name-cell">
+                                        <div class="cy-year-icon @(yr.IsCurrent ? "cy-year-icon--current" : "")">
+                                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                                        </div>
+                                        <span class="cy-year-name">@yr.Name</span>
+                                        @if (yr.IsCurrent)
+                                        {
+                                            <span class="cy-current-tag">נוכחי</span>
+                                        }
+                                    </div>
+                                </td>
+                                <td class="cy-cell-secondary">@yr.StartDate.ToString("dd/MM/yyyy")</td>
+                                <td class="cy-cell-secondary">@yr.EndDate.ToString("dd/MM/yyyy")</td>
+                                <td>
+                                    <span class="cy-status-badge cy-status--@yr.Status.ToLower()">
+                                        @StatusLabel(yr.Status)
+                                    </span>
+                                </td>
+                                <td class="cy-cell-center">
+                                    @if (yr.IsCurrent)
+                                    {
+                                        <span class="oi oi-circle-check cy-current-check" aria-hidden="true"></span>
+                                    }
+                                    else
+                                    {
+                                        <span class="cy-dash">—</span>
+                                    }
+                                </td>
+                                <td class="cy-cell-secondary cy-cell-center">
+                                    @if (yr.ProjectCount > 0)
+                                    {
+                                        <span class="cy-project-count">@yr.ProjectCount</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="cy-dash">—</span>
+                                    }
+                                </td>
+                                <td class="cy-cell-secondary">@yr.CreatedAt.ToString("dd/MM/yy")</td>
+                                <td class="cy-cell-actions" @onclick:stopPropagation="true">
+                                    <div class="cy-actions-wrap">
+                                        <button class="cy-dots-btn"
+                                                @onclick="@(() => ToggleRowMenu(yr.Id))"
+                                                title="פעולות נוספות">
+                                            <span class="oi oi-ellipses" aria-hidden="true"></span>
+                                        </button>
+
+                                        @if (_openRowMenuId == yr.Id)
+                                        {
+                                            <div class="cy-row-menu">
+                                                <!-- Edit -->
+                                                <button class="cy-row-action"
+                                                        @onclick="@(() => OpenEditForm(yr))">
+                                                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                                                    עריכת פרטים
+                                                </button>
+
+                                                @if (!yr.IsCurrent && yr.Status == "Active")
+                                                {
+                                                    <!-- Set as current -->
+                                                    <button class="cy-row-action"
+                                                            @onclick="@(() => SetCurrent(yr))">
+                                                        <span class="oi oi-star" aria-hidden="true"></span>
+                                                        הגדר כמחזור נוכחי
+                                                    </button>
+                                                }
+
+                                                @if (yr.Status == "Active")
+                                                {
+                                                    <!-- Toggle active -->
+                                                    <button class="cy-row-action"
+                                                            @onclick="@(() => ToggleActive(yr))">
+                                                        <span class="oi oi-ban" aria-hidden="true"></span>
+                                                        השבתה
+                                                    </button>
+                                                }
+                                                else if (yr.Status == "Inactive")
+                                                {
+                                                    <button class="cy-row-action"
+                                                            @onclick="@(() => ToggleActive(yr))">
+                                                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                                        הפעלה
+                                                    </button>
+                                                }
+
+                                                @if (yr.Status != "Closed" && yr.Status != "Archived")
+                                                {
+                                                    <div class="cy-row-menu-sep"></div>
+                                                    <!-- Close cycle -->
+                                                    <button class="cy-row-action cy-row-action--warn"
+                                                            @onclick="@(() => RequestClose(yr))">
+                                                        <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                                                        סגירת מחזור
+                                                    </button>
+                                                }
+
+                                                @if (yr.Status == "Closed")
+                                                {
+                                                    <!-- Archive -->
+                                                    <button class="cy-row-action cy-row-action--danger"
+                                                            @onclick="@(() => RequestArchive(yr))">
+                                                        <span class="oi oi-box" aria-hidden="true"></span>
+                                                        העברה לארכיון
+                                                    </button>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="cy-table-footer">
+            <span class="cy-count">
+                @{var count = FilteredYears.Count();}
+                סה"כ @count מחזורים
+                @if (!string.IsNullOrEmpty(_searchQuery) || !string.IsNullOrEmpty(_filterStatus) || !string.IsNullOrEmpty(_filterCurrent))
+                {
+                    <span class="cy-count-note">(מסוננים מתוך @_allYears.Count)</span>
+                }
+            </span>
+        </div>
+    </div>
+
+    <!-- ── Confirm dialogs ── -->
+    @if (_confirmAction != ConfirmAction.None)
+    {
+        <div class="cy-confirm-overlay" @onclick="CancelConfirm">
+            <div class="cy-confirm-box" @onclick:stopPropagation="true">
+                <div class="cy-confirm-icon @(_confirmAction == ConfirmAction.Archive ? "cy-confirm-icon--danger" : "cy-confirm-icon--warn")">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                </div>
+                <h2 class="cy-confirm-title">
+                    @(_confirmAction == ConfirmAction.Close ? "סגירת מחזור" : "העברה לארכיון")
+                </h2>
+                <p class="cy-confirm-body">
+                    @if (_confirmAction == ConfirmAction.Close)
+                    {
+                        <span>האם לסגור את המחזור <strong>@_confirmYearName</strong>?<br />המחזור יוסר מהתצוגה הפעילה.</span>
+                    }
+                    else
+                    {
+                        <span>האם להעביר את המחזור <strong>@_confirmYearName</strong> לארכיון? פעולה זו קשה לביטול.</span>
+                    }
+                </p>
+                <div class="cy-confirm-actions">
+                    <button class="cy-ghost-btn" @onclick="CancelConfirm">ביטול</button>
+                    <button class="@(_confirmAction == ConfirmAction.Archive ? "cy-danger-btn" : "cy-warn-btn")"
+                            @onclick="ExecuteConfirm">
+                        @(_confirmAction == ConfirmAction.Close ? "סגור מחזור" : "העבר לארכיון")
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+</div>
+
+@code {
+
+    // ─────────────────────────────────────────────────
+    //  Data
+    // ─────────────────────────────────────────────────
+    private List<AcademicYearDto> _allYears = new();
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Reload();
+        _loading = false;
+    }
+
+    private async Task Reload()
+    {
+        var years  = await ManagementService.GetAcademicYearsAsync();
+        _loadError = years is null;
+        _allYears  = years ?? _allYears;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Filters
+    // ─────────────────────────────────────────────────
+    private string _searchQuery   = "";
+    private string _filterStatus  = "";
+    private string _filterCurrent = "";
+
+    private IEnumerable<AcademicYearDto> FilteredYears => _allYears
+        .Where(y => string.IsNullOrEmpty(_searchQuery)
+                    || y.Name.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .Where(y => string.IsNullOrEmpty(_filterStatus)
+                    || y.Status == _filterStatus)
+        .Where(y => _filterCurrent switch
+        {
+            "current"    =>  y.IsCurrent,
+            "notcurrent" => !y.IsCurrent,
+            _            => true,
+        });
+
+    // ─────────────────────────────────────────────────
+    //  Add / Edit form
+    // ─────────────────────────────────────────────────
+    private bool     _showForm   = false;
+    private bool     _formSaving = false;
+    private int      _editingId  = 0;
+    private string   _editingStatus = "";   // tracks lifecycle status of the cycle being edited
+    private string   _formName      = "";
+    private DateTime _formStart     = DateTime.Today;
+    private DateTime _formEnd       = DateTime.Today.AddMonths(10);
+    private bool     _formIsActive  = true;
+    private bool     _formIsCurrent = false;
+    private string   _formError     = "";
+
+    private void OpenAddForm()
+    {
+        _editingId     = 0;
+        _editingStatus = "";
+        _formName      = "";
+        _formStart     = DateTime.Today;
+        _formEnd       = DateTime.Today.AddMonths(10);
+        _formIsActive  = true;
+        _formIsCurrent = false;
+        _formError     = "";
+        _showForm      = true;
+        CloseAllMenus();
+    }
+
+    private void OpenEditForm(AcademicYearDto yr)
+    {
+        _openRowMenuId = -1;
+        _editingId     = yr.Id;
+        _editingStatus = yr.Status;   // used to lock checkboxes for Closed/Archived
+        _formName      = yr.Name;
+        _formStart     = yr.StartDate;
+        _formEnd       = yr.EndDate;
+        _formIsActive  = yr.IsActive;
+        _formIsCurrent = yr.IsCurrent;
+        _formError     = "";
+        _showForm      = true;
+    }
+
+    private void CancelForm()
+    {
+        _showForm  = false;
+        _formError = "";
+    }
+
+    private async Task SubmitForm()
+    {
+        _formError = "";
+        if (string.IsNullOrWhiteSpace(_formName)) { _formError = "שם המחזור הוא שדה חובה"; return; }
+        if (_formEnd <= _formStart)               { _formError = "תאריך סיום חייב להיות אחרי תאריך ההתחלה"; return; }
+
+        _formSaving = true;
+
+        var req = new SaveAcademicYearRequest
+        {
+            Name      = _formName.Trim(),
+            StartDate = _formStart,
+            EndDate   = _formEnd,
+            IsActive  = _formIsActive,
+            IsCurrent = _formIsCurrent,
+        };
+
+        bool ok = _editingId == 0
+            ? await ManagementService.CreateAcademicYearAsync(req)
+            : await ManagementService.UpdateAcademicYearAsync(_editingId, req);
+
+        _formSaving = false;
+
+        if (!ok) { _formError = "שגיאה בשמירה. נסה שנית."; return; }
+
+        _showForm = false;
+        _loading  = true;
+        await Reload();
+        _loading  = false;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Row menu
+    // ─────────────────────────────────────────────────
+    private int _openRowMenuId = -1;
+
+    private void ToggleRowMenu(int id)
+    {
+        _openRowMenuId = _openRowMenuId == id ? -1 : id;
+    }
+
+    private void CloseAllMenus() => _openRowMenuId = -1;
+
+    // ─────────────────────────────────────────────────
+    //  Row actions
+    // ─────────────────────────────────────────────────
+    private async Task SetCurrent(AcademicYearDto yr)
+    {
+        _openRowMenuId = -1;
+        bool ok = await ManagementService.SetCurrentYearAsync(yr.Id);
+        if (ok)
+        {
+            foreach (var y in _allYears) y.IsCurrent = false;
+            yr.IsCurrent = true;
+            yr.IsActive  = true;
+            yr.Status    = "Active";
+        }
+    }
+
+    private async Task ToggleActive(AcademicYearDto yr)
+    {
+        _openRowMenuId = -1;
+        bool ok = await ManagementService.ToggleYearActiveAsync(yr.Id);
+        if (ok)
+        {
+            yr.IsActive = !yr.IsActive;
+            yr.Status   = yr.IsActive ? "Active" : "Inactive";
+        }
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Confirm dialogs (Close / Archive)
+    // ─────────────────────────────────────────────────
+    private enum ConfirmAction { None, Close, Archive }
+
+    private ConfirmAction _confirmAction   = ConfirmAction.None;
+    private int           _confirmYearId;
+    private string        _confirmYearName = "";
+
+    private void RequestClose(AcademicYearDto yr)
+    {
+        _openRowMenuId   = -1;
+        _confirmAction   = ConfirmAction.Close;
+        _confirmYearId   = yr.Id;
+        _confirmYearName = yr.Name;
+    }
+
+    private void RequestArchive(AcademicYearDto yr)
+    {
+        _openRowMenuId   = -1;
+        _confirmAction   = ConfirmAction.Archive;
+        _confirmYearId   = yr.Id;
+        _confirmYearName = yr.Name;
+    }
+
+    private void CancelConfirm() => _confirmAction = ConfirmAction.None;
+
+    private async Task ExecuteConfirm()
+    {
+        bool ok;
+        if (_confirmAction == ConfirmAction.Close)
+            ok = await ManagementService.CloseYearAsync(_confirmYearId);
+        else
+            ok = await ManagementService.ArchiveYearAsync(_confirmYearId);
+
+        _confirmAction = ConfirmAction.None;
+
+        if (ok)
+        {
+            _loading = true;
+            await Reload();
+            _loading = false;
+        }
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Display helpers
+    // ─────────────────────────────────────────────────
+    private static string StatusLabel(string status) => status switch
+    {
+        "Active"   => "פעיל",
+        "Inactive" => "לא פעיל",
+        "Closed"   => "סגור",
+        "Archived" => "בארכיון",
+        _          => status,
+    };
+}

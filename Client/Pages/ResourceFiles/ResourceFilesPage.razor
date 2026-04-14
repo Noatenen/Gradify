@@ -1,0 +1,381 @@
+@page "/resource-files"
+@layout AppLayout
+@using AuthWithAdmin.Client.Services
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@inject IResourceFilesService ResourceFilesService
+
+@if (_isLoading)
+{
+    <div class="rfp-loading">
+        <div class="rfp-spinner"></div>
+        <span>טוענת קבצים…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="rfp-state-msg rfp-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת הקבצים. נסה לרענן את הדף.</p>
+    </div>
+}
+else
+{
+    <div class="rfp-page">
+
+        <!-- ── Page header ── -->
+        <div class="rfp-header-card">
+            <div class="rfp-header-start">
+                <div class="rfp-page-icon">
+                    <span class="oi oi-file" aria-hidden="true"></span>
+                </div>
+                <div>
+                    <h1 class="rfp-page-title">ניהול קבצים</h1>
+                    <p class="rfp-page-subtitle">העלאת חומרי לימוד ומשאבים לאבני דרך</p>
+                </div>
+            </div>
+            <button class="rfp-btn-primary" @onclick="ToggleUploadForm">
+                <span class="oi @(_showForm ? "oi-x" : "oi-plus")" aria-hidden="true"></span>
+                @(_showForm ? "ביטול" : "העלאת קובץ")
+            </button>
+        </div>
+
+        <!-- ── Upload form ── -->
+        @if (_showForm)
+        {
+            <div class="rfp-upload-card">
+                <h2 class="rfp-upload-title">
+                    <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                    העלאת קובץ חדש
+                </h2>
+
+                <div class="rfp-form-grid">
+
+                    <!-- File picker -->
+                    <div class="rfp-field rfp-field-full">
+                        <label class="rfp-label">קובץ <span class="rfp-required">*</span></label>
+                        <div class="rfp-file-picker">
+                            <InputFile OnChange="HandleFileSelected" class="rfp-file-input"
+                                       accept=".pdf,.doc,.docx,.ppt,.pptx,.xlsx,.xls,.txt,.zip,.jpg,.jpeg,.png,.gif" />
+                            @if (!string.IsNullOrEmpty(_fileName))
+                            {
+                                <div class="rfp-file-selected">
+                                    <span class="oi oi-check rfp-file-check" aria-hidden="true"></span>
+                                    <span class="rfp-file-name">@_fileName</span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Milestone dropdown (required) -->
+                    <div class="rfp-field">
+                        <label class="rfp-label">אבן דרך <span class="rfp-required">*</span></label>
+                        <select class="rfp-select" @onchange="HandleMilestoneChanged">
+                            <option value="0">— בחר אבן דרך —</option>
+                            @foreach (var ms in _milestones)
+                            {
+                                <option value="@ms.Id">@ms.Title</option>
+                            }
+                        </select>
+                    </div>
+
+                    <!-- Task dropdown (optional, filtered by milestone) -->
+                    <div class="rfp-field">
+                        <label class="rfp-label">משימה <span class="rfp-optional">(אופציונלי)</span></label>
+                        <select class="rfp-select" @bind="_selectedTaskId"
+                                disabled="@(_selectedMilestoneId == 0)">
+                            <option value="0">— ללא משימה ספציפית —</option>
+                            @foreach (var task in _tasks)
+                            {
+                                <option value="@task.Id">@task.Title</option>
+                            }
+                        </select>
+                    </div>
+
+                    <!-- Description -->
+                    <div class="rfp-field rfp-field-full">
+                        <label class="rfp-label">תיאור <span class="rfp-optional">(אופציונלי)</span></label>
+                        <input type="text" class="rfp-input" @bind="_description"
+                               placeholder="תיאור קצר של הקובץ…" maxlength="300" />
+                    </div>
+
+                </div>
+
+                @if (!string.IsNullOrEmpty(_formError))
+                {
+                    <div class="rfp-form-error">
+                        <span class="oi oi-warning" aria-hidden="true"></span>
+                        @_formError
+                    </div>
+                }
+
+                <div class="rfp-form-actions">
+                    <button class="rfp-btn-ghost" @onclick="CancelUpload" disabled="@_uploading">ביטול</button>
+                    <button class="rfp-btn-primary" @onclick="SubmitUpload" disabled="@_uploading">
+                        @if (_uploading)
+                        {
+                            <span class="rfp-spinner-sm"></span>
+                            <span>מעלה…</span>
+                        }
+                        else
+                        {
+                            <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                            <span>העלאה</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        }
+
+        <!-- ── Files list ── -->
+        @if (_files.Count == 0)
+        {
+            <div class="rfp-empty">
+                <span class="oi oi-folder" aria-hidden="true"></span>
+                <p>לא הועלו קבצים עדיין. לחץ על "העלאת קובץ" כדי להתחיל.</p>
+            </div>
+        }
+        else
+        {
+            <div class="rfp-table-card">
+                <div class="rfp-table-header">
+                    <span class="rfp-table-count">@_files.Count קבצים</span>
+                </div>
+                <div class="rfp-table-wrap">
+                    <table class="rfp-table">
+                        <thead>
+                            <tr>
+                                <th>שם קובץ</th>
+                                <th>תיאור</th>
+                                <th>אבן דרך</th>
+                                <th>משימה</th>
+                                <th>תאריך העלאה</th>
+                                <th>פעולות</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var file in _files)
+                            {
+                                <tr class="@(_confirmDeleteId == file.Id ? "rfp-row-deleting" : "")">
+                                    <td>
+                                        <div class="rfp-file-cell">
+                                            <span class="rfp-file-icon oi @FileIcon(file.ContentType)" aria-hidden="true"></span>
+                                            <span class="rfp-file-label">@file.FileName</span>
+                                        </div>
+                                    </td>
+                                    <td class="rfp-desc-cell">
+                                        @if (!string.IsNullOrWhiteSpace(file.Description))
+                                        {
+                                            <span>@file.Description</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="rfp-no-value">—</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <span class="rfp-ms-badge">@file.MilestoneName</span>
+                                    </td>
+                                    <td>
+                                        @if (!string.IsNullOrWhiteSpace(file.TaskName))
+                                        {
+                                            <span class="rfp-task-badge">@file.TaskName</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="rfp-no-value">—</span>
+                                        }
+                                    </td>
+                                    <td class="rfp-date-cell">@file.UploadedAt.ToString("dd/MM/yy HH:mm")</td>
+                                    <td>
+                                        <div class="rfp-actions">
+                                            <a class="rfp-action-btn rfp-action-download"
+                                               href="/resources/@file.StoredFileName"
+                                               download="@file.FileName"
+                                               title="הורדה">
+                                                <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                            </a>
+
+                                            @if (_confirmDeleteId == file.Id)
+                                            {
+                                                <button class="rfp-action-btn rfp-action-confirm"
+                                                        @onclick="() => ConfirmDelete(file.Id)"
+                                                        title="אישור מחיקה">
+                                                    <span class="oi oi-check" aria-hidden="true"></span>
+                                                </button>
+                                                <button class="rfp-action-btn rfp-action-cancel-del"
+                                                        @onclick="CancelDelete"
+                                                        title="ביטול">
+                                                    <span class="oi oi-x" aria-hidden="true"></span>
+                                                </button>
+                                            }
+                                            else
+                                            {
+                                                <button class="rfp-action-btn rfp-action-delete"
+                                                        @onclick="() => RequestDelete(file.Id)"
+                                                        title="מחיקה">
+                                                    <span class="oi oi-trash" aria-hidden="true"></span>
+                                                </button>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+
+    </div>
+}
+
+@code {
+    // ── State ────────────────────────────────────────────────────────────────
+    private List<ResourceFileDto>    _files     = new();
+    private List<MilestoneOptionDto> _milestones = new();
+    private List<TaskOptionDto>      _tasks     = new();
+
+    private bool _isLoading = true;
+    private bool _loadError;
+    private bool _showForm;
+    private bool _uploading;
+
+    // Upload form fields
+    private string? _fileBase64;
+    private string  _fileName    = "";
+    private string  _contentType = "";
+    private int     _selectedMilestoneId;
+    private int     _selectedTaskId;
+    private string  _description = "";
+    private string  _formError   = "";
+
+    // Delete confirmation
+    private int _confirmDeleteId;
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFiles();
+        _isLoading = false;
+    }
+
+    private async Task LoadFiles()
+    {
+        var files = await ResourceFilesService.GetAllAsync();
+        _loadError = files is null;
+        _files     = files ?? new List<ResourceFileDto>();
+    }
+
+    // ── Upload form ──────────────────────────────────────────────────────────
+    private async Task ToggleUploadForm()
+    {
+        _showForm = !_showForm;
+        if (_showForm && _milestones.Count == 0)
+            _milestones = await ResourceFilesService.GetMilestonesAsync();
+        ResetForm();
+    }
+
+    private void CancelUpload()
+    {
+        _showForm = false;
+        ResetForm();
+    }
+
+    private void ResetForm()
+    {
+        _fileBase64          = null;
+        _fileName            = "";
+        _contentType         = "";
+        _selectedMilestoneId = 0;
+        _selectedTaskId      = 0;
+        _tasks               = new();
+        _description         = "";
+        _formError           = "";
+    }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        _formError = "";
+        var file = e.File;
+
+        if (file.Size > 10 * 1024 * 1024)
+        {
+            _formError = "גודל הקובץ עולה על 10MB";
+            return;
+        }
+
+        _fileName    = file.Name;
+        _contentType = string.IsNullOrWhiteSpace(file.ContentType)
+            ? "application/octet-stream"
+            : file.ContentType;
+
+        using var ms = new MemoryStream();
+        await file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024).CopyToAsync(ms);
+        _fileBase64 = Convert.ToBase64String(ms.ToArray());
+    }
+
+    private async Task HandleMilestoneChanged(ChangeEventArgs e)
+    {
+        _selectedMilestoneId = int.TryParse(e.Value?.ToString(), out int id) ? id : 0;
+        _selectedTaskId      = 0;
+        _tasks               = _selectedMilestoneId > 0
+            ? await ResourceFilesService.GetTasksForMilestoneAsync(_selectedMilestoneId)
+            : new List<TaskOptionDto>();
+    }
+
+    private async Task SubmitUpload()
+    {
+        _formError = "";
+
+        if (string.IsNullOrEmpty(_fileBase64))       { _formError = "יש לבחור קובץ";    return; }
+        if (_selectedMilestoneId == 0)               { _formError = "יש לבחור אבן דרך"; return; }
+
+        _uploading = true;
+
+        var request = new UploadResourceFileRequest
+        {
+            FileName    = _fileName,
+            FileBase64  = _fileBase64,
+            ContentType = _contentType,
+            MilestoneId = _selectedMilestoneId,
+            TaskId      = _selectedTaskId > 0 ? _selectedTaskId : null,
+            Description = string.IsNullOrWhiteSpace(_description) ? null : _description.Trim(),
+        };
+
+        bool ok = await ResourceFilesService.UploadAsync(request);
+
+        _uploading = false;
+
+        if (!ok)
+        {
+            _formError = "שגיאה בהעלאת הקובץ. נסה שנית.";
+            return;
+        }
+
+        _showForm = false;
+        ResetForm();
+        await LoadFiles();
+    }
+
+    // ── Delete ───────────────────────────────────────────────────────────────
+    private void RequestDelete(int id)   => _confirmDeleteId = id;
+    private void CancelDelete()          => _confirmDeleteId = 0;
+
+    private async Task ConfirmDelete(int id)
+    {
+        _confirmDeleteId = 0;
+        await ResourceFilesService.DeleteAsync(id);
+        _files.RemoveAll(f => f.Id == id);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    private static string FileIcon(string contentType) => contentType switch
+    {
+        var ct when ct.StartsWith("image/")                             => "oi-image",
+        "application/pdf"                                               => "oi-document",
+        "application/zip" or "application/x-zip-compressed"            => "oi-data-transfer-download",
+        var ct when ct.Contains("spreadsheet") || ct.Contains("excel") => "oi-spreadsheet",
+        var ct when ct.Contains("presentation")                        => "oi-monitor",
+        _                                                               => "oi-file",
+    };
+}

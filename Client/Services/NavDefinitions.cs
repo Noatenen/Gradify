@@ -23,9 +23,10 @@ public static class NavDefinitions
 
     private static readonly IReadOnlyList<NavItem> _adminBottom = new[]
     {
-        new NavItem("ניהול",  "management", "oi-list-rich", NavLinkMatch.All),
-        new NavItem("דוחות",  "reports",    "oi-bar-chart", NavLinkMatch.Prefix),
-        new NavItem("הגדרות", "settings",   "oi-cog",       NavLinkMatch.Prefix),
+        new NavItem("ניהול",   "management",    "oi-list-rich", NavLinkMatch.All),
+        new NavItem("קבצים",   "resource-files","oi-file",      NavLinkMatch.Prefix),
+        new NavItem("דוחות",   "reports",       "oi-bar-chart", NavLinkMatch.Prefix),
+        new NavItem("הגדרות",  "settings",      "oi-cog",       NavLinkMatch.Prefix),
     };
 
     // ── Student ──────────────────────────────────────────────────────

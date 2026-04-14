@@ -1,0 +1,498 @@
+@page "/management/milestones"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject IMilestoneManagementService MilestoneService
+
+<div class="ms-page" @onclick="CloseAllMenus">
+
+    <!-- ══════════════════════════════════════════
+         TOP BAR
+         ══════════════════════════════════════════ -->
+    <div class="ms-topbar">
+        <div class="ms-topbar-start">
+            <button class="ms-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))"
+                    @onclick:stopPropagation="true" title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="ms-breadcrumb">ניהול</div>
+                <h1 class="ms-page-title">ניהול אבני דרך</h1>
+            </div>
+        </div>
+
+        <div class="ms-topbar-end" @onclick:stopPropagation="true">
+            <button class="ms-add-btn" @onclick="OpenAddForm">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                אבן דרך חדשה
+            </button>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         KPI SUMMARY CARDS
+         ══════════════════════════════════════════ -->
+    @if (!_loading && !_loadError)
+    {
+        <div class="ms-kpi-row">
+            <div class="ms-kpi-card">
+                <div class="ms-kpi-value">@_allTemplates.Count</div>
+                <div class="ms-kpi-label">סה"כ תבניות</div>
+            </div>
+            <div class="ms-kpi-card ms-kpi--active">
+                <div class="ms-kpi-value">@_allTemplates.Count(t => t.IsActive)</div>
+                <div class="ms-kpi-label">פעילות</div>
+            </div>
+            <div class="ms-kpi-card ms-kpi--inactive">
+                <div class="ms-kpi-value">@_allTemplates.Count(t => !t.IsActive)</div>
+                <div class="ms-kpi-label">מושבתות</div>
+            </div>
+            <div class="ms-kpi-card ms-kpi--required">
+                <div class="ms-kpi-value">@_allTemplates.Count(t => t.IsRequired && t.IsActive)</div>
+                <div class="ms-kpi-label">חובה (פעילות)</div>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         INFO BAR — applicability explanation
+         ══════════════════════════════════════════ -->
+    <div class="ms-info-bar">
+        <span class="oi oi-info" aria-hidden="true"></span>
+        אבני דרך מסומנות <strong>שניהם</strong> מוצגות לכל סוגי הפרויקטים.
+        אבני דרך מסומנות <strong>טכנולוגי</strong> או <strong>מתודולוגי</strong> מוצגות רק לסוג הרלוונטי.
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         ADD / EDIT FORM PANEL
+         ══════════════════════════════════════════ -->
+    @if (_showForm)
+    {
+        <div class="ms-form-panel" @onclick:stopPropagation="true">
+            <div class="ms-form-header">
+                <span class="oi @(_editingId == 0 ? "oi-plus" : "oi-pencil")" aria-hidden="true"></span>
+                @(_editingId == 0 ? "הוספת אבן דרך" : $"עריכה: {_formTitle}")
+            </div>
+
+            <div class="ms-form-grid">
+                <div class="ms-field ms-field-full">
+                    <label class="ms-label">שם אבן הדרך <span class="ms-required">*</span></label>
+                    <input type="text" class="ms-input" @bind="_formTitle"
+                           placeholder="לדוגמה: ניתוח דרישות" maxlength="200" />
+                </div>
+
+                <div class="ms-field">
+                    <label class="ms-label">מספר סדר <span class="ms-required">*</span></label>
+                    <input type="number" class="ms-input" @bind="_formOrder"
+                           min="0" placeholder="1" />
+                </div>
+
+                <div class="ms-field">
+                    <label class="ms-label">רלוונטי לסוג פרויקט <span class="ms-required">*</span></label>
+                    <select class="ms-input" @bind="_formProjectTypeId">
+                        <option value="">שניהם (טכנולוגי + מתודולוגי)</option>
+                        @foreach (var pt in _projectTypes)
+                        {
+                            <option value="@pt.Id">@pt.Name בלבד</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="ms-field ms-field-full">
+                    <label class="ms-label">תיאור <span class="ms-optional">(אופציונלי)</span></label>
+                    <textarea class="ms-input ms-textarea" @bind="_formDescription"
+                              placeholder="תיאור קצר של שלב זה..."
+                              rows="2" maxlength="500"></textarea>
+                </div>
+
+                <div class="ms-field">
+                    <div class="ms-check-row">
+                        <input type="checkbox" id="chk-required" class="ms-checkbox"
+                               @bind="_formIsRequired" />
+                        <label for="chk-required" class="ms-check-label">חובה</label>
+                    </div>
+                </div>
+
+                <div class="ms-field">
+                    <div class="ms-check-row">
+                        <input type="checkbox" id="chk-active" class="ms-checkbox"
+                               @bind="_formIsActive" />
+                        <label for="chk-active" class="ms-check-label">פעיל</label>
+                    </div>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_formError))
+            {
+                <div class="ms-form-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_formError
+                </div>
+            }
+
+            <div class="ms-form-actions">
+                <button class="ms-ghost-btn" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
+                <button class="ms-add-btn ms-add-btn--save" @onclick="SubmitForm" disabled="@_formSaving">
+                    @if (_formSaving) { <span class="ms-spinner-sm"></span> }
+                    @(_editingId == 0 ? "הוספה" : "שמירה")
+                </button>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         FILTERS BAR
+         ══════════════════════════════════════════ -->
+    <div class="ms-filters-bar">
+        <div class="ms-search-wrap">
+            <span class="oi oi-magnifying-glass ms-search-icon" aria-hidden="true"></span>
+            <input class="ms-search" type="text"
+                   placeholder="חיפוש לפי שם..."
+                   @bind="_searchQuery" @bind:event="oninput" />
+        </div>
+        <div class="ms-filters">
+            <select class="ms-filter-select" @bind="_filterApplicability">
+                <option value="">כל הסוגים</option>
+                <option value="both">שניהם (משותף)</option>
+                @foreach (var pt in _projectTypes)
+                {
+                    <option value="@pt.Id.ToString()">@pt.Name בלבד</option>
+                }
+            </select>
+            <select class="ms-filter-select" @bind="_filterActive">
+                <option value="">פעיל ולא פעיל</option>
+                <option value="active">פעיל בלבד</option>
+                <option value="inactive">לא פעיל בלבד</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         TABLE
+         ══════════════════════════════════════════ -->
+    <div class="ms-table-panel">
+        <div class="ms-table-wrap">
+            <table class="ms-table ms-table-min-width">
+                <thead>
+                    <tr>
+                        <th class="ms-th-order">#</th>
+                        <th>שם אבן הדרך</th>
+                        <th>תיאור</th>
+                        <th>רלוונטי ל</th>
+                        <th class="ms-cell-center">חובה</th>
+                        <th>סטטוס</th>
+                        <th class="ms-th-actions">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr>
+                            <td colspan="7" class="ms-empty">
+                                <span class="ms-spinner-inline"></span>
+                                טוען אבני דרך...
+                            </td>
+                        </tr>
+                    }
+                    else if (_loadError)
+                    {
+                        <tr>
+                            <td colspan="7" class="ms-empty ms-empty--error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                שגיאה בטעינת אבני הדרך. רענן את הדף.
+                            </td>
+                        </tr>
+                    }
+                    else if (!FilteredTemplates.Any())
+                    {
+                        <tr>
+                            <td colspan="7" class="ms-empty">
+                                <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
+                                לא נמצאו אבני דרך התואמות את הסינון
+                            </td>
+                        </tr>
+                    }
+                    else
+                    {
+                        foreach (var t in FilteredTemplates)
+                        {
+                            <tr class="ms-row @(!t.IsActive ? "ms-row-inactive" : "")">
+                                <td class="ms-cell-order">@t.OrderIndex</td>
+                                <td>
+                                    <button class="ms-title-link" @onclick="@(() => OpenEditForm(t))">
+                                        @t.Title
+                                    </button>
+                                </td>
+                                <td class="ms-cell-desc">
+                                    @if (!string.IsNullOrWhiteSpace(t.Description))
+                                    {
+                                        <span title="@t.Description">
+                                            @Truncate(t.Description, 60)
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="ms-dash">—</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="ms-applicability-badge ms-applicability--@ApplicabilityKey(t.ProjectTypeId)">
+                                        @t.Applicability
+                                    </span>
+                                </td>
+                                <td class="ms-cell-center">
+                                    @if (t.IsRequired)
+                                    {
+                                        <span class="oi oi-circle-check ms-required-check" aria-hidden="true"></span>
+                                    }
+                                    else
+                                    {
+                                        <span class="ms-dash">—</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="ms-status-badge @(t.IsActive ? "ms-status--active" : "ms-status--inactive")">
+                                        @(t.IsActive ? "פעיל" : "לא פעיל")
+                                    </span>
+                                </td>
+                                <td class="ms-cell-actions" @onclick:stopPropagation="true">
+                                    <div class="ms-actions-wrap">
+                                        <button class="ms-dots-btn"
+                                                @onclick="@(() => ToggleRowMenu(t.Id))"
+                                                title="פעולות">
+                                            <span class="oi oi-ellipses" aria-hidden="true"></span>
+                                        </button>
+
+                                        @if (_openRowMenuId == t.Id)
+                                        {
+                                            <div class="ms-row-menu">
+                                                <button class="ms-row-action"
+                                                        @onclick="@(() => OpenEditForm(t))">
+                                                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                                                    עריכה
+                                                </button>
+
+                                                <div class="ms-row-menu-sep"></div>
+
+                                                <button class="ms-row-action"
+                                                        @onclick="@(async () => await ToggleActive(t))">
+                                                    @if (t.IsActive)
+                                                    {
+                                                        <span class="oi oi-ban" aria-hidden="true"></span>
+                                                        <span>השבתה</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                                        <span>הפעלה</span>
+                                                    }
+                                                </button>
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="ms-table-footer">
+            <span class="ms-count">
+                @{ var count = FilteredTemplates.Count(); }
+                @count אבני דרך
+                @if (!string.IsNullOrEmpty(_searchQuery) || !string.IsNullOrEmpty(_filterApplicability) || !string.IsNullOrEmpty(_filterActive))
+                {
+                    <span class="ms-count-note">(מסוננות מתוך @_allTemplates.Count)</span>
+                }
+            </span>
+            <div class="ms-type-legend">
+                <span class="ms-applicability-badge ms-applicability--both">שניהם</span>
+                <span class="ms-applicability-badge ms-applicability--tech">טכנולוגי</span>
+                <span class="ms-applicability-badge ms-applicability--method">מתודולוגי</span>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+@code {
+
+    // ─────────────────────────────────────────────────
+    //  Data
+    // ─────────────────────────────────────────────────
+    private List<MilestoneTemplateDto> _allTemplates = new();
+    private List<ProjectTypeOptionDto> _projectTypes = new();
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadTemplatesAsync(), LoadProjectTypesAsync());
+        _loading = false;
+    }
+
+    private async Task LoadTemplatesAsync()
+    {
+        var list   = await MilestoneService.GetTemplatesAsync();
+        _loadError = list is null;
+        _allTemplates = list ?? _allTemplates;
+    }
+
+    private async Task LoadProjectTypesAsync()
+    {
+        _projectTypes = await MilestoneService.GetProjectTypesAsync();
+    }
+
+    private async Task Reload()
+    {
+        var list   = await MilestoneService.GetTemplatesAsync();
+        _loadError = list is null;
+        _allTemplates = list ?? _allTemplates;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Filters
+    // ─────────────────────────────────────────────────
+    private string _searchQuery         = "";
+    private string _filterApplicability = "";
+    private string _filterActive        = "";
+
+    private IEnumerable<MilestoneTemplateDto> FilteredTemplates => _allTemplates
+        .Where(t => string.IsNullOrEmpty(_searchQuery)
+                    || t.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .Where(t => _filterApplicability switch
+        {
+            "both" => t.ProjectTypeId is null,
+            _      => string.IsNullOrEmpty(_filterApplicability)
+                      || t.ProjectTypeId?.ToString() == _filterApplicability,
+        })
+        .Where(t => _filterActive switch
+        {
+            "active"   =>  t.IsActive,
+            "inactive" => !t.IsActive,
+            _          => true,
+        });
+
+    // ─────────────────────────────────────────────────
+    //  Form state
+    // ─────────────────────────────────────────────────
+    private bool   _showForm        = false;
+    private bool   _formSaving      = false;
+    private int    _editingId       = 0;
+    private string _formTitle       = "";
+    private string _formDescription = "";
+    private int    _formOrder       = 1;
+    private string _formProjectTypeId = "";
+    private bool   _formIsRequired  = true;
+    private bool   _formIsActive    = true;
+    private string _formError       = "";
+
+    private void OpenAddForm()
+    {
+        _editingId        = 0;
+        _formTitle        = "";
+        _formDescription  = "";
+        _formOrder        = NextOrderIndex();
+        _formProjectTypeId = "";
+        _formIsRequired   = true;
+        _formIsActive     = true;
+        _formError        = "";
+        _showForm         = true;
+        CloseAllMenus();
+    }
+
+    private void OpenEditForm(MilestoneTemplateDto t)
+    {
+        _openRowMenuId    = -1;
+        _editingId        = t.Id;
+        _formTitle        = t.Title;
+        _formDescription  = t.Description ?? "";
+        _formOrder        = t.OrderIndex;
+        _formProjectTypeId = t.ProjectTypeId?.ToString() ?? "";
+        _formIsRequired   = t.IsRequired;
+        _formIsActive     = t.IsActive;
+        _formError        = "";
+        _showForm         = true;
+    }
+
+    private void CancelForm()
+    {
+        _showForm  = false;
+        _formError = "";
+    }
+
+    private async Task SubmitForm()
+    {
+        _formError = "";
+        if (string.IsNullOrWhiteSpace(_formTitle)) { _formError = "שם אבן הדרך הוא שדה חובה"; return; }
+        if (_formOrder < 0)                        { _formError = "מספר סדר חייב להיות אפס או יותר"; return; }
+
+        _formSaving = true;
+
+        int? typeId = string.IsNullOrEmpty(_formProjectTypeId)
+            ? null
+            : int.TryParse(_formProjectTypeId, out var parsed) ? parsed : (int?)null;
+
+        var req = new SaveMilestoneTemplateRequest
+        {
+            Title         = _formTitle.Trim(),
+            Description   = string.IsNullOrWhiteSpace(_formDescription) ? null : _formDescription.Trim(),
+            OrderIndex    = _formOrder,
+            ProjectTypeId = typeId,
+            IsRequired    = _formIsRequired,
+            IsActive      = _formIsActive,
+        };
+
+        string? error = _editingId == 0
+            ? await MilestoneService.CreateTemplateAsync(req)
+            : await MilestoneService.UpdateTemplateAsync(_editingId, req);
+
+        _formSaving = false;
+
+        if (error != null) { _formError = error.Trim('"', ' '); return; }
+
+        _showForm = false;
+        _loading  = true;
+        await Reload();
+        _loading  = false;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Row menu
+    // ─────────────────────────────────────────────────
+    private int _openRowMenuId = -1;
+
+    private void ToggleRowMenu(int id) =>
+        _openRowMenuId = _openRowMenuId == id ? -1 : id;
+
+    private void CloseAllMenus() => _openRowMenuId = -1;
+
+    // ─────────────────────────────────────────────────
+    //  Row actions
+    // ─────────────────────────────────────────────────
+    private async Task ToggleActive(MilestoneTemplateDto t)
+    {
+        _openRowMenuId = -1;
+        bool ok = await MilestoneService.ToggleActiveAsync(t.Id);
+        if (ok) t.IsActive = !t.IsActive;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Display helpers
+    // ─────────────────────────────────────────────────
+    private static string ApplicabilityKey(int? projectTypeId) => projectTypeId switch
+    {
+        1 => "tech",
+        2 => "method",
+        _ => "both",
+    };
+
+    private static string Truncate(string? s, int max) =>
+        s is null ? "" : s.Length <= max ? s : s[..max] + "…";
+
+    private int NextOrderIndex() =>
+        _allTemplates.Count == 0 ? 1 : _allTemplates.Max(t => t.OrderIndex) + 1;
+}

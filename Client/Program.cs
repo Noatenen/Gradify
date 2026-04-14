@@ -16,6 +16,14 @@ builder.Services.AddScoped<ITasksService, TasksService>();
 builder.Services.AddScoped<IMilestonesService, MilestonesService>();
 builder.Services.AddScoped<IProjectContextService, ProjectContextService>();
 
+// Resource files (admin/lecturer knowledge-base uploads)
+builder.Services.AddScoped<IResourceFilesService, ResourceFilesService>();
+
+// Management area services
+builder.Services.AddScoped<IManagementService, ManagementService>();
+builder.Services.AddScoped<ICatalogService, CatalogService>();
+builder.Services.AddScoped<IMilestoneManagementService, MilestoneManagementService>();
+
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();

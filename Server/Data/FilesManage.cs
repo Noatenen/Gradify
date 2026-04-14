@@ -25,6 +25,29 @@ public class FilesManage
         }
     }
     
+    /// <summary>
+    /// Saves any raw file (non-image) by writing bytes directly — no resizing.
+    /// Returns the generated stored filename (GUID + original extension).
+    /// </summary>
+    public async Task<string> SaveRawFile(string fileBase64, string originalFileName, string containerName)
+    {
+        byte[] fileBytes = Convert.FromBase64String(fileBase64);
+
+        string ext = Path.GetExtension(originalFileName);
+        string fileName = string.IsNullOrEmpty(ext)
+            ? $"{Guid.NewGuid()}"
+            : $"{Guid.NewGuid()}{ext}";
+
+        string folderPath = Path.Combine(_env.WebRootPath, containerName);
+
+        if (!Directory.Exists(folderPath))
+            Directory.CreateDirectory(folderPath);
+
+        string savingPath = Path.Combine(folderPath, fileName);
+        await File.WriteAllBytesAsync(savingPath, fileBytes);
+        return fileName;
+    }
+
     public async Task<string> SaveFile(string imageBase64, string extension, string containerName)
     {  
         byte[] picture = Convert.FromBase64String(imageBase64);

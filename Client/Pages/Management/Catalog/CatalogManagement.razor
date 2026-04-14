@@ -1,0 +1,899 @@
+@page "/management/catalog"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject ICatalogService CatalogService
+
+<div class="cat-page" @onclick="CloseAllMenus">
+
+    <!-- ══════════════════════════════════════════
+         TOP BAR
+         ══════════════════════════════════════════ -->
+    <div class="cat-topbar">
+        <div class="cat-topbar-start">
+            <button class="cat-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))"
+                    @onclick:stopPropagation="true" title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="cat-breadcrumb">ניהול</div>
+                <h1 class="cat-title">קטלוג פרויקטים</h1>
+            </div>
+        </div>
+
+        <div class="cat-topbar-end" @onclick:stopPropagation="true">
+            <button class="cat-sync-btn" disabled title="סנכרון Airtable — בקרוב">
+                <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                סנכרון Airtable
+                <span class="cat-soon-badge">בקרוב</span>
+            </button>
+            <button class="cat-add-btn" @onclick="OpenAddForm">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                הוספה ידנית
+            </button>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         KPI SUMMARY CARDS (entire dataset)
+         ══════════════════════════════════════════ -->
+    @if (!_loading && !_loadError)
+    {
+        <div class="cat-kpi-row">
+            <div class="cat-kpi-card">
+                <div class="cat-kpi-value">@_allProjects.Count</div>
+                <div class="cat-kpi-label">סה"כ הצעות</div>
+            </div>
+            <div class="cat-kpi-card cat-kpi-card--unassigned">
+                <div class="cat-kpi-value">@_allProjects.Count(x => !x.IsAssigned)</div>
+                <div class="cat-kpi-label">לא מוקצות</div>
+            </div>
+            <div class="cat-kpi-card cat-kpi-card--assigned">
+                <div class="cat-kpi-value">@_allProjects.Count(x => x.IsAssigned)</div>
+                <div class="cat-kpi-label">מוקצות</div>
+            </div>
+            <div class="cat-kpi-card cat-kpi-card--available">
+                <div class="cat-kpi-value">@_allProjects.Count(x => x.Status == "Available" && !x.IsAssigned)</div>
+                <div class="cat-kpi-label">זמינות לשיוך</div>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         ADD / EDIT FORM PANEL
+         ══════════════════════════════════════════ -->
+    @if (_showForm)
+    {
+        <div class="cat-form-panel" @onclick:stopPropagation="true">
+            <div class="cat-form-header">
+                <span class="oi @(_editingId == 0 ? "oi-plus" : "oi-pencil")" aria-hidden="true"></span>
+                @(_editingId == 0 ? "הוספת הצעת פרויקט" : $"עריכת הצעה: {_formTitle}")
+            </div>
+
+            <!-- Section A: Core fields -->
+            <div class="cat-form-section-header">
+                <span class="oi oi-info" aria-hidden="true"></span>
+                מידע בסיסי
+            </div>
+            <div class="cat-form-grid">
+                <div class="cat-field">
+                    <label class="cat-label">מספר פרויקט <span class="cat-required">*</span></label>
+                    <input type="number" class="cat-input" @bind="_formNumber"
+                           placeholder="לדוגמה: 101" min="1" />
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">סוג פרויקט <span class="cat-required">*</span></label>
+                    <select class="cat-input" @bind="_formTypeId">
+                        <option value="0">— בחר סוג —</option>
+                        @foreach (var pt in _projectTypes)
+                        {
+                            <option value="@pt.Id">@pt.Name</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="cat-field cat-field-full">
+                    <label class="cat-label">שם / נושא הפרויקט <span class="cat-required">*</span></label>
+                    <input type="text" class="cat-input" @bind="_formTitle"
+                           placeholder="הזן שם הפרויקט..." maxlength="200" />
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">מחזור אקדמי <span class="cat-required">*</span></label>
+                    <select class="cat-input" @bind="_formYearId">
+                        <option value="0">— בחר מחזור —</option>
+                        @foreach (var yr in _academicYears)
+                        {
+                            <option value="@yr.Id">@yr.Name</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">עדיפות <span class="cat-optional">(אופציונלי)</span></label>
+                    <select class="cat-input" @bind="_formPriority">
+                        <option value="">— ללא עדיפות —</option>
+                        <option value="Low">נמוכה</option>
+                        <option value="Medium">בינונית</option>
+                        <option value="High">גבוהה</option>
+                    </select>
+                </div>
+
+                <div class="cat-field cat-field-full">
+                    <label class="cat-label">תיאור / צורך <span class="cat-optional">(אופציונלי)</span></label>
+                    <textarea class="cat-input cat-textarea" @bind="_formDescription"
+                              placeholder="תיאור קצר של הצורך / הבעיה שהפרויקט עונה עליה..."
+                              rows="3" maxlength="1000"></textarea>
+                </div>
+            </div>
+
+            <!-- Section B: Organization / contact -->
+            <div class="cat-form-section-header">
+                <span class="oi oi-people" aria-hidden="true"></span>
+                ארגון ויצירת קשר
+                <span class="cat-section-optional">אופציונלי</span>
+            </div>
+            <div class="cat-form-grid">
+                <div class="cat-field">
+                    <label class="cat-label">שם ארגון</label>
+                    <input type="text" class="cat-input" @bind="_formOrgName"
+                           placeholder="לדוגמה: עיריית תל אביב" maxlength="200" />
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">קהל יעד</label>
+                    <input type="text" class="cat-input" @bind="_formTargetAudience"
+                           placeholder="לדוגמה: תלמידי תיכון" maxlength="200" />
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">איש קשר</label>
+                    <input type="text" class="cat-input" @bind="_formContactPerson"
+                           placeholder="שם מלא" maxlength="150" />
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">תפקיד איש קשר</label>
+                    <input type="text" class="cat-input" @bind="_formContactRole"
+                           placeholder="לדוגמה: מנהל פרויקטים" maxlength="150" />
+                </div>
+
+                <div class="cat-field cat-field-full">
+                    <label class="cat-label">מטרות הפרויקט</label>
+                    <textarea class="cat-input cat-textarea" @bind="_formGoals"
+                              placeholder="תאר את המטרות העיקריות של הפרויקט..."
+                              rows="2" maxlength="1000"></textarea>
+                </div>
+            </div>
+
+            <!-- Section C: Internal management -->
+            <div class="cat-form-section-header">
+                <span class="oi oi-cog" aria-hidden="true"></span>
+                הגדרות פנימיות
+                <span class="cat-section-optional">אופציונלי</span>
+            </div>
+            <div class="cat-form-grid">
+                <div class="cat-field">
+                    <label class="cat-label">מקור הצעה</label>
+                    <select class="cat-input" @bind="_formSourceType">
+                        <option value="Manual">ידני (הוזן בגרדיפיי)</option>
+                        <option value="Airtable">Airtable (מסונכרן)</option>
+                    </select>
+                </div>
+
+                <div class="cat-field">
+                    <label class="cat-label">זמינות לשיוך</label>
+                    <select class="cat-input" @bind="_formStatus">
+                        <option value="Available">זמין לשיוך</option>
+                        <option value="Unavailable">לא זמין</option>
+                    </select>
+                </div>
+
+                <div class="cat-field cat-field-full">
+                    <label class="cat-label">הערות פנימיות</label>
+                    <textarea class="cat-input cat-textarea" @bind="_formInternalNotes"
+                              placeholder="הערות שמיועדות לצוות הניהול בלבד..."
+                              rows="2" maxlength="2000"></textarea>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_formError))
+            {
+                <div class="cat-form-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_formError
+                </div>
+            }
+
+            <div class="cat-form-actions">
+                <button class="cat-ghost-btn" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
+                <button class="cat-add-btn cat-add-btn--save" @onclick="SubmitForm" disabled="@_formSaving">
+                    @if (_formSaving) { <span class="cat-spinner-sm"></span> }
+                    @(_editingId == 0 ? "הוספה" : "שמירה")
+                </button>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         DETAIL PANEL
+         ══════════════════════════════════════════ -->
+    @if (_detailProject != null)
+    {
+        <div class="cat-detail-overlay" @onclick="CloseDetail">
+            <div class="cat-detail-panel" @onclick:stopPropagation="true">
+                <div class="cat-detail-header">
+                    <div class="cat-detail-title-row">
+                        <span class="cat-detail-number">#@_detailProject.ProjectNumber</span>
+                        <h2 class="cat-detail-title">@_detailProject.Title</h2>
+                        @if (_detailProject.IsAssigned)
+                        {
+                            <span class="cat-assigned-badge">מוקצה</span>
+                        }
+                    </div>
+                    <button class="cat-detail-close" @onclick="CloseDetail" title="סגור">
+                        <span class="oi oi-x" aria-hidden="true"></span>
+                    </button>
+                </div>
+
+                <!-- Section: Basic Info -->
+                <div class="cat-detail-section">
+                    <div class="cat-detail-section-label">פרטי הצעה</div>
+                    <div class="cat-detail-grid">
+                        <div class="cat-detail-row">
+                            <span class="cat-detail-key">סוג פרויקט</span>
+                            <span class="cat-detail-val">@_detailProject.ProjectType</span>
+                        </div>
+                        <div class="cat-detail-row">
+                            <span class="cat-detail-key">מחזור אקדמי</span>
+                            <span class="cat-detail-val">@_detailProject.AcademicYear</span>
+                        </div>
+                        <div class="cat-detail-row">
+                            <span class="cat-detail-key">זמינות</span>
+                            <span class="cat-detail-val">
+                                <span class="cat-status-badge cat-status--@_detailProject.Status.ToLower()">
+                                    @AvailabilityLabel(_detailProject.Status)
+                                </span>
+                            </span>
+                        </div>
+                        @if (!string.IsNullOrEmpty(_detailProject.Priority))
+                        {
+                            <div class="cat-detail-row">
+                                <span class="cat-detail-key">עדיפות</span>
+                                <span class="cat-detail-val">
+                                    <span class="cat-priority-badge cat-priority--@_detailProject.Priority.ToLower()">
+                                        @PriorityLabel(_detailProject.Priority)
+                                    </span>
+                                </span>
+                            </div>
+                        }
+                        <div class="cat-detail-row">
+                            <span class="cat-detail-key">נוצר</span>
+                            <span class="cat-detail-val">@_detailProject.CreatedAt.ToString("dd/MM/yyyy")</span>
+                        </div>
+                        @if (_detailProject.UpdatedAt.HasValue)
+                        {
+                            <div class="cat-detail-row">
+                                <span class="cat-detail-key">עודכן</span>
+                                <span class="cat-detail-val">@_detailProject.UpdatedAt.Value.ToString("dd/MM/yyyy")</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- Section: Assignment -->
+                <div class="cat-detail-section">
+                    <div class="cat-detail-section-label">שיוך לצוות</div>
+                    @if (_detailProject.IsAssigned)
+                    {
+                        <div class="cat-assignment-info cat-assignment-info--assigned">
+                            <span class="oi oi-people" aria-hidden="true"></span>
+                            <div>
+                                <div class="cat-assignment-name">
+                                    @AssignedToDisplay(_detailProject.AssignedFirstMemberName, _detailProject.AssignedTeamSize)
+                                </div>
+                                <div class="cat-assignment-sub">@_detailProject.AssignedTeamSize חברי צוות</div>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="cat-assignment-info cat-assignment-info--unassigned">
+                            <span class="oi oi-circle-x" aria-hidden="true"></span>
+                            <span>הפרויקט לא שויך עדיין לצוות</span>
+                        </div>
+                    }
+                </div>
+
+                <!-- Section: Description / Need -->
+                @if (!string.IsNullOrWhiteSpace(_detailProject.Description))
+                {
+                    <div class="cat-detail-section">
+                        <div class="cat-detail-section-label">תיאור / צורך</div>
+                        <p class="cat-detail-text">@_detailProject.Description</p>
+                    </div>
+                }
+
+                <!-- Section: Goals -->
+                @if (!string.IsNullOrWhiteSpace(_detailProject.Goals))
+                {
+                    <div class="cat-detail-section">
+                        <div class="cat-detail-section-label">מטרות הפרויקט</div>
+                        <p class="cat-detail-text">@_detailProject.Goals</p>
+                    </div>
+                }
+
+                <!-- Section: Organization / Contact -->
+                @{
+                    bool hasOrgData = !string.IsNullOrEmpty(_detailProject.OrganizationName)
+                                   || !string.IsNullOrEmpty(_detailProject.ContactPerson)
+                                   || !string.IsNullOrEmpty(_detailProject.ContactRole)
+                                   || !string.IsNullOrEmpty(_detailProject.TargetAudience);
+                }
+                @if (hasOrgData)
+                {
+                    <div class="cat-detail-section">
+                        <div class="cat-detail-section-label">ארגון ויצירת קשר</div>
+                        <div class="cat-detail-grid">
+                            @if (!string.IsNullOrEmpty(_detailProject.OrganizationName))
+                            {
+                                <div class="cat-detail-row">
+                                    <span class="cat-detail-key">ארגון</span>
+                                    <span class="cat-detail-val">@_detailProject.OrganizationName</span>
+                                </div>
+                            }
+                            @if (!string.IsNullOrEmpty(_detailProject.ContactPerson))
+                            {
+                                <div class="cat-detail-row">
+                                    <span class="cat-detail-key">איש קשר</span>
+                                    <span class="cat-detail-val">@_detailProject.ContactPerson</span>
+                                </div>
+                            }
+                            @if (!string.IsNullOrEmpty(_detailProject.ContactRole))
+                            {
+                                <div class="cat-detail-row">
+                                    <span class="cat-detail-key">תפקיד</span>
+                                    <span class="cat-detail-val">@_detailProject.ContactRole</span>
+                                </div>
+                            }
+                            @if (!string.IsNullOrEmpty(_detailProject.TargetAudience))
+                            {
+                                <div class="cat-detail-row">
+                                    <span class="cat-detail-key">קהל יעד</span>
+                                    <span class="cat-detail-val">@_detailProject.TargetAudience</span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+
+                <!-- Section: Source — only shows Airtable details if relevant -->
+                <div class="cat-detail-section">
+                    <div class="cat-detail-section-label">מקור</div>
+                    @if (_detailProject.SourceType == "Airtable")
+                    {
+                        <div class="cat-source-airtable">
+                            <span class="cat-source-badge cat-source--airtable">Airtable</span>
+                            @if (!string.IsNullOrEmpty(_detailProject.AirtableRecordId))
+                            {
+                                <span class="cat-airtable-id">מזהה: @_detailProject.AirtableRecordId</span>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="cat-source-manual">
+                            <span class="cat-source-badge cat-source--manual">ידני</span>
+                            <span class="cat-source-desc">הוזן ידנית בתוך מערכת Gradify</span>
+                        </div>
+                    }
+                </div>
+
+                <!-- Section: Internal Notes — admin only -->
+                @if (!string.IsNullOrWhiteSpace(_detailProject.InternalNotes))
+                {
+                    <div class="cat-detail-section cat-detail-section--internal">
+                        <div class="cat-detail-section-label">
+                            <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                            הערות פנימיות
+                        </div>
+                        <p class="cat-detail-text">@_detailProject.InternalNotes</p>
+                    </div>
+                }
+
+                <div class="cat-detail-actions">
+                    <button class="cat-ghost-btn" @onclick="CloseDetail">סגור</button>
+                    @if (!_detailProject.IsAssigned)
+                    {
+                        <button class="cat-edit-inline-btn"
+                                @onclick="@(() => OpenEditFromDetail(_detailProject))">
+                            <span class="oi oi-pencil" aria-hidden="true"></span>
+                            עריכה
+                        </button>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         FILTERS BAR
+         ══════════════════════════════════════════ -->
+    <div class="cat-filters-bar">
+        <div class="cat-search-wrap">
+            <span class="oi oi-magnifying-glass cat-search-icon" aria-hidden="true"></span>
+            <input class="cat-search" type="text"
+                   placeholder="חיפוש לפי שם, ארגון..."
+                   @bind="_searchQuery" @bind:event="oninput" />
+        </div>
+        <div class="cat-filters">
+            <select class="cat-filter-select" @bind="_filterYear">
+                <option value="">כל המחזורים</option>
+                @foreach (var yr in _distinctYears)
+                {
+                    <option value="@yr">@yr</option>
+                }
+            </select>
+            <select class="cat-filter-select" @bind="_filterType">
+                <option value="">כל הסוגים</option>
+                @foreach (var pt in _projectTypes)
+                {
+                    <option value="@pt.Name">@pt.Name</option>
+                }
+            </select>
+            <select class="cat-filter-select" @bind="_filterStatus">
+                <option value="">כל הסטטוסים</option>
+                <option value="Available">זמין לשיוך</option>
+                <option value="Unavailable">לא זמין</option>
+            </select>
+            <select class="cat-filter-select" @bind="_filterAssigned">
+                <option value="">שיוך: הכל</option>
+                <option value="unassigned">לא מוקצה</option>
+                <option value="assigned">מוקצה</option>
+            </select>
+            <select class="cat-filter-select" @bind="_filterSource">
+                <option value="">מקור: הכל</option>
+                <option value="Manual">ידני</option>
+                <option value="Airtable">Airtable</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         TABLE
+         ══════════════════════════════════════════ -->
+    <div class="cat-table-panel">
+        <div class="cat-table-wrap">
+            <table class="cat-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>שם הפרויקט</th>
+                        <th>סוג</th>
+                        <th>מחזור</th>
+                        <th>מקור</th>
+                        <th>זמינות</th>
+                        <th>שיוך</th>
+                        <th class="cat-th-actions">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr>
+                            <td colspan="8" class="cat-empty">
+                                <span class="cat-spinner-inline"></span>
+                                טוען קטלוג...
+                            </td>
+                        </tr>
+                    }
+                    else if (_loadError)
+                    {
+                        <tr>
+                            <td colspan="8" class="mgmt-empty cat-empty--error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                שגיאה בטעינת הקטלוג. רענן את הדף.
+                            </td>
+                        </tr>
+                    }
+                    else if (!FilteredProjects.Any())
+                    {
+                        <tr>
+                            <td colspan="8" class="cat-empty">
+                                <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
+                                לא נמצאו פרויקטים התואמים את הסינון
+                            </td>
+                        </tr>
+                    }
+                    else
+                    {
+                        foreach (var p in FilteredProjects)
+                        {
+                            <tr class="cat-row @(p.IsAssigned ? "cat-row--assigned" : "")">
+                                <td class="cat-cell-num">@p.ProjectNumber</td>
+                                <td class="cat-cell-name">
+                                    <div class="cat-title-wrap">
+                                        <button class="cat-title-link"
+                                                @onclick="@(() => OpenDetail(p.Id))"
+                                                @onclick:stopPropagation="true">
+                                            @p.Title
+                                        </button>
+                                        @if (!string.IsNullOrEmpty(p.OrganizationName))
+                                        {
+                                            <span class="cat-org-sub">@p.OrganizationName</span>
+                                        }
+                                    </div>
+                                </td>
+                                <td class="cat-cell-secondary">@p.ProjectType</td>
+                                <td class="cat-cell-secondary">@p.AcademicYear</td>
+                                <td>
+                                    <span class="cat-source-badge cat-source--@p.SourceType.ToLower()">
+                                        @(p.SourceType == "Airtable" ? "Airtable" : "ידני")
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="cat-status-cell">
+                                        <span class="cat-status-badge cat-status--@p.Status.ToLower()">
+                                            @AvailabilityLabel(p.Status)
+                                        </span>
+                                        @if (!string.IsNullOrEmpty(p.Priority))
+                                        {
+                                            <span class="cat-priority-badge cat-priority--@p.Priority.ToLower()">
+                                                @PriorityLabel(p.Priority)
+                                            </span>
+                                        }
+                                    </div>
+                                </td>
+                                <td class="cat-cell-assignment">
+                                    @if (p.IsAssigned)
+                                    {
+                                        <div class="cat-assignment-cell">
+                                            <span class="oi oi-people cat-assigned-icon" aria-hidden="true"></span>
+                                            <span class="cat-assigned-text">
+                                                @AssignedToDisplay(p.AssignedFirstMemberName, p.AssignedTeamSize)
+                                            </span>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <span class="cat-unassigned-tag">לא מוקצה</span>
+                                    }
+                                </td>
+                                <td class="cat-cell-actions" @onclick:stopPropagation="true">
+                                    <div class="cat-actions-wrap">
+                                        <button class="cat-dots-btn"
+                                                @onclick="@(() => ToggleRowMenu(p.Id))"
+                                                title="פעולות">
+                                            <span class="oi oi-ellipses" aria-hidden="true"></span>
+                                        </button>
+
+                                        @if (_openRowMenuId == p.Id)
+                                        {
+                                            <div class="cat-row-menu">
+                                                <button class="cat-row-action"
+                                                        @onclick="@(() => OpenDetail(p.Id))">
+                                                    <span class="oi oi-eye" aria-hidden="true"></span>
+                                                    צפייה בפרטים
+                                                </button>
+
+                                                @if (!p.IsAssigned)
+                                                {
+                                                    <button class="cat-row-action"
+                                                            @onclick="@(() => OpenEditFormFromList(p))">
+                                                        <span class="oi oi-pencil" aria-hidden="true"></span>
+                                                        עריכת הצעה
+                                                    </button>
+
+                                                    <div class="cat-row-menu-sep"></div>
+
+                                                    <button class="cat-row-action"
+                                                            @onclick="@(() => ToggleAvailability(p))">
+                                                        @if (p.Status == "Available")
+                                                        {
+                                                            <span class="oi oi-ban" aria-hidden="true"></span>
+                                                            <span>הגדר כלא זמין</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                                            <span>הגדר כזמין</span>
+                                                        }
+                                                    </button>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="cat-table-footer">
+            <span class="cat-count">
+                @{ var count = FilteredProjects.Count(); }
+                מציג @count הצעות
+                @if (IsFiltered)
+                {
+                    <span class="cat-count-note">(מסוננות מתוך @_allProjects.Count)</span>
+                }
+            </span>
+        </div>
+    </div>
+
+</div>
+
+@code {
+
+    // ─────────────────────────────────────────────────
+    //  Data
+    // ─────────────────────────────────────────────────
+    private List<CatalogProjectListDto> _allProjects   = new();
+    private List<ProjectTypeOptionDto>  _projectTypes  = new();
+    private List<AcademicYearDto>       _academicYears = new();
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadCatalogAsync(), LoadFormDataAsync());
+        _loading = false;
+    }
+
+    private async Task LoadCatalogAsync()
+    {
+        var list   = await CatalogService.GetCatalogAsync();
+        _loadError = list is null;
+        _allProjects = list ?? _allProjects;
+    }
+
+    private async Task LoadFormDataAsync()
+    {
+        _projectTypes  = await CatalogService.GetProjectTypesAsync();
+        _academicYears = await CatalogService.GetAcademicYearsAsync() ?? new();
+    }
+
+    private async Task Reload()
+    {
+        var list   = await CatalogService.GetCatalogAsync();
+        _loadError = list is null;
+        _allProjects = list ?? _allProjects;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Filters
+    // ─────────────────────────────────────────────────
+    private string _searchQuery    = "";
+    private string _filterYear     = "";
+    private string _filterType     = "";
+    private string _filterStatus   = "";
+    private string _filterAssigned = "";
+    private string _filterSource   = "";
+
+    private IEnumerable<string> _distinctYears =>
+        _allProjects.Select(p => p.AcademicYear).Distinct().OrderByDescending(y => y);
+
+    private bool IsFiltered =>
+        !string.IsNullOrEmpty(_searchQuery) || !string.IsNullOrEmpty(_filterYear)
+        || !string.IsNullOrEmpty(_filterType) || !string.IsNullOrEmpty(_filterStatus)
+        || !string.IsNullOrEmpty(_filterAssigned) || !string.IsNullOrEmpty(_filterSource);
+
+    private IEnumerable<CatalogProjectListDto> FilteredProjects => _allProjects
+        .Where(p => string.IsNullOrEmpty(_searchQuery)
+                    || p.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                    || (p.OrganizationName ?? "").Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                    || p.ProjectNumber.ToString().Contains(_searchQuery))
+        .Where(p => string.IsNullOrEmpty(_filterYear)     || p.AcademicYear == _filterYear)
+        .Where(p => string.IsNullOrEmpty(_filterType)     || p.ProjectType  == _filterType)
+        .Where(p => string.IsNullOrEmpty(_filterStatus)   || p.Status       == _filterStatus)
+        .Where(p => string.IsNullOrEmpty(_filterSource)   || p.SourceType   == _filterSource)
+        .Where(p => _filterAssigned switch
+        {
+            "assigned"   =>  p.IsAssigned,
+            "unassigned" => !p.IsAssigned,
+            _            => true,
+        });
+
+    // ─────────────────────────────────────────────────
+    //  Add / Edit form state
+    // ─────────────────────────────────────────────────
+    private bool   _showForm   = false;
+    private bool   _formSaving = false;
+    private int    _editingId  = 0;
+    // Core
+    private int    _formNumber      = 0;
+    private string _formTitle       = "";
+    private int    _formTypeId      = 0;
+    private int    _formYearId      = 0;
+    private string _formPriority    = "";
+    private string _formDescription = "";
+    // Organization
+    private string _formOrgName       = "";
+    private string _formTargetAudience = "";
+    private string _formContactPerson  = "";
+    private string _formContactRole    = "";
+    private string _formGoals          = "";
+    // Internal
+    private string _formSourceType    = "Manual";
+    private string _formStatus        = "Available";
+    private string _formInternalNotes = "";
+    // Error
+    private string _formError = "";
+
+    private void OpenAddForm()
+    {
+        _editingId          = 0;
+        _formNumber         = 0;
+        _formTitle          = "";
+        _formTypeId         = 0;
+        _formYearId         = _academicYears.FirstOrDefault(y => y.IsCurrent)?.Id ?? 0;
+        _formPriority       = "";
+        _formDescription    = "";
+        _formOrgName        = "";
+        _formTargetAudience = "";
+        _formContactPerson  = "";
+        _formContactRole    = "";
+        _formGoals          = "";
+        _formSourceType     = "Manual";
+        _formStatus         = "Available";
+        _formInternalNotes  = "";
+        _formError          = "";
+        _showForm           = true;
+        CloseAllMenus();
+    }
+
+    private void PopulateFormFromDetail(CatalogProjectDetailDto d)
+    {
+        _editingId          = d.Id;
+        _formNumber         = d.ProjectNumber;
+        _formTitle          = d.Title;
+        _formTypeId         = d.ProjectTypeId;
+        _formYearId         = d.AcademicYearId;
+        _formPriority       = d.Priority ?? "";
+        _formDescription    = d.Description ?? "";
+        _formOrgName        = d.OrganizationName ?? "";
+        _formTargetAudience = d.TargetAudience ?? "";
+        _formContactPerson  = d.ContactPerson ?? "";
+        _formContactRole    = d.ContactRole ?? "";
+        _formGoals          = d.Goals ?? "";
+        _formSourceType     = d.SourceType;
+        _formStatus         = d.Status;
+        _formInternalNotes  = d.InternalNotes ?? "";
+        _formError          = "";
+    }
+
+    private async Task OpenEditFormFromList(CatalogProjectListDto p)
+    {
+        _openRowMenuId = -1;
+        // Fetch full detail so all new fields are pre-populated
+        var detail = await CatalogService.GetProjectDetailAsync(p.Id);
+        if (detail is null) return;
+        PopulateFormFromDetail(detail);
+        _showForm = true;
+    }
+
+    private void OpenEditFromDetail(CatalogProjectDetailDto d)
+    {
+        CloseDetail();
+        PopulateFormFromDetail(d);
+        _showForm = true;
+    }
+
+    private void CancelForm()
+    {
+        _showForm  = false;
+        _formError = "";
+    }
+
+    private async Task SubmitForm()
+    {
+        _formError = "";
+        if (string.IsNullOrWhiteSpace(_formTitle)) { _formError = "שם הפרויקט הוא שדה חובה"; return; }
+        if (_formNumber <= 0)                       { _formError = "מספר פרויקט חייב להיות חיובי"; return; }
+        if (_formTypeId <= 0)                       { _formError = "יש לבחור סוג פרויקט"; return; }
+        if (_formYearId <= 0)                       { _formError = "יש לבחור מחזור אקדמי"; return; }
+
+        _formSaving = true;
+
+        var req = new SaveCatalogProjectRequest
+        {
+            ProjectNumber   = _formNumber,
+            Title           = _formTitle.Trim(),
+            ProjectTypeId   = _formTypeId,
+            AcademicYearId  = _formYearId,
+            Priority        = string.IsNullOrEmpty(_formPriority) ? null : _formPriority,
+            Description     = NullIfEmpty(_formDescription),
+            OrganizationName = NullIfEmpty(_formOrgName),
+            TargetAudience  = NullIfEmpty(_formTargetAudience),
+            ContactPerson   = NullIfEmpty(_formContactPerson),
+            ContactRole     = NullIfEmpty(_formContactRole),
+            Goals           = NullIfEmpty(_formGoals),
+            SourceType      = _formSourceType,
+            Status          = _formStatus,
+            InternalNotes   = NullIfEmpty(_formInternalNotes),
+        };
+
+        string? serverError = _editingId == 0
+            ? await CatalogService.CreateProjectWithErrorAsync(req)
+            : await CatalogService.UpdateProjectWithErrorAsync(_editingId, req);
+
+        _formSaving = false;
+
+        if (serverError != null) { _formError = CleanError(serverError); return; }
+
+        _showForm = false;
+        _loading  = true;
+        await Reload();
+        _loading  = false;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Detail panel
+    // ─────────────────────────────────────────────────
+    private CatalogProjectDetailDto? _detailProject = null;
+
+    private async Task OpenDetail(int id)
+    {
+        _openRowMenuId = -1;
+        _detailProject = await CatalogService.GetProjectDetailAsync(id);
+    }
+
+    private void CloseDetail() => _detailProject = null;
+
+    // ─────────────────────────────────────────────────
+    //  Row menu
+    // ─────────────────────────────────────────────────
+    private int _openRowMenuId = -1;
+
+    private void ToggleRowMenu(int id) =>
+        _openRowMenuId = _openRowMenuId == id ? -1 : id;
+
+    private void CloseAllMenus() => _openRowMenuId = -1;
+
+    // ─────────────────────────────────────────────────
+    //  Row actions
+    // ─────────────────────────────────────────────────
+    private async Task ToggleAvailability(CatalogProjectListDto p)
+    {
+        _openRowMenuId = -1;
+        bool ok = await CatalogService.ToggleAvailabilityAsync(p.Id);
+        if (ok)
+            p.Status = p.Status == "Available" ? "Unavailable" : "Available";
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Display helpers
+    // ─────────────────────────────────────────────────
+    private static string AvailabilityLabel(string status) => status switch
+    {
+        "Available"   => "זמין",
+        "Unavailable" => "לא זמין",
+        _             => status,
+    };
+
+    private static string PriorityLabel(string? priority) => priority switch
+    {
+        "Low"    => "נמוכה",
+        "Medium" => "בינונית",
+        "High"   => "גבוהה",
+        _        => priority ?? "",
+    };
+
+    private static string AssignedToDisplay(string? firstName, int teamSize) =>
+        teamSize switch
+        {
+            0 => "מוקצה",
+            1 => firstName ?? "מוקצה",
+            _ => $"{firstName ?? "מוקצה"} +{teamSize - 1}",
+        };
+
+    private static string? NullIfEmpty(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    private static string CleanError(string raw) =>
+        raw.Trim('"', ' ', '\n', '\r');
+}
