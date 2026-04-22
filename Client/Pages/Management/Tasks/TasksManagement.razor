@@ -1,0 +1,616 @@
+@page "/management/tasks"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject ITaskManagementService TaskService
+@inject IResourceFilesService ResourceFilesService
+
+<div class="tk-page" @onclick="CloseAllMenus">
+
+    <!-- ══════════════════════════════════════════
+         TOP BAR
+         ══════════════════════════════════════════ -->
+    <div class="tk-topbar">
+        <div class="tk-topbar-start">
+            <button class="tk-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))"
+                    @onclick:stopPropagation="true" title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="tk-breadcrumb">ניהול</div>
+                <h1 class="tk-page-title">ניהול משימות</h1>
+            </div>
+        </div>
+
+        <div class="tk-topbar-end" @onclick:stopPropagation="true">
+            <button class="tk-add-btn" @onclick="OpenAddForm">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                תבנית חדשה
+            </button>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         KPI SUMMARY CARDS
+         ══════════════════════════════════════════ -->
+    @if (!_loading && !_loadError)
+    {
+        <div class="tk-kpi-row">
+            <div class="tk-kpi-card">
+                <div class="tk-kpi-value">@_allTemplates.Count</div>
+                <div class="tk-kpi-label">סה"כ תבניות</div>
+            </div>
+            <div class="tk-kpi-card tk-kpi--active">
+                <div class="tk-kpi-value">@_allTemplates.Count(t => t.IsActive && TaskTemplateStatus(t) == "open")</div>
+                <div class="tk-kpi-label">תבניות פתוחות כעת</div>
+            </div>
+            <div class="tk-kpi-card tk-kpi--system">
+                <div class="tk-kpi-value">@_allTemplates.Count(t => t.IsActive)</div>
+                <div class="tk-kpi-label">תבניות פעילות</div>
+            </div>
+            <div class="tk-kpi-card tk-kpi--student">
+                <div class="tk-kpi-value">@_milestones.Count</div>
+                <div class="tk-kpi-label">אבני דרך מקושרות</div>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         ADD / EDIT FORM PANEL (TaskTemplates only)
+         ══════════════════════════════════════════ -->
+    @if (_showForm)
+    {
+        <div class="tk-form-panel" @onclick:stopPropagation="true">
+            <div class="tk-form-header">
+                <span class="oi @(_editingId == 0 ? "oi-plus" : "oi-pencil")" aria-hidden="true"></span>
+                @(_editingId == 0 ? "הוספת תבנית משימה" : $"עריכה: {_formTitle}")
+            </div>
+
+            <div class="tk-form-grid">
+                <div class="tk-field tk-field-full">
+                    <label class="tk-label">שם המשימה <span class="tk-required">*</span></label>
+                    <input type="text" class="tk-input" @bind="_formTitle"
+                           placeholder="לדוגמה: הגשת מסמך דרישות" maxlength="200" />
+                </div>
+
+                <div class="tk-field tk-field-full">
+                    <label class="tk-label">אבן דרך משויכת <span class="tk-required">*</span></label>
+                    <select class="tk-input" @bind="_formMilestoneId">
+                        <option value="0">— בחר אבן דרך —</option>
+                        @foreach (var m in _milestones)
+                        {
+                            <option value="@m.Id">@m.Title</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="tk-field">
+                    <label class="tk-label">תאריך פתיחה <span class="tk-required">*</span></label>
+                    <input type="date" class="tk-input" @bind="_formStartDate" />
+                </div>
+
+                <div class="tk-field">
+                    <label class="tk-label">תאריך יעד <span class="tk-required">*</span></label>
+                    <input type="date" class="tk-input" @bind="_formDueDate" />
+                </div>
+
+                <div class="tk-field tk-field-full">
+                    <label class="tk-label">תיאור <span class="tk-optional">(אופציונלי)</span></label>
+                    <textarea class="tk-input tk-textarea" @bind="_formDescription"
+                              placeholder="תיאור קצר של המשימה..."
+                              rows="2" maxlength="500"></textarea>
+                </div>
+
+                <div class="tk-field">
+                    <div class="tk-check-row">
+                        <input type="checkbox" id="chk-active" class="tk-checkbox"
+                               @bind="_formIsActive" />
+                        <label for="chk-active" class="tk-check-label">פעיל</label>
+                    </div>
+                </div>
+
+                <div class="tk-field">
+                    <div class="tk-check-row">
+                        <input type="checkbox" id="chk-submission" class="tk-checkbox"
+                               @bind="_formIsSubmission" />
+                        <label for="chk-submission" class="tk-check-label">משימת הגשה</label>
+                    </div>
+                </div>
+            </div>
+
+            @if (_formIsSubmission)
+            {
+                <div class="tk-submission-section">
+                    <div class="tk-submission-header">
+                        <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                        הגדרות הגשה
+                    </div>
+
+                    <div class="tk-form-grid">
+                        <div class="tk-field tk-field-full">
+                            <label class="tk-label">הוראות הגשה <span class="tk-optional">(אופציונלי)</span></label>
+                            <textarea class="tk-input tk-textarea" @bind="_formSubmissionInstructions"
+                                      placeholder="הוראות מפורטות לסטודנטים לגבי אופן ההגשה..."
+                                      rows="2" maxlength="1000"></textarea>
+                        </div>
+
+                        <div class="tk-field">
+                            <label class="tk-label">מספר קבצים מקסימלי <span class="tk-required">*</span></label>
+                            <input type="number" class="tk-input" @bind="_formMaxFilesCount"
+                                   min="1" max="20" />
+                        </div>
+
+                        <div class="tk-field">
+                            <label class="tk-label">גודל קובץ מקסימלי (MB) <span class="tk-required">*</span></label>
+                            <input type="number" class="tk-input" @bind="_formMaxFileSizeMb"
+                                   min="1" max="200" />
+                        </div>
+
+                        <div class="tk-field tk-field-full">
+                            <label class="tk-label">סוגי קבצים מותרים <span class="tk-required">*</span></label>
+                            <div class="tk-file-type-grid">
+                                @foreach (var ft in _fileTypeOptions)
+                                {
+                                    var ftCopy = ft;
+                                    <label class="tk-file-type-item">
+                                        <input type="checkbox" class="tk-checkbox"
+                                               checked="@_formAllowedFileTypes.Contains(ftCopy)"
+                                               @onchange="@(e => ToggleFileType(ftCopy, (bool)e.Value!))" />
+                                        .@ftCopy
+                                    </label>
+                                }
+                            </div>
+                        </div>
+
+                        <div class="tk-field tk-field-full">
+                            <label class="tk-label">קבצי עזר מקושרים <span class="tk-optional">(אופציונלי)</span></label>
+                            @if (_allResourceFiles.Count == 0)
+                            {
+                                <div class="tk-no-files">אין קבצים זמינים במאגר — ניתן להוסיף דרך עמוד ניהול קבצים</div>
+                            }
+                            else
+                            {
+                                <div class="tk-resource-picker">
+                                    @foreach (var rf in _allResourceFiles)
+                                    {
+                                        var rfCopy = rf;
+                                        <label class="tk-resource-item">
+                                            <input type="checkbox" class="tk-checkbox"
+                                                   checked="@_formLinkedResourceFileIds.Contains(rfCopy.Id)"
+                                                   @onchange="@(e => ToggleResourceFile(rfCopy.Id, (bool)e.Value!))" />
+                                            <span class="tk-resource-icon oi @FileTypeIcon(rfCopy.ContentType)" aria-hidden="true"></span>
+                                            <span class="tk-resource-name">@rfCopy.FileName</span>
+                                        </label>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @if (!string.IsNullOrEmpty(_formError))
+            {
+                <div class="tk-form-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_formError
+                </div>
+            }
+
+            <div class="tk-form-actions">
+                <button class="tk-ghost-btn" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
+                <button class="tk-add-btn tk-add-btn--save" @onclick="SubmitForm" disabled="@_formSaving">
+                    @if (_formSaving) { <span class="tk-spinner-sm"></span> }
+                    @(_editingId == 0 ? "הוספה" : "שמירה")
+                </button>
+            </div>
+        </div>
+    }
+
+    <!-- ══════════════════════════════════════════
+         SECTION A — GLOBAL TASK TEMPLATES
+         ══════════════════════════════════════════ -->
+    <div class="tk-section-bar">
+        <div class="tk-section-bar-start">
+            <span class="oi oi-cog tk-section-icon" aria-hidden="true"></span>
+            <span class="tk-section-title">תבניות משימות גלובליות</span>
+            @if (!_loading)
+            {
+                <span class="tk-section-count">@_allTemplates.Count</span>
+            }
+        </div>
+        <div class="tk-section-bar-note">תבניות אקדמיות המקושרות לאבני דרך</div>
+    </div>
+
+    <div class="tk-filters-bar">
+        <div class="tk-search-wrap">
+            <span class="oi oi-magnifying-glass tk-search-icon" aria-hidden="true"></span>
+            <input class="tk-search" type="text"
+                   placeholder="חיפוש לפי שם..."
+                   @bind="_searchQuery" @bind:event="oninput" />
+        </div>
+        <div class="tk-filters">
+            <select class="tk-filter-select" @bind="_filterMilestone">
+                <option value="">כל אבני הדרך</option>
+                @foreach (var m in _milestones)
+                {
+                    <option value="@m.Id.ToString()">@m.Title</option>
+                }
+            </select>
+            <select class="tk-filter-select" @bind="_filterStatus">
+                <option value="">כל הסטטוסים</option>
+                <option value="locked">מנוע</option>
+                <option value="open">פתוח</option>
+                <option value="closed">סגור</option>
+            </select>
+            <select class="tk-filter-select" @bind="_filterActive">
+                <option value="">פעיל ולא פעיל</option>
+                <option value="active">פעיל בלבד</option>
+                <option value="inactive">לא פעיל בלבד</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="tk-table-panel">
+        <div class="tk-table-wrap">
+            <table class="tk-table">
+                <thead>
+                    <tr>
+                        <th>שם התבנית</th>
+                        <th>אבן דרך</th>
+                        <th>תאריך פתיחה</th>
+                        <th>תאריך יעד</th>
+                        <th>סטטוס</th>
+                        <th>פעיל</th>
+                        <th>הגשה</th>
+                        <th class="tk-th-actions">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr><td colspan="8" class="tk-empty"><span class="tk-spinner-inline"></span>טוען תבניות...</td></tr>
+                    }
+                    else if (_loadError)
+                    {
+                        <tr><td colspan="8" class="tk-empty tk-empty--error"><span class="oi oi-warning"></span>שגיאה בטעינה. רענן את הדף.</td></tr>
+                    }
+                    else if (!FilteredTemplates.Any())
+                    {
+                        <tr><td colspan="8" class="tk-empty"><span class="oi oi-magnifying-glass"></span>לא נמצאו תבניות התואמות את הסינון</td></tr>
+                    }
+                    else
+                    {
+                        foreach (var t in FilteredTemplates)
+                        {
+                            var status = TaskTemplateStatus(t);
+                            <tr class="tk-row @(!t.IsActive ? "tk-row-inactive" : "")">
+                                <td>
+                                    <button class="tk-title-link" @onclick="@(() => OpenEditForm(t))">@t.Title</button>
+                                    @if (!string.IsNullOrWhiteSpace(t.Description))
+                                    {
+                                        <div class="tk-cell-desc" title="@t.Description">@Truncate(t.Description, 55)</div>
+                                    }
+                                </td>
+                                <td><span class="tk-milestone-tag">@t.MilestoneTitle</span></td>
+                                <td class="tk-cell-date">@FormatDate(t.StartDate)</td>
+                                <td class="tk-cell-date">@FormatDate(t.DueDate)</td>
+                                <td>
+                                    <span class="tk-status-badge tk-status--@status">@TemplateStatusLabel(status)</span>
+                                </td>
+                                <td class="tk-cell-center">
+                                    @if (t.IsActive) { <span class="oi oi-circle-check tk-active-check"></span> }
+                                    else             { <span class="tk-dash">—</span> }
+                                </td>
+                                <td class="tk-cell-center">
+                                    @if (t.IsSubmission)
+                                    {
+                                        <span class="tk-submission-badge" title="@($"עד {t.MaxFilesCount} קבצים, {t.MaxFileSizeMb} MB")">
+                                            <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                                            הגשה
+                                        </span>
+                                    }
+                                    else { <span class="tk-dash">—</span> }
+                                </td>
+                                <td class="tk-cell-actions" @onclick:stopPropagation="true">
+                                    <div class="tk-actions-wrap">
+                                        <button class="tk-dots-btn" @onclick="@(() => ToggleRowMenu(t.Id))" title="פעולות">
+                                            <span class="oi oi-ellipses"></span>
+                                        </button>
+                                        @if (_openRowMenuId == t.Id)
+                                        {
+                                            <div class="tk-row-menu">
+                                                <button class="tk-row-action" @onclick="@(() => OpenEditForm(t))">
+                                                    <span class="oi oi-pencil"></span>עריכה
+                                                </button>
+                                                <div class="tk-row-menu-sep"></div>
+                                                <button class="tk-row-action" @onclick="@(async () => await ToggleActive(t))">
+                                                    @if (t.IsActive) { <span class="oi oi-ban"></span><span>השבתה</span> }
+                                                    else             { <span class="oi oi-circle-check"></span><span>הפעלה</span> }
+                                                </button>
+                                                <div class="tk-row-menu-sep"></div>
+                                                <button class="tk-row-action tk-row-action--danger" @onclick="@(async () => await DeleteTemplate(t))">
+                                                    <span class="oi oi-trash"></span>מחיקה
+                                                </button>
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="tk-table-footer">
+            <span class="tk-count">
+                @{ var tCount = FilteredTemplates.Count(); }
+                @tCount תבניות
+                @if (!string.IsNullOrEmpty(_searchQuery) || !string.IsNullOrEmpty(_filterMilestone) ||
+                     !string.IsNullOrEmpty(_filterStatus) || !string.IsNullOrEmpty(_filterActive))
+                {
+                    <span class="tk-count-note">(מסוננות מתוך @_allTemplates.Count)</span>
+                }
+            </span>
+            <div class="tk-legend">
+                <span class="tk-status-badge tk-status--locked">מנוע</span>
+                <span class="tk-status-badge tk-status--open">פתוח</span>
+                <span class="tk-status-badge tk-status--closed">סגור</span>
+            </div>
+        </div>
+    </div>
+
+
+</div>
+
+@code {
+
+    // ─────────────────────────────────────────────────
+    //  TaskTemplates — global admin catalog
+    // ─────────────────────────────────────────────────
+    private List<TaskTemplateDto>      _allTemplates    = new();
+    private List<MilestoneTemplateDto> _milestones      = new();
+    private List<ResourceFileDto>      _allResourceFiles = new();
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadTemplatesAsync(), LoadMilestonesAsync(), LoadResourceFilesAsync());
+        _loading = false;
+    }
+
+    private async Task LoadTemplatesAsync()
+    {
+        var list   = await TaskService.GetTemplatesAsync();
+        _loadError = list is null;
+        _allTemplates = list ?? _allTemplates;
+    }
+
+    private async Task LoadMilestonesAsync()
+    {
+        _milestones = await TaskService.GetMilestoneTemplatesAsync() ?? new();
+    }
+
+    private async Task LoadResourceFilesAsync()
+    {
+        _allResourceFiles = await ResourceFilesService.GetAllAsync() ?? new();
+    }
+
+    private async Task Reload()
+    {
+        var list   = await TaskService.GetTemplatesAsync();
+        _loadError = list is null;
+        _allTemplates = list ?? _allTemplates;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Filters
+    // ─────────────────────────────────────────────────
+    private string _searchQuery     = "";
+    private string _filterMilestone = "";
+    private string _filterStatus    = "";
+    private string _filterActive    = "";
+
+    private IEnumerable<TaskTemplateDto> FilteredTemplates => _allTemplates
+        .Where(t => string.IsNullOrEmpty(_searchQuery)
+                    || t.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .Where(t => string.IsNullOrEmpty(_filterMilestone)
+                    || t.MilestoneTemplateId.ToString() == _filterMilestone)
+        .Where(t => string.IsNullOrEmpty(_filterStatus)
+                    || TaskTemplateStatus(t) == _filterStatus)
+        .Where(t => _filterActive switch
+        {
+            "active"   =>  t.IsActive,
+            "inactive" => !t.IsActive,
+            _          => true,
+        });
+
+    // ─────────────────────────────────────────────────
+    //  Form state
+    // ─────────────────────────────────────────────────
+    private bool     _showForm        = false;
+    private bool     _formSaving      = false;
+    private int      _editingId       = 0;
+    private string   _formTitle       = "";
+    private string   _formDescription = "";
+    private int      _formMilestoneId = 0;
+    private DateTime _formStartDate   = DateTime.Today;
+    private DateTime _formDueDate     = DateTime.Today.AddDays(7);
+    private bool     _formIsActive    = true;
+    private string   _formError       = "";
+
+    // Submission policy fields
+    private bool            _formIsSubmission           = false;
+    private string          _formSubmissionInstructions = "";
+    private int             _formMaxFilesCount          = 1;
+    private int             _formMaxFileSizeMb          = 10;
+    private HashSet<string> _formAllowedFileTypes       = new();
+    private HashSet<int>    _formLinkedResourceFileIds  = new();
+
+    private static readonly string[] _fileTypeOptions =
+        ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "jpg", "png", "zip"];
+
+    private void OpenAddForm()
+    {
+        _editingId                  = 0;
+        _formTitle                  = "";
+        _formDescription            = "";
+        _formMilestoneId            = 0;
+        _formStartDate              = DateTime.Today;
+        _formDueDate                = DateTime.Today.AddDays(7);
+        _formIsActive               = true;
+        _formIsSubmission           = false;
+        _formSubmissionInstructions = "";
+        _formMaxFilesCount          = 1;
+        _formMaxFileSizeMb          = 10;
+        _formAllowedFileTypes       = new();
+        _formLinkedResourceFileIds  = new();
+        _formError                  = "";
+        _showForm                   = true;
+        CloseAllMenus();
+    }
+
+    private void OpenEditForm(TaskTemplateDto t)
+    {
+        _openRowMenuId              = -1;
+        _editingId                  = t.Id;
+        _formTitle                  = t.Title;
+        _formDescription            = t.Description ?? "";
+        _formMilestoneId            = t.MilestoneTemplateId;
+        _formStartDate              = t.StartDate;
+        _formDueDate                = t.DueDate;
+        _formIsActive               = t.IsActive;
+        _formIsSubmission           = t.IsSubmission;
+        _formSubmissionInstructions = t.SubmissionInstructions ?? "";
+        _formMaxFilesCount          = t.MaxFilesCount ?? 1;
+        _formMaxFileSizeMb          = t.MaxFileSizeMb ?? 10;
+        _formAllowedFileTypes       = string.IsNullOrEmpty(t.AllowedFileTypes)
+            ? new()
+            : t.AllowedFileTypes.Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        _formLinkedResourceFileIds  = t.LinkedResourceFiles.Select(f => f.Id).ToHashSet();
+        _formError                  = "";
+        _showForm                   = true;
+    }
+
+    private void CancelForm()
+    {
+        _showForm  = false;
+        _formError = "";
+    }
+
+    private async Task SubmitForm()
+    {
+        _formError = "";
+        if (string.IsNullOrWhiteSpace(_formTitle)) { _formError = "שם המשימה הוא שדה חובה"; return; }
+        if (_formMilestoneId <= 0)                 { _formError = "יש לבחור אבן דרך"; return; }
+        if (_formDueDate <= _formStartDate)        { _formError = "תאריך היעד חייב להיות אחרי תאריך הפתיחה"; return; }
+        if (_formIsSubmission && _formMaxFilesCount <= 0) { _formError = "יש להגדיר מספר קבצים מקסימלי גדול מ-0"; return; }
+        if (_formIsSubmission && _formMaxFileSizeMb <= 0) { _formError = "יש להגדיר גודל קובץ מקסימלי גדול מ-0"; return; }
+
+        _formSaving = true;
+
+        var req = new SaveTaskTemplateRequest
+        {
+            Title                  = _formTitle.Trim(),
+            Description            = string.IsNullOrWhiteSpace(_formDescription) ? null : _formDescription.Trim(),
+            MilestoneTemplateId    = _formMilestoneId,
+            StartDate              = _formStartDate,
+            DueDate                = _formDueDate,
+            IsActive               = _formIsActive,
+            IsSubmission           = _formIsSubmission,
+            SubmissionInstructions = _formIsSubmission && !string.IsNullOrWhiteSpace(_formSubmissionInstructions)
+                ? _formSubmissionInstructions.Trim() : null,
+            MaxFilesCount          = _formIsSubmission ? _formMaxFilesCount : null,
+            MaxFileSizeMb          = _formIsSubmission ? _formMaxFileSizeMb : null,
+            AllowedFileTypes       = _formIsSubmission && _formAllowedFileTypes.Count > 0
+                ? string.Join(",", _formAllowedFileTypes) : null,
+            LinkedResourceFileIds  = _formIsSubmission
+                ? _formLinkedResourceFileIds.ToList() : new(),
+        };
+
+        string? error = _editingId == 0
+            ? await TaskService.CreateAsync(req)
+            : await TaskService.UpdateAsync(_editingId, req);
+
+        _formSaving = false;
+
+        if (error != null) { _formError = error.Trim('"', ' '); return; }
+
+        _showForm = false;
+        _loading  = true;
+        await Reload();
+        _loading  = false;
+    }
+
+    private void ToggleFileType(string ft, bool isChecked)
+    {
+        if (isChecked) _formAllowedFileTypes.Add(ft);
+        else           _formAllowedFileTypes.Remove(ft);
+    }
+
+    private void ToggleResourceFile(int id, bool isChecked)
+    {
+        if (isChecked) _formLinkedResourceFileIds.Add(id);
+        else           _formLinkedResourceFileIds.Remove(id);
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Row menu
+    // ─────────────────────────────────────────────────
+    private int _openRowMenuId = -1;
+
+    private void ToggleRowMenu(int id) =>
+        _openRowMenuId = _openRowMenuId == id ? -1 : id;
+
+    private void CloseAllMenus() => _openRowMenuId = -1;
+
+    private async Task ToggleActive(TaskTemplateDto t)
+    {
+        _openRowMenuId = -1;
+        bool ok = await TaskService.ToggleActiveAsync(t.Id);
+        if (ok) t.IsActive = !t.IsActive;
+    }
+
+    private async Task DeleteTemplate(TaskTemplateDto t)
+    {
+        _openRowMenuId = -1;
+        bool ok = await TaskService.DeleteAsync(t.Id);
+        if (ok) _allTemplates.Remove(t);
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Display helpers
+    // ─────────────────────────────────────────────────
+
+    /// <summary>Date-based status for TaskTemplates: "locked" | "open" | "closed".</summary>
+    private static string TaskTemplateStatus(TaskTemplateDto t)
+    {
+        var today = DateTime.Today;
+        if (today < t.StartDate.Date) return "locked";
+        if (today > t.DueDate.Date)   return "closed";
+        return "open";
+    }
+
+    private static string TemplateStatusLabel(string s) => s switch
+    {
+        "locked" => "מנוע",
+        "open"   => "פתוח",
+        "closed" => "סגור",
+        _        => s,
+    };
+
+    private static string FormatDate(DateTime d) => d.ToString("dd/MM/yyyy");
+
+    private static string FileTypeIcon(string contentType) => contentType switch
+    {
+        var c when c.Contains("pdf")   => "oi-document",
+        var c when c.Contains("image") => "oi-image",
+        var c when c.Contains("zip")   => "oi-box",
+        _                              => "oi-file",
+    };
+
+    private static string Truncate(string? s, int max) =>
+        s is null ? "" : s.Length <= max ? s : s[..max] + "…";
+}

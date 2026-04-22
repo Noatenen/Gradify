@@ -50,9 +50,14 @@ public class ProjectsController : ControllerBase
                 projectSql, new { UserId = authUserId }))
             .FirstOrDefault();
 
-        // User is not yet assigned to a project — return an empty dashboard.
+        // User is not yet assigned to a project — return minimal dashboard with HasTeam flag.
         if (projectRow is null)
-            return Ok(new DashboardDto());
+        {
+            var teamCount = (await _db.GetRecordsAsync<int>(
+                "SELECT COUNT(1) FROM TeamMembers WHERE UserId = @UserId AND IsActive = 1",
+                new { UserId = authUserId })).FirstOrDefault();
+            return Ok(new DashboardDto { HasTeam = teamCount > 0 });
+        }
 
         int projectId = projectRow.Id;
         int teamId    = projectRow.TeamId;
@@ -108,6 +113,7 @@ public class ProjectsController : ControllerBase
                     t.Status,
                     t.DueDate,
                     t.ProjectMilestoneId,
+                    t.IsSubmission,
                     COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName
             FROM    Tasks t
             LEFT JOIN Users u ON t.AssignedToUserId = u.Id
@@ -118,17 +124,18 @@ public class ProjectsController : ControllerBase
             tasksSql, new { ProjectId = projectId });
 
         // ── 6. Open requests ──────────────────────────────────────────────────
+        // Reads from ProjectRequests (unified requests module).
+        // Maps CreatedAt → OpenedAt to satisfy OpenRequestDto column mapping.
         const string requestsSql = @"
             SELECT  r.Id,
                     r.Title,
-                    rt.Name AS RequestType,
+                    r.RequestType,
                     r.Status,
-                    r.OpenedAt
-            FROM    Requests     r
-            JOIN    RequestTypes rt ON r.RequestTypeId = rt.Id
+                    r.CreatedAt AS OpenedAt
+            FROM    ProjectRequests r
             WHERE   r.ProjectId = @ProjectId
               AND   r.Status   != 'Closed'
-            ORDER   BY r.OpenedAt DESC";
+            ORDER   BY r.CreatedAt DESC";
 
         var requests = await _db.GetRecordsAsync<OpenRequestDto>(
             requestsSql, new { ProjectId = projectId });
@@ -156,16 +163,36 @@ public class ProjectsController : ControllerBase
                 .ToList(),
         }).ToList();
 
-        // ── Derive next deadline from milestones ──────────────────────────────
-        var nextDeadline = milestones
-            .Where(m => !IsMilestoneCompleted(m.Status) && m.DueDate.HasValue)
-            .OrderBy(m => m.DueDate)
-            .Select(m => new UpcomingDeadlineDto { Title = m.Title, DueDate = m.DueDate!.Value })
+        // ── Derive next deadline ──────────────────────────────────────────────
+        // Prefer the nearest incomplete submission task; fall back to nearest milestone.
+        var nearestSubmissionTask = taskRows?
+            .Where(t => t.IsSubmission && t.Status != "Done" && t.DueDate.HasValue)
+            .OrderBy(t => t.DueDate)
             .FirstOrDefault();
+
+        UpcomingDeadlineDto? nextDeadline;
+        if (nearestSubmissionTask is not null)
+        {
+            nextDeadline = new UpcomingDeadlineDto
+            {
+                TaskId  = nearestSubmissionTask.Id,
+                Title   = nearestSubmissionTask.Title,
+                DueDate = nearestSubmissionTask.DueDate!.Value,
+            };
+        }
+        else
+        {
+            nextDeadline = milestones
+                .Where(m => !IsMilestoneCompleted(m.Status) && m.DueDate.HasValue)
+                .OrderBy(m => m.DueDate)
+                .Select(m => new UpcomingDeadlineDto { Title = m.Title, DueDate = m.DueDate!.Value })
+                .FirstOrDefault();
+        }
 
         // ── Build and return the dashboard DTO ────────────────────────────────
         var dashboard = new DashboardDto
         {
+            HasTeam = true,
             Project = new ProjectInfoDto
             {
                 Id            = projectRow.Id,
@@ -255,6 +282,7 @@ public class ProjectsController : ControllerBase
 
         return Ok(new ProjectContextDto
         {
+            ProjectId                = projectRow.ProjectId,
             ProjectNumber            = projectRow.ProjectNumber,
             ProjectTitle             = projectRow.ProjectTitle,
             CurrentMilestoneTitle    = currentMs?.Title,
@@ -415,7 +443,16 @@ public class ProjectsController : ControllerBase
                     t.IsMandatory,
                     t.DueDate          AS TaskDueDate,
                     t.ClosedAt         AS CompletedAt,
-                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName
+                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName,
+                    t.IsSubmission,
+                    (SELECT s.Status
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmissionStatus,
+                    (SELECT s.MentorStatus
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMentorStatus
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
@@ -435,15 +472,18 @@ public class ProjectsController : ControllerBase
             {
                 var allTasks = g.Select(r => new TaskItemDto
                 {
-                    Id              = r.TaskId,
-                    Title           = r.TaskTitle,
-                    Status          = r.TaskStatus,
-                    TaskType        = r.TaskType,
-                    IsMandatory     = r.IsMandatory,
-                    DueDate         = r.TaskDueDate,
-                    CompletedAt     = r.CompletedAt,
-                    AssignedToName  = r.AssignedToName,
-                    MilestoneStatus = NormalizeMilestoneStatus(r.MilestoneStatus),
+                    Id                     = r.TaskId,
+                    Title                  = r.TaskTitle,
+                    Status                 = NormalizeTaskStatus(r.TaskStatus),
+                    TaskType               = r.TaskType,
+                    IsMandatory            = r.IsMandatory,
+                    DueDate                = r.TaskDueDate,
+                    CompletedAt            = r.CompletedAt,
+                    AssignedToName         = r.AssignedToName,
+                    IsSubmission           = r.IsSubmission,
+                    MilestoneStatus        = NormalizeMilestoneStatus(r.MilestoneStatus),
+                    LatestSubmissionStatus = r.LatestSubmissionStatus,
+                    LatestMentorStatus     = r.LatestMentorStatus,
                 }).ToList();
 
                 return new TaskMilestoneGroupDto
@@ -532,6 +572,36 @@ public class ProjectsController : ControllerBase
     private static string NormalizeMilestoneStatus(string? status) =>
         IsMilestoneCompleted(status) ? "Completed" : status ?? "NotStarted";
 
+    // ── Task status helpers ───────────────────────────────────────────────────
+    // Some legacy tasks in the DB carry "Completed" instead of "Done".
+    // Normalize at the read boundary so all downstream UI checks use "Done".
+    private static string NormalizeTaskStatus(string? status) =>
+        status is "Completed" ? "Done" : status ?? "Open";
+
+    // Valid student progress status values (7-step workflow).
+    private static readonly HashSet<string> ValidTaskProgressStatuses =
+        new(StringComparer.Ordinal)
+        {
+            "Open", "InProgress",
+            "SubmittedToMentor", "ReturnedForRevision",
+            "RevisionSubmitted", "ApprovedForSubmission",
+            "Done",
+        };
+
+    // ── Team resolution helper ────────────────────────────────────────────────
+    private async Task<int?> GetTeamIdForUserAsync(int userId)
+    {
+        const string sql = @"
+            SELECT t.Id
+            FROM   Teams       t
+            JOIN   TeamMembers tm ON t.Id = tm.TeamId
+            WHERE  tm.UserId   = @UserId AND tm.IsActive = 1
+            LIMIT 1";
+        var rows = await _db.GetRecordsAsync<SubTeamIdRow>(sql, new { UserId = userId });
+        return rows?.FirstOrDefault()?.Id;
+    }
+    private sealed class SubTeamIdRow { public int Id { get; set; } }
+
     // ── Private Dapper mapping rows ───────────────────────────────────────────
     // These are intermediate shapes for Dapper to fill from raw SQL results.
     // They are never exposed outside this controller.
@@ -565,6 +635,7 @@ public class ProjectsController : ControllerBase
         public string    Status             { get; set; } = "";
         public DateTime? DueDate            { get; set; }
         public int?      ProjectMilestoneId { get; set; }
+        public bool      IsSubmission       { get; set; }
         public string    AssignedToName     { get; set; } = "";
     }
 
@@ -634,5 +705,504 @@ public class ProjectsController : ControllerBase
         public DateTime? TaskDueDate         { get; set; }
         public DateTime? CompletedAt         { get; set; }
         public string    AssignedToName      { get; set; } = "";
+        public bool      IsSubmission        { get; set; }
+        public string?   LatestSubmissionStatus { get; set; }
+        public string?   LatestMentorStatus     { get; set; }
+    }
+
+    // ── GET /api/projects/my-submission-tasks ────────────────────────────────
+    // Returns all submission tasks for the authenticated student's project,
+    // each with its latest submission state.
+    // Used by the /submissions page and the SubmissionModal.
+    [HttpGet("my-submission-tasks")]
+    public async Task<IActionResult> GetMySubmissionTasks(int authUserId)
+    {
+        // ── 1. Resolve project ────────────────────────────────────────────────
+        const string projectSql = @"
+            SELECT  p.Id
+            FROM    Projects     p
+            JOIN    Teams        t   ON p.TeamId  = t.Id
+            JOIN    TeamMembers  tm  ON t.Id       = tm.TeamId
+            WHERE   tm.UserId  = @UserId
+              AND   tm.IsActive = 1
+            LIMIT 1";
+
+        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+                projectSql, new { UserId = authUserId }))
+            .FirstOrDefault();
+
+        if (projectIdRow is null)
+            return Ok(Enumerable.Empty<StudentSubmissionTaskDto>());
+
+        int projectId = projectIdRow.Id;
+
+        // ── 2. Submission tasks with latest submission state ──────────────────
+        // Correlated subqueries on TaskSubmissions give the latest row's
+        // status and date without a GROUP BY complication.
+        const string sql = @"
+            SELECT  t.Id                                   AS TaskId,
+                    t.Title                                AS TaskTitle,
+                    t.Description,
+                    COALESCE(mt.Title, '')                 AS MilestoneTitle,
+                    t.DueDate,
+                    t.Status                               AS TaskStatus,
+                    t.SubmissionInstructions,
+                    t.MaxFilesCount,
+                    t.MaxFileSizeMb,
+                    t.AllowedFileTypes,
+                    (SELECT COUNT(*) FROM TaskSubmissions s WHERE s.TaskId = t.Id)
+                                                           AS SubmissionCount,
+                    (SELECT s.Id
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmissionId,
+                    (SELECT s.Status
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmissionStatus,
+                    (SELECT s.SubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmittedAt
+            FROM    Tasks                    t
+            LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
+            LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+            LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            WHERE   t.ProjectId    = @ProjectId
+              AND   t.IsSubmission = 1
+            ORDER   BY t.DueDate NULLS LAST, t.Id";
+
+        var rows = await _db.GetRecordsAsync<StudentSubmissionTaskDto>(
+            sql, new { ProjectId = projectId });
+
+        return Ok(rows ?? Enumerable.Empty<StudentSubmissionTaskDto>());
+    }
+
+    // ── GET /api/projects/my-submission-tasks/{taskId} ───────────────────────
+    // Returns a single submission task with its latest submission state.
+    // Used by the SubmissionModal when it opens for a specific task.
+    [HttpGet("my-submission-tasks/{taskId:int}")]
+    public async Task<IActionResult> GetMySubmissionTask(int taskId, int authUserId)
+    {
+        // ── 1. Resolve project ────────────────────────────────────────────────
+        const string projectSql = @"
+            SELECT  p.Id
+            FROM    Projects     p
+            JOIN    Teams        t   ON p.TeamId  = t.Id
+            JOIN    TeamMembers  tm  ON t.Id       = tm.TeamId
+            WHERE   tm.UserId  = @UserId
+              AND   tm.IsActive = 1
+            LIMIT 1";
+
+        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+                projectSql, new { UserId = authUserId }))
+            .FirstOrDefault();
+
+        if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
+
+        int projectId = projectIdRow.Id;
+
+        // ── 2. Single task (must belong to the user's project) ────────────────
+        const string sql = @"
+            SELECT  t.Id                                   AS TaskId,
+                    t.Title                                AS TaskTitle,
+                    t.Description,
+                    COALESCE(mt.Title, '')                 AS MilestoneTitle,
+                    t.DueDate,
+                    t.Status                               AS TaskStatus,
+                    t.SubmissionInstructions,
+                    t.MaxFilesCount,
+                    t.MaxFileSizeMb,
+                    t.AllowedFileTypes,
+                    (SELECT COUNT(*) FROM TaskSubmissions s WHERE s.TaskId = t.Id)
+                                                           AS SubmissionCount,
+                    (SELECT s.Id
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmissionId,
+                    (SELECT s.Status
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmissionStatus,
+                    (SELECT s.SubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmittedAt
+            FROM    Tasks                    t
+            LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
+            LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+            LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            WHERE   t.Id         = @TaskId
+              AND   t.ProjectId  = @ProjectId
+              AND   t.IsSubmission = 1";
+
+        var row = (await _db.GetRecordsAsync<StudentSubmissionTaskDto>(
+                sql, new { TaskId = taskId, ProjectId = projectId }))
+            .FirstOrDefault();
+
+        if (row is null) return NotFound("משימת ההגשה לא נמצאה");
+        return Ok(row);
+    }
+
+    // ── GET /api/projects/tasks/{taskId}/detail ──────────────────────────────
+    // Returns full task details + complete submission history for the student.
+    // Scoped to the requesting user's own project — students cannot access
+    // tasks that belong to other projects.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("tasks/{taskId:int}/detail")]
+    public async Task<IActionResult> GetTaskDetail(int taskId, int authUserId)
+    {
+        // ── 1. Resolve user → project ────────────────────────────────────────
+        const string projectSql = @"
+            SELECT p.Id
+            FROM   Projects    p
+            JOIN   Teams       t  ON p.TeamId = t.Id
+            JOIN   TeamMembers tm ON t.Id     = tm.TeamId
+            WHERE  tm.UserId   = @UserId AND tm.IsActive = 1
+            LIMIT 1";
+
+        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+                projectSql, new { UserId = authUserId }))
+            .FirstOrDefault();
+
+        if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
+        int projectId = projectIdRow.Id;
+
+        // ── 2. Fetch task (must belong to the student's project) ─────────────
+        const string taskSql = @"
+            SELECT  t.Id,
+                    t.Title,
+                    t.Description,
+                    COALESCE(mt.Title, '')  AS MilestoneTitle,
+                    t.CreatedAt            AS OpenDate,
+                    t.DueDate,
+                    t.Status,
+                    t.TaskType,
+                    t.IsSubmission,
+                    t.SubmissionInstructions,
+                    t.MaxFilesCount,
+                    t.MaxFileSizeMb,
+                    t.AllowedFileTypes
+            FROM    Tasks                    t
+            LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
+            LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+            LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            WHERE   t.Id        = @TaskId
+              AND   t.ProjectId = @ProjectId";
+
+        var task = (await _db.GetRecordsAsync<TaskDetailDto>(
+                taskSql, new { TaskId = taskId, ProjectId = projectId }))
+            .FirstOrDefault();
+
+        if (task is null) return NotFound("המשימה לא נמצאה");
+
+        // Normalize legacy "Completed" → "Done" so the client always receives
+        // the canonical status string.
+        task.Status = NormalizeTaskStatus(task.Status);
+
+        // ── 3. Fetch all submissions (newest first) ──────────────────────────
+        if (task.IsSubmission)
+        {
+            const string subsSql = @"
+                SELECT  s.Id,
+                        s.SubmittedAt,
+                        s.Notes,
+                        s.Status,
+                        s.ReviewerFeedback,
+                        s.MentorStatus,
+                        s.MentorFeedback,
+                        s.MentorReviewedAt
+                FROM    TaskSubmissions s
+                WHERE   s.TaskId = @TaskId
+                ORDER   BY s.Id DESC";
+
+            var subs = (await _db.GetRecordsAsync<SubmissionHistoryItemDto>(
+                    subsSql, new { TaskId = taskId }))
+                .ToList();
+
+            // Attach files to each submission
+            if (subs.Count > 0)
+            {
+                const string filesSql = @"
+                    SELECT  f.Id,
+                            f.TaskSubmissionId,
+                            f.OriginalFileName,
+                            f.StoredFileName,
+                            f.ContentType,
+                            f.SizeBytes,
+                            f.UploadedAt
+                    FROM    TaskSubmissionFiles f
+                    WHERE   f.TaskSubmissionId IN
+                        (SELECT s2.Id FROM TaskSubmissions s2 WHERE s2.TaskId = @TaskId)
+                    ORDER   BY f.TaskSubmissionId DESC, f.Id";
+
+                var allFiles = (await _db.GetRecordsAsync<TaskSubmissionFileDto>(
+                        filesSql, new { TaskId = taskId }))
+                    .ToList();
+
+                var filesBySubmission = allFiles
+                    .GroupBy(f => f.TaskSubmissionId)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                foreach (var sub in subs)
+                    sub.Files = filesBySubmission.GetValueOrDefault(sub.Id) ?? new();
+            }
+
+            task.Submissions = subs;
+        }
+
+        return Ok(task);
+    }
+
+    // ── PATCH /api/projects/tasks/{taskId}/progress ──────────────────────────
+    // Allows the authenticated student to update their personal progress status
+    // on any task that belongs to their project.
+    // Valid values: "Open" | "InProgress" | "Done"
+    // Students control their own progress; this endpoint does NOT affect
+    // submission approval statuses (MentorStatus, reviewer Status).
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPatch("tasks/{taskId:int}/progress")]
+    public async Task<IActionResult> UpdateTaskProgress(
+        int taskId, [FromBody] UpdateTaskProgressRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Status) ||
+            !ValidTaskProgressStatuses.Contains(req.Status))
+            return BadRequest(
+                "סטטוס לא תקין. ערכים חוקיים: Open, InProgress, SubmittedToMentor, " +
+                "ReturnedForRevision, RevisionSubmitted, ApprovedForSubmission, Done");
+
+        // Verify the task belongs to the student's project
+        const string projectSql = @"
+            SELECT p.Id
+            FROM   Projects    p
+            JOIN   Teams       t  ON p.TeamId = t.Id
+            JOIN   TeamMembers tm ON t.Id     = tm.TeamId
+            WHERE  tm.UserId   = @UserId AND tm.IsActive = 1
+            LIMIT 1";
+
+        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+                projectSql, new { UserId = authUserId }))
+            .FirstOrDefault();
+
+        if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
+
+        const string updateSql = @"
+            UPDATE Tasks
+            SET    Status   = @Status,
+                   ClosedAt = CASE WHEN @Status = 'Done' THEN datetime('now') ELSE NULL END
+            WHERE  Id        = @TaskId
+              AND  ProjectId = @ProjectId";
+
+        int affected = await _db.SaveDataAsync(updateSql, new
+        {
+            req.Status,
+            TaskId    = taskId,
+            ProjectId = projectIdRow.Id,
+        });
+
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── GET /api/projects/tasks/{taskId}/subtasks ────────────────────────────
+    // Returns all student sub-tasks for the calling team + parent task.
+    // Scoped to the caller's active team — other teams' sub-tasks are invisible.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("tasks/{taskId:int}/subtasks")]
+    public async Task<IActionResult> GetSubTasks(int taskId, int authUserId)
+    {
+        var teamId = await GetTeamIdForUserAsync(authUserId);
+        if (teamId is null) return NotFound("צוות לא נמצא");
+
+        const string sql = @"
+            SELECT  st.Id,
+                    st.TaskId,
+                    st.Title,
+                    st.IsDone,
+                    COALESCE(st.Status, 'Open') AS Status,
+                    st.DueDate,
+                    st.Notes,
+                    st.CreatedAt,
+                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS CreatedByName
+            FROM    StudentSubTasks st
+            LEFT JOIN users u ON u.Id = st.CreatedByUserId
+            WHERE   st.TaskId = @TaskId
+              AND   st.TeamId = @TeamId
+            ORDER   BY st.CreatedAt";
+
+        var rows = await _db.GetRecordsAsync<StudentSubTaskDto>(
+            sql, new { TaskId = taskId, TeamId = teamId });
+        return Ok(rows ?? Enumerable.Empty<StudentSubTaskDto>());
+    }
+
+    // ── POST /api/projects/tasks/{taskId}/subtasks ───────────────────────────
+    // Creates a new student sub-task for the calling team under the given task.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPost("tasks/{taskId:int}/subtasks")]
+    public async Task<IActionResult> CreateSubTask(
+        int taskId, [FromBody] CreateSubTaskRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        var teamId = await GetTeamIdForUserAsync(authUserId);
+        if (teamId is null) return NotFound("צוות לא נמצא");
+
+        var validSubTaskStatuses = new HashSet<string>
+            { "Open", "InProgress", "Done" };
+        var status = validSubTaskStatuses.Contains(req.Status) ? req.Status : "Open";
+
+        const string sql = @"
+            INSERT INTO StudentSubTasks (TaskId, TeamId, Title, IsDone, Status, DueDate, Notes, CreatedByUserId)
+            VALUES (@TaskId, @TeamId, @Title, 0, @Status, @DueDate, @Notes, @CreatedByUserId)";
+
+        int newId = await _db.InsertReturnIdAsync(sql, new
+        {
+            TaskId          = taskId,
+            TeamId          = teamId.Value,
+            Title           = req.Title.Trim(),
+            Status          = status,
+            DueDate         = req.DueDate?.ToString("yyyy-MM-dd"),
+            Notes           = req.Notes,
+            CreatedByUserId = authUserId,
+        });
+
+        if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
+
+        var created = new StudentSubTaskDto
+        {
+            Id        = newId,
+            TaskId    = taskId,
+            Title     = req.Title.Trim(),
+            IsDone    = false,
+            Status    = status,
+            DueDate   = req.DueDate,
+            Notes     = req.Notes,
+            CreatedAt = DateTime.UtcNow,
+        };
+        return Ok(created);
+    }
+
+    // ── PATCH /api/projects/subtasks/{id}/toggle ─────────────────────────────
+    // Toggles the IsDone flag on a student sub-task.
+    // Only the owning team may modify their own sub-tasks.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPatch("subtasks/{id:int}/toggle")]
+    public async Task<IActionResult> ToggleSubTask(int id, int authUserId)
+    {
+        var teamId = await GetTeamIdForUserAsync(authUserId);
+        if (teamId is null) return NotFound("צוות לא נמצא");
+
+        const string sql = @"
+            UPDATE StudentSubTasks
+            SET    IsDone = CASE WHEN IsDone = 1 THEN 0 ELSE 1 END
+            WHERE  Id     = @Id
+              AND  TeamId = @TeamId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, TeamId = teamId.Value });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── PATCH /api/projects/subtasks/{id} ───────────────────────────────────
+    // Updates title, status, due date, and notes on a student sub-task.
+    // Only the owning team may modify their own sub-tasks.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPatch("subtasks/{id:int}")]
+    public async Task<IActionResult> UpdateSubTask(
+        int id, [FromBody] UpdateSubTaskRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        var teamId = await GetTeamIdForUserAsync(authUserId);
+        if (teamId is null) return NotFound("צוות לא נמצא");
+
+        var validSubTaskStatuses = new HashSet<string>
+            { "Open", "InProgress", "Done" };
+        var status = validSubTaskStatuses.Contains(req.Status) ? req.Status : "Open";
+
+        const string sql = @"
+            UPDATE StudentSubTasks
+            SET    Title   = @Title,
+                   Status  = @Status,
+                   DueDate = @DueDate,
+                   Notes   = @Notes
+            WHERE  Id     = @Id
+              AND  TeamId = @TeamId";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            Id      = id,
+            TeamId  = teamId.Value,
+            Title   = req.Title.Trim(),
+            Status  = status,
+            DueDate = req.DueDate?.ToString("yyyy-MM-dd"),
+            Notes   = req.Notes,
+        });
+
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── DELETE /api/projects/subtasks/{id} ───────────────────────────────────
+    // Deletes a student sub-task. Only the owning team may delete their rows.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("subtasks/{id:int}")]
+    public async Task<IActionResult> DeleteSubTask(int id, int authUserId)
+    {
+        var teamId = await GetTeamIdForUserAsync(authUserId);
+        if (teamId is null) return NotFound("צוות לא נמצא");
+
+        const string sql = @"
+            DELETE FROM StudentSubTasks
+            WHERE  Id     = @Id
+              AND  TeamId = @TeamId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, TeamId = teamId.Value });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return NoContent();
+    }
+
+    // ── GET /api/projects/my-project-details ─────────────────────────────────
+    // Returns the full student-safe details for the authenticated user's project.
+    // Excludes all internal management fields (health status, priority,
+    // internal notes, source type, Airtable IDs, assignment metadata).
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("my-project-details")]
+    public async Task<IActionResult> GetMyProjectDetails(int authUserId)
+    {
+        const string sql = @"
+            SELECT  p.Id,
+                    p.ProjectNumber,
+                    p.Title,
+                    pt.Name   AS ProjectType,
+                    ay.Name   AS AcademicYear,
+                    p.Description,
+                    p.Goals,
+                    p.TargetAudience,
+                    p.OrganizationName,
+                    p.OrganizationType,
+                    p.ContactPerson,
+                    p.ContactRole,
+                    p.ContactEmail,
+                    p.ContactPhone,
+                    p.ProjectTopic,
+                    p.Contents
+            FROM    Projects      p
+            JOIN    ProjectTypes  pt  ON p.ProjectTypeId  = pt.Id
+            JOIN    AcademicYears ay  ON p.AcademicYearId = ay.Id
+            JOIN    Teams         t   ON p.TeamId         = t.Id
+            JOIN    TeamMembers   tm  ON t.Id             = tm.TeamId
+            WHERE   tm.UserId   = @UserId
+              AND   tm.IsActive = 1
+            LIMIT 1";
+
+        var row = (await _db.GetRecordsAsync<StudentProjectDetailsDto>(
+                sql, new { UserId = authUserId }))
+            .FirstOrDefault();
+
+        if (row is null) return NotFound("פרויקט לא נמצא");
+        return Ok(row);
     }
 }

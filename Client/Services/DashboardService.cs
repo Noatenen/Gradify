@@ -11,6 +11,13 @@ public interface IDashboardService
     /// Project when the user is not yet assigned to a team.
     /// </summary>
     Task<DashboardDto?> GetDashboardAsync();
+
+    /// <summary>
+    /// Fetches the student-safe full project details for the current user's project.
+    /// Returns null on error or when the user has no project.
+    /// Used to lazily populate the project-details modal on the student dashboard.
+    /// </summary>
+    Task<StudentProjectDetailsDto?> GetMyProjectDetailsAsync();
 }
 
 public class DashboardService : IDashboardService
@@ -24,6 +31,19 @@ public class DashboardService : IDashboardService
         try
         {
             return await _http.GetFromJsonAsync<DashboardDto>("api/projects/my-dashboard");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public async Task<StudentProjectDetailsDto?> GetMyProjectDetailsAsync()
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<StudentProjectDetailsDto>(
+                "api/projects/my-project-details");
         }
         catch
         {

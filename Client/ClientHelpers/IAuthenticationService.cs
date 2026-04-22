@@ -25,5 +25,6 @@ namespace AuthWithAdmin.Client
         Task<string> ResendVerafication(User user);
         Task<List<UserForAdmin>> GetUsersByRoles(string role);
         Task<AdminResults> AdminAddUser(UserAddedByAdmin user);
+        Task<string?> UpdateUserAsync(int userId, AdminUpdateUserRequest req);
     }
 }

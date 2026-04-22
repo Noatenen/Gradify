@@ -107,7 +107,6 @@ namespace AuthWithAdmin.Server.Controllers
         {
             AdminResults auth = await _authRepository.AddUserByAdmin(newUser);
 
-
             if (auth.Result == AuthResults.ChangeRoleFailed)
                 return BadRequest(auth);
 
@@ -117,8 +116,34 @@ namespace AuthWithAdmin.Server.Controllers
             if (auth.Result == AuthResults.CreateUserFailed)
                 return BadRequest(auth);
 
-            //מייל
+            int newUserId = auth.User.Id;
 
+            // Persist Phone and AcademicYear (not stored by AddUserByAdmin)
+            await _db.SaveDataAsync(
+                "UPDATE users SET Phone = @Phone, AcademicYear = @AcademicYear WHERE Id = @Id",
+                new
+                {
+                    Phone        = newUser.Phone?.Trim()        ?? "",
+                    AcademicYear = newUser.AcademicYear?.Trim() ?? "2025-2026",
+                    Id           = newUserId,
+                });
+
+            // Insert the selected role (AddUserByAdmin only inserts the "User" approval role)
+            var validRoles = new[] { Roles.Student, Roles.Mentor, Roles.Staff, Roles.Admin };
+            var primaryRole = newUser.Role?.Trim() ?? Roles.Student;
+            if (validRoles.Contains(primaryRole))
+            {
+                await _db.SaveDataAsync(
+                    "INSERT INTO UserRoles (UserId, Role) VALUES (@UserId, @Role)",
+                    new { UserId = newUserId, Role = primaryRole });
+            }
+
+            // Reflect updated fields in the returned user object
+            auth.User.Phone        = newUser.Phone?.Trim()        ?? "";
+            auth.User.AcademicYear = newUser.AcademicYear?.Trim() ?? "2025-2026";
+            auth.User.Roles.Add(primaryRole);
+
+            // שליחת מייל עם קישור לאיפוס סיסמה
             string redirectURL = $"{getPath()}/api/users/ResetPassword?token={Uri.EscapeDataString(auth.Result)}";
 
             var placeholders = new Dictionary<string, string>
@@ -134,7 +159,6 @@ namespace AuthWithAdmin.Server.Controllers
             {
                 auth.Result = AuthResults.EmailFailed;
                 return Ok(auth);
-
             }
 
             MailModel mail = new MailModel()
@@ -151,12 +175,53 @@ namespace AuthWithAdmin.Server.Controllers
                 return Ok(auth);
             }
 
-
             auth.Result = AuthResults.Success;
             return Ok(auth);
-
         }
 
+
+        // עדכון פרטי משתמש + תפקיד
+        [HttpPut("users/{id:int}")]
+        public async Task<IActionResult> UpdateUser(int id, [FromBody] AdminUpdateUserRequest req)
+        {
+            if (string.IsNullOrWhiteSpace(req.FirstName) || string.IsNullOrWhiteSpace(req.LastName))
+                return BadRequest("שם פרטי ושם משפחה הם שדות חובה");
+
+            var validRoles = new[] { Roles.Student, Roles.Mentor, Roles.Staff, Roles.Admin };
+            if (string.IsNullOrWhiteSpace(req.Role) || !validRoles.Contains(req.Role))
+                return BadRequest("תפקיד לא תקין");
+
+            // Update personal details
+            const string updateSql = @"
+                UPDATE users
+                SET    FirstName    = @FirstName,
+                       LastName     = @LastName,
+                       Phone        = @Phone,
+                       AcademicYear = @AcademicYear
+                WHERE  Id = @Id";
+
+            int affected = await _db.SaveDataAsync(updateSql, new
+            {
+                FirstName    = req.FirstName.Trim(),
+                LastName     = req.LastName.Trim(),
+                Phone        = req.Phone?.Trim() ?? "",
+                AcademicYear = req.AcademicYear?.Trim() ?? "",
+                Id           = id,
+            });
+
+            if (affected == 0) return NotFound("המשתמש לא נמצא");
+
+            // Replace primary role (keep "User" approval role if present)
+            await _db.SaveDataAsync(
+                "DELETE FROM UserRoles WHERE UserId = @Id AND Role != 'User'",
+                new { Id = id });
+
+            await _db.SaveDataAsync(
+                "INSERT INTO UserRoles (UserId, Role) VALUES (@UserId, @Role)",
+                new { UserId = id, Role = req.Role });
+
+            return Ok();
+        }
 
         //קבלת כל המשתמשים לפי הרשאה מסויימת
         [HttpGet]

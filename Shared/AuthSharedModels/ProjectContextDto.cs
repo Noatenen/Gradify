@@ -8,6 +8,7 @@ namespace AuthWithAdmin.Shared.AuthSharedModels;
 public class ProjectContextDto
 {
     // ── Identity (always shown) ───────────────────────────────────────────────
+    public int    ProjectId     { get; set; }
     public int    ProjectNumber { get; set; }
     public string ProjectTitle  { get; set; } = "";
 

@@ -38,14 +38,22 @@ public class ManagementController : ControllerBase
                     t.Id     AS TeamId,
                     (SELECT COUNT(*)
                      FROM   TeamMembers tm2
-                     WHERE  tm2.TeamId = t.Id AND tm2.IsActive = 1)                   AS TeamSize,
+                     WHERE  tm2.TeamId = t.Id AND tm2.IsActive = 1)  AS TeamSize,
                     COALESCE(
                         (SELECT u.AcademicYear
                          FROM   TeamMembers tm2
                          JOIN   Users       u  ON tm2.UserId = u.Id
                          WHERE  tm2.TeamId = t.Id AND tm2.IsActive = 1
                          LIMIT  1),
-                    '')                                                                AS AcademicYear
+                    '')                                               AS AcademicYear,
+                    p.OrganizationName,
+                    p.ContactPerson,
+                    p.ContactRole,
+                    p.Goals,
+                    p.TargetAudience,
+                    p.InternalNotes,
+                    p.Priority,
+                    COALESCE(p.SourceType, 'Manual')                 AS SourceType
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId       = t.Id
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
@@ -99,16 +107,29 @@ public class ManagementController : ControllerBase
 
         // Create the project
         const string insertProjectSql = @"
-            INSERT INTO Projects (ProjectNumber, Title, Description, Status, TeamId, ProjectTypeId)
-            VALUES (@ProjectNumber, @Title, @Description, 'Active', @TeamId, @ProjectTypeId)";
+            INSERT INTO Projects
+                (ProjectNumber, Title, Description, Status, TeamId, ProjectTypeId,
+                 OrganizationName, ContactPerson, ContactRole,
+                 Goals, TargetAudience, InternalNotes, Priority)
+            VALUES
+                (@ProjectNumber, @Title, @Description, 'Active', @TeamId, @ProjectTypeId,
+                 @OrganizationName, @ContactPerson, @ContactRole,
+                 @Goals, @TargetAudience, @InternalNotes, @Priority)";
 
         int projectId = await _db.InsertReturnIdAsync(insertProjectSql, new
         {
             req.ProjectNumber,
-            Title         = req.Title.Trim(),
-            Description   = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
-            TeamId        = teamId,
+            Title           = req.Title.Trim(),
+            Description     = Nz(req.Description),
+            TeamId          = teamId,
             req.ProjectTypeId,
+            OrganizationName = Nz(req.OrganizationName),
+            ContactPerson    = Nz(req.ContactPerson),
+            ContactRole      = Nz(req.ContactRole),
+            Goals            = Nz(req.Goals),
+            TargetAudience   = Nz(req.TargetAudience),
+            InternalNotes    = Nz(req.InternalNotes),
+            Priority         = Nz(req.Priority),
         });
 
         if (projectId == 0)
@@ -133,6 +154,76 @@ public class ManagementController : ControllerBase
 
         return Ok();
     }
+
+    // ── PUT /api/management/projects/{id} ────────────────────────────────────
+    // Full update of all editable project fields.
+    [HttpPut("projects/{id:int}")]
+    public async Task<IActionResult> UpdateProject(int id, [FromBody] UpdateProjectRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("שם הפרויקט הוא שדה חובה");
+
+        if (req.ProjectNumber <= 0)
+            return BadRequest("מספר פרויקט חייב להיות חיובי");
+
+        if (req.ProjectTypeId <= 0)
+            return BadRequest("יש לבחור סוג פרויקט");
+
+        // Verify project type exists
+        var typeCount = (await _db.GetRecordsAsync<int>(
+            "SELECT COUNT(1) FROM ProjectTypes WHERE Id = @Id", new { Id = req.ProjectTypeId })).FirstOrDefault();
+        if (typeCount == 0)
+            return BadRequest("סוג הפרויקט לא נמצא");
+
+        // Check project number uniqueness (exclude current project)
+        var dupCount = (await _db.GetRecordsAsync<int>(
+            "SELECT COUNT(1) FROM Projects WHERE ProjectNumber = @ProjectNumber AND Id != @Id",
+            new { req.ProjectNumber, Id = id })).FirstOrDefault();
+        if (dupCount > 0)
+            return BadRequest("מספר פרויקט זה כבר קיים במערכת");
+
+        const string sql = @"
+            UPDATE Projects
+            SET    ProjectNumber    = @ProjectNumber,
+                   Title            = @Title,
+                   Description      = @Description,
+                   ProjectTypeId    = @ProjectTypeId,
+                   Status           = @Status,
+                   OrganizationName = @OrganizationName,
+                   ContactPerson    = @ContactPerson,
+                   ContactRole      = @ContactRole,
+                   Goals            = @Goals,
+                   TargetAudience   = @TargetAudience,
+                   InternalNotes    = @InternalNotes,
+                   Priority         = @Priority
+            WHERE  Id = @Id";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            req.ProjectNumber,
+            Title            = req.Title.Trim(),
+            Description      = Nz(req.Description),
+            req.ProjectTypeId,
+            Status           = string.IsNullOrWhiteSpace(req.Status) ? "Active" : req.Status,
+            OrganizationName = Nz(req.OrganizationName),
+            ContactPerson    = Nz(req.ContactPerson),
+            ContactRole      = Nz(req.ContactRole),
+            Goals            = Nz(req.Goals),
+            TargetAudience   = Nz(req.TargetAudience),
+            InternalNotes    = Nz(req.InternalNotes),
+            Priority         = Nz(req.Priority),
+            Id               = id,
+        });
+
+        if (affected == 0)
+            return NotFound("הפרויקט לא נמצא");
+
+        return Ok();
+    }
+
+    /// <summary>Returns null for empty/whitespace strings; trims non-empty ones.</summary>
+    private static string? Nz(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     // ════════════════════════════════════════════════════════════════════════════
     //  ACADEMIC YEARS (CYCLES)

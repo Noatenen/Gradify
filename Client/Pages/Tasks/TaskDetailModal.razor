@@ -1,0 +1,848 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject ITasksService TasksService
+
+@* ═══════════════════════════════════════════════════════════════════════════
+   TaskDetailModal  — full task detail view for students
+
+   Layout (RTL):
+     Header  : milestone chip · task-type chip · title · mandatory tag · ✕
+     Body    : two-column info grid (description | dates + status dropdown)
+               ↓ submission pipeline  (IsSubmission only)
+               ↓ moodle reminder banner  (when latest status = Reviewed)
+               ↓ sub-tasks checklist  (team-private)
+               ↓ submission history  (IsSubmission + has submissions)
+     Footer  : close · submit / resubmit
+
+   Status separation — must never be collapsed:
+     _task.Status              = student progress (7-step dropdown)
+     SubmissionHistoryItemDto.Status        = reviewer decision
+     SubmissionHistoryItemDto.MentorStatus  = mentor decision
+   ═══════════════════════════════════════════════════════════════════════════ *@
+
+@if (TaskId > 0)
+{
+    <div class="tdm-overlay" @onclick="Close">
+        <div class="tdm-modal" @onclick:stopPropagation="true">
+
+            @if (_loading)
+            {
+                <div class="tdm-loading">
+                    <div class="tdm-spinner"></div>
+                    <span>טוענת פרטי משימה…</span>
+                </div>
+            }
+            else if (_loadError)
+            {
+                <div class="tdm-error-state">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    <p>אירעה שגיאה בטעינת פרטי המשימה</p>
+                    <button class="tdm-btn-ghost" @onclick="Close">סגירה</button>
+                </div>
+            }
+            else if (_task is not null)
+            {
+                <!-- ── Header ── -->
+                <div class="tdm-header">
+                    <div class="tdm-header-chips">
+                        @if (!string.IsNullOrWhiteSpace(_task.MilestoneTitle))
+                        {
+                            <span class="tdm-chip tdm-chip-milestone">
+                                <span class="oi oi-flag" aria-hidden="true"></span>
+                                @_task.MilestoneTitle
+                            </span>
+                        }
+                        <span class="tdm-chip tdm-chip-type">@TaskTypeLabel(_task.TaskType)</span>
+                        @if (_task.IsSubmission)
+                        {
+                            <span class="tdm-chip tdm-chip-submission">
+                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                משימת הגשה
+                            </span>
+                        }
+                    </div>
+                    <button class="tdm-close" @onclick="Close" title="סגירה">
+                        <span class="oi oi-x" aria-hidden="true"></span>
+                    </button>
+                </div>
+                <div class="tdm-header-title-row">
+                    <h2 class="tdm-title">@_task.Title</h2>
+                </div>
+
+                <!-- ── Moodle reminder (shown when latest submission is Reviewed) ── -->
+                @if (LatestSubmission is { Status: "Reviewed" })
+                {
+                    <div class="tdm-moodle-banner">
+                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                        <span>המשימה אושרה — עכשיו הזמן להגיש אותה גם ב-Moodle 💪</span>
+                    </div>
+                }
+
+                <!-- ── Body ── -->
+                <div class="tdm-body">
+
+                    <!-- ════ Two-column info grid ════ -->
+                    <div class="tdm-info-grid">
+
+                        <!-- Left: description + submission instructions -->
+                        <div class="tdm-info-left">
+                            <p class="tdm-col-label">תיאור</p>
+                            <div class="tdm-desc-box">
+                                @if (!string.IsNullOrWhiteSpace(_task.Description))
+                                {
+                                    @_task.Description
+                                }
+                                else
+                                {
+                                    <span class="tdm-desc-empty">אין תיאור למשימה זו.</span>
+                                }
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(_task.SubmissionInstructions))
+                            {
+                                <p class="tdm-col-label tdm-col-label-mt">הוראות הגשה</p>
+                                <div class="tdm-instructions-box">
+                                    <span class="oi oi-info" aria-hidden="true"></span>
+                                    <p>@_task.SubmissionInstructions</p>
+                                </div>
+                            }
+                        </div>
+
+                        <!-- Right: dates + status dropdown -->
+                        <div class="tdm-info-right">
+                            <p class="tdm-col-label">תאריכים</p>
+                            <div class="tdm-dates-list">
+                                @if (_task.OpenDate.HasValue)
+                                {
+                                    <div class="tdm-date-row">
+                                        <span class="tdm-date-key">פתיחה</span>
+                                        <span class="tdm-date-val">@_task.OpenDate.Value.ToString("dd/MM/yyyy")</span>
+                                    </div>
+                                }
+                                @if (_task.DueDate.HasValue)
+                                {
+                                    bool overdue = IsOverdue;
+                                    <div class="tdm-date-row @(overdue ? "tdm-date-overdue" : "")">
+                                        <span class="tdm-date-key">הגשה</span>
+                                        <span class="tdm-date-val">
+                                            @_task.DueDate.Value.ToString("dd/MM/yyyy")
+                                            @if (overdue)
+                                            {
+                                                <span class="tdm-overdue-tag">באיחור</span>
+                                            }
+                                        </span>
+                                    </div>
+                                }
+                            </div>
+
+                            <p class="tdm-col-label tdm-col-label-mt">סטטוס שלי</p>
+                            <div class="tdm-status-ctrl">
+                                <select class="tdm-status-select"
+                                        @onchange="OnStatusDropdownChanged"
+                                        disabled="@_updatingStatus">
+                                    <option value="Open"
+                                            selected="@(_task.Status == "Open")">ממתין לביצוע</option>
+                                    <option value="InProgress"
+                                            selected="@(_task.Status == "InProgress")">בעבודה</option>
+                                    @if (_task.IsSubmission)
+                                    {
+                                        <option value="SubmittedToMentor"
+                                                selected="@(_task.Status == "SubmittedToMentor")">הועבר לבדיקת מנחה</option>
+                                        <option value="ReturnedForRevision"
+                                                selected="@(_task.Status == "ReturnedForRevision")">הוחזר לתיקונים</option>
+                                        <option value="ApprovedForSubmission"
+                                                selected="@(_task.Status == "ApprovedForSubmission")">אושר להגשה</option>
+                                    }
+                                    <option value="Done"
+                                            selected="@(_task.Status is "Done" or "RevisionSubmitted")">@(_task.IsSubmission ? "הוגש" : "הושלם")</option>
+                                </select>
+                                @if (_updatingStatus)
+                                {
+                                    <div class="tdm-spinner-sm"></div>
+                                }
+                            </div>
+                            @if (_statusError)
+                            {
+                                <p class="tdm-inline-error">שגיאה בעדכון הסטטוס. נסי שנית.</p>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- ════ Submission state (if IsSubmission) ════ -->
+                    @if (_task.IsSubmission)
+                    {
+                        <div class="tdm-section">
+                            <h3 class="tdm-section-title">
+                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                מצב הגשה
+                            </h3>
+
+                            @if (_task.Submissions.Count == 0)
+                            {
+                                <div class="tdm-submission-empty">
+                                    <span class="oi oi-inbox" aria-hidden="true"></span>
+                                    <span>טרם הוגשה משימה</span>
+                                </div>
+                            }
+                            else
+                            {
+                                var latest = LatestSubmission!;
+
+                                <!-- Pipeline: student submitted → mentor → reviewer -->
+                                <div class="tdm-pipeline">
+                                    <div class="tdm-pipeline-step tdm-pipeline-done">
+                                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                        <span>הוגש</span>
+                                        <span class="tdm-pipeline-date">@latest.SubmittedAt.ToString("dd/MM")</span>
+                                    </div>
+                                    <div class="tdm-pipeline-arrow"></div>
+                                    <div class="tdm-pipeline-step tdm-pipeline-@MentorPipelineClass(latest.MentorStatus)">
+                                        <span class="oi @MentorPipelineIcon(latest.MentorStatus)" aria-hidden="true"></span>
+                                        <span>@MentorStatusLabel(latest.MentorStatus)</span>
+                                    </div>
+                                    <div class="tdm-pipeline-arrow"></div>
+                                    <div class="tdm-pipeline-step tdm-pipeline-@ReviewerPipelineClass(latest.Status, latest.MentorStatus)">
+                                        <span class="oi @ReviewerPipelineIcon(latest.Status, latest.MentorStatus)" aria-hidden="true"></span>
+                                        <span>@ReviewerStatusLabel(latest.Status, latest.MentorStatus)</span>
+                                    </div>
+                                </div>
+
+                                <!-- Feedback banners -->
+                                @if (latest.MentorStatus == "Returned" &&
+                                     !string.IsNullOrWhiteSpace(latest.MentorFeedback))
+                                {
+                                    <div class="tdm-feedback-banner tdm-feedback-returned">
+                                        <div class="tdm-feedback-header">
+                                            <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                            <strong>הערות מנחה</strong>
+                                        </div>
+                                        <p class="tdm-feedback-text">@latest.MentorFeedback</p>
+                                    </div>
+                                }
+                                @if (latest.Status == "NeedsRevision" &&
+                                     !string.IsNullOrWhiteSpace(latest.ReviewerFeedback))
+                                {
+                                    <div class="tdm-feedback-banner tdm-feedback-returned">
+                                        <div class="tdm-feedback-header">
+                                            <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                            <strong>הערות מרצה</strong>
+                                        </div>
+                                        <p class="tdm-feedback-text">@latest.ReviewerFeedback</p>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
+
+                    <!-- ════ Sub-tasks (team-private internal checklist) ════ -->
+                    <div class="tdm-section tdm-section-subtasks">
+                        <div class="tdm-subtask-header">
+                            <h3 class="tdm-section-title">
+                                <span class="oi oi-check" aria-hidden="true"></span>
+                                משימות משנה
+                            </h3>
+                            <div class="tdm-subtask-header-end">
+                                <span class="tdm-subtask-private-note">
+                                    <span class="oi oi-eye-closed" aria-hidden="true"></span>
+                                    פנימי לצוות בלבד
+                                </span>
+                                <button class="tdm-subtask-toggle-add"
+                                        @onclick="ToggleAddForm"
+                                        title="@(_showAddForm ? "בטל" : "הוסף משימה")">
+                                    <span class="oi @(_showAddForm ? "oi-minus" : "oi-plus")" aria-hidden="true"></span>
+                                    @(_showAddForm ? "בטל" : "הוסף")
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Expandable add form -->
+                        @if (_showAddForm)
+                        {
+                            <div class="tdm-subtask-form">
+                                <div class="tdm-subtask-form-row">
+                                    <input class="tdm-subtask-input tdm-subtask-input-title"
+                                           @bind="_newSubTaskTitle"
+                                           @bind:event="oninput"
+                                           @onkeydown="OnSubTaskInputKeyDown"
+                                           placeholder="כותרת משימה…"
+                                           maxlength="120" />
+                                </div>
+                                <div class="tdm-subtask-form-row tdm-subtask-form-row-meta">
+                                    <input class="tdm-subtask-date-input"
+                                           type="date"
+                                           title="תאריך יעד"
+                                           placeholder="תאריך יעד"
+                                           @bind="_newSubTaskDueDate" />
+                                </div>
+                                <div class="tdm-subtask-form-row">
+                                    <textarea class="tdm-subtask-notes-input"
+                                              @bind="_newSubTaskNotes"
+                                              placeholder="הערות (אופציונלי)…"
+                                              rows="2"
+                                              maxlength="500"></textarea>
+                                </div>
+                                <div class="tdm-subtask-form-actions">
+                                    <button class="tdm-subtask-add-btn"
+                                            @onclick="AddSubTask"
+                                            disabled="@(string.IsNullOrWhiteSpace(_newSubTaskTitle) || _addingSubTask)">
+                                        @if (_addingSubTask)
+                                        {
+                                            <div class="tdm-spinner-sm"></div>
+                                        }
+                                        else
+                                        {
+                                            <span class="oi oi-plus" aria-hidden="true"></span>
+                                        }
+                                        הוסף
+                                    </button>
+                                </div>
+                            </div>
+                        }
+
+                        @if (_subTasksLoading)
+                        {
+                            <div class="tdm-subtask-loading">
+                                <div class="tdm-spinner-sm"></div>
+                                <span>טוענת…</span>
+                            </div>
+                        }
+                        else if (!_subTasks.Any())
+                        {
+                            <p class="tdm-subtask-empty">אין משימות משנה. לחצו + הוסף כדי להוסיף פריטים פנימיים לצוות.</p>
+                        }
+                        else
+                        {
+                            <div class="tdm-subtask-list">
+                                @foreach (var st in _subTasks)
+                                {
+                                    bool isEditing = _editingSubTaskId == st.Id;
+                                    <div class="tdm-subtask-row @(st.IsDone ? "tdm-subtask-row-done" : "")">
+                                        @if (isEditing)
+                                        {
+                                            <!-- Inline edit form -->
+                                            <div class="tdm-subtask-edit-form">
+                                                <div class="tdm-subtask-form-row">
+                                                    <input class="tdm-subtask-input tdm-subtask-input-title"
+                                                           @bind="_editTitle"
+                                                           @bind:event="oninput"
+                                                           maxlength="120" />
+                                                </div>
+                                                <div class="tdm-subtask-form-row tdm-subtask-form-row-meta">
+                                                    <input class="tdm-subtask-date-input"
+                                                           type="date"
+                                                           title="תאריך יעד"
+                                                           placeholder="תאריך יעד"
+                                                           @bind="_editDueDate" />
+                                                </div>
+                                                <div class="tdm-subtask-form-row">
+                                                    <textarea class="tdm-subtask-notes-input"
+                                                              @bind="_editNotes"
+                                                              rows="2"
+                                                              maxlength="500"></textarea>
+                                                </div>
+                                                <div class="tdm-subtask-form-actions">
+                                                    <button class="tdm-subtask-add-btn"
+                                                            @onclick="() => SaveSubTaskEdit(st)"
+                                                            disabled="@(string.IsNullOrWhiteSpace(_editTitle))">
+                                                        <span class="oi oi-check" aria-hidden="true"></span>
+                                                        שמור
+                                                    </button>
+                                                    <button class="tdm-subtask-cancel-btn"
+                                                            @onclick="CancelSubTaskEdit">
+                                                        ביטול
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <!-- Normal display row -->
+                                            <button class="tdm-subtask-check @(st.IsDone ? "tdm-subtask-check-done" : "")"
+                                                    @onclick="() => ToggleSubTask(st)"
+                                                    title="@(st.IsDone ? "סמן כלא הושלם" : "סמן כהושלם")">
+                                                <span class="oi @(st.IsDone ? "oi-circle-check" : "oi-circle-x")" aria-hidden="true"></span>
+                                            </button>
+                                            <div class="tdm-subtask-body">
+                                                <span class="tdm-subtask-title @(st.IsDone ? "tdm-subtask-title-done" : "")">
+                                                    @st.Title
+                                                </span>
+                                                <div class="tdm-subtask-meta">
+                                                    @if (st.DueDate.HasValue)
+                                                    {
+                                                        bool stOverdue = st.DueDate.Value.Date < DateTime.Today && !st.IsDone;
+                                                        <span class="tdm-subtask-meta-item @(stOverdue ? "tdm-subtask-meta-overdue" : "")">
+                                                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                                                            @st.DueDate.Value.ToString("dd/MM/yy")
+                                                            @if (stOverdue) { <span>(באיחור)</span> }
+                                                        </span>
+                                                    }
+                                                    @if (!string.IsNullOrWhiteSpace(st.Notes))
+                                                    {
+                                                        <span class="tdm-subtask-has-notes" title="@st.Notes">
+                                                            <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                                        </span>
+                                                    }
+                                                </div>
+                                            </div>
+                                            <div class="tdm-subtask-actions">
+                                                <button class="tdm-subtask-edit"
+                                                        @onclick="() => StartSubTaskEdit(st)"
+                                                        title="ערוך">
+                                                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                                                </button>
+                                                <button class="tdm-subtask-delete"
+                                                        @onclick="() => DeleteSubTask(st)"
+                                                        title="מחק">
+                                                    <span class="oi oi-trash" aria-hidden="true"></span>
+                                                </button>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <!-- ════ Submission history ════ -->
+                    @if (_task.IsSubmission && _task.Submissions.Count > 0)
+                    {
+                        <div class="tdm-section">
+                            <h3 class="tdm-section-title">
+                                <span class="oi oi-list-rich" aria-hidden="true"></span>
+                                היסטוריית הגשות
+                                <span class="tdm-history-count">@_task.Submissions.Count</span>
+                            </h3>
+
+                            <div class="tdm-history-list">
+                                @foreach (var (sub, idx) in _task.Submissions.Select((s, i) => (s, i)))
+                                {
+                                    bool isExpanded = _expandedSubmissions.Contains(sub.Id);
+                                    bool isLatest   = idx == 0;
+
+                                    <div class="tdm-history-item @(isLatest ? "tdm-history-latest" : "")">
+                                        <button class="tdm-history-header"
+                                                @onclick="() => ToggleSubmission(sub.Id)">
+                                            <div class="tdm-history-header-start">
+                                                <span class="tdm-history-number">
+                                                    הגשה @(_task.Submissions.Count - idx)
+                                                </span>
+                                                <span class="tdm-submission-badge tdm-sbadge-@sub.Status.ToLower()">
+                                                    @SubmissionStatusLabel(sub.Status)
+                                                </span>
+                                                @if (sub.MentorStatus != "Pending")
+                                                {
+                                                    <span class="tdm-mentor-badge tdm-mbadge-@sub.MentorStatus.ToLower()">
+                                                        מנחה: @MentorStatusLabel(sub.MentorStatus)
+                                                    </span>
+                                                }
+                                            </div>
+                                            <div class="tdm-history-header-end">
+                                                <span class="tdm-history-date">
+                                                    @sub.SubmittedAt.ToString("dd/MM/yy HH:mm")
+                                                </span>
+                                                <span class="oi @(isExpanded ? "oi-chevron-top" : "oi-chevron-bottom") tdm-chevron"
+                                                      aria-hidden="true"></span>
+                                            </div>
+                                        </button>
+
+                                        @if (isExpanded)
+                                        {
+                                            <div class="tdm-history-body">
+                                                @if (!string.IsNullOrWhiteSpace(sub.Notes))
+                                                {
+                                                    <div class="tdm-history-notes">
+                                                        <span class="tdm-notes-label">הערות:</span>
+                                                        <p class="tdm-notes-text">@sub.Notes</p>
+                                                    </div>
+                                                }
+
+                                                @if (!string.IsNullOrWhiteSpace(sub.MentorFeedback))
+                                                {
+                                                    <div class="tdm-feedback-banner tdm-feedback-returned">
+                                                        <div class="tdm-feedback-header">
+                                                            <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                                            <strong>פידבק מנחה</strong>
+                                                            @if (sub.MentorReviewedAt.HasValue)
+                                                            {
+                                                                <span class="tdm-feedback-date">
+                                                                    @sub.MentorReviewedAt.Value.ToString("dd/MM/yy")
+                                                                </span>
+                                                            }
+                                                        </div>
+                                                        <p class="tdm-feedback-text">@sub.MentorFeedback</p>
+                                                    </div>
+                                                }
+
+                                                @if (!string.IsNullOrWhiteSpace(sub.ReviewerFeedback))
+                                                {
+                                                    <div class="tdm-feedback-banner tdm-feedback-returned">
+                                                        <div class="tdm-feedback-header">
+                                                            <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                                            <strong>פידבק מרצה</strong>
+                                                        </div>
+                                                        <p class="tdm-feedback-text">@sub.ReviewerFeedback</p>
+                                                    </div>
+                                                }
+
+                                                @if (sub.Files.Count > 0)
+                                                {
+                                                    <div class="tdm-files">
+                                                        <span class="tdm-files-label">קבצים מצורפים</span>
+                                                        <div class="tdm-files-list">
+                                                            @foreach (var f in sub.Files)
+                                                            {
+                                                                <a class="tdm-file-row"
+                                                                   href="/api/task-submissions/@sub.Id/files/@f.Id/download"
+                                                                   target="_blank"
+                                                                   title="@f.OriginalFileName">
+                                                                    <span class="oi oi-file tdm-file-icon" aria-hidden="true"></span>
+                                                                    <span class="tdm-file-name">@f.OriginalFileName</span>
+                                                                    <span class="tdm-file-size">@FormatSize(f.SizeBytes)</span>
+                                                                    <span class="oi oi-cloud-download tdm-file-dl" aria-hidden="true"></span>
+                                                                </a>
+                                                            }
+                                                        </div>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+
+                </div><!-- /.tdm-body -->
+
+                <!-- ── Footer ── -->
+                <div class="tdm-footer">
+                    <button class="tdm-btn-ghost" @onclick="Close">סגירה</button>
+                    @if (_task.IsSubmission && CanSubmit)
+                    {
+                        <button class="tdm-btn-primary" @onclick="OpenSubmission">
+                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                            @(LatestSubmission is null ? "הגשת משימה" : "הגשה מחדש")
+                        </button>
+                    }
+                </div>
+            }
+
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int                TaskId           { get; set; }
+    [Parameter] public EventCallback      OnClose          { get; set; }
+    [Parameter] public EventCallback<int> OnOpenSubmission { get; set; }
+
+    // ── Task detail state ──────────────────────────────────────────────────────
+    private TaskDetailDto?   _task;
+    private bool             _loading        = false;
+    private bool             _loadError      = false;
+    private bool             _updatingStatus = false;
+    private bool             _statusError    = false;
+
+    private readonly HashSet<int> _expandedSubmissions = new();
+
+    // ── Sub-task state ─────────────────────────────────────────────────────────
+    private List<StudentSubTaskDto> _subTasks        = new();
+    private bool                    _subTasksLoading = false;
+    private bool                    _showAddForm     = false;
+    private string                  _newSubTaskTitle = "";
+    private DateTime?               _newSubTaskDueDate;
+    private string?                 _newSubTaskNotes;
+    private bool                    _addingSubTask   = false;
+
+    // ── Sub-task inline edit state ─────────────────────────────────────────────
+    private int       _editingSubTaskId = 0;
+    private string    _editTitle        = "";
+    private DateTime? _editDueDate;
+    private string?   _editNotes;
+
+    // ── Computed helpers ───────────────────────────────────────────────────────
+
+    private SubmissionHistoryItemDto? LatestSubmission =>
+        _task?.Submissions.FirstOrDefault();
+
+    /// <summary>
+    /// True when the due date has passed AND the task is not considered "done".
+    /// For submission tasks: only overdue if no submission exists, or the last
+    /// submission was returned (NeedsRevision or MentorStatus = Returned).
+    /// </summary>
+    private bool IsOverdue
+    {
+        get
+        {
+            if (_task is null || !_task.DueDate.HasValue) return false;
+            if (_task.DueDate.Value.Date >= DateTime.Today)  return false;
+            if (_task.Status == "Done")                       return false;
+
+            // Submission task: not overdue when a valid submission exists
+            if (_task.IsSubmission && LatestSubmission is not null)
+            {
+                // Still overdue if the submission was returned for revision
+                bool returned = LatestSubmission.MentorStatus == "Returned"
+                             || LatestSubmission.Status        == "NeedsRevision";
+                if (!returned) return false;
+            }
+
+            return true;
+        }
+    }
+
+    private bool CanSubmit
+    {
+        get
+        {
+            if (_task is null || !_task.IsSubmission) return false;
+            if (LatestSubmission is null) return true;
+            return LatestSubmission.MentorStatus == "Returned"
+                || LatestSubmission.Status        == "NeedsRevision";
+        }
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (TaskId <= 0) return;
+
+        _loading      = true;
+        _loadError    = false;
+        _task         = null;
+        _statusError  = false;
+        _expandedSubmissions.Clear();
+        _subTasks          = new();
+        _showAddForm       = false;
+        _newSubTaskTitle   = "";
+        _newSubTaskDueDate = null;
+        _newSubTaskNotes   = null;
+        _editingSubTaskId  = 0;
+
+        _task      = await TasksService.GetTaskDetailAsync(TaskId);
+        _loadError = _task is null;
+        _loading   = false;
+
+        if (_task is not null)
+        {
+            if (_task.Submissions.Count > 0)
+                _expandedSubmissions.Add(_task.Submissions[0].Id);
+
+            await LoadSubTasksAsync();
+        }
+    }
+
+    private async Task LoadSubTasksAsync()
+    {
+        _subTasksLoading = true;
+        _subTasks = await TasksService.GetSubTasksAsync(TaskId);
+        _subTasksLoading = false;
+    }
+
+    // ── Event handlers ─────────────────────────────────────────────────────────
+
+    private async Task Close() => await OnClose.InvokeAsync();
+
+    private async Task OpenSubmission()
+    {
+        await OnClose.InvokeAsync();
+        await OnOpenSubmission.InvokeAsync(TaskId);
+    }
+
+    private async Task OnStatusDropdownChanged(ChangeEventArgs e)
+    {
+        var newStatus = e.Value?.ToString() ?? "";
+        if (string.IsNullOrEmpty(newStatus) || _task is null) return;
+        await SetProgress(newStatus);
+    }
+
+    private async Task SetProgress(string status)
+    {
+        if (_task is null) return;
+        _updatingStatus = true;
+        _statusError    = false;
+
+        bool ok = await TasksService.UpdateTaskProgressAsync(_task.Id, status);
+        if (ok)
+            _task.Status = status;
+        else
+            _statusError = true;
+
+        _updatingStatus = false;
+    }
+
+    private void ToggleSubmission(int id)
+    {
+        if (!_expandedSubmissions.Remove(id))
+            _expandedSubmissions.Add(id);
+    }
+
+    // ── Sub-task handlers ──────────────────────────────────────────────────────
+
+    private async Task OnSubTaskInputKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await AddSubTask();
+    }
+
+    private void ToggleAddForm()
+    {
+        _showAddForm = !_showAddForm;
+        if (!_showAddForm)
+        {
+            _newSubTaskTitle   = "";
+            _newSubTaskDueDate = null;
+            _newSubTaskNotes   = null;
+        }
+    }
+
+    private async Task AddSubTask()
+    {
+        var title = _newSubTaskTitle.Trim();
+        if (string.IsNullOrEmpty(title) || _addingSubTask) return;
+
+        _addingSubTask = true;
+        var req = new CreateSubTaskRequest
+        {
+            Title   = title,
+            Status  = "Open",
+            DueDate = _newSubTaskDueDate,
+            Notes   = string.IsNullOrWhiteSpace(_newSubTaskNotes) ? null : _newSubTaskNotes.Trim(),
+        };
+        var created = await TasksService.CreateSubTaskAsync(TaskId, req);
+        if (created is not null)
+        {
+            _subTasks.Add(created);
+            _newSubTaskTitle   = "";
+            _newSubTaskDueDate = null;
+            _newSubTaskNotes   = null;
+            _showAddForm       = false;
+        }
+        _addingSubTask = false;
+    }
+
+    private async Task ToggleSubTask(StudentSubTaskDto st)
+    {
+        bool ok = await TasksService.ToggleSubTaskAsync(st.Id);
+        if (ok) st.IsDone = !st.IsDone;
+    }
+
+    private void StartSubTaskEdit(StudentSubTaskDto st)
+    {
+        _editingSubTaskId = st.Id;
+        _editTitle        = st.Title;
+        _editDueDate      = st.DueDate;
+        _editNotes        = st.Notes;
+    }
+
+    private void CancelSubTaskEdit()
+    {
+        _editingSubTaskId = 0;
+    }
+
+    private async Task SaveSubTaskEdit(StudentSubTaskDto st)
+    {
+        var title = _editTitle.Trim();
+        if (string.IsNullOrEmpty(title)) return;
+
+        var req = new UpdateSubTaskRequest
+        {
+            Title   = title,
+            Status  = st.Status,   // preserve; not edited in UI
+            DueDate = _editDueDate,
+            Notes   = string.IsNullOrWhiteSpace(_editNotes) ? null : _editNotes.Trim(),
+        };
+        bool ok = await TasksService.UpdateSubTaskAsync(st.Id, req);
+        if (ok)
+        {
+            st.Title   = req.Title;
+            st.DueDate = req.DueDate;
+            st.Notes   = req.Notes;
+        }
+        _editingSubTaskId = 0;
+    }
+
+    private async Task DeleteSubTask(StudentSubTaskDto st)
+    {
+        bool ok = await TasksService.DeleteSubTaskAsync(st.Id);
+        if (ok) _subTasks.Remove(st);
+    }
+
+    // ── Status label/class helpers ─────────────────────────────────────────────
+
+    private static string TaskTypeLabel(string t) => t switch
+    {
+        "System"   => "משימת מערכת",
+        "Mentor"   => "משימת מנחה",
+        "Personal" => "משימה אישית",
+        _          => t,
+    };
+
+    private static string SubmissionStatusLabel(string s) => s switch
+    {
+        "Reviewed"      => "אושר",
+        "NeedsRevision" => "הוחזר לתיקון",
+        _               => "ממתין לבדיקה",
+    };
+
+    private static string MentorStatusLabel(string s) => s switch
+    {
+        "Approved" => "אושר ע״י מנחה",
+        "Returned" => "הוחזר ע״י מנחה",
+        _          => "ממתין לאישור מנחה",
+    };
+
+    private static string MentorPipelineClass(string mentorStatus) => mentorStatus switch
+    {
+        "Approved" => "done",
+        "Returned" => "returned",
+        _          => "waiting",
+    };
+
+    private static string MentorPipelineIcon(string mentorStatus) => mentorStatus switch
+    {
+        "Approved" => "oi-circle-check",
+        "Returned" => "oi-arrow-circle-left",
+        _          => "oi-clock",
+    };
+
+    private static string ReviewerPipelineClass(string status, string mentorStatus)
+    {
+        if (mentorStatus != "Approved") return "locked";
+        return status switch
+        {
+            "Reviewed"      => "done",
+            "NeedsRevision" => "returned",
+            _               => "waiting",
+        };
+    }
+
+    private static string ReviewerPipelineIcon(string status, string mentorStatus)
+    {
+        if (mentorStatus != "Approved") return "oi-lock-locked";
+        return status switch
+        {
+            "Reviewed"      => "oi-circle-check",
+            "NeedsRevision" => "oi-arrow-circle-left",
+            _               => "oi-clock",
+        };
+    }
+
+    private static string ReviewerStatusLabel(string status, string mentorStatus)
+    {
+        if (mentorStatus != "Approved") return "ממתין לאישור מנחה";
+        return status switch
+        {
+            "Reviewed"      => "אושר ע״י מרצה",
+            "NeedsRevision" => "הוחזר ע״י מרצה",
+            _               => "ממתין לאישור מרצה",
+        };
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)      return $"{bytes} B";
+        if (bytes < 1_048_576) return $"{bytes / 1024} KB";
+        return $"{bytes / 1_048_576.0:F1} MB";
+    }
+}

@@ -1,0 +1,353 @@
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Microsoft.AspNetCore.Components.Forms
+@inject IProjectRequestsService RequestsService
+@inject IProjectContextService  ProjectContext
+
+@if (IsOpen)
+{
+    <div class="nrm-overlay" @onclick="TryClose">
+        <div class="nrm-box" @onclick:stopPropagation="true">
+
+            @if (_phase == Phase.Success)
+            {
+                <!-- ── Success state ── -->
+                <div class="nrm-success">
+                    <div class="nrm-success-icon">
+                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                    </div>
+                    <h2 class="nrm-success-title">הבקשה נשלחה בהצלחה!</h2>
+                    <p class="nrm-success-body">
+                        הבקשה שלך התקבלה ותטופל על ידי הצוות האקדמי.
+                        תוכל לעקוב אחרי הסטטוס בדף הבקשות שלך.
+                    </p>
+                    <div class="nrm-success-actions">
+                        <button class="nrm-primary-btn" @onclick="SuccessClose">סגירה</button>
+                        <button class="nrm-ghost-btn" @onclick="ResetForm">הגשת בקשה נוספת</button>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <!-- ── Header ── -->
+                <div class="nrm-header">
+                    <div class="nrm-header-start">
+                        <div class="nrm-icon">
+                            <span class="oi oi-envelope-closed" aria-hidden="true"></span>
+                        </div>
+                        <div>
+                            <h2 class="nrm-title">פתיחת בקשה חדשה</h2>
+                            <p class="nrm-subtitle">הגש בקשה לצוות האקדמי</p>
+                        </div>
+                    </div>
+                    <button class="nrm-close-btn" @onclick="TryClose" title="סגירה"
+                            disabled="@(_phase == Phase.Submitting)">
+                        <span class="oi oi-x" aria-hidden="true"></span>
+                    </button>
+                </div>
+
+                <!-- ── Form ── -->
+                <div class="nrm-form">
+
+                    <!-- Request type -->
+                    <div class="nrm-field">
+                        <label class="nrm-label">
+                            סוג הבקשה <span class="nrm-required">*</span>
+                        </label>
+                        <select class="nrm-select @(_touched && string.IsNullOrEmpty(_requestType) ? "nrm-input-error" : "")"
+                                @bind="_requestType"
+                                disabled="@(_phase == Phase.Submitting)">
+                            <option value="">— בחר סוג בקשה —</option>
+                            @foreach (var t in RequestTypes.All)
+                            {
+                                <option value="@t">@RequestTypes.Label(t)</option>
+                            }
+                        </select>
+                        @if (_touched && string.IsNullOrEmpty(_requestType))
+                        {
+                            <div class="nrm-field-error">יש לבחור סוג בקשה</div>
+                        }
+                    </div>
+
+                    <!-- Title -->
+                    <div class="nrm-field">
+                        <label class="nrm-label">
+                            כותרת <span class="nrm-required">*</span>
+                        </label>
+                        <input type="text"
+                               class="nrm-input @(_touched && string.IsNullOrWhiteSpace(_title) ? "nrm-input-error" : "")"
+                               placeholder="תאר בקצרה את הבקשה…"
+                               maxlength="200"
+                               @bind="_title"
+                               @bind:event="oninput"
+                               disabled="@(_phase == Phase.Submitting)" />
+                        @if (_touched && string.IsNullOrWhiteSpace(_title))
+                        {
+                            <div class="nrm-field-error">כותרת הבקשה היא שדה חובה</div>
+                        }
+                    </div>
+
+                    <!-- Description -->
+                    <div class="nrm-field">
+                        <label class="nrm-label">
+                            פירוט <span class="nrm-required">*</span>
+                        </label>
+                        <textarea class="nrm-textarea @(_touched && string.IsNullOrWhiteSpace(_description) ? "nrm-input-error" : "")"
+                                  rows="4"
+                                  placeholder="פרט את הבקשה, הסיבה, ומה הסיוע הנדרש…"
+                                  maxlength="2000"
+                                  @bind="_description"
+                                  @bind:event="oninput"
+                                  disabled="@(_phase == Phase.Submitting)"></textarea>
+                        @if (_touched && string.IsNullOrWhiteSpace(_description))
+                        {
+                            <div class="nrm-field-error">פירוט הבקשה הוא שדה חובה</div>
+                        }
+                    </div>
+
+                    <!-- Image attachments -->
+                    <div class="nrm-field">
+                        <label class="nrm-label">צירוף תמונות (אופציונלי)</label>
+                        <p class="nrm-hint">jpg, png, webp — עד 5 תמונות, עד 5MB כל אחת</p>
+
+                        @if (_attachments.Count < MaxAttachments && _phase != Phase.Submitting)
+                        {
+                            <label class="nrm-file-zone">
+                                <span class="oi oi-image" aria-hidden="true"></span>
+                                <span>לחץ לבחירת תמונה</span>
+                                <InputFile OnChange="OnFilesSelected"
+                                           accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                                           multiple
+                                           class="nrm-file-hidden" />
+                            </label>
+                        }
+
+                        @if (!string.IsNullOrEmpty(_fileError))
+                        {
+                            <div class="nrm-field-error">@_fileError</div>
+                        }
+
+                        @if (_attachments.Count > 0)
+                        {
+                            <ul class="nrm-file-list">
+                                @foreach (var att in _attachments)
+                                {
+                                    <li class="nrm-file-item">
+                                        <span class="oi oi-image nrm-file-icon" aria-hidden="true"></span>
+                                        <span class="nrm-file-name">@att.Name</span>
+                                        <span class="nrm-file-size">@FormatBytes(att.Size)</span>
+                                        <button type="button"
+                                                class="nrm-file-remove"
+                                                title="הסר קובץ"
+                                                disabled="@(_phase == Phase.Submitting)"
+                                                @onclick="@(() => RemoveAttachment(att))">
+                                            <span class="oi oi-x" aria-hidden="true"></span>
+                                        </button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    </div>
+
+                    <!-- Error banner -->
+                    @if (!string.IsNullOrWhiteSpace(_submitError))
+                    {
+                        <div class="nrm-error-banner">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            @_submitError
+                        </div>
+                    }
+
+                </div>
+
+                <!-- ── Footer ── -->
+                <div class="nrm-footer">
+                    <button class="nrm-ghost-btn"
+                            @onclick="TryClose"
+                            disabled="@(_phase == Phase.Submitting)">
+                        ביטול
+                    </button>
+                    <button class="nrm-primary-btn"
+                            @onclick="Submit"
+                            disabled="@(_phase == Phase.Submitting)">
+                        @if (_phase == Phase.Submitting)
+                        {
+                            <span class="nrm-spinner-sm"></span>
+                            <span>שולח…</span>
+                        }
+                        else
+                        {
+                            <span class="oi oi-envelope-closed" aria-hidden="true"></span>
+                            <span>שליחת בקשה</span>
+                        }
+                    </button>
+                </div>
+            }
+
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool          IsOpen    { get; set; }
+    [Parameter] public EventCallback OnClose   { get; set; }
+    [Parameter] public EventCallback OnSuccess { get; set; }
+
+    private enum Phase { Form, Submitting, Success }
+    private Phase  _phase = Phase.Form;
+
+    // Form fields
+    private string _requestType = "";
+    private string _title       = "";
+    private string _description = "";
+
+    // Attachments
+    private record PendingAttachment(string Name, string Base64, string ContentType, long Size);
+    private List<PendingAttachment> _attachments = new();
+    private string _fileError = "";
+    private const int  MaxAttachments = 5;
+    private const long MaxImageBytes  = 5 * 1_048_576L; // 5 MB
+
+    // Validation / error
+    private bool   _touched     = false;
+    private string _submitError = "";
+
+    // Resolved on first open
+    private int _projectId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsOpen && _projectId == 0)
+        {
+            var ctx = await ProjectContext.GetAsync();
+            _projectId = ctx?.ProjectId ?? 0;
+        }
+    }
+
+    private async Task OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _fileError = "";
+
+        int remaining = MaxAttachments - _attachments.Count;
+        if (remaining <= 0) return;
+
+        foreach (var file in e.GetMultipleFiles(remaining))
+        {
+            // Validate type by extension as well as MIME
+            string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+            if (ext is not ("jpg" or "jpeg" or "png" or "webp"))
+            {
+                _fileError = $"הקובץ \"{file.Name}\" אינו סוג תמונה נתמך (jpg, png, webp)";
+                continue;
+            }
+
+            if (file.Size > MaxImageBytes)
+            {
+                _fileError = $"הקובץ \"{file.Name}\" חורג מהגודל המקסימלי (5 MB)";
+                continue;
+            }
+
+            try
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: MaxImageBytes);
+                using var ms     = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                string base64 = Convert.ToBase64String(ms.ToArray());
+
+                _attachments.Add(new PendingAttachment(
+                    Name:        file.Name,
+                    Base64:      base64,
+                    ContentType: file.ContentType,
+                    Size:        file.Size));
+            }
+            catch
+            {
+                _fileError = $"שגיאה בקריאת הקובץ \"{file.Name}\"";
+            }
+        }
+    }
+
+    private void RemoveAttachment(PendingAttachment att)
+    {
+        _attachments.Remove(att);
+        _fileError = "";
+    }
+
+    private async Task Submit()
+    {
+        _touched = true;
+        _submitError = "";
+
+        if (string.IsNullOrEmpty(_requestType)      ||
+            string.IsNullOrWhiteSpace(_title)        ||
+            string.IsNullOrWhiteSpace(_description))
+            return;
+
+        if (_projectId <= 0)
+        {
+            _submitError = "לא נמצא פרויקט מקושר לחשבון שלך";
+            return;
+        }
+
+        _phase = Phase.Submitting;
+
+        var req = new CreateProjectRequestRequest
+        {
+            ProjectId   = _projectId,
+            RequestType = _requestType,
+            Title       = _title.Trim(),
+            Description = _description.Trim(),
+            Attachments = _attachments.Select(a => new RequestAttachmentUploadRequest
+            {
+                OriginalFileName = a.Name,
+                FileBase64       = a.Base64,
+                ContentType      = a.ContentType,
+                SizeBytes        = a.Size,
+            }).ToList(),
+        };
+
+        var newId = await RequestsService.CreateAsync(req);
+
+        if (newId is null)
+        {
+            _phase       = Phase.Form;
+            _submitError = "אירעה שגיאה בשליחת הבקשה. נסה שנית.";
+            return;
+        }
+
+        _phase = Phase.Success;
+        await OnSuccess.InvokeAsync();
+    }
+
+    private void ResetForm()
+    {
+        _phase       = Phase.Form;
+        _requestType = "";
+        _title       = "";
+        _description = "";
+        _attachments.Clear();
+        _fileError   = "";
+        _touched     = false;
+        _submitError = "";
+    }
+
+    private async Task TryClose()
+    {
+        if (_phase == Phase.Submitting) return;
+        ResetForm();
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task SuccessClose()
+    {
+        ResetForm();
+        await OnClose.InvokeAsync();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)       return $"{bytes} B";
+        if (bytes < 1_048_576)  return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / 1_048_576.0:F1} MB";
+    }
+}

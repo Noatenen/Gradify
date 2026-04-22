@@ -13,6 +13,8 @@ public class PageRoutes
     public const string VerifyEmail = "Verify-Email";
     public const string Pending = "Pending";
     public const string ResetPassword = "Reset-Password";
-    public const string ResourceFiles = "resource-files";
+    public const string ResourceFiles    = "resource-files";
+    public const string StudentCatalog   = "student/catalog";
+    public const string StudentAssignment = "student/assignment";
 
 }

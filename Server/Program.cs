@@ -31,6 +31,10 @@ builder.Services.AddHostedService<TokenCleanupBackgroundService>();
 //Files
 builder.Services.AddScoped<FilesManage>();
 
+//Airtable
+builder.Services.AddHttpClient("Airtable");
+builder.Services.AddScoped<AirtableService>();
+
 //Mail
 builder.Services.AddSingleton<EmailHelper>();
 

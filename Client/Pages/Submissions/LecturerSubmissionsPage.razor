@@ -1,0 +1,426 @@
+@page "/lecturer-submissions"
+@layout AppLayout
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@inject ITaskSubmissionsService SubmissionsService
+
+<!-- ── Detail drawer backdrop ── -->
+@if (_drawer is not null)
+{
+    <div class="lsub-backdrop" @onclick="CloseDrawer"></div>
+}
+
+<!-- ── Detail drawer ── -->
+@if (_drawer is not null)
+{
+    <div class="lsub-drawer @(_drawerLoading ? "lsub-drawer-loading" : "")">
+
+        <div class="lsub-drawer-header">
+            <div class="lsub-drawer-title-row">
+                <div>
+                    <div class="lsub-drawer-milestone">@_drawer.MilestoneTitle</div>
+                    <div class="lsub-drawer-title">@_drawer.TaskTitle</div>
+                </div>
+                <button class="lsub-drawer-close" @onclick="CloseDrawer" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="lsub-drawer-meta">
+                <div class="lsub-drawer-meta-item">
+                    <span class="oi oi-layers" aria-hidden="true"></span>
+                    צוות @_drawer.ProjectNumber — @_drawer.ProjectTitle
+                </div>
+                <div class="lsub-drawer-meta-item">
+                    <span class="oi oi-person" aria-hidden="true"></span>
+                    @_drawer.SubmittedByName
+                </div>
+                <div class="lsub-drawer-meta-item">
+                    <span class="oi oi-clock" aria-hidden="true"></span>
+                    @_drawer.SubmittedAt.ToString("dd/MM/yyyy HH:mm")
+                </div>
+            </div>
+
+            <!-- Status row -->
+            <div class="lsub-drawer-status-row">
+                <span class="lsub-status-badge lsub-badge-@_drawer.Status.ToLower()">
+                    @StatusLabel(_drawer.Status)
+                </span>
+                <div class="lsub-drawer-status-actions">
+                    @foreach (var s in new[] { "Submitted", "Reviewed", "NeedsRevision" })
+                    {
+                        if (s != _drawer.Status)
+                        {
+                            <button class="lsub-status-btn lsub-status-btn-@s.ToLower()"
+                                    disabled="@_statusUpdating"
+                                    @onclick="@(async () => await SetStatus(s))">
+                                @StatusLabel(s)
+                            </button>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="lsub-drawer-body">
+
+            @if (!string.IsNullOrWhiteSpace(_drawer.Notes))
+            {
+                <div class="lsub-drawer-section">
+                    <div class="lsub-drawer-section-title">הערות הסטודנט</div>
+                    <div class="lsub-drawer-notes">@_drawer.Notes</div>
+                </div>
+            }
+
+            <div class="lsub-drawer-section">
+                <div class="lsub-drawer-section-title">
+                    קבצים מצורפים
+                    <span class="lsub-drawer-file-count">@_drawer.FileCount</span>
+                </div>
+
+                @if (_detailLoading)
+                {
+                    <div class="lsub-drawer-file-loading">
+                        <span class="lsub-spinner-sm"></span>
+                        טוען קבצים…
+                    </div>
+                }
+                else if (_detailFiles.Count == 0)
+                {
+                    <div class="lsub-drawer-empty-files">לא צורפו קבצים</div>
+                }
+                else
+                {
+                    <div class="lsub-file-list">
+                        @foreach (var f in _detailFiles)
+                        {
+                            <div class="lsub-file-item">
+                                <span class="lsub-file-icon oi @FileIcon(f.ContentType)" aria-hidden="true"></span>
+                                <div class="lsub-file-info">
+                                    <span class="lsub-file-name">@f.OriginalFileName</span>
+                                    <span class="lsub-file-size">@FormatSize(f.SizeBytes)</span>
+                                </div>
+                                <a class="lsub-file-download"
+                                   href="/submissions/@f.StoredFileName"
+                                   download="@f.OriginalFileName"
+                                   title="הורדה">
+                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                </a>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
+        </div>
+    </div>
+}
+
+<!-- ── Main page ── -->
+@if (_isLoading)
+{
+    <div class="lsub-loading">
+        <div class="lsub-spinner"></div>
+        <span>טוענת הגשות…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="lsub-state-msg lsub-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת ההגשות. נסה לרענן את הדף.</p>
+    </div>
+}
+else
+{
+    <div class="lsub-page">
+
+        <!-- ── Page header ── -->
+        <div class="lsub-header-card">
+            <div class="lsub-header-start">
+                <div class="lsub-page-icon">
+                    <span class="oi oi-inbox" aria-hidden="true"></span>
+                </div>
+                <div>
+                    <h1 class="lsub-page-title">הגשות</h1>
+                    <p class="lsub-page-subtitle">מעקב אחר הגשות סטודנטים לפי פרויקט, אבן דרך ומשימה</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── KPI summary ── -->
+        <div class="lsub-kpi-row">
+            <div class="lsub-kpi-card">
+                <div class="lsub-kpi-value">@_all.Count</div>
+                <div class="lsub-kpi-label">סה"כ הגשות</div>
+            </div>
+            <div class="lsub-kpi-card lsub-kpi--new">
+                <div class="lsub-kpi-value">@_all.Count(s => s.Status == "Submitted")</div>
+                <div class="lsub-kpi-label">ממתינות לבדיקה</div>
+            </div>
+            <div class="lsub-kpi-card lsub-kpi--week">
+                <div class="lsub-kpi-value">@_all.Count(s => s.SubmittedAt.Date >= DateTime.Today.AddDays(-7))</div>
+                <div class="lsub-kpi-label">הוגשו השבוע</div>
+            </div>
+            <div class="lsub-kpi-card lsub-kpi--revision">
+                <div class="lsub-kpi-value">@_all.Count(s => s.Status == "NeedsRevision")</div>
+                <div class="lsub-kpi-label">דורשות תיקון</div>
+            </div>
+        </div>
+
+        <!-- ── Filters bar ── -->
+        <div class="lsub-filters-bar">
+            <div class="lsub-search-wrap">
+                <span class="oi oi-magnifying-glass lsub-search-icon" aria-hidden="true"></span>
+                <input class="lsub-search" type="text"
+                       placeholder="חיפוש לפי פרויקט, משימה, סטודנט..."
+                       @bind="_searchQuery" @bind:event="oninput" />
+            </div>
+            <div class="lsub-filter-group">
+                <select class="lsub-filter-select" @bind="_filterYear">
+                    <option value="">כל המחזורים</option>
+                    @foreach (var y in YearOptions)
+                    {
+                        <option value="@y.Id">@y.Name</option>
+                    }
+                </select>
+                <select class="lsub-filter-select" @bind="_filterMilestone">
+                    <option value="">כל אבני הדרך</option>
+                    @foreach (var m in MilestoneOptions)
+                    {
+                        <option value="@m">@m</option>
+                    }
+                </select>
+                <select class="lsub-filter-select" @bind="_filterStatus">
+                    <option value="">כל הסטטוסים</option>
+                    <option value="Submitted">ממתין לבדיקה</option>
+                    <option value="Reviewed">נבדק</option>
+                    <option value="NeedsRevision">דורש תיקון</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- ── Submissions table ── -->
+        <div class="lsub-table-panel">
+            @if (!Filtered.Any())
+            {
+                <div class="lsub-empty">
+                    <span class="oi oi-inbox" aria-hidden="true"></span>
+                    <p>
+                        @if (_all.Count == 0)
+                        {
+                            <span>לא הוגשו הגשות עדיין.</span>
+                        }
+                        else
+                        {
+                            <span>לא נמצאו הגשות התואמות את הסינון.</span>
+                        }
+                    </p>
+                </div>
+            }
+            else
+            {
+                <div class="lsub-table-wrap">
+                    <table class="lsub-table">
+                        <thead>
+                            <tr>
+                                <th>משימה</th>
+                                <th>אבן דרך</th>
+                                <th>פרויקט / צוות</th>
+                                <th>סטודנט</th>
+                                <th>תאריך הגשה</th>
+                                <th>קבצים</th>
+                                <th>סטטוס</th>
+                                <th class="lsub-th-actions"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in Filtered)
+                            {
+                                bool isSelected = _drawer?.SubmissionId == row.SubmissionId;
+                                <tr class="lsub-row @(isSelected ? "lsub-row-selected" : "")"
+                                    @onclick="@(() => OpenDrawer(row))">
+                                    <td>
+                                        <span class="lsub-task-title">@row.TaskTitle</span>
+                                    </td>
+                                    <td>
+                                        <span class="lsub-ms-badge">@row.MilestoneTitle</span>
+                                    </td>
+                                    <td>
+                                        <div class="lsub-project-cell">
+                                            <span class="lsub-team-number">צוות @row.ProjectNumber</span>
+                                            <span class="lsub-project-title">@row.ProjectTitle</span>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="lsub-submitter">@row.SubmittedByName</span>
+                                    </td>
+                                    <td class="lsub-date-cell">
+                                        <div>@row.SubmittedAt.ToString("dd/MM/yyyy")</div>
+                                        <div class="lsub-time">@row.SubmittedAt.ToString("HH:mm")</div>
+                                    </td>
+                                    <td class="lsub-cell-center">
+                                        @if (row.FileCount > 0)
+                                        {
+                                            <span class="lsub-file-badge">
+                                                <span class="oi oi-paperclip" aria-hidden="true"></span>
+                                                @row.FileCount
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="lsub-dash">—</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <span class="lsub-status-badge lsub-badge-@row.Status.ToLower()">
+                                            @StatusLabel(row.Status)
+                                        </span>
+                                    </td>
+                                    <td class="lsub-cell-action">
+                                        <button class="lsub-open-btn" title="פתח פרטים"
+                                                @onclick:stopPropagation="true"
+                                                @onclick="@(() => OpenDrawer(row))">
+                                            <span class="oi oi-chevron-left" aria-hidden="true"></span>
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="lsub-table-footer">
+                    <span class="lsub-count">
+                        @{ var cnt = Filtered.Count(); }
+                        מציג @cnt הגשות
+                        @if (cnt < _all.Count)
+                        {
+                            <span class="lsub-count-note">(מסוננות מתוך @_all.Count)</span>
+                        }
+                    </span>
+                </div>
+            }
+        </div>
+
+    </div>
+}
+
+@code {
+
+    // ── Data ─────────────────────────────────────────────────────────────────
+    private List<LecturerSubmissionRowDto> _all = new();
+    private bool _isLoading = true;
+    private bool _loadError;
+
+    // ── Filters ──────────────────────────────────────────────────────────────
+    private string _searchQuery     = "";
+    private string _filterYear      = "";
+    private string _filterMilestone = "";
+    private string _filterStatus    = "";
+
+    // ── Drawer ────────────────────────────────────────────────────────────────
+    private LecturerSubmissionRowDto? _drawer;
+    private List<TaskSubmissionFileDto> _detailFiles = new();
+    private bool _drawerLoading;
+    private bool _detailLoading;
+    private bool _statusUpdating;
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        var result = await SubmissionsService.GetAllForLecturerAsync();
+        _loadError = result is null;
+        _all       = result ?? new();
+        _isLoading = false;
+    }
+
+    // ── Filter options (derived from loaded data) ─────────────────────────
+    private IEnumerable<(int Id, string Name)> YearOptions =>
+        _all.Select(r => (r.AcademicYearId, r.AcademicYearName))
+            .DistinctBy(x => x.AcademicYearId)
+            .OrderBy(x => x.AcademicYearName);
+
+    private IEnumerable<string> MilestoneOptions =>
+        _all.Select(r => r.MilestoneTitle)
+            .Distinct()
+            .OrderBy(m => m);
+
+    // ── Filtered list ─────────────────────────────────────────────────────
+    private IEnumerable<LecturerSubmissionRowDto> Filtered => _all
+        .Where(r => string.IsNullOrEmpty(_filterYear)
+                 || r.AcademicYearId.ToString() == _filterYear)
+        .Where(r => string.IsNullOrEmpty(_filterMilestone)
+                 || r.MilestoneTitle == _filterMilestone)
+        .Where(r => string.IsNullOrEmpty(_filterStatus)
+                 || r.Status == _filterStatus)
+        .Where(r => string.IsNullOrEmpty(_searchQuery)
+                 || r.TaskTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                 || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                 || r.ProjectNumber.ToString().Contains(_searchQuery)
+                 || r.SubmittedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(r => r.SubmittedAt);
+
+    // ── Drawer ────────────────────────────────────────────────────────────
+    private async Task OpenDrawer(LecturerSubmissionRowDto row)
+    {
+        _drawer      = row;
+        _detailFiles = new();
+        _detailLoading = true;
+        StateHasChanged();
+
+        var detail = await SubmissionsService.GetSubmissionDetailAsync(row.SubmissionId);
+        _detailFiles   = detail?.Files ?? new();
+        _detailLoading = false;
+    }
+
+    private void CloseDrawer()
+    {
+        _drawer      = null;
+        _detailFiles = new();
+    }
+
+    private async Task SetStatus(string newStatus)
+    {
+        if (_drawer is null) return;
+        _statusUpdating = true;
+
+        bool ok = await SubmissionsService.UpdateSubmissionStatusAsync(_drawer.SubmissionId, newStatus);
+        if (ok)
+        {
+            // Update in-memory
+            _drawer.Status = newStatus;
+            var listRow = _all.FirstOrDefault(r => r.SubmissionId == _drawer.SubmissionId);
+            if (listRow is not null) listRow.Status = newStatus;
+        }
+
+        _statusUpdating = false;
+    }
+
+    // ── Display helpers ───────────────────────────────────────────────────
+    private static string StatusLabel(string s) => s switch
+    {
+        "Submitted"     => "ממתין לבדיקה",
+        "Reviewed"      => "נבדק",
+        "NeedsRevision" => "דורש תיקון",
+        _               => s,
+    };
+
+    private static string FileIcon(string contentType) => contentType switch
+    {
+        var c when c.StartsWith("image/")                             => "oi-image",
+        "application/pdf"                                             => "oi-document",
+        "application/zip" or "application/x-zip-compressed"          => "oi-data-transfer-download",
+        var c when c.Contains("spreadsheet") || c.Contains("excel")  => "oi-spreadsheet",
+        var c when c.Contains("presentation")                         => "oi-monitor",
+        _                                                             => "oi-file",
+    };
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)         return $"{bytes} B";
+        if (bytes < 1_048_576)    return $"{bytes / 1024} KB";
+        return $"{bytes / 1_048_576.0:F1} MB";
+    }
+}

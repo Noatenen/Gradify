@@ -1,0 +1,163 @@
+@page "/submissions"
+@layout AppLayout
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject ITaskSubmissionsService SubmissionsService
+@attribute [Authorize]
+
+<!-- Submission modal (hosted on this page) -->
+<SubmissionModal TaskId="@_openTaskId" OnClose="CloseModal" />
+
+@if (_isLoading)
+{
+    <div class="sub-loading">
+        <div class="sub-spinner"></div>
+        <span>טוענת הגשות…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="sub-state-msg sub-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת ההגשות. נסי לרענן את הדף.</p>
+    </div>
+}
+else if (!_tasks.Any())
+{
+    <div class="sub-state-msg">
+        <span class="oi oi-info" aria-hidden="true"></span>
+        <p>אין משימות הגשה בפרויקט שלך כרגע.</p>
+    </div>
+}
+else
+{
+    <div class="sub-page">
+
+        <!-- ── Header ── -->
+        <div class="sub-header-card">
+            <div class="sub-header-start">
+                <div class="sub-page-icon">
+                    <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                </div>
+                <div>
+                    <h1 class="sub-page-title">הגשות</h1>
+                    <p class="sub-page-subtitle">כל משימות ההגשה של הפרויקט שלך</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Summary pills ── -->
+        <div class="sub-summary-row">
+            <div class="sub-summary-pill">
+                <span class="sub-summary-value">@_tasks.Count</span>
+                <span class="sub-summary-label">סה"כ הגשות</span>
+            </div>
+            <div class="sub-summary-pill sub-summary-pill--done">
+                <span class="sub-summary-value">@_tasks.Count(t => t.LatestSubmissionId.HasValue)</span>
+                <span class="sub-summary-label">הוגשו</span>
+            </div>
+            <div class="sub-summary-pill sub-summary-pill--pending">
+                <span class="sub-summary-value">@_tasks.Count(t => !t.LatestSubmissionId.HasValue)</span>
+                <span class="sub-summary-label">ממתינות להגשה</span>
+            </div>
+        </div>
+
+        <!-- ── Task cards ── -->
+        <div class="sub-cards-grid">
+            @foreach (var task in _tasks)
+            {
+                bool isOverdue = task.DueDate.HasValue
+                              && task.DueDate.Value.Date < DateTime.Today
+                              && task.LatestSubmissionStatus is null or "NeedsRevision";
+                bool isSubmitted = task.LatestSubmissionId.HasValue;
+
+                <div class="sub-card @(isOverdue ? "sub-card-overdue" : "") @(isSubmitted ? "sub-card-submitted" : "")">
+
+                    <!-- Card header -->
+                    <div class="sub-card-header">
+                        <div class="sub-card-info">
+                            <span class="sub-card-milestone">@task.MilestoneTitle</span>
+                            <h3 class="sub-card-title">@task.TaskTitle</h3>
+                        </div>
+                        @if (task.LatestSubmissionStatus is not null)
+                        {
+                            <span class="sub-status-badge sub-badge-@task.LatestSubmissionStatus.ToLower()">
+                                @SubmissionStatusLabel(task.LatestSubmissionStatus)
+                            </span>
+                        }
+                        else
+                        {
+                            <span class="sub-status-badge sub-badge-none">טרם הוגש</span>
+                        }
+                    </div>
+
+                    <!-- Due date -->
+                    @if (task.DueDate.HasValue)
+                    {
+                        <div class="sub-card-due @(isOverdue ? "sub-due-overdue" : "")">
+                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                            מועד הגשה: <strong>@task.DueDate.Value.ToString("dd/MM/yyyy")</strong>
+                            @if (isOverdue) { <span class="sub-overdue-label">(באיחור)</span> }
+                        </div>
+                    }
+
+                    <!-- Last submission info -->
+                    @if (task.LatestSubmittedAt.HasValue)
+                    {
+                        <div class="sub-card-prev">
+                            <span class="oi oi-check" aria-hidden="true"></span>
+                            הוגש לאחרונה: @task.LatestSubmittedAt.Value.ToString("dd/MM/yyyy HH:mm")
+                            (@task.SubmissionCount @(task.SubmissionCount == 1 ? "הגשה" : "הגשות"))
+                        </div>
+                    }
+
+                    <!-- Action button -->
+                    <div class="sub-card-actions">
+                        <button class="sub-card-btn @(isSubmitted ? "sub-card-btn-secondary" : "")"
+                                @onclick="@(() => OpenSubmission(task.TaskId))">
+                            <span class="oi @(isSubmitted ? "oi-pencil" : "oi-data-transfer-upload")"
+                                  aria-hidden="true"></span>
+                            @(isSubmitted ? "הגשה נוספת / צפייה" : "הגשה")
+                        </button>
+                    </div>
+
+                </div>
+            }
+        </div>
+
+    </div>
+}
+
+@code {
+    [Parameter, SupplyParameterFromQuery] public int? TaskId { get; set; }
+    [CascadingParameter] private User? _user { get; set; }
+
+    private List<StudentSubmissionTaskDto> _tasks   = new();
+    private bool _isLoading = true;
+    private bool _loadError = false;
+    private int  _openTaskId = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var result = await SubmissionsService.GetMySubmissionTasksAsync();
+        _loadError = result is null;
+        _tasks     = result ?? new();
+        _isLoading = false;
+
+        // Auto-open modal when navigated here with ?taskId=N
+        if (TaskId.HasValue && TaskId.Value > 0)
+            _openTaskId = TaskId.Value;
+    }
+
+    private void OpenSubmission(int taskId) => _openTaskId = taskId;
+    private void CloseModal()               => _openTaskId = 0;
+
+    private static string SubmissionStatusLabel(string status) => status switch
+    {
+        "Submitted"     => "הוגש",
+        "Reviewed"      => "נבדק",
+        "NeedsRevision" => "דורש תיקון",
+        _               => status,
+    };
+}

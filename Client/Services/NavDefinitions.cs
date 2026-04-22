@@ -14,18 +14,18 @@ public static class NavDefinitions
     // ── Admin / Staff (Lecturer) ─────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _adminMain = new[]
     {
-        new NavItem("דשבורד",            "dashboard",  "oi-dashboard",       NavLinkMatch.All),
-        new NavItem("פרויקטים",          "projects",   "oi-folder",          NavLinkMatch.Prefix),
-        new NavItem("אבני דרך",          "milestones", "oi-flag",            NavLinkMatch.Prefix),
-        new NavItem("פרויקטים בחריגה",  "overdue",    "oi-warning",         NavLinkMatch.Prefix),
-        new NavItem("בקשות מיוחדות",    "requests",   "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("דשבורד",            "dashboard",             "oi-dashboard",             NavLinkMatch.All),
+        new NavItem("פרויקטים",          "projects",              "oi-folder",                NavLinkMatch.Prefix),
+        new NavItem("שיבוצים",           "assignments",           "oi-target",                NavLinkMatch.Prefix),
+        new NavItem("אבני דרך",          "milestones",            "oi-flag",                  NavLinkMatch.Prefix),
+        new NavItem("הגשות",             "lecturer-submissions",  "oi-inbox",                 NavLinkMatch.Prefix),
+        new NavItem("בקשות",             "management/requests",   "oi-envelope-closed",       NavLinkMatch.Prefix),
     };
 
     private static readonly IReadOnlyList<NavItem> _adminBottom = new[]
     {
         new NavItem("ניהול",   "management",    "oi-list-rich", NavLinkMatch.All),
-        new NavItem("קבצים",   "resource-files","oi-file",      NavLinkMatch.Prefix),
-        new NavItem("דוחות",   "reports",       "oi-bar-chart", NavLinkMatch.Prefix),
+        new NavItem("חומרי עזר","resource-files","oi-folder",    NavLinkMatch.Prefix),
         new NavItem("הגדרות",  "settings",      "oi-cog",       NavLinkMatch.Prefix),
     };
 
@@ -36,9 +36,10 @@ public static class NavDefinitions
         new NavItem("משימות",          "tasks",       "oi-task",            NavLinkMatch.Prefix),
         new NavItem("הגשות",           "submissions", "oi-document",        NavLinkMatch.Prefix),
         new NavItem("יומן",            "journal",     "oi-calendar",        NavLinkMatch.Prefix),
-        new NavItem("הודעות ובקשות",  "messages",    "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("בקשות",           "requests",    "oi-envelope-closed", NavLinkMatch.Prefix),
         new NavItem("אבני דרך",        "milestones",  "oi-flag",            NavLinkMatch.Prefix),
-        new NavItem("קבצים",           "files",       "oi-file",            NavLinkMatch.Prefix),
+        new NavItem("חומרי עזר",       "files",       "oi-folder",          NavLinkMatch.Prefix),
+        new NavItem("חומרי למידה",     "learning",    "oi-book",            NavLinkMatch.Prefix),
     };
 
     // Settings for students lives in the sidebar header as a compact icon button.

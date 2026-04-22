@@ -1,0 +1,1066 @@
+@page "/management/requests"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@implements IDisposable
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Microsoft.AspNetCore.Components.Forms
+@inject NavigationManager Nav
+@inject IProjectRequestsService RequestsService
+@inject IJSRuntime JS
+
+<!-- ══════════════════════════════════════════
+     REQUEST DETAIL MODAL
+     ══════════════════════════════════════════ -->
+@if (_drawer is not null)
+{
+    <div class="req-modal-overlay" @onclick="CloseDrawer" @onkeydown="OnModalKeyDown" tabindex="-1" @ref="_modalOverlayRef">
+    <div class="req-modal-box" @onclick:stopPropagation="true">
+
+        <!-- ── Modal header ── -->
+        <div class="req-modal-header">
+            <div class="req-drawer-title-row">
+                <div class="req-drawer-title-block">
+                    <span class="req-type-badge req-type-@TypeClass(_drawer.RequestType)">
+                        @RequestTypes.Label(_drawer.RequestType)
+                    </span>
+                    <div class="req-drawer-title">@_drawer.Title</div>
+                </div>
+                <div class="req-drawer-header-actions">
+                    <button class="req-drawer-refresh"
+                            @onclick="RefreshDrawer"
+                            title="רענן פרטים"
+                            disabled="@_refreshing">
+                        @if (_refreshing)
+                        {
+                            <span class="req-spinner-sm"></span>
+                        }
+                        else
+                        {
+                            <span class="oi oi-loop-circular" aria-hidden="true"></span>
+                        }
+                    </button>
+                    <button class="req-drawer-close" @onclick="CloseDrawer" title="סגירה">
+                        <span class="oi oi-x" aria-hidden="true"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="req-drawer-meta">
+                <div class="req-drawer-meta-item">
+                    <span class="oi oi-layers" aria-hidden="true"></span>
+                    צוות @_drawer.ProjectNumber — @_drawer.ProjectTitle
+                </div>
+                <div class="req-drawer-meta-item">
+                    <span class="oi oi-person" aria-hidden="true"></span>
+                    נפתחה על ידי @_drawer.CreatedByName
+                </div>
+                <div class="req-drawer-meta-item">
+                    <span class="oi oi-clock" aria-hidden="true"></span>
+                    @_drawer.CreatedAt.ToString("dd/MM/yyyy HH:mm")
+                    @if (_drawer.UpdatedAt > _drawer.CreatedAt)
+                    {
+                        <span class="req-updated-note">(עודכן @_drawer.UpdatedAt.ToString("dd/MM/yyyy HH:mm"))</span>
+                    }
+                </div>
+                @if (!string.IsNullOrEmpty(_drawer.AssignedToName))
+                {
+                    <div class="req-drawer-meta-item req-meta-assignee">
+                        <span class="oi oi-arrow-circle-right" aria-hidden="true"></span>
+                        מטופל על ידי @_drawer.AssignedToName
+                    </div>
+                }
+            </div>
+
+            <div class="req-drawer-badges-row">
+                <span class="req-priority-badge req-priority-@_drawer.Priority.ToLower()">
+                    <span class="oi oi-signal" aria-hidden="true"></span>
+                    @RequestPriorities.Label(_drawer.Priority)
+                </span>
+                <span class="req-status-badge req-badge-@_drawer.Status.ToLower()">
+                    @RequestStatuses.Label(_drawer.Status)
+                </span>
+            </div>
+        </div>
+
+        <!-- ── Modal body: 2-column layout ── -->
+        <div class="req-modal-body">
+
+        <!-- Main column: description + thread (independently scrollable) -->
+        <div class="req-modal-main">
+
+            <!-- Original request description -->
+            @if (!string.IsNullOrWhiteSpace(_drawer.Description))
+            {
+                <div class="req-drawer-section">
+                    <div class="req-drawer-section-title">תיאור הבקשה המקורית</div>
+                    <div class="req-drawer-text-block">@_drawer.Description</div>
+                </div>
+            }
+
+            <!-- Image attachments -->
+            @if (_drawer.Attachments.Count > 0)
+            {
+                <div class="req-drawer-section">
+                    <div class="req-drawer-section-title">
+                        קבצים מצורפים
+                        <span class="req-attachment-count">(@_drawer.Attachments.Count)</span>
+                    </div>
+                    <div class="req-attachments-grid">
+                        @foreach (var att in _drawer.Attachments)
+                        {
+                            <a class="req-attachment-thumb"
+                               href="/request-attachments/@att.StoredFileName"
+                               target="_blank"
+                               title="@att.OriginalFileName">
+                                <img src="/request-attachments/@att.StoredFileName"
+                                     alt="@att.OriginalFileName"
+                                     loading="lazy" />
+                                <span class="req-attachment-name">@att.OriginalFileName</span>
+                            </a>
+                        }
+                    </div>
+                </div>
+            }
+
+            <!-- ── Thread / history ── -->
+            @if (_drawer.Events.Count > 0 || !string.IsNullOrWhiteSpace(_drawer.Description))
+            {
+                <div class="req-drawer-section">
+                    <div class="req-drawer-section-title">היסטוריית בקשה</div>
+                    <div class="req-thread">
+
+                        <!-- Synthetic "original request" entry -->
+                        <div class="req-thread-entry req-thread-original">
+                            <div class="req-thread-avatar req-avatar-student">
+                                <span class="oi oi-person" aria-hidden="true"></span>
+                            </div>
+                            <div class="req-thread-bubble">
+                                <div class="req-thread-meta">
+                                    <span class="req-thread-author">@_drawer.CreatedByName</span>
+                                    <span class="req-thread-time">@_drawer.CreatedAt.ToString("dd/MM/yyyy HH:mm")</span>
+                                </div>
+                                <div class="req-thread-content">
+                                    @if (!string.IsNullOrWhiteSpace(_drawer.Description))
+                                    {
+                                        @_drawer.Description
+                                    }
+                                    else
+                                    {
+                                        <em class="req-thread-no-desc">ללא תיאור</em>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Actual events -->
+                        @foreach (var evt in _drawer.Events)
+                        {
+                            <div class="req-thread-entry @EventClass(evt) @(_highlightedEventIds.Contains(evt.Id) ? "req-evt-new" : "")"
+                                 id="req-evt-@evt.Id">
+                                <div class="req-thread-avatar @AvatarClass(evt)">
+                                    <span class="oi @EventIcon(evt)" aria-hidden="true"></span>
+                                </div>
+                                <div class="req-thread-bubble">
+                                    <div class="req-thread-meta">
+                                        <span class="req-thread-author">@evt.UserName</span>
+                                        <span class="req-thread-time">@evt.CreatedAt.ToString("dd/MM/yyyy HH:mm")</span>
+                                    </div>
+                                    <div class="req-thread-content">
+                                        @EventSummary(evt)
+                                    </div>
+                                    @if (evt.Attachments.Count > 0)
+                                    {
+                                        <div class="req-thread-event-attachments">
+                                            @foreach (var att in evt.Attachments)
+                                            {
+                                                @if (att.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    <a class="req-evt-att-thumb"
+                                                       href="/request-attachments/@att.StoredFileName"
+                                                       target="_blank"
+                                                       title="@att.OriginalFileName">
+                                                        <img src="/request-attachments/@att.StoredFileName"
+                                                             alt="@att.OriginalFileName"
+                                                             loading="lazy" />
+                                                    </a>
+                                                }
+                                                else
+                                                {
+                                                    <a class="req-evt-att-file"
+                                                       href="/request-attachments/@att.StoredFileName"
+                                                       target="_blank"
+                                                       title="@att.OriginalFileName">
+                                                        <span class="oi oi-document" aria-hidden="true"></span>
+                                                        <span>@att.OriginalFileName</span>
+                                                    </a>
+                                                }
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            <!-- ── DEBUG: raw event log ── -->
+            <div class="req-drawer-section">
+                <button class="req-debug-toggle" @onclick="@(() => _showDebug = !_showDebug)">
+                    <span class="oi @(_showDebug ? "oi-chevron-top" : "oi-chevron-bottom")" aria-hidden="true"></span>
+                    DEBUG — אירועים גולמיים (@_drawer.Events.Count)
+                </button>
+
+                @if (_showDebug)
+                {
+                    <div class="req-debug-panel">
+                        @if (_drawer.Events.Count == 0)
+                        {
+                            <p class="req-debug-empty">אין אירועים בטעינה הנוכחית.</p>
+                        }
+                        else
+                        {
+                            <table class="req-debug-table">
+                                <thead>
+                                    <tr>
+                                        <th>Id</th>
+                                        <th>Type</th>
+                                        <th>UserId</th>
+                                        <th>OldValue</th>
+                                        <th>NewValue</th>
+                                        <th>Content</th>
+                                        <th>CreatedAt</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var evt in _drawer.Events)
+                                    {
+                                        <tr>
+                                            <td>@evt.Id</td>
+                                            <td class="req-debug-type">@evt.EventType</td>
+                                            <td>@evt.UserId</td>
+                                            <td>@evt.OldValue</td>
+                                            <td>@evt.NewValue</td>
+                                            <td class="req-debug-content">@(evt.Content is { Length: > 40 } c ? c[..40] + "…" : evt.Content)</td>
+                                            <td class="req-debug-time">@evt.CreatedAt.ToString("HH:mm:ss.fff")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        }
+                        <p class="req-debug-hint">
+                            לבדיקה עמוקה יותר: <code>GET /api/project-requests/@_drawer.Id/debug-events</code>
+                        </p>
+                    </div>
+                }
+            </div>
+
+        </div>
+        <!-- ← closes req-modal-main -->
+
+        <!-- Side panel: request controls -->
+        <div class="req-modal-panel">
+            <div class="req-panel-section-title">עדכון בקשה</div>
+
+            <div class="req-handle-field">
+                <label class="req-handle-label">סטטוס</label>
+                <select class="req-handle-select" @bind="_handleStatus" disabled="@_handling">
+                    @foreach (var s in RequestStatuses.All)
+                    {
+                        <option value="@s">@RequestStatuses.Label(s)</option>
+                    }
+                </select>
+            </div>
+
+            <div class="req-handle-field">
+                <label class="req-handle-label">עדיפות</label>
+                <select class="req-handle-select" @bind="_handlePriority" disabled="@_handling">
+                    @foreach (var p in RequestPriorities.All)
+                    {
+                        <option value="@p">@RequestPriorities.Label(p)</option>
+                    }
+                </select>
+            </div>
+
+            <div class="req-handle-field">
+                <label class="req-handle-label">שיוך לאדם</label>
+                <select class="req-handle-select" @bind="_handleAssigneeId" disabled="@_handling">
+                    <option value="">— ללא שיוך —</option>
+                    @foreach (var u in _assignableUsers)
+                    {
+                        <option value="@u.Id">@u.Name (@RoleLabel(u.Role))</option>
+                    }
+                </select>
+            </div>
+
+            <div class="req-panel-divider"></div>
+
+            <div class="req-panel-section-title">פעולות מהירות</div>
+
+            <button class="req-quick-btn req-quick-return req-panel-btn"
+                    title="החזר לסטודנט להשלמה"
+                    disabled="@_handling"
+                    @onclick="@(() => _handleStatus = RequestStatuses.NeedsInfo)">
+                <span class="oi oi-action-undo" aria-hidden="true"></span>
+                החזרה לסטודנט
+            </button>
+            <button class="req-quick-btn req-quick-resolve req-panel-btn"
+                    title="סמן כטופל ומעבר לסגירה"
+                    disabled="@_handling"
+                    @onclick="@(() => _handleStatus = RequestStatuses.Resolved)">
+                <span class="oi oi-circle-check" aria-hidden="true"></span>
+                סמן כטופל
+            </button>
+
+            @if (!string.IsNullOrWhiteSpace(_handleError))
+            {
+                <div class="req-drawer-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_handleError
+                </div>
+            }
+        </div>
+
+        </div>
+        <!-- ← closes req-modal-body -->
+
+        <!-- ── Modal footer: reply only ── -->
+        <div class="req-modal-footer">
+            <div class="req-modal-reply-row">
+                <textarea class="req-handle-textarea req-modal-textarea"
+                          rows="2"
+                          placeholder="הוסף תגובה, הסבר, החלטה או הוראה לסטודנט…"
+                          maxlength="2000"
+                          @bind="_handleComment"
+                          @bind:event="oninput"
+                          disabled="@_handling"></textarea>
+
+                <div class="req-modal-reply-actions">
+                    @if (_handleAttachments.Count < MaxEventAttachments && !_handling)
+                    {
+                        <label class="req-handle-file-zone req-modal-file-zone" title="צרף קובץ (תמונה / PDF / Word)">
+                            <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                            <InputFile OnChange="OnHandleFilesSelected"
+                                       accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,.jpg,.jpeg,.png,.webp,.docx"
+                                       multiple
+                                       class="req-handle-file-hidden" />
+                        </label>
+                    }
+
+                    <button class="req-save-btn"
+                            disabled="@_handling"
+                            @onclick="SubmitHandle">
+                        @if (_handling)
+                        {
+                            <span class="req-spinner-sm"></span>
+                        }
+                        else
+                        {
+                            <span class="oi oi-check" aria-hidden="true"></span>
+                        }
+                        שמור ושלח
+                    </button>
+                </div>
+            </div>
+
+            @if (_handleAttachments.Count > 0)
+            {
+                <ul class="req-handle-file-list">
+                    @foreach (var att in _handleAttachments)
+                    {
+                        <li class="req-handle-file-item">
+                            <span class="oi @(att.ContentType.StartsWith("image/") ? "oi-image" : "oi-document") req-handle-file-icon" aria-hidden="true"></span>
+                            <span class="req-handle-file-name">@att.Name</span>
+                            <span class="req-handle-file-size">@FormatBytes(att.Size)</span>
+                            <button type="button" class="req-handle-file-remove" title="הסר"
+                                    disabled="@_handling"
+                                    @onclick="@(() => { _handleAttachments.Remove(att); _handleFileError = ""; })">
+                                <span class="oi oi-x" aria-hidden="true"></span>
+                            </button>
+                        </li>
+                    }
+                </ul>
+            }
+
+            @if (!string.IsNullOrEmpty(_handleFileError))
+            {
+                <div class="req-drawer-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_handleFileError
+                </div>
+            }
+        </div>
+
+    </div>
+    </div>
+}
+
+<!-- ══════════════════════════════════════════
+     MAIN PAGE
+     ══════════════════════════════════════════ -->
+<div class="req-page" @onclick="CloseAllMenus">
+
+    <!-- ── Top bar ── -->
+    <div class="req-topbar">
+        <div class="req-topbar-start">
+            <button class="req-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management"))"
+                    @onclick:stopPropagation="true"
+                    title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="req-breadcrumb">ניהול</div>
+                <h1 class="req-page-title">ניהול בקשות</h1>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── KPI summary (clickable filters) ── -->
+    @if (!_loading && !_loadError)
+    {
+        <div class="req-kpi-row">
+            <div class="req-kpi-card @(_kpiFilter == "all" ? "req-kpi--active" : "")"
+                 @onclick="@(() => SetKpiFilter("all"))"
+                 title="הצג את כל הבקשות">
+                <div class="req-kpi-value">@_all.Count</div>
+                <div class="req-kpi-label">סה"כ בקשות</div>
+            </div>
+            <div class="req-kpi-card req-kpi--new @(_kpiFilter == "new" ? "req-kpi--active" : "")"
+                 @onclick="@(() => SetKpiFilter("new"))"
+                 title="סנן לבקשות חדשות">
+                <div class="req-kpi-value">@_all.Count(r => r.Status == RequestStatuses.New)</div>
+                <div class="req-kpi-label">בקשות חדשות</div>
+                <div class="req-kpi-hint">לחץ לסינון</div>
+            </div>
+            <div class="req-kpi-card req-kpi--inprogress @(_kpiFilter == "inprogress" ? "req-kpi--active" : "")"
+                 @onclick="@(() => SetKpiFilter("inprogress"))"
+                 title="סנן לבקשות בטיפול">
+                <div class="req-kpi-value">@_all.Count(r => r.Status is RequestStatuses.InProgress or RequestStatuses.NeedsInfo or RequestStatuses.WaitingForStaff)</div>
+                <div class="req-kpi-label">בטיפול</div>
+                <div class="req-kpi-hint">לחץ לסינון</div>
+            </div>
+            <div class="req-kpi-card req-kpi--resolved @(_kpiFilter == "resolved" ? "req-kpi--active" : "")"
+                 @onclick="@(() => SetKpiFilter("resolved"))"
+                 title="הצג בקשות שטופלו">
+                <div class="req-kpi-value">@_all.Count(r => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed)</div>
+                <div class="req-kpi-label">טופלו / נסגרו</div>
+                <div class="req-kpi-hint">לחץ לסינון</div>
+            </div>
+        </div>
+    }
+
+    <!-- ── Filters bar ── -->
+    <div class="req-filters-bar">
+        <div class="req-search-wrap">
+            <span class="oi oi-magnifying-glass req-search-icon" aria-hidden="true"></span>
+            <input class="req-search" type="text"
+                   placeholder="חיפוש לפי כותרת, פרויקט, צוות, שם…"
+                   @bind="_searchQuery" @bind:event="oninput" />
+        </div>
+        <div class="req-filter-group">
+            <select class="req-filter-select" @bind="_filterType">
+                <option value="">כל סוגי הבקשות</option>
+                @foreach (var t in RequestTypes.All)
+                {
+                    <option value="@t">@RequestTypes.Label(t)</option>
+                }
+            </select>
+            <select class="req-filter-select" @bind="_filterStatus">
+                <option value="">כל הסטטוסים</option>
+                @foreach (var s in RequestStatuses.All)
+                {
+                    <option value="@s">@RequestStatuses.Label(s)</option>
+                }
+            </select>
+            <select class="req-filter-select" @bind="_filterPriority">
+                <option value="">כל העדיפויות</option>
+                @foreach (var p in RequestPriorities.All)
+                {
+                    <option value="@p">@RequestPriorities.Label(p)</option>
+                }
+            </select>
+        </div>
+    </div>
+
+    <!-- ── Active scope indicator ── -->
+    @if (!_loading && !_loadError)
+    {
+        <div class="req-scope-bar">
+            <span class="req-scope-label @(_kpiFilter == "active" ? "req-scope-default" : "req-scope-filtered")">
+                <span class="oi oi-eye" aria-hidden="true"></span>
+                @KpiScopeText()
+            </span>
+            @if (_kpiFilter != "active" || !string.IsNullOrEmpty(_filterType) || !string.IsNullOrEmpty(_filterStatus) || !string.IsNullOrEmpty(_filterPriority) || !string.IsNullOrEmpty(_searchQuery))
+            {
+                <button class="req-scope-reset" @onclick="ClearAllFilters" title="חזור לתצוגת ברירת מחדל">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                    נקה סינון
+                </button>
+            }
+        </div>
+    }
+
+    <!-- ── Table panel ── -->
+    <div class="req-table-panel">
+        <div class="req-table-wrap">
+            <table class="req-table">
+                <thead>
+                    <tr>
+                        <th>סוג</th>
+                        <th>כותרת</th>
+                        <th>פרויקט / צוות</th>
+                        <th>פתח על ידי</th>
+                        <th>תאריך</th>
+                        <th>עדיפות</th>
+                        <th>סטטוס</th>
+                        <th class="req-th-actions"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr><td colspan="8" class="req-empty">
+                            <span class="req-spinner-inline"></span>טוען בקשות...
+                        </td></tr>
+                    }
+                    else if (_loadError)
+                    {
+                        <tr><td colspan="8" class="req-empty req-empty--error">
+                            <span class="oi oi-warning"></span>שגיאה בטעינה. רענן את הדף.
+                        </td></tr>
+                    }
+                    else if (!Filtered.Any())
+                    {
+                        <tr><td colspan="8" class="req-empty">
+                            <span class="oi oi-magnifying-glass"></span>
+                            @if (_all.Count == 0)
+                            {
+                                <span>לא נפתחו בקשות עדיין.</span>
+                            }
+                            else
+                            {
+                                <span>לא נמצאו בקשות התואמות את הסינון.</span>
+                            }
+                        </td></tr>
+                    }
+                    else
+                    {
+                        foreach (var r in Filtered)
+                        {
+                            bool isSelected = _drawer?.Id == r.Id;
+                            <tr class="req-row @(isSelected ? "req-row-selected" : "")"
+                                @onclick="@(async () => await OpenDrawer(r))">
+                                <td>
+                                    <span class="req-type-badge req-type-@TypeClass(r.RequestType)">
+                                        @RequestTypes.Label(r.RequestType)
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="req-title-cell-wrap">
+                                        <span class="req-title-cell">@r.Title</span>
+                                        @if (r.AttachmentCount > 0)
+                                        {
+                                            <span class="req-attach-indicator" title="@r.AttachmentCount תמונות מצורפות">
+                                                <span class="oi oi-image" aria-hidden="true"></span>
+                                            </span>
+                                        }
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="req-project-cell">
+                                        <span class="req-team-number">צוות @r.ProjectNumber</span>
+                                        <span class="req-project-title">@r.ProjectTitle</span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="req-name-cell">@r.CreatedByName</span>
+                                </td>
+                                <td class="req-date-cell">
+                                    <div>@r.CreatedAt.ToString("dd/MM/yyyy")</div>
+                                    <div class="req-time">@r.CreatedAt.ToString("HH:mm")</div>
+                                </td>
+                                <td>
+                                    <span class="req-priority-badge req-priority-@r.Priority.ToLower()">
+                                        @RequestPriorities.Label(r.Priority)
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="req-status-badge req-badge-@r.Status.ToLower()">
+                                        @RequestStatuses.Label(r.Status)
+                                    </span>
+                                </td>
+                                <td class="req-cell-action">
+                                    <button class="req-open-btn"
+                                            title="פתח פרטים"
+                                            @onclick:stopPropagation="true"
+                                            @onclick="@(async () => await OpenDrawer(r))">
+                                        <span class="oi oi-chevron-left" aria-hidden="true"></span>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (!_loading && !_loadError)
+        {
+            <div class="req-table-footer">
+                <span class="req-count">
+                    @{ var cnt = Filtered.Count(); }
+                    @cnt בקשות
+                    @if (_kpiFilter == "active" && cnt < _all.Count)
+                    {
+                        <span class="req-count-note">(פעילות — @_all.Count סה"כ במערכת)</span>
+                    }
+                    else if (_kpiFilter != "active" && cnt < _all.Count)
+                    {
+                        <span class="req-count-note">(מסוננות מתוך @_all.Count)</span>
+                    }
+                </span>
+                <div class="req-legend">
+                    @foreach (var s in RequestStatuses.All)
+                    {
+                        <span class="req-status-badge req-badge-@s.ToLower()">
+                            @RequestStatuses.Label(s)
+                        </span>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+</div>
+
+@code {
+
+    // ── Data ─────────────────────────────────────────────────────────────────
+    private List<ProjectRequestRowDto> _all         = new();
+    private List<AssignableUserDto>    _assignableUsers = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    // ── Filters ──────────────────────────────────────────────────────────────
+    private string _searchQuery    = "";
+    private string _filterType     = "";
+    private string _filterStatus   = "";
+    private string _filterPriority = "";
+
+    // KPI card group filter:  "active" (default) | "all" | "new" | "inprogress" | "resolved"
+    private string _kpiFilter = "active";
+
+    // ── Drawer ────────────────────────────────────────────────────────────────
+    private ProjectRequestDetailDto? _drawer;
+
+    // Handle form
+    private string  _handleStatus    = "";
+    private string  _handlePriority  = "";
+    private string  _handleAssigneeIdRaw = "";   // bound to select as string
+    private string  _handleComment   = "";
+    private bool    _handling;
+    private bool    _refreshing;
+    private string  _handleError     = "";
+
+    // Handle-form attachments
+    private record PendingAttachment(string Name, string Base64, string ContentType, long Size);
+    private List<PendingAttachment> _handleAttachments = new();
+    private string _handleFileError = "";
+    private const int MaxEventAttachments = 3;
+
+    // ── Debug panel ──────────────────────────────────────────────────────────
+    private bool _showDebug;
+
+    // ── Modal focus (ESC support) ─────────────────────────────────────────────
+    private ElementReference _modalOverlayRef;
+    private bool             _justOpenedModal;
+
+    // ── Auto-refresh polling + highlight/scroll ───────────────────────────────
+    private CancellationTokenSource? _pollCts;
+    private const int PollIntervalMs = 4000;
+
+    // IDs of events that just arrived via polling — cleared after animation
+    private readonly HashSet<int> _highlightedEventIds = new();
+    // Set before StateHasChanged; consumed and cleared in OnAfterRenderAsync
+    private int? _scrollToEventId;
+
+    private int? _handleAssigneeId
+    {
+        get => int.TryParse(_handleAssigneeIdRaw, out var v) && v > 0 ? v : null;
+        set => _handleAssigneeIdRaw = value?.ToString() ?? "";
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        var reqTask   = RequestsService.GetAllAsync();
+        var usersTask = RequestsService.GetAssignableUsersAsync();
+        await Task.WhenAll(reqTask, usersTask);
+
+        _loadError       = reqTask.Result is null;
+        _all             = reqTask.Result   ?? new();
+        _assignableUsers = usersTask.Result ?? new();
+        _loading         = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_justOpenedModal)
+        {
+            _justOpenedModal = false;
+            try { await JS.InvokeVoidAsync("gradify.focusElement", _modalOverlayRef); } catch { }
+        }
+
+        if (_scrollToEventId.HasValue)
+        {
+            var id = _scrollToEventId.Value;
+            _scrollToEventId = null;
+            await JS.InvokeVoidAsync("gradify.scrollIntoView", $"req-evt-{id}");
+        }
+    }
+
+    // ── Filtered list ─────────────────────────────────────────────────────
+    private IEnumerable<ProjectRequestRowDto> Filtered => _all
+        .Where(r => _kpiFilter switch
+        {
+            "all"        => true,
+            "new"        => r.Status == RequestStatuses.New,
+            "inprogress" => r.Status is RequestStatuses.InProgress
+                                     or RequestStatuses.NeedsInfo
+                                     or RequestStatuses.WaitingForStaff,
+            "resolved"   => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed,
+            _            => r.Status is RequestStatuses.New
+                                     or RequestStatuses.InProgress
+                                     or RequestStatuses.NeedsInfo
+                                     or RequestStatuses.WaitingForStaff,
+        })
+        .Where(r => string.IsNullOrEmpty(_filterType)     || r.RequestType == _filterType)
+        .Where(r => string.IsNullOrEmpty(_filterStatus)   || r.Status      == _filterStatus)
+        .Where(r => string.IsNullOrEmpty(_filterPriority) || r.Priority    == _filterPriority)
+        .Where(r => string.IsNullOrEmpty(_searchQuery)
+                 || r.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                 || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                 || r.ProjectNumber.ToString().Contains(_searchQuery)
+                 || r.CreatedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(r => r.CreatedAt);
+
+    private void SetKpiFilter(string key)
+    {
+        _kpiFilter    = (_kpiFilter == key) ? "active" : key;
+        _filterStatus = "";   // clear dropdown conflict
+    }
+
+    private void ClearAllFilters()
+    {
+        _kpiFilter     = "active";
+        _filterStatus  = "";
+        _filterType    = "";
+        _filterPriority = "";
+        _searchQuery   = "";
+    }
+
+    private string KpiScopeText() => _kpiFilter switch
+    {
+        "all"        => "כל הבקשות",
+        "new"        => "בקשות חדשות בלבד",
+        "inprogress" => "בקשות בטיפול",
+        "resolved"   => "בקשות שטופלו / נסגרו",
+        _            => "בקשות פעילות בלבד",
+    };
+
+    // ── Drawer open / close ───────────────────────────────────────────────
+    private async Task OpenDrawer(ProjectRequestRowDto row)
+    {
+        _handleError = "";
+        var detail   = await RequestsService.GetByIdAsync(row.Id);
+        if (detail is null) return;
+
+        _drawer            = detail;
+        _handleStatus      = detail.Status;
+        _handlePriority    = detail.Priority;
+        _handleAssigneeId  = detail.AssignedToUserId;
+        _handleComment     = "";
+        _handleAttachments.Clear();
+        _handleFileError   = "";
+        _handleError       = "";
+        _showDebug         = false;
+        _justOpenedModal   = true;
+
+        StartPolling();
+    }
+
+    private void CloseDrawer()
+    {
+        StopPolling();
+        _drawer      = null;
+        _handleError = "";
+    }
+
+    private void OnModalKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CloseDrawer();
+    }
+
+    private async Task RefreshDrawer()
+    {
+        if (_drawer is null) return;
+        _refreshing = true;
+        var updated = await RequestsService.GetByIdAsync(_drawer.Id);
+        _refreshing = false;
+        if (updated is null) return;
+
+        ApplyDrawerUpdate(updated);
+    }
+
+    private void CloseAllMenus() { }
+
+    // ── Auto-refresh polling ──────────────────────────────────────────────────
+
+    private void StartPolling()
+    {
+        StopPolling();
+        _pollCts = new CancellationTokenSource();
+        _ = PollLoop(_pollCts.Token);
+    }
+
+    private void StopPolling()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        _pollCts = null;
+    }
+
+    private async Task PollLoop(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(PollIntervalMs, ct);
+                if (ct.IsCancellationRequested || _drawer is null) break;
+
+                var updated = await RequestsService.GetByIdAsync(_drawer.Id);
+                if (ct.IsCancellationRequested || updated is null || _drawer is null) break;
+
+                // Skip re-render when nothing changed
+                if (updated.UpdatedAt == _drawer.UpdatedAt &&
+                    updated.Events.Count == _drawer.Events.Count) continue;
+
+                await InvokeAsync(() =>
+                {
+                    if (_drawer is null) return;
+                    ApplyDrawerUpdate(updated);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) { /* normal cancellation */ }
+    }
+
+    /// <summary>
+    /// Mutates the open drawer's display-only fields in-place so the DOM diff
+    /// is minimal (no scroll reset, no flicker). Form fields are intentionally
+    /// left untouched so the lecturer's in-progress edits are preserved.
+    /// Also detects newly arrived events and schedules their highlight + scroll.
+    /// </summary>
+    private void ApplyDrawerUpdate(ProjectRequestDetailDto updated)
+    {
+        if (_drawer is null) return;
+
+        // Detect events that weren't present before this update
+        var existingIds = _drawer.Events.Select(e => e.Id).ToHashSet();
+        var newEvents   = updated.Events.Where(e => !existingIds.Contains(e.Id)).ToList();
+
+        _drawer.Events           = updated.Events;
+        _drawer.Status           = updated.Status;
+        _drawer.Priority         = updated.Priority;
+        _drawer.UpdatedAt        = updated.UpdatedAt;
+        _drawer.AssignedToName   = updated.AssignedToName;
+        _drawer.AssignedToUserId = updated.AssignedToUserId;
+        _drawer.ResolutionNotes  = updated.ResolutionNotes;
+
+        // Keep list row in sync too (status badge in the table)
+        var listRow = _all.FirstOrDefault(r => r.Id == updated.Id);
+        if (listRow is not null)
+        {
+            listRow.Status         = updated.Status;
+            listRow.Priority       = updated.Priority;
+            listRow.UpdatedAt      = updated.UpdatedAt;
+            listRow.AssignedToName = updated.AssignedToName;
+        }
+
+        if (newEvents.Count == 0) return;
+
+        // Mark newly arrived events for highlight and scroll to the latest one
+        foreach (var e in newEvents)
+            _highlightedEventIds.Add(e.Id);
+
+        _scrollToEventId = newEvents[^1].Id;  // newest new event
+
+        // Remove highlight classes after the CSS animation finishes (2.5 s)
+        var idsToRemove = newEvents.Select(e => e.Id).ToList();
+        _ = ClearHighlightsAsync(idsToRemove);
+    }
+
+    private async Task ClearHighlightsAsync(List<int> ids)
+    {
+        await Task.Delay(2800);
+        await InvokeAsync(() =>
+        {
+            foreach (var id in ids)
+                _highlightedEventIds.Remove(id);
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose() => StopPolling();
+
+    // ── Handle action ─────────────────────────────────────────────────────
+    private async Task SubmitHandle()
+    {
+        if (_drawer is null) return;
+        _handling    = true;
+        _handleError = "";
+
+        var req = new HandleProjectRequestRequest
+        {
+            NewStatus        = _handleStatus,
+            NewPriority      = _handlePriority,
+            AssignedToUserId = _handleAssigneeId,
+            Comment          = string.IsNullOrWhiteSpace(_handleComment) ? null : _handleComment.Trim(),
+            Attachments      = _handleAttachments.Select(a => new RequestAttachmentUploadRequest
+            {
+                OriginalFileName = a.Name,
+                FileBase64       = a.Base64,
+                ContentType      = a.ContentType,
+                SizeBytes        = a.Size,
+            }).ToList(),
+        };
+
+        var error = await RequestsService.HandleAsync(_drawer.Id, req);
+        _handling = false;
+
+        if (error is not null) { _handleError = error.Trim('"', ' '); return; }
+
+        // Sync list row with what we applied before closing
+        var reqId   = _drawer.Id;
+        var listRow = _all.FirstOrDefault(r => r.Id == reqId);
+        if (listRow is not null)
+        {
+            listRow.Status         = _handleStatus;
+            listRow.Priority       = _handlePriority;
+            listRow.UpdatedAt      = DateTime.Now;
+            listRow.AssignedToName = _handleAssigneeId.HasValue
+                ? _assignableUsers.FirstOrDefault(u => u.Id == _handleAssigneeId.Value)?.Name
+                : null;
+        }
+
+        // Auto-close — action is complete, return to the queue
+        CloseDrawer();
+    }
+
+    // ── Handle-form file upload ───────────────────────────────────────────
+    private async Task OnHandleFilesSelected(InputFileChangeEventArgs e)
+    {
+        _handleFileError = "";
+        int remaining = MaxEventAttachments - _handleAttachments.Count;
+        if (remaining <= 0) return;
+
+        foreach (var file in e.GetMultipleFiles(remaining))
+        {
+            string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+            if (ext is not ("jpg" or "jpeg" or "png" or "webp" or "pdf" or "docx"))
+            {
+                _handleFileError = $"הקובץ \"{file.Name}\" אינו סוג נתמך";
+                continue;
+            }
+            if (file.Size > 5 * 1_048_576L)
+            {
+                _handleFileError = $"הקובץ \"{file.Name}\" חורג מהגודל המקסימלי (5 MB)";
+                continue;
+            }
+            try
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: 5 * 1_048_576L);
+                using var ms     = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                _handleAttachments.Add(new PendingAttachment(
+                    Name:        file.Name,
+                    Base64:      Convert.ToBase64String(ms.ToArray()),
+                    ContentType: file.ContentType,
+                    Size:        file.Size));
+            }
+            catch { _handleFileError = $"שגיאה בקריאת הקובץ \"{file.Name}\""; }
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)       return $"{bytes} B";
+        if (bytes < 1_048_576)  return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / 1_048_576.0:F1} MB";
+    }
+
+    // ── Display helpers ───────────────────────────────────────────────────
+    private static string TypeClass(string type) => type switch
+    {
+        RequestTypes.Extension                 => "extension",
+        RequestTypes.SpecialEvent              => "special",
+        RequestTypes.TechnicalSupport          => "tech",
+        RequestTypes.Meeting                   => "meeting",
+        RequestTypes.ClientChallenge           => "client",
+        RequestTypes.ContentChallenge          => "content",
+        RequestTypes.CharacterizationChallenge => "char",
+        _                                      => "default",
+    };
+
+    private static string RoleLabel(string role) => role switch
+    {
+        Roles.Admin  => "מנהל",
+        Roles.Staff  => "מרצה",
+        Roles.Mentor => "מנחה",
+        _            => role,
+    };
+
+    private static string EventClass(ProjectRequestEventDto evt)
+    {
+        if (evt.EventType == RequestEventTypes.Comment)
+            return evt.UserRole == Roles.Student ? "req-thread-student-comment" : "req-thread-comment";
+        return evt.EventType switch
+        {
+            RequestEventTypes.StatusChange   => "req-thread-status",
+            RequestEventTypes.PriorityChange => "req-thread-system",
+            RequestEventTypes.AssigneeChange => "req-thread-system",
+            _                                => "",
+        };
+    }
+
+    private static string AvatarClass(ProjectRequestEventDto evt)
+    {
+        if (evt.EventType == RequestEventTypes.Comment)
+            return evt.UserRole == Roles.Student ? "req-avatar-student" : "req-avatar-staff";
+        return "req-avatar-system";
+    }
+
+    private static string EventIcon(ProjectRequestEventDto evt) => evt.EventType switch
+    {
+        RequestEventTypes.Comment        => "oi-comment-square",
+        RequestEventTypes.StatusChange   => "oi-loop-circular",
+        RequestEventTypes.PriorityChange => "oi-signal",
+        RequestEventTypes.AssigneeChange => "oi-arrow-circle-right",
+        _                                => "oi-info",
+    };
+
+    private static string EventSummary(ProjectRequestEventDto evt) => evt.EventType switch
+    {
+        RequestEventTypes.Comment        => evt.Content ?? "",
+        RequestEventTypes.StatusChange   => $"סטטוס שונה: {evt.OldValue} ← {evt.NewValue}",
+        RequestEventTypes.PriorityChange => $"עדיפות שונתה: {evt.OldValue} ← {evt.NewValue}",
+        RequestEventTypes.AssigneeChange => evt.NewValue is not null
+            ? $"הבקשה הועברה ל{evt.NewValue}"
+            : "שיוך הוסר",
+        _ => "",
+    };
+}

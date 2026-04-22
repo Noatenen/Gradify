@@ -10,6 +10,7 @@ public interface IManagementService
     Task<List<ProjectTypeOptionDto>>  GetProjectTypesAsync();
     Task<bool>                        CreateProjectAsync(CreateProjectRequest request);
     Task<bool>                        UpdateProjectStatusAsync(int id, string status);
+    Task<(bool ok, string? error)>    UpdateProjectAsync(int id, UpdateProjectRequest request);
 
     // ── Academic Years (Cycles) ───────────────────────────────────────────────
     Task<List<AcademicYearDto>?>      GetAcademicYearsAsync();
@@ -19,6 +20,10 @@ public interface IManagementService
     Task<bool>                        ToggleYearActiveAsync(int id);
     Task<bool>                        CloseYearAsync(int id);
     Task<bool>                        ArchiveYearAsync(int id);
+    Task<ApplyTemplatesResultDto?>    ApplyTemplatesAsync(int id);
+
+    // ── Airtable sync ─────────────────────────────────────────────────────────
+    Task<AirtableSyncResultDto?>       SyncAirtableProjectsAsync();
 }
 
 public class ManagementService : IManagementService
@@ -54,6 +59,18 @@ public class ManagementService : IManagementService
             return resp.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    public async Task<(bool ok, string? error)> UpdateProjectAsync(int id, UpdateProjectRequest request)
+    {
+        try
+        {
+            var resp = await _http.PutAsJsonAsync($"api/management/projects/{id}", request);
+            if (resp.IsSuccessStatusCode) return (true, null);
+            var msg = await resp.Content.ReadAsStringAsync();
+            return (false, msg);
+        }
+        catch { return (false, null); }
     }
 
     public async Task<bool> UpdateProjectStatusAsync(int id, string status)
@@ -137,5 +154,27 @@ public class ManagementService : IManagementService
             return resp.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    public async Task<ApplyTemplatesResultDto?> ApplyTemplatesAsync(int id)
+    {
+        try
+        {
+            var resp = await _http.PostAsync($"api/academic-years/{id}/apply-templates", null);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<ApplyTemplatesResultDto>();
+        }
+        catch { return null; }
+    }
+
+    public async Task<AirtableSyncResultDto?> SyncAirtableProjectsAsync()
+    {
+        try
+        {
+            var resp = await _http.PostAsync("api/airtable/sync-projects", null);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<AirtableSyncResultDto>();
+        }
+        catch { return null; }
     }
 }

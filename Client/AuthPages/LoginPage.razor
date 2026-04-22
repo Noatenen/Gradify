@@ -1,7 +1,10 @@
 @using System.ComponentModel.DataAnnotations
 @using Microsoft.AspNetCore.Components.Forms
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
 @layout BlankLayout
 @inject NavigationManager nav
+@inject HttpClient Http
 
 <PageTitle>Gradify — התחברות</PageTitle>
 
@@ -79,12 +82,8 @@
 
     protected override async Task OnInitializedAsync()
     {
-        //אם יש משתמש מחובר כבר - לעבור לדף שלו
         if (user != null)
-        {
-
-            nav.NavigateTo(PageRoutes.Dashboard, forceLoad: true, replace: true);
-        }
+            nav.NavigateTo(await GetRedirectTarget(user), forceLoad: true, replace: true);
     }
 
     async Task login()
@@ -92,20 +91,35 @@
         loading = true;
         message = "";
 
-        //ניסיון התחברות
         bool LoginOK = await _Auth.Login(loginUser);
 
-        //אם הצליח להתחבר - מעבר לדף המשתמש
-        if (LoginOK){
-            nav.NavigateTo(PageRoutes.Dashboard, forceLoad: true, replace: true);
-            StateHasChanged();
+        if (LoginOK)
+        {
+            var loggedInUser = await _Auth.GetUserFromClaimAsync();
+            nav.NavigateTo(await GetRedirectTarget(loggedInUser), forceLoad: true, replace: true);
         }
         else
         {
             message = "שם המשתמש או הסיסמה אינם נכונים";
         }
         loading = false;
+    }
 
+    private async Task<string> GetRedirectTarget(User? u)
+    {
+        if (!RoleService.IsStudent(u))
+            return PageRoutes.Dashboard;
+
+        // Students: check whether they have a team but no project yet
+        try
+        {
+            var dashboard = await Http.GetFromJsonAsync<DashboardDto>("api/projects/my-dashboard");
+            if (dashboard is not null && dashboard.HasTeam && dashboard.Project is null)
+                return PageRoutes.StudentCatalog;
+        }
+        catch { /* fall through to dashboard on any error */ }
+
+        return PageRoutes.Dashboard;
     }
 
 

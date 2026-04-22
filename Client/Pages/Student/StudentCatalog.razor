@@ -1,0 +1,175 @@
+@page "/student/catalog"
+@layout AppLayout
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Microsoft.AspNetCore.Authorization
+@inject HttpClient Http
+@inject NavigationManager Nav
+@attribute [Authorize]
+
+<div class="sc-page">
+
+    <!-- ══ Top bar ══════════════════════════════════════════════════════════ -->
+    <div class="sc-topbar">
+        <div class="sc-topbar-text">
+            <h1 class="sc-page-title">קטלוג פרויקטים</h1>
+            <p class="sc-page-sub">בחרו פרויקט שמעניין אתכן — לאחר הבחירה תגישו טופס שיבוץ</p>
+        </div>
+        <a class="sc-assignment-btn" href="/@PageRoutes.StudentAssignment">
+            <span>לטופס השיבוץ</span>
+            <span class="sc-arrow">←</span>
+        </a>
+    </div>
+
+    <!-- ══ Search / filter bar ══════════════════════════════════════════════ -->
+    <div class="sc-toolbar">
+        <div class="sc-search-wrap">
+            <span class="sc-search-icon">🔍</span>
+            <input class="sc-search-input"
+                   type="text"
+                   placeholder="חיפוש לפי שם, תיאור, סוג…"
+                   @bind="_search"
+                   @bind:event="oninput" />
+        </div>
+        <div class="sc-filter-wrap">
+            <label class="sc-filter-label">סוג:</label>
+            <select class="sc-filter-select" @bind="_typeFilter">
+                <option value="">הכל</option>
+                @foreach (var t in _projectTypes)
+                {
+                    <option value="@t">@t</option>
+                }
+            </select>
+        </div>
+        <div class="sc-count-badge">
+            @_filtered.Count פרויקטים
+        </div>
+    </div>
+
+    <!-- ══ Content ══════════════════════════════════════════════════════════ -->
+    @if (_loading)
+    {
+        <div class="sc-state-box">
+            <div class="sc-spinner"></div>
+            <span>טוענת פרויקטים…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="sc-state-box sc-state-box--error">
+            <span>⚠</span>
+            <span>שגיאה בטעינת הקטלוג. נסי לרענן את הדף.</span>
+        </div>
+    }
+    else if (_filtered.Count == 0)
+    {
+        <div class="sc-state-box">
+            <span class="sc-empty-icon">📂</span>
+            <span>לא נמצאו פרויקטים התואמים את החיפוש</span>
+        </div>
+    }
+    else
+    {
+        <div class="sc-grid">
+            @foreach (var p in _filtered)
+            {
+                <div class="sc-card @(p.Id == _expandedId ? "sc-card--expanded" : "")"
+                     @onclick="() => ToggleExpand(p.Id)">
+
+                    <!-- Card header -->
+                    <div class="sc-card-head">
+                        <div class="sc-card-num">#@p.ProjectNumber</div>
+                        <span class="sc-type-badge">@p.ProjectType</span>
+                        @if (p.Availability == "Taken")
+                        {
+                            <span class="sc-avail-badge sc-avail-badge--taken">תפוס</span>
+                        }
+                        else
+                        {
+                            <span class="sc-avail-badge sc-avail-badge--free">פנוי</span>
+                        }
+                        <span class="sc-expand-icon">@(p.Id == _expandedId ? "▲" : "▼")</span>
+                    </div>
+
+                    <!-- Card title -->
+                    <h3 class="sc-card-title">@p.Title</h3>
+
+                    <!-- Short description (always visible) -->
+                    <p class="sc-card-desc">@Truncate(p.Description, 120)</p>
+
+                    <!-- Expanded detail -->
+                    @if (p.Id == _expandedId)
+                    {
+                        <div class="sc-detail" @onclick:stopPropagation="true">
+                            <div class="sc-detail-section">
+                                <p class="sc-detail-label">תיאור מלא</p>
+                                <p class="sc-detail-value">@p.Description</p>
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(p.Mentors))
+                            {
+                                <div class="sc-detail-section">
+                                    <p class="sc-detail-label">מנחים</p>
+                                    <p class="sc-detail-value">@p.Mentors</p>
+                                </div>
+                            }
+                        </div>
+                    }
+
+                </div>
+            }
+        </div>
+    }
+
+</div>
+
+@code {
+
+    private List<StudentCatalogProjectDto> _projects = new();
+    private bool   _loading   = true;
+    private bool   _loadError = false;
+    private string _search     = "";
+    private string _typeFilter = "";
+    private int?   _expandedId = null;
+
+    private List<string> _projectTypes => _projects
+        .Select(p => p.ProjectType)
+        .Distinct()
+        .OrderBy(t => t)
+        .ToList();
+
+    private List<StudentCatalogProjectDto> _filtered => _projects
+        .Where(p =>
+            (string.IsNullOrWhiteSpace(_search) ||
+             p.Title.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+             p.Description.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+             p.ProjectType.Contains(_search, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(_typeFilter) || p.ProjectType == _typeFilter))
+        .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var result = await Http.GetFromJsonAsync<List<StudentCatalogProjectDto>>("api/student/catalog");
+            _projects = result ?? new();
+        }
+        catch
+        {
+            _loadError = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ToggleExpand(int id)
+    {
+        _expandedId = _expandedId == id ? null : id;
+    }
+
+    private static string Truncate(string text, int max)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= max) return text;
+        return text[..max] + "…";
+    }
+}

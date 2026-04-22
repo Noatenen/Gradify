@@ -41,3 +41,18 @@ public class SaveAcademicYearRequest
     public bool     IsActive  { get; set; }
     public bool     IsCurrent { get; set; }
 }
+
+/// <summary>
+/// Summary returned by POST /api/academic-years/{id}/apply-templates.
+/// Reports how many milestones and tasks were created vs already existed.
+/// </summary>
+public class ApplyTemplatesResultDto
+{
+    public int MilestonesCreated { get; set; }
+    public int MilestonesSkipped { get; set; }
+    public int TasksCreated      { get; set; }
+    public int TasksSkipped      { get; set; }
+
+    /// <summary>Total projects that were processed.</summary>
+    public int ProjectsProcessed { get; set; }
+}

@@ -174,6 +174,8 @@ public class AuthRepository
         if (newUserId == 0) return new AdminResults { Result = AuthResults.CreateUserFailed };
 
         if (!await ApproveUser(newUserId)) return new AdminResults { Result = AuthResults.ChangeRoleFailed };
+
+        newUserForDB.Id = newUserId;
         return new AdminResults { Result = _tokenService.GenerateToken(CreateClaimsIDEmail(newUserId, newUser.Email), 7), User = newUserForDB.MapUserToAdmin() };
     }
 

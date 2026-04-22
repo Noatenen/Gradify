@@ -79,13 +79,22 @@
                             @foreach (var task in group.Tasks)
                             {
                                 bool isPending = !IsCompletedSection && task.MilestoneStatus == "NotStarted";
+                                // A task is overdue when: due date passed, not done/submitted,
+                                // and no valid (non-returned) submission exists.
+                                bool hasValidSubmission = task.LatestSubmissionStatus is not null
+                                    && task.LatestSubmissionStatus != "NeedsRevision";
+                                bool isActionedStatus = task.Status is "Done"
+                                    or "SubmittedToMentor" or "RevisionSubmitted"
+                                    or "ApprovedForSubmission";
                                 bool isOverdue = !IsCompletedSection
                                              && task.DueDate.HasValue
                                              && task.DueDate.Value.Date < DateTime.Today
-                                             && task.Status != "Done";
+                                             && !isActionedStatus
+                                             && !hasValidSubmission;
 
                                 <div class="tma-task-row @(isPending ? "tma-task-pending" : "")"
-                                     title="לחץ לפרטי המשימה">
+                                     title="לחץ לפרטי המשימה"
+                                     @onclick="() => OnOpenDetail.InvokeAsync(task.Id)">
 
                                     <div class="tma-task-icon tma-icon-@TaskIconClass(task.Status, isPending, isOverdue)">
                                         <span class="oi @TaskIcon(task.Status, isPending, isOverdue)"
@@ -131,6 +140,16 @@
                                     @if (!IsCompletedSection)
                                     {
                                         <div class="tma-task-badges">
+                                            @if (task.IsSubmission && !isPending)
+                                            {
+                                                <button class="tma-submit-btn"
+                                                        @onclick:stopPropagation="true"
+                                                        @onclick="@(() => OnOpenSubmission.InvokeAsync(task.Id))"
+                                                        title="פתח הגשה">
+                                                    <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                                    הגש
+                                                </button>
+                                            }
                                             <span class="tma-status-badge tma-badge-@StatusClass(task.Status, isPending, isOverdue)">
                                                 @StatusLabel(task.Status, isPending, isOverdue)
                                             </span>
@@ -164,6 +183,8 @@
     [Parameter]                 public bool                      ShowAddButton       { get; set; }
     [Parameter]                 public int                       ProjectCompletedCount { get; set; }
     [Parameter]                 public int                       ProjectTotalCount   { get; set; }
+    [Parameter] public EventCallback<int> OnOpenSubmission { get; set; }
+    [Parameter] public EventCallback<int> OnOpenDetail     { get; set; }
 
     private readonly HashSet<int> _openGroups = new();
 
@@ -204,33 +225,65 @@
     // ── Task status helpers ───────────────────────────────────────────────────
     private static string StatusClass(string status, bool isPending, bool isOverdue)
     {
-        if (isOverdue)  return "overdue";
-        if (isPending)  return "pending";
-        if (status == "InProgress") return "inprogress";
-        return "open";
+        if (isOverdue) return "overdue";
+        if (isPending) return "pending";
+        return status switch
+        {
+            "InProgress"            => "inprogress",
+            "SubmittedToMentor"     => "submitted",
+            "ReturnedForRevision"   => "returned",
+            "RevisionSubmitted"     => "revision",
+            "ApprovedForSubmission" => "approved",
+            "Done"                  => "done",
+            _                       => "open",
+        };
     }
 
     private static string StatusLabel(string status, bool isPending, bool isOverdue)
     {
-        if (isOverdue)  return "באיחור";
-        if (isPending)  return "ממתין";
-        if (status == "InProgress") return "בתהליך";
-        return "פתוחה";
+        if (isOverdue) return "באיחור";
+        if (isPending) return "ממתין לביצוע";
+        return status switch
+        {
+            "InProgress"            => "בעבודה",
+            "SubmittedToMentor"     => "הועבר לבדיקת מנחה",
+            "ReturnedForRevision"   => "הוחזר לתיקון",
+            "RevisionSubmitted"     => "הועבר לבדיקת מנחה",
+            "ApprovedForSubmission" => "אושר להגשה",
+            "Done"                  => "הושלם",
+            _                       => "ממתין לביצוע",
+        };
     }
 
     private static string TaskIconClass(string status, bool isPending, bool isOverdue)
     {
-        if (isOverdue)  return "overdue";
-        if (isPending)  return "pending";
-        if (status == "InProgress") return "inprogress";
-        return "open";
+        if (isOverdue) return "overdue";
+        if (isPending) return "pending";
+        return status switch
+        {
+            "InProgress"            => "inprogress",
+            "SubmittedToMentor"     => "submitted",
+            "ReturnedForRevision"   => "returned",
+            "RevisionSubmitted"     => "revision",
+            "ApprovedForSubmission" => "approved",
+            "Done"                  => "completed",
+            _                       => "open",
+        };
     }
 
     private static string TaskIcon(string status, bool isPending, bool isOverdue)
     {
-        if (isOverdue)  return "oi-warning";
-        if (isPending)  return "oi-clock";
-        if (status == "InProgress") return "oi-reload";
-        return "oi-media-record";
+        if (isOverdue) return "oi-warning";
+        if (isPending) return "oi-clock";
+        return status switch
+        {
+            "InProgress"            => "oi-reload",
+            "SubmittedToMentor"     => "oi-data-transfer-upload",
+            "ReturnedForRevision"   => "oi-arrow-circle-left",
+            "RevisionSubmitted"     => "oi-loop-circular",
+            "ApprovedForSubmission" => "oi-circle-check",
+            "Done"                  => "oi-circle-check",
+            _                       => "oi-media-record",
+        };
     }
 }

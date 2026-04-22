@@ -82,9 +82,23 @@ public class TaskItemDto
     /// <summary>ClosedAt from DB — when the task was marked done.</summary>
     public DateTime? CompletedAt     { get; set; }
     public string    AssignedToName  { get; set; } = "";
+    /// <summary>True when this task requires a file submission.</summary>
+    public bool      IsSubmission    { get; set; }
     /// <summary>
     /// Parent milestone status, embedded so the UI can determine whether
     /// this task is "pending" (NotStarted milestone) without extra lookups.
     /// </summary>
     public string    MilestoneStatus { get; set; } = "";
+
+    // ── Latest submission state (populated only when IsSubmission = true) ────
+    /// <summary>
+    /// Reviewer (admin/staff) decision on the latest submission.
+    /// "Submitted" | "Reviewed" | "NeedsRevision" — null if never submitted.
+    /// </summary>
+    public string?   LatestSubmissionStatus { get; set; }
+    /// <summary>
+    /// Mentor decision on the latest submission.
+    /// "Pending" | "Approved" | "Returned" — null if never submitted.
+    /// </summary>
+    public string?   LatestMentorStatus     { get; set; }
 }

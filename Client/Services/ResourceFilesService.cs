@@ -5,11 +5,16 @@ namespace AuthWithAdmin.Client.Services;
 
 public interface IResourceFilesService
 {
-    Task<List<ResourceFileDto>?>     GetAllAsync();
-    Task<List<MilestoneOptionDto>>   GetMilestonesAsync();
-    Task<List<TaskOptionDto>>        GetTasksForMilestoneAsync(int milestoneId);
-    Task<bool>                       UploadAsync(UploadResourceFileRequest request);
-    Task<bool>                       DeleteAsync(int id);
+    /// <summary>Admin/Staff — full list including all metadata.</summary>
+    Task<List<ResourceFileDto>?>   GetAllAsync();
+    /// <summary>All authenticated users — same data, student-accessible endpoint.</summary>
+    Task<List<ResourceFileDto>?>   GetPublicAsync();
+    Task<List<MilestoneOptionDto>> GetMilestonesAsync();
+    Task<List<TaskOptionDto>>      GetTasksForMilestoneAsync(int milestoneId);
+    /// <summary>Returns null on success, or the server error message on failure.</summary>
+    Task<string?>                  UploadAsync(UploadResourceFileRequest request);
+    Task<bool>                     UpdateAsync(int id, UpdateResourceFileRequest request);
+    Task<bool>                     DeleteAsync(int id);
 }
 
 public class ResourceFilesService : IResourceFilesService
@@ -20,50 +25,49 @@ public class ResourceFilesService : IResourceFilesService
 
     public async Task<List<ResourceFileDto>?> GetAllAsync()
     {
-        try
-        {
-            return await _http.GetFromJsonAsync<List<ResourceFileDto>>("api/resourcefiles");
-        }
+        try   { return await _http.GetFromJsonAsync<List<ResourceFileDto>>("api/resourcefiles"); }
+        catch { return null; }
+    }
+
+    public async Task<List<ResourceFileDto>?> GetPublicAsync()
+    {
+        try   { return await _http.GetFromJsonAsync<List<ResourceFileDto>>("api/student/resources"); }
         catch { return null; }
     }
 
     public async Task<List<MilestoneOptionDto>> GetMilestonesAsync()
     {
-        try
-        {
-            return await _http.GetFromJsonAsync<List<MilestoneOptionDto>>("api/resourcefiles/milestones")
-                   ?? new List<MilestoneOptionDto>();
-        }
-        catch { return new List<MilestoneOptionDto>(); }
+        try   { return await _http.GetFromJsonAsync<List<MilestoneOptionDto>>("api/resourcefiles/milestones") ?? new(); }
+        catch { return new(); }
     }
 
     public async Task<List<TaskOptionDto>> GetTasksForMilestoneAsync(int milestoneId)
     {
-        try
-        {
-            return await _http.GetFromJsonAsync<List<TaskOptionDto>>($"api/resourcefiles/tasks/{milestoneId}")
-                   ?? new List<TaskOptionDto>();
-        }
-        catch { return new List<TaskOptionDto>(); }
+        try   { return await _http.GetFromJsonAsync<List<TaskOptionDto>>($"api/resourcefiles/tasks/{milestoneId}") ?? new(); }
+        catch { return new(); }
     }
 
-    public async Task<bool> UploadAsync(UploadResourceFileRequest request)
+    public async Task<string?> UploadAsync(UploadResourceFileRequest request)
     {
         try
         {
             var resp = await _http.PostAsJsonAsync("api/resourcefiles", request);
-            return resp.IsSuccessStatusCode;
+            if (resp.IsSuccessStatusCode) return null;
+            var body = await resp.Content.ReadAsStringAsync();
+            return string.IsNullOrWhiteSpace(body) ? $"שגיאת שרת ({(int)resp.StatusCode})" : body;
         }
+        catch (Exception ex) { return ex.Message; }
+    }
+
+    public async Task<bool> UpdateAsync(int id, UpdateResourceFileRequest request)
+    {
+        try   { return (await _http.PutAsJsonAsync($"api/resourcefiles/{id}", request)).IsSuccessStatusCode; }
         catch { return false; }
     }
 
     public async Task<bool> DeleteAsync(int id)
     {
-        try
-        {
-            var resp = await _http.DeleteAsync($"api/resourcefiles/{id}");
-            return resp.IsSuccessStatusCode;
-        }
+        try   { return (await _http.DeleteAsync($"api/resourcefiles/{id}")).IsSuccessStatusCode; }
         catch { return false; }
     }
 }

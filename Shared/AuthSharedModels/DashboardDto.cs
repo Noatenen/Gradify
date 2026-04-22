@@ -13,6 +13,8 @@ namespace AuthWithAdmin.Shared.AuthSharedModels;
 /// <summary>Complete dashboard payload. Project is null when the user has no team/project yet.</summary>
 public class DashboardDto
 {
+    /// <summary>True when the user is in at least one active team, even if the team has no project yet.</summary>
+    public bool                     HasTeam      { get; set; }
     public ProjectInfoDto?          Project      { get; set; }
     public List<TeamMemberDto>      TeamMembers  { get; set; } = new();
     public List<ContactDto>         Mentors      { get; set; } = new();
@@ -91,6 +93,7 @@ public class TaskSummaryDto
 /// <summary>Derived server-side: the nearest incomplete milestone's deadline.</summary>
 public class UpcomingDeadlineDto
 {
+    public int?     TaskId  { get; set; }   // set when the nearest deadline is a specific submission task
     public string   Title   { get; set; } = "";
     public DateTime DueDate { get; set; }
 }

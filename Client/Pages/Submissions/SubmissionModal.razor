@@ -1,0 +1,416 @@
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Microsoft.AspNetCore.Components.Forms
+@inject ITaskSubmissionsService SubmissionsService
+
+@if (TaskId > 0)
+{
+    <div class="smo-overlay" @onclick="TryClose">
+        <div class="smo-box" @onclick:stopPropagation="true">
+
+            @if (_phase == Phase.Loading)
+            {
+                <div class="smo-loading">
+                    <div class="smo-spinner"></div>
+                    <span>טוענת פרטי משימה…</span>
+                </div>
+            }
+            else if (_phase == Phase.LoadError)
+            {
+                <div class="smo-load-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    <p>אירעה שגיאה בטעינת פרטי המשימה</p>
+                    <button class="smo-ghost-btn" @onclick="Close">סגירה</button>
+                </div>
+            }
+            else
+            {
+                <!-- ── Header ── -->
+                <div class="smo-header">
+                    <div class="smo-header-start">
+                        <div class="smo-task-icon">
+                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                        </div>
+                        <div>
+                            <p class="smo-milestone-label">@_task!.MilestoneTitle</p>
+                            <h2 class="smo-title">@_task.TaskTitle</h2>
+                        </div>
+                    </div>
+                    <button class="smo-close-btn" @onclick="Close" title="סגירה">
+                        <span class="oi oi-x" aria-hidden="true"></span>
+                    </button>
+                </div>
+
+                <!-- ── Meta row (due date + status) ── -->
+                <div class="smo-meta-row">
+                    @if (_task.DueDate.HasValue)
+                    {
+                        bool isOverdue = _task.DueDate.Value.Date < DateTime.Today
+                                      && _task.LatestSubmissionStatus is null or "NeedsRevision";
+                        <span class="smo-due @(isOverdue ? "smo-due-overdue" : "")">
+                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                            מועד הגשה: <strong>@_task.DueDate.Value.ToString("dd/MM/yyyy")</strong>
+                            @if (isOverdue) { <span class="smo-overdue-label">(באיחור)</span> }
+                        </span>
+                    }
+                    @if (_task.LatestSubmissionStatus is not null)
+                    {
+                        <span class="smo-submission-badge smo-badge-@_task.LatestSubmissionStatus.ToLower()">
+                            @SubmissionStatusLabel(_task.LatestSubmissionStatus)
+                        </span>
+                    }
+                </div>
+
+                <!-- ── Description ── -->
+                @if (!string.IsNullOrWhiteSpace(_task.Description))
+                {
+                    <p class="smo-description">@_task.Description</p>
+                }
+
+                <!-- ── Submission instructions ── -->
+                @if (!string.IsNullOrWhiteSpace(_task.SubmissionInstructions))
+                {
+                    <div class="smo-instructions">
+                        <div class="smo-instructions-title">
+                            <span class="oi oi-info" aria-hidden="true"></span>
+                            הוראות הגשה
+                        </div>
+                        <p class="smo-instructions-body">@_task.SubmissionInstructions</p>
+                    </div>
+                }
+
+                <!-- ── Upload policy ── -->
+                <div class="smo-policy-row">
+                    @if (_task.MaxFilesCount.HasValue)
+                    {
+                        <span class="smo-policy-item">
+                            <span class="oi oi-file" aria-hidden="true"></span>
+                            עד @_task.MaxFilesCount קבצים
+                        </span>
+                    }
+                    @if (_task.MaxFileSizeMb.HasValue)
+                    {
+                        <span class="smo-policy-item">
+                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                            עד @_task.MaxFileSizeMb MB לקובץ
+                        </span>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_task.AllowedFileTypes))
+                    {
+                        <span class="smo-policy-item">
+                            <span class="oi oi-check" aria-hidden="true"></span>
+                            סוגים: @_task.AllowedFileTypes
+                        </span>
+                    }
+                </div>
+
+                <!-- ── Existing submission banner ── -->
+                @if (_task.LatestSubmissionId.HasValue)
+                {
+                    <div class="smo-prev-submission">
+                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                        <span>
+                            הגשה אחרונה: @(_task.LatestSubmittedAt?.ToString("dd/MM/yyyy HH:mm") ?? "")
+                            (@_task.SubmissionCount הגשות בסה"כ)
+                        </span>
+                    </div>
+                }
+
+                <!-- ── Upload form (hidden while submitting or after success) ── -->
+                @if (_phase != Phase.Success)
+                {
+                    <!-- Notes -->
+                    <div class="smo-field">
+                        <label class="smo-label">הערות (אופציונלי)</label>
+                        <textarea class="smo-textarea" @bind="_notes" rows="2"
+                                  placeholder="הוסף/י הערות להגשה…" disabled="@(_phase == Phase.Submitting)"></textarea>
+                    </div>
+
+                    <!-- File picker -->
+                    <div class="smo-field">
+                        <label class="smo-label">
+                            קבצים להגשה <span class="smo-required">*</span>
+                            @if (_task.MaxFilesCount.HasValue)
+                            {
+                                <span class="smo-label-hint">(עד @_task.MaxFilesCount)</span>
+                            }
+                        </label>
+                        <div class="smo-file-drop @(_selectedFiles.Count > 0 ? "smo-file-drop-filled" : "")">
+                            <InputFile OnChange="HandleFilesSelected"
+                                       multiple
+                                       accept="@BuildAcceptAttr()"
+                                       disabled="@(_phase == Phase.Submitting)"
+                                       class="smo-file-input" />
+                            <div class="smo-file-drop-inner">
+                                <span class="oi oi-cloud-upload smo-upload-icon" aria-hidden="true"></span>
+                                <span class="smo-drop-label">לחץ/י לבחירת קבצים</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Selected files list -->
+                    @if (_selectedFiles.Count > 0)
+                    {
+                        <div class="smo-files-list">
+                            @foreach (var f in _selectedFiles)
+                            {
+                                <div class="smo-file-row @(f.ValidationError is not null ? "smo-file-invalid" : "")">
+                                    <span class="oi oi-file smo-file-icon" aria-hidden="true"></span>
+                                    <div class="smo-file-info">
+                                        <span class="smo-file-name">@f.OriginalFileName</span>
+                                        <span class="smo-file-size">@FormatSize(f.SizeBytes)</span>
+                                        @if (f.ValidationError is not null)
+                                        {
+                                            <span class="smo-file-error">@f.ValidationError</span>
+                                        }
+                                    </div>
+                                    @if (_phase != Phase.Submitting)
+                                    {
+                                        <button class="smo-file-remove" @onclick="@(() => RemoveFile(f))"
+                                                title="הסרה">
+                                            <span class="oi oi-x" aria-hidden="true"></span>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    <!-- Validation / submit error -->
+                    @if (!string.IsNullOrEmpty(_submitError))
+                    {
+                        <div class="smo-error-msg">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            @_submitError
+                        </div>
+                    }
+
+                    <!-- Submit / cancel actions -->
+                    <div class="smo-actions">
+                        <button class="smo-ghost-btn" @onclick="Close" disabled="@(_phase == Phase.Submitting)">
+                            ביטול
+                        </button>
+                        <button class="smo-submit-btn"
+                                @onclick="Submit"
+                                disabled="@(_phase == Phase.Submitting || _selectedFiles.Count == 0 || HasValidationErrors)">
+                            @if (_phase == Phase.Submitting)
+                            {
+                                <span class="smo-spinner-sm"></span>
+                                <span>שולח…</span>
+                            }
+                            else
+                            {
+                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                <span>הגשה</span>
+                            }
+                        </button>
+                    </div>
+                }
+                else
+                {
+                    <!-- Success state -->
+                    <div class="smo-success">
+                        <div class="smo-success-icon">
+                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                        </div>
+                        <h3 class="smo-success-title">ההגשה נשלחה בהצלחה!</h3>
+                        <p class="smo-success-body">הגשתך נקלטה במערכת.</p>
+                        <button class="smo-submit-btn" @onclick="Close">סגירה</button>
+                    </div>
+                }
+
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int             TaskId   { get; set; }
+    [Parameter] public EventCallback   OnClose  { get; set; }
+
+    private enum Phase { Loading, LoadError, View, Submitting, Success }
+
+    private Phase                      _phase         = Phase.Loading;
+    private StudentSubmissionTaskDto?  _task;
+    private string                     _notes         = "";
+    private List<SelectedFile>         _selectedFiles = new();
+    private string                     _submitError   = "";
+
+    private bool HasValidationErrors =>
+        _selectedFiles.Any(f => f.ValidationError is not null);
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (TaskId <= 0) return;
+
+        _phase         = Phase.Loading;
+        _notes         = "";
+        _selectedFiles = new();
+        _submitError   = "";
+
+        _task = await SubmissionsService.GetSubmissionTaskAsync(TaskId);
+        _phase = _task is null ? Phase.LoadError : Phase.View;
+    }
+
+    // ── File selection ─────────────────────────────────────────────────────────
+
+    private async Task HandleFilesSelected(InputFileChangeEventArgs e)
+    {
+        _submitError   = "";
+        _selectedFiles = new();
+
+        int maxCount = _task?.MaxFilesCount ?? 20;
+        var files    = e.GetMultipleFiles(maxCount + 5); // read a few extra to detect over-limit
+
+        foreach (var file in files)
+        {
+            string? validationError = null;
+
+            // Size check
+            long maxBytes = _task?.MaxFileSizeMb is int mb ? (long)mb * 1_048_576 : long.MaxValue;
+            if (file.Size > maxBytes)
+                validationError = $"גדול מ-{_task!.MaxFileSizeMb} MB";
+
+            // Extension check
+            if (validationError is null && !string.IsNullOrWhiteSpace(_task?.AllowedFileTypes))
+            {
+                var allowed = _task.AllowedFileTypes
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => x.Trim().TrimStart('.').ToLowerInvariant())
+                    .ToHashSet();
+                string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+                if (!allowed.Contains(ext))
+                    validationError = $"סוג קובץ לא מורשה (.{ext})";
+            }
+
+            // Read to base64 only when valid (skip huge invalid files)
+            string base64 = "";
+            if (validationError is null)
+            {
+                try
+                {
+                    using var ms = new MemoryStream();
+                    await file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024).CopyToAsync(ms);
+                    base64 = Convert.ToBase64String(ms.ToArray());
+                }
+                catch
+                {
+                    validationError = "שגיאה בקריאת הקובץ";
+                }
+            }
+
+            _selectedFiles.Add(new SelectedFile
+            {
+                OriginalFileName = file.Name,
+                ContentType      = file.ContentType,
+                SizeBytes        = file.Size,
+                Base64           = base64,
+                ValidationError  = validationError,
+            });
+        }
+
+        // File count check
+        if (_task?.MaxFilesCount is int max && _selectedFiles.Count > max)
+            _submitError = $"ניתן לצרף עד {max} קבצים בלבד";
+    }
+
+    private void RemoveFile(SelectedFile file) => _selectedFiles.Remove(file);
+
+    // ── Submit ─────────────────────────────────────────────────────────────────
+
+    private async Task Submit()
+    {
+        _submitError = "";
+
+        if (_selectedFiles.Count == 0)
+        {
+            _submitError = "יש לבחור לפחות קובץ אחד";
+            return;
+        }
+        if (HasValidationErrors)
+        {
+            _submitError = "תקן/י שגיאות בקבצים לפני ההגשה";
+            return;
+        }
+        if (_task?.MaxFilesCount is int max && _selectedFiles.Count > max)
+        {
+            _submitError = $"ניתן לצרף עד {max} קבצים בלבד";
+            return;
+        }
+
+        _phase = Phase.Submitting;
+
+        var req = new CreateSubmissionRequest
+        {
+            TaskId = TaskId,
+            Notes  = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
+            Files  = _selectedFiles.Select(f => new SubmissionFileRequest
+            {
+                OriginalFileName = f.OriginalFileName,
+                FileBase64       = f.Base64,
+                ContentType      = f.ContentType,
+                SizeBytes        = f.SizeBytes,
+            }).ToList(),
+        };
+
+        int? newId = await SubmissionsService.CreateSubmissionAsync(req);
+
+        if (newId is null)
+        {
+            _submitError = "שגיאה בשליחת ההגשה. נסה/י שנית.";
+            _phase       = Phase.View;
+        }
+        else
+        {
+            _phase = Phase.Success;
+        }
+    }
+
+    // ── Close ──────────────────────────────────────────────────────────────────
+
+    private async Task Close() => await OnClose.InvokeAsync();
+
+    private async Task TryClose()
+    {
+        if (_phase != Phase.Submitting)
+            await Close();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private string BuildAcceptAttr()
+    {
+        if (string.IsNullOrWhiteSpace(_task?.AllowedFileTypes)) return "";
+        return string.Join(",", _task.AllowedFileTypes
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => $".{e.Trim().TrimStart('.')}"));
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)         return $"{bytes} B";
+        if (bytes < 1_048_576)    return $"{bytes / 1024} KB";
+        return $"{bytes / 1_048_576.0:F1} MB";
+    }
+
+    private static string SubmissionStatusLabel(string status) => status switch
+    {
+        "Submitted"      => "הוגש",
+        "Reviewed"       => "נבדק",
+        "NeedsRevision"  => "דורש תיקון",
+        _                => status,
+    };
+
+    // ── Private models ─────────────────────────────────────────────────────────
+
+    private sealed class SelectedFile
+    {
+        public string  OriginalFileName { get; set; } = "";
+        public string  ContentType      { get; set; } = "";
+        public long    SizeBytes        { get; set; }
+        public string  Base64           { get; set; } = "";
+        public string? ValidationError  { get; set; }
+    }
+}

@@ -41,40 +41,198 @@ else
             </div>
         </div>
 
-        <!-- ── Summary cards ── -->
+        <!-- ── Summary cards (clickable — act as filters) ── -->
         <TaskSummaryCards ActiveCount="@_data.ActiveCount"
                           PendingCount="@_data.PendingCount"
-                          CompletedCount="@_data.CompletedCount" />
+                          CompletedCount="@_data.CompletedCount"
+                          ActiveFilter="@_summaryFilter"
+                          OnFilterChange="OnSummaryFilterChanged" />
+
+        <!-- ── Filter bar: status chip filter + reset ── -->
+        <div class="tsk-filter-bar">
+            <!-- Status chips -->
+            <div class="tsk-filter-chips">
+                <span class="tsk-filter-label">
+                    <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
+                    סנן לפי סטטוס:
+                </span>
+                @foreach (var (val, label, color) in StatusFilterOptions)
+                {
+                    <button class="tsk-chip @(val == _statusFilter ? "tsk-chip-active" : "") tsk-chip-@color"
+                            @onclick="() => OnStatusChipClicked(val)">
+                        @label
+                    </button>
+                }
+            </div>
+            <!-- Reset link — only visible when any filter is active -->
+            @if (!string.IsNullOrEmpty(_summaryFilter) || !string.IsNullOrEmpty(_statusFilter))
+            {
+                <button class="tsk-filter-reset" @onclick="ClearAllFilters">
+                    <span class="oi oi-reload" aria-hidden="true"></span>
+                    נקה סינון
+                </button>
+            }
+        </div>
 
         <!-- ── Active tasks accordion ── -->
-        <TaskMilestoneAccordion SectionTitle="משימות פעילות"
-                                Groups="@_data.ActiveGroups"
-                                IsCompletedSection="false"
-                                ShowAddButton="true"
-                                EmptyMessage="אין משימות פעילות או בהמתנה בפרויקט זה" />
+        @if (_summaryFilter != "completed")
+        {
+            <TaskMilestoneAccordion SectionTitle="@ActiveSectionTitle"
+                                    Groups="@FilteredActiveGroups"
+                                    IsCompletedSection="false"
+                                    ShowAddButton="true"
+                                    EmptyMessage="@(HasAnyFilter ? "אין משימות התואמות לסינון שנבחר" : "אין משימות פעילות או בהמתנה בפרויקט זה")"
+                                    OnOpenSubmission="OpenSubmission"
+                                    OnOpenDetail="OpenDetail" />
+        }
 
         <!-- ── Completed tasks accordion ── -->
-        <TaskMilestoneAccordion SectionTitle="משימות שהושלמו"
-                                Groups="@_data.CompletedGroups"
-                                IsCompletedSection="true"
-                                ProjectCompletedCount="@_data.CompletedCount"
-                                ProjectTotalCount="@(_data.ActiveCount + _data.PendingCount + _data.CompletedCount)"
-                                EmptyMessage="עדיין לא הושלמו משימות בפרויקט זה" />
+        @if (_summaryFilter != "active" && _summaryFilter != "pending")
+        {
+            <TaskMilestoneAccordion SectionTitle="משימות שהושלמו"
+                                    Groups="@FilteredCompletedGroups"
+                                    IsCompletedSection="true"
+                                    ProjectCompletedCount="@_data.CompletedCount"
+                                    ProjectTotalCount="@(_data.ActiveCount + _data.PendingCount + _data.CompletedCount)"
+                                    EmptyMessage="@(HasAnyFilter ? "אין משימות שהושלמו התואמות לסינון" : "עדיין לא הושלמו משימות בפרויקט זה")"
+                                    OnOpenDetail="OpenDetail" />
+        }
 
     </div>
 }
+
+<!-- ── Task detail modal (hosted at page level so it renders above everything) ── -->
+<TaskDetailModal TaskId="@_detailTaskId"
+                 OnClose="CloseDetail"
+                 OnOpenSubmission="OpenSubmissionFromDetail" />
+
+<!-- ── Submission modal ── -->
+<SubmissionModal TaskId="@_submissionTaskId" OnClose="CloseSubmission" />
 
 @code {
     [CascadingParameter] private User? _user { get; set; }
 
     private TasksPageDto? _data;
-    private bool _isLoading = true;
-    private bool _loadError = false;
+    private bool _isLoading      = true;
+    private bool _loadError       = false;
 
+    private int  _submissionTaskId = 0;
+    private int  _detailTaskId     = 0;
+
+    // ── Filter state ──────────────────────────────────────────────────────────
+    // _summaryFilter: "" | "active" | "pending" | "completed"
+    // _statusFilter:  "" | specific status string e.g. "InProgress"
+    private string _summaryFilter = "";
+    private string _statusFilter  = "";
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
         _data      = await TasksService.GetTasksAsync();
         _loadError = _data is null;
         _isLoading = false;
     }
+
+    // ── Submission handlers ───────────────────────────────────────────────────
+    private void OpenSubmission(int taskId)  => _submissionTaskId = taskId;
+    private void CloseSubmission()           => _submissionTaskId = 0;
+
+    // ── Detail modal handlers ─────────────────────────────────────────────────
+    private void OpenDetail(int taskId)      => _detailTaskId = taskId;
+    private void CloseDetail()               => _detailTaskId = 0;
+
+    private void OpenSubmissionFromDetail(int taskId)
+    {
+        _detailTaskId     = 0;
+        _submissionTaskId = taskId;
+    }
+
+    // ── Filter handlers ───────────────────────────────────────────────────────
+    private void OnSummaryFilterChanged(string filter)
+    {
+        _summaryFilter = filter;
+        // Clear incompatible status filter if switching to completed
+        if (filter == "completed") _statusFilter = "";
+    }
+
+    private void OnStatusChipClicked(string status)
+    {
+        // Toggle: clicking the active chip deactivates it
+        _statusFilter = _statusFilter == status ? "" : status;
+    }
+
+    private void ClearAllFilters()
+    {
+        _summaryFilter = "";
+        _statusFilter  = "";
+    }
+
+    // ── Computed properties ───────────────────────────────────────────────────
+    private bool HasAnyFilter =>
+        !string.IsNullOrEmpty(_summaryFilter) || !string.IsNullOrEmpty(_statusFilter);
+
+    private string ActiveSectionTitle => _summaryFilter switch
+    {
+        "active"  => "משימות פעילות",
+        "pending" => "משימות בהמתנה",
+        _         => "משימות פעילות ובהמתנה",
+    };
+
+    private List<TaskMilestoneGroupDto> FilteredActiveGroups
+    {
+        get
+        {
+            if (_data is null) return new();
+
+            // Apply summary (milestone-level) filter
+            var groups = _summaryFilter switch
+            {
+                "active"  => _data.ActiveGroups.Where(g => g.MilestoneStatus is "InProgress" or "Delayed").ToList(),
+                "pending" => _data.ActiveGroups.Where(g => g.MilestoneStatus == "NotStarted").ToList(),
+                _         => _data.ActiveGroups,
+            };
+
+            return ApplyStatusFilter(groups);
+        }
+    }
+
+    private List<TaskMilestoneGroupDto> FilteredCompletedGroups
+    {
+        get
+        {
+            if (_data is null) return new();
+            return ApplyStatusFilter(_data.CompletedGroups);
+        }
+    }
+
+    private List<TaskMilestoneGroupDto> ApplyStatusFilter(List<TaskMilestoneGroupDto> groups)
+    {
+        if (string.IsNullOrEmpty(_statusFilter)) return groups;
+
+        return groups
+            .Select(g => new TaskMilestoneGroupDto
+            {
+                ProjectMilestoneId = g.ProjectMilestoneId,
+                MilestoneTitle     = g.MilestoneTitle,
+                OrderIndex         = g.OrderIndex,
+                MilestoneStatus    = g.MilestoneStatus,
+                DueDate            = g.DueDate,
+                DoneCount          = g.DoneCount,
+                TotalCount         = g.TotalCount,
+                Tasks              = g.Tasks.Where(t => t.Status == _statusFilter).ToList(),
+            })
+            .Where(g => g.Tasks.Count > 0)
+            .ToList();
+    }
+
+    // Status filter chip definitions: (value, label, color-suffix)
+    private static readonly (string Value, string Label, string Color)[] StatusFilterOptions =
+    {
+        ("Open",                "ממתין לביצוע",        "gray"),
+        ("InProgress",          "בעבודה",              "blue"),
+        ("SubmittedToMentor",   "הועבר לבדיקת מנחה",   "indigo"),
+        ("ReturnedForRevision", "הוחזר לתיקון",        "orange"),
+        ("ApprovedForSubmission","אושר להגשה",          "teal"),
+        ("Done",                "הושלם",               "green"),
+    };
 }

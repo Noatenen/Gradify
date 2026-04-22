@@ -1,0 +1,354 @@
+@page "/files"
+@layout AppLayout
+@using AuthWithAdmin.Client.Services
+@attribute [Authorize]
+@inject IResourceFilesService ResourceFilesService
+
+@if (_isLoading)
+{
+    <div class="sfp-loading">
+        <div class="sfp-spinner"></div>
+        <span>טוענת חומרי עזר…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="sfp-state-msg sfp-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת חומרי העזר. נסה לרענן את הדף.</p>
+    </div>
+}
+else
+{
+    <div class="sfp-page">
+
+        <!-- ── Page header ── -->
+        <div class="sfp-header-card">
+            <div class="sfp-header-start">
+                <div class="sfp-page-icon">
+                    <span class="oi oi-folder" aria-hidden="true"></span>
+                </div>
+                <div>
+                    <h1 class="sfp-page-title">קבצים וחומרי עזר</h1>
+                    <p class="sfp-page-subtitle">מסמכים, סרטונים וחומרי לימוד שהועמדו לרשותך</p>
+                </div>
+            </div>
+        </div>
+
+        @if (_files.Count == 0)
+        {
+            <div class="sfp-empty">
+                <span class="oi oi-folder" aria-hidden="true"></span>
+                <p>לא הועלו חומרי עזר עדיין.</p>
+            </div>
+        }
+        else
+        {
+            <!-- ── Videos accordion ── -->
+            @if (_videos.Count > 0)
+            {
+                bool videosOpen = _openGroups.Contains("videos");
+                <div class="sfp-accordion @(videosOpen ? "sfp-accordion--open" : "")">
+                    <button class="sfp-accordion-head" @onclick='() => ToggleGroup("videos")'>
+                        <span class="sfp-accordion-chevron oi @(videosOpen ? "oi-chevron-bottom" : "oi-chevron-left")" aria-hidden="true"></span>
+                        <span class="sfp-folder-icon oi oi-video" aria-hidden="true"></span>
+                        <span class="sfp-accordion-title">סרטונים</span>
+                        <span class="sfp-accordion-count">@_videos.Count סרטונים</span>
+                    </button>
+
+                    @if (videosOpen)
+                    {
+                        <div class="sfp-accordion-body sfp-videos-body">
+                            @foreach (var video in _videos)
+                            {
+                                <div class="sfp-video-card">
+                                    <div class="sfp-video-card-left">
+                                        @{ string? thumb = GetThumbnailUrl(video.VideoUrl); }
+                                        <div class="sfp-video-thumb-wrap">
+                                            @if (thumb is not null)
+                                            {
+                                                <img class="sfp-video-thumb-img"
+                                                     src="@thumb"
+                                                     alt="@video.FileName"
+                                                     loading="lazy" />
+                                                <div class="sfp-video-thumb-overlay">
+                                                    <span class="oi oi-media-play sfp-video-thumb-play" aria-hidden="true"></span>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <span class="oi oi-media-play sfp-video-thumb-icon" aria-hidden="true"></span>
+                                            }
+                                        </div>
+                                    </div>
+                                    <div class="sfp-video-card-body">
+                                        <div class="sfp-video-title-row">
+                                            <span class="sfp-video-title">@video.FileName</span>
+                                            @if (!string.IsNullOrWhiteSpace(video.MilestoneName))
+                                            {
+                                                <span class="sfp-ms-badge">@video.MilestoneName</span>
+                                            }
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(video.Description))
+                                        {
+                                            <p class="sfp-video-desc">@video.Description</p>
+                                        }
+                                        <div class="sfp-video-actions">
+                                            <button class="sfp-watch-btn"
+                                                    @onclick="() => OpenVideoModal(video.VideoUrl, video.FileName)">
+                                                <span class="oi oi-media-play" aria-hidden="true"></span>
+                                                צפייה בסרטון
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            <!-- ── Milestone-grouped file accordions ── -->
+            <!-- GetFileGroups() derives groups directly from the file DTOs,
+                 which already carry MilestoneName — no separate milestone fetch needed. -->
+            @foreach (var group in GetFileGroups())
+            {
+                string groupKey = "ms-" + group.Key;
+                bool   isOpen   = _openGroups.Contains(groupKey);
+                string title    = GroupTitle(group.Key, group.Value);
+                <div class="sfp-accordion @(isOpen ? "sfp-accordion--open" : "")">
+                    <button class="sfp-accordion-head" @onclick="() => ToggleGroup(groupKey)">
+                        <span class="sfp-accordion-chevron oi @(isOpen ? "oi-chevron-bottom" : "oi-chevron-left")" aria-hidden="true"></span>
+                        <span class="sfp-folder-icon oi oi-folder" aria-hidden="true"></span>
+                        <span class="sfp-accordion-title">@title</span>
+                        <span class="sfp-accordion-count">@group.Value.Count קבצים</span>
+                    </button>
+
+                    @if (isOpen)
+                    {
+                        <div class="sfp-accordion-body">
+                            @foreach (var file in group.Value)
+                            {
+                                <div class="sfp-file-card">
+                                    <div class="sfp-file-icon-wrap sfp-file-icon-@FileIconClass(file.ContentType)">
+                                        <span class="oi @FileIcon(file.ContentType)" aria-hidden="true"></span>
+                                    </div>
+                                    <div class="sfp-file-info">
+                                        <span class="sfp-file-name">@file.FileName</span>
+                                        @if (!string.IsNullOrWhiteSpace(file.Description))
+                                        {
+                                            <span class="sfp-file-desc">@file.Description</span>
+                                        }
+                                        <div class="sfp-file-meta">
+                                            @if (!string.IsNullOrWhiteSpace(file.TaskName))
+                                            {
+                                                <span class="sfp-task-badge">@file.TaskName</span>
+                                            }
+                                            <span class="sfp-file-date">@file.UploadedAt.ToString("dd/MM/yy")</span>
+                                        </div>
+                                    </div>
+                                    <a class="sfp-file-action-btn"
+                                       href="/resources/@file.StoredFileName"
+                                       download="@file.FileName"
+                                       title="הורדת קובץ">
+                                        <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                        הורדה
+                                    </a>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        }
+
+    </div>
+}
+
+<!-- ════════════════════════════════════════
+     VIDEO MODAL
+     Rendered outside the page div so it
+     overlays the full viewport correctly.
+     ════════════════════════════════════════ -->
+@if (_modalVideoUrl is not null)
+{
+    <div class="sfp-modal-backdrop" @onclick="CloseVideoModal">
+        <div class="sfp-modal" @onclick:stopPropagation="true">
+            <div class="sfp-modal-header">
+                <span class="sfp-modal-title">@_modalVideoTitle</span>
+                <button class="sfp-modal-close" @onclick="CloseVideoModal" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="sfp-modal-body">
+                @{ string? embedUrl = GetEmbedUrl(_modalVideoUrl); }
+                @if (embedUrl is not null)
+                {
+                    <div class="sfp-modal-video-wrap">
+                        <iframe class="sfp-modal-iframe"
+                                src="@embedUrl"
+                                title="@_modalVideoTitle"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowfullscreen>
+                        </iframe>
+                    </div>
+                }
+                else
+                {
+                    <div class="sfp-modal-external">
+                        <p>הסרטון אינו זמין להצגה ישירה.</p>
+                        <a class="sfp-watch-btn" href="@_modalVideoUrl" target="_blank" rel="noopener noreferrer">
+                            <span class="oi oi-external-link" aria-hidden="true"></span>
+                            פתיחה בלשונית חדשה
+                        </a>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ── Data ────────────────────────────────────────────────────────────────
+    private List<ResourceFileDto> _files  = new();
+    private List<ResourceFileDto> _videos = new();
+
+    private bool _isLoading = true;
+    private bool _loadError;
+
+    // ── Accordion state ──────────────────────────────────────────────────────
+    private HashSet<string> _openGroups = new();
+
+    // ── Video modal state ────────────────────────────────────────────────────
+    private string? _modalVideoUrl   = null;
+    private string? _modalVideoTitle = null;
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        // NOTE: We only fetch the files — no separate milestones call.
+        // ResourceFileDto already carries MilestoneName on every row so we can
+        // derive group titles directly from the list without a second request.
+        // (The milestones endpoint is Admin/Staff-only and would fail for students.)
+        var all = await ResourceFilesService.GetPublicAsync();
+
+        _loadError = all is null;
+        _files     = all ?? new();
+        _videos    = _files.Where(f => f.ItemType == "Video").ToList();
+
+        // Open all groups by default
+        if (_videos.Count > 0)
+            _openGroups.Add("videos");
+        foreach (var f in _files.Where(f => f.ItemType != "Video"))
+            _openGroups.Add("ms-" + f.MilestoneId);
+
+        _isLoading = false;
+    }
+
+    // ── Accordion helpers ────────────────────────────────────────────────────
+    private void ToggleGroup(string key)
+    {
+        if (!_openGroups.Add(key)) _openGroups.Remove(key);
+    }
+
+    // Groups non-video files by MilestoneId.
+    // Milestone 0 ("כללי") is placed after all named milestones.
+    // MilestoneName comes from the dto — no separate fetch required.
+    private IEnumerable<KeyValuePair<int, List<ResourceFileDto>>> GetFileGroups()
+    {
+        var fileItems = _files.Where(f => f.ItemType != "Video").ToList();
+
+        foreach (var group in fileItems
+            .GroupBy(f => f.MilestoneId)
+            .OrderBy(g => g.Key == 0 ? int.MaxValue : g.Key))
+        {
+            yield return new(group.Key, group.ToList());
+        }
+    }
+
+    private static string GroupTitle(int milestoneId, List<ResourceFileDto> groupItems)
+    {
+        if (milestoneId == 0) return "כללי";
+        return groupItems.FirstOrDefault()?.MilestoneName ?? $"אבן דרך {milestoneId}";
+    }
+
+    // ── Video modal ──────────────────────────────────────────────────────────
+    private void OpenVideoModal(string? url, string? title)
+    {
+        _modalVideoUrl   = url;
+        _modalVideoTitle = title ?? "";
+    }
+
+    private void CloseVideoModal()
+    {
+        _modalVideoUrl   = null;
+        _modalVideoTitle = null;
+    }
+
+    // Converts a YouTube watch/short URL to an embed URL.
+    // Returns null if the URL cannot be recognised as YouTube.
+    private static string? GetEmbedUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        if (url.Contains("youtube.com/embed/")) return url.Split('?')[0];
+
+        if (url.Contains("youtu.be/"))
+        {
+            var id = url.Split("youtu.be/").Last().Split('?').First().Trim('/');
+            return string.IsNullOrEmpty(id) ? null : $"https://www.youtube.com/embed/{id}";
+        }
+
+        if (url.Contains("youtube.com/watch"))
+        {
+            var vIndex = url.IndexOf("v=", StringComparison.Ordinal);
+            if (vIndex < 0) return null;
+            var id = url[(vIndex + 2)..].Split('&').First().Trim();
+            return string.IsNullOrEmpty(id) ? null : $"https://www.youtube.com/embed/{id}";
+        }
+
+        return null;
+    }
+
+    private static string FileIcon(string contentType) => contentType switch
+    {
+        var ct when ct.StartsWith("image/")                             => "oi-image",
+        "application/pdf"                                               => "oi-document",
+        "application/zip" or "application/x-zip-compressed"            => "oi-data-transfer-download",
+        var ct when ct.Contains("spreadsheet") || ct.Contains("excel") => "oi-spreadsheet",
+        var ct when ct.Contains("presentation")                        => "oi-monitor",
+        _                                                               => "oi-file",
+    };
+
+    // Returns a CSS modifier class used to colour the file icon by type.
+    private static string FileIconClass(string contentType) => contentType switch
+    {
+        "application/pdf"                                               => "pdf",
+        var ct when ct.StartsWith("image/")                             => "image",
+        "application/zip" or "application/x-zip-compressed"            => "archive",
+        var ct when ct.Contains("spreadsheet") || ct.Contains("excel") => "spreadsheet",
+        var ct when ct.Contains("presentation")                        => "presentation",
+        _                                                               => "default",
+    };
+
+    // Returns a YouTube thumbnail URL extracted from any recognised YouTube URL format.
+    // Returns null for non-YouTube or unrecognisable URLs.
+    private static string? GetThumbnailUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        string? id = null;
+
+        if (url.Contains("youtu.be/"))
+            id = url.Split("youtu.be/").Last().Split('?').First().Trim('/');
+        else if (url.Contains("youtube.com/watch"))
+        {
+            var v = url.IndexOf("v=", StringComparison.Ordinal);
+            if (v >= 0) id = url[(v + 2)..].Split('&').First().Trim();
+        }
+        else if (url.Contains("youtube.com/embed/"))
+            id = url.Split("youtube.com/embed/").Last().Split('?').First().Trim('/');
+
+        return string.IsNullOrEmpty(id) ? null : $"https://img.youtube.com/vi/{id}/hqdefault.jpg";
+    }
+}

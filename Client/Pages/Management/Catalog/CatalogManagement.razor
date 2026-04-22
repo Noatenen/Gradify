@@ -4,6 +4,7 @@
 @using AuthWithAdmin.Client.Services
 @inject NavigationManager Nav
 @inject ICatalogService CatalogService
+@inject IManagementService ManagementService
 
 <div class="cat-page" @onclick="CloseAllMenus">
 
@@ -23,10 +24,19 @@
         </div>
 
         <div class="cat-topbar-end" @onclick:stopPropagation="true">
-            <button class="cat-sync-btn" disabled title="סנכרון Airtable — בקרוב">
-                <span class="oi oi-cloud-download" aria-hidden="true"></span>
-                סנכרון Airtable
-                <span class="cat-soon-badge">בקרוב</span>
+            <button class="cat-sync-btn"
+                    @onclick="TriggerAirtableSync"
+                    disabled="@_airtableSyncing"
+                    title="ייבוא פרויקטים מ-Airtable">
+                @if (_airtableSyncing)
+                {
+                    <span class="cat-spinner-inline"></span>
+                }
+                else
+                {
+                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                }
+                ייבוא פרויקטים
             </button>
             <button class="cat-add-btn" @onclick="OpenAddForm">
                 <span class="oi oi-plus" aria-hidden="true"></span>
@@ -34,6 +44,25 @@
             </button>
         </div>
     </div>
+
+    <!-- ══════════════════════════════════════════
+         AIRTABLE SYNC NOTIFICATION BAR
+         ══════════════════════════════════════════ -->
+    @if (_airtableSyncing || !string.IsNullOrEmpty(_airtableSyncMsg))
+    {
+        <div class="cat-sync-bar @(_airtableSyncError ? "cat-sync-bar--error" : "cat-sync-bar--info")">
+            @if (_airtableSyncing)
+            {
+                <span class="cat-spinner-inline"></span>
+                <span>מייבא פרויקטים מ-Airtable...</span>
+            }
+            else
+            {
+                <span class="oi @(_airtableSyncError ? "oi-warning" : "oi-check")" aria-hidden="true"></span>
+                <span>@_airtableSyncMsg</span>
+            }
+        </div>
+    }
 
     <!-- ══════════════════════════════════════════
          KPI SUMMARY CARDS (entire dataset)
@@ -628,6 +657,50 @@
 </div>
 
 @code {
+
+    // ─────────────────────────────────────────────────
+    //  Airtable import
+    // ─────────────────────────────────────────────────
+    private bool   _airtableSyncing   = false;
+    private string _airtableSyncMsg   = "";
+    private bool   _airtableSyncError = false;
+
+    private async Task TriggerAirtableSync()
+    {
+        _airtableSyncing  = true;
+        _airtableSyncMsg  = "";
+        _airtableSyncError = false;
+        StateHasChanged();
+
+        var result = await ManagementService.SyncAirtableProjectsAsync();
+        _airtableSyncing = false;
+
+        if (result is null)
+        {
+            _airtableSyncMsg   = "שגיאה בחיבור לשרת";
+            _airtableSyncError = true;
+        }
+        else if (!string.IsNullOrEmpty(result.SyncError))
+        {
+            _airtableSyncMsg   = result.SyncError;
+            _airtableSyncError = true;
+        }
+        else
+        {
+            _airtableSyncError = result.Failed > 0 && result.Inserted == 0 && result.Updated == 0;
+            _airtableSyncMsg   = $"יובאו {result.TotalFetched} רשומות: {result.Inserted} חדשות, {result.Updated} עודכנו";
+            if (result.Failed > 0)
+                _airtableSyncMsg += $", {result.Failed} נכשלו";
+
+            if (result.Inserted > 0 || result.Updated > 0)
+                await Reload();
+        }
+
+        StateHasChanged();
+        await Task.Delay(6000);
+        _airtableSyncMsg = "";
+        StateHasChanged();
+    }
 
     // ─────────────────────────────────────────────────
     //  Data

@@ -158,6 +158,13 @@ namespace AuthWithAdmin.Client
             AdminResults newUser = addResponse.Content.ReadFromJsonAsync<AdminResults>().Result;
             return newUser;
         }
+        public async Task<string?> UpdateUserAsync(int userId, AdminUpdateUserRequest req)
+        {
+            var response = await _httpClient.PutAsJsonAsync($"api/admin/users/{userId}", req);
+            if (response.IsSuccessStatusCode) return null;
+            return await response.Content.ReadAsStringAsync();
+        }
+
         public async Task<AdminResults> ToggleUserRole(UserForAdmin user, string role)
         {
             var rolesToChange = new List<UserRole>();

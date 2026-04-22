@@ -13,9 +13,11 @@ public class UserFromDB
     public List<string> Roles { get; set; } = new List<string>();
 
     // Extended profile fields
-    public string Phone { get; set; } = string.Empty;
-    public string AcademicYear { get; set; } = string.Empty;
-    public bool IsActive { get; set; } = true;
+    public string  Phone            { get; set; } = string.Empty;
+    public string  AcademicYear     { get; set; } = string.Empty;
+    public bool    IsActive         { get; set; } = true;
+    public string  IdNumber         { get; set; } = string.Empty;
+    public string? ProfileImagePath { get; set; }
 
     public UserForAdmin MapUserToAdmin()
     {

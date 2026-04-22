@@ -19,10 +19,16 @@ builder.Services.AddScoped<IProjectContextService, ProjectContextService>();
 // Resource files (admin/lecturer knowledge-base uploads)
 builder.Services.AddScoped<IResourceFilesService, ResourceFilesService>();
 
+// Learning materials (project/type-scoped materials for students)
+builder.Services.AddScoped<ILearningMaterialsService, LearningMaterialsService>();
+
 // Management area services
 builder.Services.AddScoped<IManagementService, ManagementService>();
 builder.Services.AddScoped<ICatalogService, CatalogService>();
 builder.Services.AddScoped<IMilestoneManagementService, MilestoneManagementService>();
+builder.Services.AddScoped<ITaskManagementService, TaskManagementService>();
+builder.Services.AddScoped<ITaskSubmissionsService, TaskSubmissionsService>();
+builder.Services.AddScoped<IProjectRequestsService, ProjectRequestsService>();
 
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();

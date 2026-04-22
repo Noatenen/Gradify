@@ -1,0 +1,666 @@
+@page "/requests"
+@layout AppLayout
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using Microsoft.AspNetCore.Components.Forms
+@attribute [Authorize]
+@inject IProjectRequestsService RequestsService
+
+<!-- ── New request modal ── -->
+<NewRequestModal IsOpen="@_showModal"
+                 OnClose="CloseModal"
+                 OnSuccess="OnRequestCreated" />
+
+@if (_isLoading)
+{
+    <div class="sreq-loading">
+        <div class="sreq-spinner"></div>
+        <span>טוענת בקשות…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="sreq-state-msg sreq-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת הבקשות. נסה לרענן את הדף.</p>
+    </div>
+}
+else
+{
+    <div class="sreq-page">
+
+        <!-- ── Header ── -->
+        <div class="sreq-header-card">
+            <div class="sreq-header-start">
+                <div class="sreq-page-icon">
+                    <span class="oi oi-envelope-closed" aria-hidden="true"></span>
+                </div>
+                <div>
+                    <h1 class="sreq-page-title">הבקשות שלי</h1>
+                    <p class="sreq-page-subtitle">בקשות שפתחתי לצוות האקדמי</p>
+                </div>
+            </div>
+            <button class="sreq-new-btn" @onclick="OpenModal">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                פתח בקשה חדשה
+            </button>
+        </div>
+
+        @if (_requests.Count > 0)
+        {
+            <!-- ── Clickable summary pills ── -->
+            <div class="sreq-summary-row">
+                <button class="sreq-pill @(_filterGroup == "" ? "sreq-pill--active" : "")"
+                        @onclick="@(() => SetFilter("", _filterType))">
+                    <span class="sreq-pill-value">@_requests.Count</span>
+                    <span class="sreq-pill-label">כל הבקשות</span>
+                </button>
+                <button class="sreq-pill sreq-pill--action @(_filterGroup == "action" ? "sreq-pill--active" : "")"
+                        @onclick="@(() => SetFilter("action", _filterType))">
+                    <span class="sreq-pill-value">@_needsActionCount</span>
+                    <span class="sreq-pill-label">דורש תגובתי</span>
+                </button>
+                <button class="sreq-pill sreq-pill--waiting @(_filterGroup == "waiting" ? "sreq-pill--active" : "")"
+                        @onclick="@(() => SetFilter("waiting", _filterType))">
+                    <span class="sreq-pill-value">@_waitingCount</span>
+                    <span class="sreq-pill-label">ממתין למענה</span>
+                </button>
+                <button class="sreq-pill sreq-pill--done @(_filterGroup == "done" ? "sreq-pill--active" : "")"
+                        @onclick="@(() => SetFilter("done", _filterType))">
+                    <span class="sreq-pill-value">@_doneCount</span>
+                    <span class="sreq-pill-label">טופלו</span>
+                </button>
+            </div>
+
+            <!-- ── Filter bar ── -->
+            <div class="sreq-filter-bar">
+                <div class="sreq-filter-tabs">
+                    <button class="sreq-filter-tab @(_filterGroup == "" ? "sreq-filter-tab--active" : "")"
+                            @onclick="@(() => SetFilter("", _filterType))">כולן</button>
+                    <button class="sreq-filter-tab sreq-filter-tab--action @(_filterGroup == "action" ? "sreq-filter-tab--active" : "")"
+                            @onclick="@(() => SetFilter("action", _filterType))">
+                        דורש תגובתי
+                        @if (_needsActionCount > 0)
+                        {
+                            <span class="sreq-filter-badge">@_needsActionCount</span>
+                        }
+                    </button>
+                    <button class="sreq-filter-tab @(_filterGroup == "waiting" ? "sreq-filter-tab--active" : "")"
+                            @onclick="@(() => SetFilter("waiting", _filterType))">ממתין למענה</button>
+                    <button class="sreq-filter-tab @(_filterGroup == "done" ? "sreq-filter-tab--active" : "")"
+                            @onclick="@(() => SetFilter("done", _filterType))">טופלו / נסגרו</button>
+                </div>
+                <select class="sreq-filter-select" @bind="_filterType">
+                    <option value="">כל סוגי הבקשות</option>
+                    @foreach (var t in RequestTypes.All)
+                    {
+                        <option value="@t">@RequestTypes.Label(t)</option>
+                    }
+                </select>
+            </div>
+        }
+
+        <!-- ── Requests list ── -->
+        @{
+            var visible = Filtered.ToList();
+        }
+
+        @if (_requests.Count == 0)
+        {
+            <div class="sreq-empty">
+                <span class="oi oi-envelope-closed sreq-empty-icon" aria-hidden="true"></span>
+                <p class="sreq-empty-title">אין בקשות עדיין</p>
+                <p class="sreq-empty-sub">ניתן לפתוח בקשה חדשה בכל עת</p>
+                <button class="sreq-new-btn" @onclick="OpenModal">
+                    <span class="oi oi-plus" aria-hidden="true"></span>
+                    פתח בקשה ראשונה
+                </button>
+            </div>
+        }
+        else if (visible.Count == 0)
+        {
+            <div class="sreq-empty sreq-empty--filter">
+                <span class="oi oi-magnifying-glass sreq-empty-icon" aria-hidden="true"></span>
+                <p class="sreq-empty-title">אין תוצאות לפילטר הנוכחי</p>
+                <button class="sreq-filter-clear" @onclick="@(() => SetFilter("", ""))">נקה פילטרים</button>
+            </div>
+        }
+        else
+        {
+            <div class="sreq-list">
+                @{
+                    bool needsActionShown  = false;
+                    bool waitingShown      = false;
+                    bool doneShown         = false;
+                    bool showSectionLabels = string.IsNullOrEmpty(_filterGroup);
+                }
+
+                @foreach (var r in visible)
+                {
+                    bool isNeedsAction = r.Status == RequestStatuses.NeedsInfo;
+                    bool isWaiting     = r.Status is RequestStatuses.New or RequestStatuses.InProgress or RequestStatuses.WaitingForStaff;
+                    bool isDone        = r.Status is RequestStatuses.Resolved or RequestStatuses.Closed;
+                    bool isExpanded    = _expandedIds.Contains(r.Id);
+                    bool hasActivity   = r.Events.Count > 0;
+
+                    @if (showSectionLabels)
+                    {
+                        @if (isNeedsAction && !needsActionShown)
+                        {
+                            needsActionShown = true;
+                            <div class="sreq-section-label sreq-section-label--action">
+                                <span class="oi oi-bell" aria-hidden="true"></span>
+                                דורש את תגובתך
+                            </div>
+                        }
+                        else if (isWaiting && !waitingShown)
+                        {
+                            waitingShown = true;
+                            <div class="sreq-section-label sreq-section-label--waiting">
+                                <span class="oi oi-clock" aria-hidden="true"></span>
+                                ממתין למענה הצוות האקדמי
+                            </div>
+                        }
+                        else if (isDone && !doneShown)
+                        {
+                            doneShown = true;
+                            <div class="sreq-section-label sreq-section-label--done">
+                                <span class="oi oi-check" aria-hidden="true"></span>
+                                טופלו / נסגרו
+                            </div>
+                        }
+                    }
+
+                    <div class="sreq-card @(isDone ? "sreq-card-resolved" : "") @(isNeedsAction ? "sreq-card-needsinfo" : "") @(r.Status == RequestStatuses.WaitingForStaff ? "sreq-card-waiting" : "")">
+
+                        <div class="sreq-card-header">
+                            <div class="sreq-card-info">
+                                <span class="sreq-type-badge sreq-type-@TypeClass(r.RequestType)">
+                                    @RequestTypes.Label(r.RequestType)
+                                </span>
+                                <h3 class="sreq-card-title">@r.Title</h3>
+                            </div>
+                            <div class="sreq-card-status-col">
+                                <span class="sreq-status-badge sreq-badge-@r.Status.ToLower()">
+                                    @RequestStatuses.Label(r.Status)
+                                </span>
+                                @if (r.AttachmentCount > 0)
+                                {
+                                    <span class="sreq-attach-badge" title="@r.AttachmentCount קבצים מצורפים">
+                                        <span class="oi oi-image" aria-hidden="true"></span>
+                                        @r.AttachmentCount
+                                    </span>
+                                }
+                            </div>
+                        </div>
+
+                        @if (isNeedsAction)
+                        {
+                            <div class="sreq-needs-info-banner">
+                                <span class="oi oi-action-undo" aria-hidden="true"></span>
+                                <span>הבקשה הוחזרה אליך — אנא בדוק את התגובות מהצוות האקדמי</span>
+                            </div>
+                        }
+                        else if (r.Status == RequestStatuses.WaitingForStaff)
+                        {
+                            <div class="sreq-waiting-banner">
+                                <span class="oi oi-clock" aria-hidden="true"></span>
+                                <span>תגובתך התקבלה — ממתין למענה הצוות האקדמי</span>
+                            </div>
+                        }
+
+                        <div class="sreq-card-meta">
+                            <span class="sreq-meta-item">
+                                <span class="oi oi-clock" aria-hidden="true"></span>
+                                נפתחה @r.CreatedAt.ToString("dd/MM/yyyy")
+                            </span>
+                            @if (r.UpdatedAt > r.CreatedAt)
+                            {
+                                <span class="sreq-meta-item sreq-meta-updated">
+                                    <span class="oi oi-loop-circular" aria-hidden="true"></span>
+                                    עודכנה @r.UpdatedAt.ToString("dd/MM/yyyy")
+                                </span>
+                            }
+                            @if (hasActivity)
+                            {
+                                <span class="sreq-meta-item sreq-meta-activity">
+                                    <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                    @r.Events.Count @(r.Events.Count == 1 ? "פעילות" : "פעילויות")
+                                </span>
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(r.ResolutionNotes))
+                        {
+                            <div class="sreq-resolution">
+                                <span class="sreq-resolution-label">תגובת הצוות:</span>
+                                <span class="sreq-resolution-text">@r.ResolutionNotes</span>
+                            </div>
+                        }
+
+                        <!-- Thread toggle / reply area -->
+                        @{
+                            bool canReply   = r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed);
+                            bool showToggle = hasActivity || canReply;
+                        }
+
+                        @if (showToggle)
+                        {
+                            <button class="sreq-thread-toggle" @onclick="@(() => ToggleExpand(r.Id))">
+                                <span class="oi @(isExpanded ? "oi-chevron-top" : "oi-chevron-bottom")" aria-hidden="true"></span>
+                                @if (isExpanded)
+                                {
+                                    <span>הסתר היסטוריה</span>
+                                }
+                                else if (hasActivity)
+                                {
+                                    <span>הצג היסטוריה מלאה (@r.Events.Count פעולות)</span>
+                                }
+                                else
+                                {
+                                    <span>הוסף תגובה</span>
+                                }
+                            </button>
+
+                            @if (isExpanded)
+                            {
+                                @if (hasActivity)
+                                {
+                                    <div class="sreq-thread">
+                                        @foreach (var evt in r.Events)
+                                        {
+                                            bool isSystemEvt  = evt.EventType != RequestEventTypes.Comment;
+                                            bool isStudentEvt = !isSystemEvt && evt.UserRole == Roles.Student;
+
+                                            @if (isSystemEvt)
+                                            {
+                                                <div class="sreq-system-event">
+                                                    <span class="oi @SystemIcon(evt)" aria-hidden="true"></span>
+                                                    <span class="sreq-system-event-text">@EventSummary(evt)</span>
+                                                    <span class="sreq-system-event-time">@evt.CreatedAt.ToString("dd/MM HH:mm")</span>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <div class="sreq-chat-entry @(isStudentEvt ? "sreq-chat-student" : "sreq-chat-staff")">
+                                                    <div class="sreq-chat-avatar">
+                                                        <span class="oi oi-person" aria-hidden="true"></span>
+                                                    </div>
+                                                    <div class="sreq-chat-bubble-wrap">
+                                                        <div class="sreq-chat-meta">
+                                                            <span class="sreq-chat-author">@evt.UserName</span>
+                                                            <span class="sreq-chat-time">@evt.CreatedAt.ToString("dd/MM HH:mm")</span>
+                                                        </div>
+                                                        <div class="sreq-chat-bubble">@evt.Content</div>
+                                                        @if (evt.Attachments.Count > 0)
+                                                        {
+                                                            <div class="sreq-evt-attachments">
+                                                                @foreach (var att in evt.Attachments)
+                                                                {
+                                                                    @if (att.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                                                                    {
+                                                                        <a class="sreq-evt-att-thumb"
+                                                                           href="/request-attachments/@att.StoredFileName"
+                                                                           target="_blank"
+                                                                           title="@att.OriginalFileName">
+                                                                            <img src="/request-attachments/@att.StoredFileName"
+                                                                                 alt="@att.OriginalFileName"
+                                                                                 loading="lazy" />
+                                                                        </a>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <a class="sreq-evt-att-file"
+                                                                           href="/request-attachments/@att.StoredFileName"
+                                                                           target="_blank"
+                                                                           title="@att.OriginalFileName">
+                                                                            <span class="oi oi-document" aria-hidden="true"></span>
+                                                                            <span>@att.OriginalFileName</span>
+                                                                        </a>
+                                                                    }
+                                                                }
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </div>
+                                }
+
+                                @if (canReply)
+                                {
+                                    <div class="sreq-reply-box">
+                                        <label class="sreq-reply-label">התגובה שלך:</label>
+                                        <textarea class="sreq-reply-textarea"
+                                                  rows="3"
+                                                  placeholder="כתוב תגובה לצוות האקדמי…"
+                                                  maxlength="2000"
+                                                  value="@GetReplyText(r.Id)"
+                                                  @oninput="@(e => SetReplyText(r.Id, e.Value?.ToString() ?? ""))"
+                                                  disabled="@IsReplying(r.Id)"></textarea>
+
+                                        <!-- File attachment zone -->
+                                        <div class="sreq-reply-file-zone">
+                                            <label class="sreq-reply-file-label">
+                                                <span class="oi oi-paperclip" aria-hidden="true"></span>
+                                                <span>צרף קבצים (עד @MaxReplyAttachments, עד 5MB כל אחד)</span>
+                                                <InputFile class="sreq-reply-file-hidden"
+                                                           multiple
+                                                           OnChange="@(e => OnReplyFilesSelected(r.Id, e))"
+                                                           disabled="@IsReplying(r.Id)" />
+                                            </label>
+                                        </div>
+
+                                        @if (GetReplyAttachments(r.Id).Count > 0)
+                                        {
+                                            <div class="sreq-reply-file-list">
+                                                @foreach (var att in GetReplyAttachments(r.Id).ToList())
+                                                {
+                                                    <div class="sreq-reply-file-item">
+                                                        <span class="oi oi-document sreq-reply-file-icon" aria-hidden="true"></span>
+                                                        <span class="sreq-reply-file-name">@att.Name</span>
+                                                        <span class="sreq-reply-file-size">@FormatBytes(att.Size)</span>
+                                                        <button class="sreq-reply-file-remove"
+                                                                type="button"
+                                                                title="הסר"
+                                                                disabled="@IsReplying(r.Id)"
+                                                                @onclick="@(() => RemoveReplyAttachment(r.Id, att))">
+                                                            <span class="oi oi-x" aria-hidden="true"></span>
+                                                        </button>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+
+                                        @if (!string.IsNullOrEmpty(GetReplyFileError(r.Id)))
+                                        {
+                                            <div class="sreq-reply-error">
+                                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                                @GetReplyFileError(r.Id)
+                                            </div>
+                                        }
+
+                                        @if (!string.IsNullOrEmpty(GetReplyError(r.Id)))
+                                        {
+                                            <div class="sreq-reply-error">
+                                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                                @GetReplyError(r.Id)
+                                            </div>
+                                        }
+
+                                        <div class="sreq-reply-actions">
+                                            <button class="sreq-reply-btn"
+                                                    disabled="@(IsReplying(r.Id) || string.IsNullOrWhiteSpace(GetReplyText(r.Id)))"
+                                                    @onclick="@(async () => await SubmitReply(r.Id))">
+                                                @if (IsReplying(r.Id))
+                                                {
+                                                    <span class="sreq-reply-spinner"></span>
+                                                    <span>שולח…</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="oi oi-paper-plane" aria-hidden="true"></span>
+                                                    <span>שלח תגובה</span>
+                                                }
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        }
+
+                    </div>
+                }
+            </div>
+        }
+
+    </div>
+}
+
+@code {
+    private List<StudentOwnRequestDto> _requests  = new();
+    private bool _isLoading = true;
+    private bool _loadError;
+    private bool _showModal;
+    private HashSet<int> _expandedIds = new();
+
+    // Filters
+    private string _filterGroup = "";   // "" | "action" | "waiting" | "done"
+    private string _filterType  = "";   // "" | specific RequestType constant
+
+    // Per-card reply state
+    private Dictionary<int, string>                     _replyTexts       = new();
+    private HashSet<int>                                _replyingIds      = new();
+    private Dictionary<int, string>                     _replyErrors      = new();
+    private Dictionary<int, List<PendingAttachment>>    _replyAttachments = new();
+    private Dictionary<int, string>                     _replyFileErrors  = new();
+
+    private record PendingAttachment(string Name, string Base64, string ContentType, long Size);
+    private const int  MaxReplyAttachments = 3;
+    private const long MaxReplyAttachBytes = 5 * 1024 * 1024;
+
+    // ── Computed counts for pills ─────────────────────────────────────────
+    private int _needsActionCount => _requests.Count(r => r.Status == RequestStatuses.NeedsInfo);
+    private int _waitingCount     => _requests.Count(r => r.Status is RequestStatuses.New or RequestStatuses.InProgress or RequestStatuses.WaitingForStaff);
+    private int _doneCount        => _requests.Count(r => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed);
+
+    // ── Filtered + sorted list ────────────────────────────────────────────
+    private IEnumerable<StudentOwnRequestDto> Filtered
+    {
+        get
+        {
+            var q = _requests.AsEnumerable();
+
+            // Status group filter
+            q = _filterGroup switch
+            {
+                "action"  => q.Where(r => r.Status == RequestStatuses.NeedsInfo),
+                "waiting" => q.Where(r => r.Status is RequestStatuses.New or RequestStatuses.InProgress or RequestStatuses.WaitingForStaff),
+                "done"    => q.Where(r => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed),
+                _         => q,
+            };
+
+            // Type filter
+            if (!string.IsNullOrEmpty(_filterType))
+                q = q.Where(r => r.RequestType == _filterType);
+
+            // Sort: NeedsInfo first → active → done, then by UpdatedAt DESC within each group
+            return q.OrderBy(r => StatusSortKey(r.Status))
+                    .ThenByDescending(r => r.UpdatedAt);
+        }
+    }
+
+    private static int StatusSortKey(string status) => status switch
+    {
+        RequestStatuses.NeedsInfo       => 0,
+        RequestStatuses.WaitingForStaff => 1,
+        RequestStatuses.InProgress      => 2,
+        RequestStatuses.New             => 3,
+        RequestStatuses.Resolved        => 4,
+        RequestStatuses.Closed          => 5,
+        _                               => 6,
+    };
+
+    private void SetFilter(string group, string type)
+    {
+        _filterGroup = group;
+        _filterType  = type;
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _isLoading = false;
+        AutoExpandRelevantCards();
+    }
+
+    private async Task LoadAsync()
+    {
+        var result = await RequestsService.GetMyRequestsAsync();
+        _loadError = result is null;
+        _requests  = result ?? new();
+    }
+
+    /// <summary>
+    /// Auto-expand cards where the student needs to act (NeedsInfo) OR
+    /// has already replied and the thread is in an active back-and-forth
+    /// state (WaitingForStaff with events).
+    /// </summary>
+    private void AutoExpandRelevantCards()
+    {
+        foreach (var r in _requests)
+        {
+            if (r.Status == RequestStatuses.NeedsInfo)
+                _expandedIds.Add(r.Id);
+            else if (r.Status == RequestStatuses.WaitingForStaff && r.Events.Count > 0)
+                _expandedIds.Add(r.Id);
+        }
+    }
+
+    private void OpenModal()  => _showModal = true;
+    private void CloseModal() => _showModal = false;
+
+    private async Task OnRequestCreated()
+    {
+        await LoadAsync();
+        AutoExpandRelevantCards();
+    }
+
+    private void ToggleExpand(int id)
+    {
+        if (!_expandedIds.Remove(id))
+            _expandedIds.Add(id);
+    }
+
+    // Reply helpers
+    private string GetReplyText(int id)  => _replyTexts.TryGetValue(id, out var t) ? t : "";
+    private void SetReplyText(int id, string v) => _replyTexts[id] = v;
+    private bool IsReplying(int id)      => _replyingIds.Contains(id);
+    private string GetReplyError(int id) => _replyErrors.TryGetValue(id, out var e) ? e : "";
+
+    // Attachment helpers
+    private List<PendingAttachment> GetReplyAttachments(int id) =>
+        _replyAttachments.TryGetValue(id, out var list) ? list : new();
+    private string GetReplyFileError(int id) =>
+        _replyFileErrors.TryGetValue(id, out var e) ? e : "";
+    private void RemoveReplyAttachment(int requestId, PendingAttachment att)
+    {
+        if (_replyAttachments.TryGetValue(requestId, out var list))
+            list.Remove(att);
+    }
+
+    private async Task OnReplyFilesSelected(int requestId, InputFileChangeEventArgs e)
+    {
+        _replyFileErrors.Remove(requestId);
+        if (!_replyAttachments.ContainsKey(requestId))
+            _replyAttachments[requestId] = new();
+
+        var list      = _replyAttachments[requestId];
+        var remaining = MaxReplyAttachments - list.Count;
+        if (remaining <= 0)
+        {
+            _replyFileErrors[requestId] = $"ניתן לצרף עד {MaxReplyAttachments} קבצים לתגובה";
+            return;
+        }
+
+        foreach (var file in e.GetMultipleFiles(remaining))
+        {
+            if (file.Size > MaxReplyAttachBytes)
+            {
+                _replyFileErrors[requestId] = $"הקובץ \"{file.Name}\" גדול מדי (מקסימום 5MB)";
+                continue;
+            }
+            try
+            {
+                using var stream = file.OpenReadStream(MaxReplyAttachBytes);
+                using var ms     = new System.IO.MemoryStream();
+                await stream.CopyToAsync(ms);
+                var base64 = Convert.ToBase64String(ms.ToArray());
+                list.Add(new PendingAttachment(file.Name, base64, file.ContentType, file.Size));
+            }
+            catch
+            {
+                _replyFileErrors[requestId] = $"שגיאה בקריאת הקובץ \"{file.Name}\"";
+            }
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)        return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024):F1} MB";
+    }
+
+    private async Task SubmitReply(int requestId)
+    {
+        var text = GetReplyText(requestId).Trim();
+        if (string.IsNullOrEmpty(text)) return;
+
+        _replyingIds.Add(requestId);
+        _replyErrors.Remove(requestId);
+
+        var attachments = GetReplyAttachments(requestId)
+            .Select(a => new RequestAttachmentUploadRequest
+            {
+                OriginalFileName = a.Name,
+                FileBase64       = a.Base64,
+                ContentType      = a.ContentType,
+                SizeBytes        = a.Size,
+            }).ToList();
+
+        var error = await RequestsService.ReplyAsync(requestId, text, attachments);
+
+        _replyingIds.Remove(requestId);
+
+        if (error is not null)
+        {
+            _replyErrors[requestId] = error.Trim('"', ' ');
+            return;
+        }
+
+        // Clear reply state and reload to show the new event in thread
+        _replyTexts.Remove(requestId);
+        _replyAttachments.Remove(requestId);
+        _replyFileErrors.Remove(requestId);
+        await LoadAsync();
+        AutoExpandRelevantCards();
+        // Keep the card expanded so the student sees their reply
+        _expandedIds.Add(requestId);
+    }
+
+    // ── Display helpers ───────────────────────────────────────────────────
+    private static string TypeClass(string type) => type switch
+    {
+        RequestTypes.Extension                 => "extension",
+        RequestTypes.SpecialEvent              => "special",
+        RequestTypes.TechnicalSupport          => "tech",
+        RequestTypes.Meeting                   => "meeting",
+        RequestTypes.ClientChallenge           => "client",
+        RequestTypes.ContentChallenge          => "content",
+        RequestTypes.CharacterizationChallenge => "char",
+        _                                      => "default",
+    };
+
+    private static string SystemIcon(ProjectRequestEventDto evt) => evt.EventType switch
+    {
+        RequestEventTypes.StatusChange   => "oi-loop-circular",
+        RequestEventTypes.PriorityChange => "oi-signal",
+        RequestEventTypes.AssigneeChange => "oi-arrow-circle-right",
+        _                                => "oi-info",
+    };
+
+    private static string EventSummary(ProjectRequestEventDto evt) => evt.EventType switch
+    {
+        RequestEventTypes.Comment        => evt.Content ?? "",
+        RequestEventTypes.StatusChange   => $"סטטוס שונה ל: {evt.NewValue}",
+        RequestEventTypes.PriorityChange => $"עדיפות שונתה ל: {evt.NewValue}",
+        RequestEventTypes.AssigneeChange => evt.NewValue is not null
+            ? $"הבקשה הועברה ל{evt.NewValue}"
+            : "שיוך הוסר",
+        _ => "",
+    };
+}
