@@ -34,4 +34,6 @@ public class MilestoneItemDto
     public int       ProgressPct        { get; set; }
     /// <summary>True for exactly one milestone: the "current" one.</summary>
     public bool      IsCurrent          { get; set; }
+    /// <summary>True when any task in this milestone has a returned submission (mentor decision).</summary>
+    public bool      HasReturnedTask    { get; set; }
 }

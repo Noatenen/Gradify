@@ -30,6 +30,21 @@ builder.Services.AddScoped<ITaskManagementService, TaskManagementService>();
 builder.Services.AddScoped<ITaskSubmissionsService, TaskSubmissionsService>();
 builder.Services.AddScoped<IProjectRequestsService, ProjectRequestsService>();
 
+// Student profile & settings
+builder.Services.AddScoped<IStudentProfileService, StudentProfileService>();
+
+// Integration settings (admin-configurable OAuth credentials)
+builder.Services.AddScoped<IIntegrationSettingsService, IntegrationSettingsService>();
+
+// Mentor area
+builder.Services.AddScoped<IMentorProjectsService, MentorProjectsService>();
+
+// In-system notifications
+builder.Services.AddScoped<INotificationService, NotificationService>();
+
+// Student assignment / preference form
+builder.Services.AddScoped<IAssignmentService, AssignmentService>();
+
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();

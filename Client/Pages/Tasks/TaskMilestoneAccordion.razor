@@ -38,14 +38,18 @@
             @foreach (var group in Groups)
             {
                 bool isOpen = _openGroups.Contains(group.ProjectMilestoneId);
+                // Milestone dot uses "attention" (orange) if any task is returned or overdue.
+                // This prevents a green/completed dot from misleading when tasks need action.
+                bool groupNeedsAttention = !IsCompletedSection
+                    && group.Tasks.Any(TaskNeedsAttention);
 
                 <div class="tma-group @(isOpen ? "tma-group-open" : "")">
 
                     <button class="tma-group-header"
                             @onclick="() => Toggle(group.ProjectMilestoneId)">
                         <div class="tma-group-start">
-                            <span class="tma-ms-dot tma-ms-@MsClass(group.MilestoneStatus)"
-                                  title="@MsLabel(group.MilestoneStatus)"></span>
+                            <span class="tma-ms-dot @(groupNeedsAttention ? "tma-ms-attention" : "tma-ms-@MsClass(group.MilestoneStatus)")"
+                                  title="@(groupNeedsAttention ? "יש משימות שדורשות תשומת לב" : MsLabel(group.MilestoneStatus))"></span>
                             <span class="tma-ms-title">@group.MilestoneTitle</span>
                             @if (group.DueDate.HasValue)
                             {
@@ -79,25 +83,22 @@
                             @foreach (var task in group.Tasks)
                             {
                                 bool isPending = !IsCompletedSection && task.MilestoneStatus == "NotStarted";
-                                // A task is overdue when: due date passed, not done/submitted,
-                                // and no valid (non-returned) submission exists.
-                                bool hasValidSubmission = task.LatestSubmissionStatus is not null
-                                    && task.LatestSubmissionStatus != "NeedsRevision";
-                                bool isActionedStatus = task.Status is "Done"
-                                    or "SubmittedToMentor" or "RevisionSubmitted"
-                                    or "ApprovedForSubmission";
+                                string resolvedStatus = ResolveDisplayStatus(task);
+                                // A task is overdue when due date passed and it has not been
+                                // touched at all (Open or InProgress).
+                                // Returned tasks already communicate urgency through their own
+                                // "returned" state — don't mask it with a generic "overdue" label.
                                 bool isOverdue = !IsCompletedSection
                                              && task.DueDate.HasValue
                                              && task.DueDate.Value.Date < DateTime.Today
-                                             && !isActionedStatus
-                                             && !hasValidSubmission;
+                                             && resolvedStatus is "Open" or "InProgress";
 
-                                <div class="tma-task-row @(isPending ? "tma-task-pending" : "")"
+                                <div class="tma-task-row @(isPending ? "tma-task-pending" : "") @RowHighlightClass(resolvedStatus)"
                                      title="לחץ לפרטי המשימה"
                                      @onclick="() => OnOpenDetail.InvokeAsync(task.Id)">
 
-                                    <div class="tma-task-icon tma-icon-@TaskIconClass(task.Status, isPending, isOverdue)">
-                                        <span class="oi @TaskIcon(task.Status, isPending, isOverdue)"
+                                    <div class="tma-task-icon tma-icon-@TaskIconClass(resolvedStatus, isPending, isOverdue)">
+                                        <span class="oi @TaskIcon(resolvedStatus, isPending, isOverdue)"
                                               aria-hidden="true"></span>
                                     </div>
 
@@ -114,6 +115,15 @@
                                                         <span class="oi oi-calendar" aria-hidden="true"></span>
                                                         @task.DueDate.Value.ToString("dd/MM/yy")
                                                         @if (isOverdue) { <span>(באיחור)</span> }
+                                                    </span>
+                                                }
+                                                @if (task.LatestSubmittedAt.HasValue
+                                                     && resolvedStatus is "PendingMentorReview" or "ReturnedByMentor"
+                                                                       or "ReturnedForRevision" or "ApprovedByMentor")
+                                                {
+                                                    <span class="tma-meta-item tma-meta-submitted">
+                                                        <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                                        הוגש @task.LatestSubmittedAt.Value.ToString("dd/MM/yy")
                                                     </span>
                                                 }
                                                 @if (!string.IsNullOrWhiteSpace(task.AssignedToName))
@@ -139,7 +149,12 @@
 
                                     @if (!IsCompletedSection)
                                     {
+                                        <!-- Status badge comes first so it's visually closest to the icon
+                                             (rightmost in RTL), then the submit action. -->
                                         <div class="tma-task-badges">
+                                            <span class="tma-status-badge tma-badge-@StatusClass(resolvedStatus, isPending, isOverdue)">
+                                                @StatusLabel(resolvedStatus, isPending, isOverdue)
+                                            </span>
                                             @if (task.IsSubmission && !isPending)
                                             {
                                                 <button class="tma-submit-btn"
@@ -150,9 +165,6 @@
                                                     הגש
                                                 </button>
                                             }
-                                            <span class="tma-status-badge tma-badge-@StatusClass(task.Status, isPending, isOverdue)">
-                                                @StatusLabel(task.Status, isPending, isOverdue)
-                                            </span>
                                             @if (task.IsMandatory)
                                             {
                                                 <span class="tma-priority-badge">חובה</span>
@@ -205,6 +217,19 @@
         if (!_openGroups.Remove(id)) _openGroups.Add(id);
     }
 
+    private static string RowHighlightClass(string status) =>
+        status is "ReturnedByMentor" or "ReturnedForRevision" ? "tma-row-attention" : "";
+
+    // Returns true when a task requires student attention — used to set the milestone dot color.
+    private static bool TaskNeedsAttention(TaskItemDto t)
+    {
+        string resolved = ResolveDisplayStatus(t);
+        if (resolved is "ReturnedByMentor" or "ReturnedForRevision") return true;
+        return t.DueDate.HasValue
+            && t.DueDate.Value.Date < DateTime.Today
+            && resolved is "Open" or "InProgress";
+    }
+
     // ── Milestone status helpers ──────────────────────────────────────────────
     private static string MsClass(string s) => s switch
     {
@@ -222,6 +247,33 @@
         _            => "טרם נפתח",
     };
 
+    // ── Effective status resolution ───────────────────────────────────────────
+    // Priority order for submission tasks:
+    //  1. Mentor returned   → "ReturnedByMentor"   (student must fix + resubmit)
+    //  2. Reviewer returned → "ReturnedForRevision" (NeedsRevision from lecturer)
+    //  3. Submission pending mentor review → "PendingMentorReview"
+    //  4. Mentor approved, reviewer pending → "ApprovedByMentor"
+    //  5. Fall back to task.Status (covers Done, InProgress, Open, etc.)
+    private static string ResolveDisplayStatus(TaskItemDto task)
+    {
+        if (!task.IsSubmission || task.LatestSubmissionStatus is null)
+            return task.Status;
+
+        if (task.LatestMentorStatus == "Returned")
+            return "ReturnedByMentor";
+
+        if (task.LatestSubmissionStatus == "NeedsRevision")
+            return "ReturnedForRevision";
+
+        if (task.LatestMentorStatus == "Pending")
+            return "PendingMentorReview";
+
+        if (task.LatestMentorStatus == "Approved" && task.LatestSubmissionStatus == "Submitted")
+            return "ApprovedByMentor";
+
+        return task.Status;
+    }
+
     // ── Task status helpers ───────────────────────────────────────────────────
     private static string StatusClass(string status, bool isPending, bool isOverdue)
     {
@@ -235,6 +287,9 @@
             "RevisionSubmitted"     => "revision",
             "ApprovedForSubmission" => "approved",
             "Done"                  => "done",
+            "PendingMentorReview"   => "submitted",
+            "ReturnedByMentor"      => "returned",
+            "ApprovedByMentor"      => "approved",
             _                       => "open",
         };
     }
@@ -251,6 +306,9 @@
             "RevisionSubmitted"     => "הועבר לבדיקת מנחה",
             "ApprovedForSubmission" => "אושר להגשה",
             "Done"                  => "הושלם",
+            "PendingMentorReview"   => "ממתין לאישור מנחה",
+            "ReturnedByMentor"      => "הוחזר ע״י מנחה",
+            "ApprovedByMentor"      => "ממתין לאישור מרצה",
             _                       => "ממתין לביצוע",
         };
     }
@@ -267,6 +325,9 @@
             "RevisionSubmitted"     => "revision",
             "ApprovedForSubmission" => "approved",
             "Done"                  => "completed",
+            "PendingMentorReview"   => "submitted",
+            "ReturnedByMentor"      => "returned",
+            "ApprovedByMentor"      => "approved",
             _                       => "open",
         };
     }
@@ -283,6 +344,9 @@
             "RevisionSubmitted"     => "oi-loop-circular",
             "ApprovedForSubmission" => "oi-circle-check",
             "Done"                  => "oi-circle-check",
+            "PendingMentorReview"   => "oi-data-transfer-upload",
+            "ReturnedByMentor"      => "oi-arrow-circle-left",
+            "ApprovedByMentor"      => "oi-circle-check",
             _                       => "oi-media-record",
         };
     }

@@ -553,6 +553,19 @@ public static class DatabaseMigrator
             await connection.ExecuteNonQueryAsync(
                 "ALTER TABLE TaskSubmissions ADD COLUMN ReviewerFeedback TEXT");
 
+        if (!submissionsColumns.Contains("CourseSubmittedAt"))
+        {
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN CourseSubmittedAt TEXT");
+            // Backfill: existing approved submissions are treated as already course-submitted
+            // so they remain visible to course staff without requiring student action.
+            await connection.ExecuteNonQueryAsync(@"
+                UPDATE TaskSubmissions
+                SET    CourseSubmittedAt = COALESCE(MentorReviewedAt, SubmittedAt)
+                WHERE  MentorStatus = 'Approved'
+                  AND  CourseSubmittedAt IS NULL");
+        }
+
         // ── StudentSubTasks table ────────────────────────────────────────────
         // Lightweight internal checklist items created by a student team under
         // a parent system task. These are team-private: not visible to mentors
@@ -590,6 +603,118 @@ public static class DatabaseMigrator
             await connection.ExecuteNonQueryAsync(
                 "ALTER TABLE StudentSubTasks ADD COLUMN Notes TEXT");
 
+        // ── SlackIntegrations table ───────────────────────────────────────────
+        // One row per user. Stores the OAuth result from Slack so the system can
+        // later post DM notifications on the user's behalf.
+        //   AccessToken    — bot/user token returned by Slack after OAuth
+        //   SlackUserId    — Slack's internal user ID (used to open DMs)
+        //   WebhookUrl     — incoming-webhook URL if the app requested that scope
+        //   IsActive       — set to 0 on disconnect without deleting history
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS SlackIntegrations (
+                Id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId        INTEGER NOT NULL UNIQUE,
+                SlackUserId   TEXT    NOT NULL DEFAULT '',
+                SlackTeamId   TEXT    NOT NULL DEFAULT '',
+                SlackTeamName TEXT    NOT NULL DEFAULT '',
+                AccessToken   TEXT    NOT NULL DEFAULT '',
+                WebhookUrl    TEXT    NOT NULL DEFAULT '',
+                ConnectedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                IsActive      INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // ── UserPreferences table ─────────────────────────────────────────────
+        // Per-user notification and integration preferences for the student
+        // profile/settings page. UserId is the primary key so each user has at
+        // most one row; missing rows are treated as all-defaults on read.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS UserPreferences (
+                UserId                  INTEGER PRIMARY KEY,
+                NotifyOnTasks           INTEGER NOT NULL DEFAULT 1,
+                NotifyOnDeadlines       INTEGER NOT NULL DEFAULT 1,
+                NotifyOnFeedback        INTEGER NOT NULL DEFAULT 1,
+                NotifyOnSubmissions     INTEGER NOT NULL DEFAULT 1,
+                NotifyOnMentorUpdates   INTEGER NOT NULL DEFAULT 1,
+                GoogleCalendarConnected INTEGER NOT NULL DEFAULT 0,
+                SlackConnected          INTEGER NOT NULL DEFAULT 0,
+                UpdatedAt               TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // ── UserPreferences: ThemePreference column ───────────────────────────
+        // Added after the initial schema; existing rows default to 'system'.
+        var prefColumns = await GetColumnsAsync(connection, "UserPreferences");
+        if (!prefColumns.Contains("ThemePreference"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE UserPreferences ADD COLUMN ThemePreference TEXT NOT NULL DEFAULT 'system'");
+
+        // ── IntegrationSettings table ────────────────────────────────────────
+        // System-level OAuth configuration for third-party integrations.
+        // One row per provider (e.g. 'Slack'). ClientSecret is stored here only;
+        // it is never included in API responses sent to the client.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS IntegrationSettings (
+                Id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                Provider     TEXT    NOT NULL UNIQUE,
+                ClientId     TEXT    NOT NULL DEFAULT '',
+                ClientSecret TEXT    NOT NULL DEFAULT '',
+                RedirectUri  TEXT    NOT NULL DEFAULT '',
+                Scopes       TEXT    NOT NULL DEFAULT '',
+                IsEnabled    INTEGER NOT NULL DEFAULT 0,
+                UpdatedAt    TEXT    NOT NULL DEFAULT (datetime('now'))
+            )");
+
+        // ── ProjectMentors table ─────────────────────────────────────────────
+        // Many-to-many junction: links mentor users to the projects they supervise.
+        // UNIQUE(ProjectId, UserId) prevents duplicate assignments.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectMentors (
+                Id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ProjectId  INTEGER NOT NULL,
+                UserId     INTEGER NOT NULL,
+                AssignedAt TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (ProjectId, UserId),
+                FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UserId)    REFERENCES users(Id)    ON DELETE CASCADE
+            )");
+
+        // ── StudentProjectFavorites table ─────────────────────────────────────
+        // Students bookmark projects they are interested in before submitting
+        // the assignment / preference form.
+        // UNIQUE(UserId, ProjectId) prevents duplicate bookmarks.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS StudentProjectFavorites (
+                Id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId    INTEGER NOT NULL,
+                ProjectId INTEGER NOT NULL,
+                CreatedAt TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (UserId, ProjectId),
+                FOREIGN KEY (UserId)    REFERENCES users(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE CASCADE
+            )");
+
+        // ── Notifications table ───────────────────────────────────────────────
+        // In-system notification feed per user.
+        // Type: 'SubmissionReceived' | 'SubmissionReturned' | 'General'
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Notifications (
+                Id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId            INTEGER NOT NULL,
+                Title             TEXT    NOT NULL,
+                Message           TEXT    NOT NULL,
+                Type              TEXT    NOT NULL DEFAULT 'General',
+                RelatedEntityType TEXT,
+                RelatedEntityId   INTEGER,
+                IsRead            INTEGER NOT NULL DEFAULT 0,
+                CreatedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                ReadAt            TEXT,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user ON Notifications(UserId, CreatedAt DESC)");
+
         // ── LearningMaterials table ───────────────────────────────────────────
         // Stores learning resources (videos, files, links) visible to students.
         // Targeting rules:
@@ -609,6 +734,47 @@ public static class DatabaseMigrator
                 ProjectType  TEXT,
                 CreatedAt    TEXT    NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE CASCADE
+            )");
+
+        // ── StudentStrengths table ────────────────────────────────────────────
+        // Records which domain strengths each student selected in the assignment form.
+        // Strength values: 'Design' | 'Content' | 'Technology' | 'ProjectManagement'
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS StudentStrengths (
+                Id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId    INTEGER NOT NULL,
+                Strength  TEXT    NOT NULL,
+                CreatedAt TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (UserId, Strength),
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // ── TeamProjectPreferences table ──────────────────────────────────────
+        // Ordered project preferences submitted by a team (up to 3 priorities).
+        // UNIQUE(TeamId, Priority) ensures only one project per rank.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS TeamProjectPreferences (
+                Id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                TeamId    INTEGER NOT NULL,
+                Priority  INTEGER NOT NULL,
+                ProjectId INTEGER NOT NULL,
+                UNIQUE (TeamId, Priority),
+                FOREIGN KEY (TeamId)    REFERENCES Teams(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE CASCADE
+            )");
+
+        // ── AssignmentFormSubmissions table ───────────────────────────────────
+        // One record per team; stores the free-text fields from the preference form.
+        // UNIQUE(TeamId) enforced via ON CONFLICT UPDATE (upsert).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AssignmentFormSubmissions (
+                Id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                TeamId               INTEGER NOT NULL UNIQUE,
+                HasOwnProject        INTEGER NOT NULL DEFAULT 0,
+                OwnProjectDescription TEXT,
+                Notes                TEXT,
+                SubmittedAt          TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (TeamId) REFERENCES Teams(Id) ON DELETE CASCADE
             )");
     }
 

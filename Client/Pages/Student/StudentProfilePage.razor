@@ -1,0 +1,576 @@
+@page "/settings"
+@layout AppLayout
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject IStudentProfileService ProfileService
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@attribute [Authorize]
+
+@if (_isLoading)
+{
+    <div class="spp-loading">
+        <div class="spp-spinner"></div>
+        <span>טוענת פרטים…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <div class="spp-error">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        <p>אירעה שגיאה בטעינת הפרופיל. נסי לרענן את הדף.</p>
+    </div>
+}
+else if (_profile is not null)
+{
+    <div class="spp-page">
+
+        <!-- ══ Page title ══ -->
+        <div class="spp-page-header">
+            <h1 class="spp-page-title">האזור האישי</h1>
+        </div>
+
+        <!-- ══ Profile strip ══ -->
+        <div class="spp-profile-strip">
+
+            <!-- Avatar with upload overlay -->
+            <div class="spp-avatar-wrap">
+                @if (!string.IsNullOrEmpty(_profile.ProfileImageUrl))
+                {
+                    <img class="spp-avatar-img" src="@_profile.ProfileImageUrl" alt="תמונת פרופיל" />
+                }
+                else
+                {
+                    <div class="spp-avatar-initials">@GetInitials()</div>
+                }
+                <label class="spp-avatar-overlay" for="avatar-file-input" title="החלפת תמונה">
+                    <span class="oi oi-camera" aria-hidden="true"></span>
+                </label>
+                <InputFile id="avatar-file-input"
+                           OnChange="HandleAvatarUpload"
+                           accept="image/jpeg,image/png,image/webp"
+                           class="spp-avatar-file-input"
+                           style="display:none" />
+            </div>
+
+            <!-- Name + meta -->
+            <div class="spp-profile-strip-info">
+                <div class="spp-strip-name">@_profile.FirstName @_profile.LastName</div>
+                <div class="spp-strip-badges">
+                    <span class="spp-role-badge">סטודנט</span>
+                    @if (!string.IsNullOrWhiteSpace(_profile.AcademicYear))
+                    {
+                        <span class="spp-strip-year">
+                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                            @_profile.AcademicYear
+                        </span>
+                    }
+                    @if (_profile.ProjectTitle is not null)
+                    {
+                        <span class="spp-strip-project">
+                            <span class="oi oi-layers" aria-hidden="true"></span>
+                            @_profile.ProjectTitle
+                        </span>
+                    }
+                </div>
+                <div class="spp-strip-meta">
+                    <span>
+                        <span class="oi oi-envelope-closed" aria-hidden="true"></span>
+                        @_profile.Email
+                    </span>
+                    @if (!string.IsNullOrWhiteSpace(_profile.Phone))
+                    {
+                        <span>
+                            <span class="oi oi-phone" aria-hidden="true"></span>
+                            @_profile.Phone
+                        </span>
+                    }
+                </div>
+                @if (!string.IsNullOrEmpty(_profile.ProfileImageUrl))
+                {
+                    <button class="spp-remove-avatar-btn" @onclick="RemoveAvatarAsync" disabled="@_avatarBusy">
+                        הסרת תמונה
+                    </button>
+                }
+            </div>
+
+            <!-- Avatar feedback -->
+            @if (_avatarBusy)
+            {
+                <div class="spp-avatar-status">
+                    <div class="spp-spinner-sm"></div>
+                    <span>מעלה…</span>
+                </div>
+            }
+            @if (_avatarError)
+            {
+                <p class="spp-inline-error">שגיאה בהעלאת התמונה. נסי שנית.</p>
+            }
+        </div>
+
+        <!-- ══ Main grid ══ -->
+        <div class="spp-grid">
+
+            <!-- ─── Left column ─── -->
+            <div class="spp-col">
+
+                <!-- Personal details -->
+                <div class="spp-card">
+                    <div class="spp-card-title">
+                        <span class="oi oi-person" aria-hidden="true"></span>
+                        פרטים אישיים
+                    </div>
+                    <div class="spp-fields">
+                        <div class="spp-field">
+                            <span class="spp-field-label">שם מלא</span>
+                            <span class="spp-field-val">@_profile.FirstName @_profile.LastName</span>
+                        </div>
+                        <div class="spp-field">
+                            <span class="spp-field-label">אימייל</span>
+                            <span class="spp-field-val">@_profile.Email</span>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(_profile.IdNumber))
+                        {
+                            <div class="spp-field">
+                                <span class="spp-field-label">ת"ז</span>
+                                <span class="spp-field-val">@_profile.IdNumber</span>
+                            </div>
+                        }
+                        <div class="spp-field">
+                            <span class="spp-field-label">שנה אקדמית</span>
+                            <span class="spp-field-val">@(_profile.AcademicYear is { Length: > 0 } y ? y : "—")</span>
+                        </div>
+
+                        <!-- Phone — editable -->
+                        <div class="spp-field spp-field-edit">
+                            <span class="spp-field-label">טלפון</span>
+                            @if (_editingPhone)
+                            {
+                                <div class="spp-inline-edit">
+                                    <input class="spp-inline-input"
+                                           type="tel"
+                                           @bind="_phoneInput"
+                                           @bind:event="oninput"
+                                           placeholder="05x-xxxxxxx"
+                                           maxlength="20"
+                                           disabled="@_savingPhone" />
+                                    <button class="spp-btn-save" @onclick="SavePhoneAsync" disabled="@_savingPhone">
+                                        @if (_savingPhone) { <div class="spp-spinner-sm"></div> }
+                                        else               { <span>שמירה</span> }
+                                    </button>
+                                    <button class="spp-btn-ghost" @onclick="CancelPhoneEdit" disabled="@_savingPhone">
+                                        ביטול
+                                    </button>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="spp-field-edit-row">
+                                    <span class="spp-field-val">@(_profile.Phone is { Length: > 0 } ph ? ph : "—")</span>
+                                    <button class="spp-btn-edit" @onclick="StartPhoneEdit">
+                                        <span class="oi oi-pencil" aria-hidden="true"></span>
+                                        עריכה
+                                    </button>
+                                </div>
+                            }
+                        </div>
+
+                        @if (_phoneError)  { <p class="spp-inline-error">שגיאה בשמירה. נסי שנית.</p> }
+                        @if (_phoneSaved)
+                        {
+                            <p class="spp-inline-success">
+                                <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                עודכן בהצלחה
+                            </p>
+                        }
+                    </div>
+                </div>
+
+                <!-- Appearance -->
+                <div class="spp-card">
+                    <div class="spp-card-title">
+                        <span class="oi oi-contrast" aria-hidden="true"></span>
+                        מראה
+                    </div>
+                    <div class="spp-theme-group">
+                        <button class="spp-theme-btn @(_prefs.ThemePreference == "light" ? "spp-theme-active" : "")"
+                                @onclick='() => SetTheme("light")'>
+                            <span class="oi oi-sun" aria-hidden="true"></span>
+                            בהיר
+                        </button>
+                        <button class="spp-theme-btn @(_prefs.ThemePreference == "dark" ? "spp-theme-active" : "")"
+                                @onclick='() => SetTheme("dark")'>
+                            <span class="oi oi-moon" aria-hidden="true"></span>
+                            כהה
+                        </button>
+                        <button class="spp-theme-btn @(_prefs.ThemePreference == "system" ? "spp-theme-active" : "")"
+                                @onclick='() => SetTheme("system")'>
+                            <span class="oi oi-monitor" aria-hidden="true"></span>
+                            מערכת
+                        </button>
+                    </div>
+                </div>
+
+            </div><!-- /.spp-col -->
+
+            <!-- ─── Right column ─── -->
+            <div class="spp-col">
+
+                <!-- Notifications -->
+                <div class="spp-card">
+                    <div class="spp-card-header">
+                        <div class="spp-card-title">
+                            <span class="oi oi-bell" aria-hidden="true"></span>
+                            התראות
+                        </div>
+                        @if (_prefsSaving) { <div class="spp-spinner-sm"></div> }
+                        @if (_prefsSaved)
+                        {
+                            <span class="spp-saved-chip">
+                                <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                נשמר
+                            </span>
+                        }
+                    </div>
+                    <div class="spp-toggles">
+                        @foreach (var t in _notifDefs)
+                        {
+                            <div class="spp-toggle-row">
+                                <div class="spp-toggle-text">
+                                    <span class="spp-toggle-title">@t.Title</span>
+                                    <span class="spp-toggle-sub">@t.Sub</span>
+                                </div>
+                                <button class="spp-toggle @(t.Get(_prefs) ? "spp-toggle-on" : "")"
+                                        @onclick="() => TogglePref(t.Mutate)">
+                                    <span class="spp-toggle-thumb"></span>
+                                </button>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- Integrations -->
+                <div class="spp-card">
+                    <div class="spp-card-title">
+                        <span class="oi oi-link-intact" aria-hidden="true"></span>
+                        אינטגרציות
+                    </div>
+
+                    <!-- Slack -->
+                    @{
+                        bool slackReady = _slackSystemStatus?.IsConfigured == true
+                                       && _slackSystemStatus?.IsEnabled    == true;
+                    }
+                    <div class="spp-integration-row @(_profile.SlackConnection.IsConnected ? "spp-int-connected" : "") @(!slackReady ? "spp-int-dimmed" : "")">
+                        <div class="spp-int-icon spp-int-slack">
+                            <span class="oi oi-chat" aria-hidden="true"></span>
+                        </div>
+                        <div class="spp-int-info">
+                            <span class="spp-int-name">Slack</span>
+                            @if (!slackReady)
+                            {
+                                <span class="spp-int-desc">האינטגרציה עדיין לא הוגדרה במערכת</span>
+                            }
+                            else if (_profile.SlackConnection.IsConnected)
+                            {
+                                <span class="spp-int-status spp-int-status-ok">
+                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                    מחובר — @_profile.SlackConnection.TeamName
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="spp-int-desc">קבל התראות ישירות ל-Slack</span>
+                            }
+                        </div>
+                        <div class="spp-int-action">
+                            @if (!slackReady)
+                            {
+                                <!-- no action — system not configured -->
+                            }
+                            else if (_slackBusy)
+                            {
+                                <div class="spp-spinner-sm"></div>
+                            }
+                            else if (_profile.SlackConnection.IsConnected)
+                            {
+                                <button class="spp-btn-danger-sm" @onclick="DisconnectSlackAsync">
+                                    ניתוק
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="spp-btn-connect" @onclick="ConnectSlackAsync">
+                                    <span class="oi oi-link-intact" aria-hidden="true"></span>
+                                    חיבור
+                                </button>
+                            }
+                        </div>
+                    </div>
+
+                    @if (_slackConnectError)
+                    {
+                        <p class="spp-inline-error">שגיאה בחיבור ל-Slack. נסי שנית.</p>
+                    }
+                    @if (_slackJustConnected)
+                    {
+                        <p class="spp-inline-success">
+                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                            Slack חובר בהצלחה!
+                        </p>
+                    }
+
+                    <!-- Google Calendar -->
+                    <div class="spp-integration-row spp-int-dimmed">
+                        <div class="spp-int-icon spp-int-google">
+                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                        </div>
+                        <div class="spp-int-info">
+                            <span class="spp-int-name">יומן Google</span>
+                            <span class="spp-int-desc">סנכרן אבני דרך ומועדים ליומן האישי</span>
+                        </div>
+                        <div class="spp-int-action">
+                            <span class="spp-coming-soon">בקרוב</span>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div><!-- /.spp-col -->
+
+        </div><!-- /.spp-grid -->
+
+    </div><!-- /.spp-page -->
+}
+
+@code {
+    [CascadingParameter] private User? _user { get; set; }
+
+    private StudentProfileDto?    _profile;
+    private StudentPreferencesDto _prefs     = new();
+    private bool _isLoading = true;
+    private bool _loadError = false;
+
+    // Phone edit
+    private bool   _editingPhone = false;
+    private string _phoneInput   = "";
+    private bool   _savingPhone  = false;
+    private bool   _phoneError   = false;
+    private bool   _phoneSaved   = false;
+
+    // Avatar
+    private bool _avatarBusy  = false;
+    private bool _avatarError = false;
+
+    // Preferences
+    private bool _prefsSaving = false;
+    private bool _prefsSaved  = false;
+
+    // Slack
+    private IntegrationStatusDto? _slackSystemStatus;
+    private bool _slackBusy          = false;
+    private bool _slackConnectError  = false;
+    private bool _slackJustConnected = false;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Check for OAuth callback query params
+        var uri = new Uri(Nav.Uri);
+        _slackJustConnected = uri.Query.Contains("slackConnected=true");
+        _slackConnectError  = uri.Query.Contains("slackError=true");
+
+        var profileTask     = ProfileService.GetProfileAsync();
+        var slackStatusTask = ProfileService.GetSlackSystemStatusAsync();
+
+        await Task.WhenAll(profileTask, slackStatusTask);
+
+        _profile          = profileTask.Result;
+        _slackSystemStatus = slackStatusTask.Result;
+        _loadError        = _profile is null;
+        _isLoading        = false;
+
+        if (_profile is not null)
+        {
+            _prefs = _profile.Preferences;
+            try { await JS.InvokeVoidAsync("gradify.setTheme", _prefs.ThemePreference); }
+            catch { /* JS not yet ready — theme already applied by the inline script in index.html */ }
+        }
+    }
+
+    // ── Profile image ─────────────────────────────────────────────────────────
+
+    private async Task HandleAvatarUpload(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file.Size > 3 * 1024 * 1024)
+        {
+            _avatarError = true;
+            return;
+        }
+
+        _avatarBusy  = true;
+        _avatarError = false;
+
+        using var ms = new System.IO.MemoryStream();
+        await file.OpenReadStream(maxAllowedSize: 3 * 1024 * 1024).CopyToAsync(ms);
+        var base64 = Convert.ToBase64String(ms.ToArray());
+        var ext    = System.IO.Path.GetExtension(file.Name).TrimStart('.').ToLower();
+
+        bool ok = await ProfileService.UploadAvatarAsync(base64, ext);
+        if (ok)
+        {
+            var updated = await ProfileService.GetProfileAsync();
+            if (updated is not null) _profile = updated;
+        }
+        else
+        {
+            _avatarError = true;
+        }
+
+        _avatarBusy = false;
+    }
+
+    private async Task RemoveAvatarAsync()
+    {
+        _avatarBusy  = true;
+        _avatarError = false;
+        bool ok = await ProfileService.RemoveAvatarAsync();
+        if (ok && _profile is not null) _profile.ProfileImageUrl = null;
+        else if (!ok) _avatarError = true;
+        _avatarBusy = false;
+    }
+
+    // ── Phone edit ────────────────────────────────────────────────────────────
+
+    private void StartPhoneEdit()
+    {
+        _phoneInput   = _profile?.Phone ?? "";
+        _editingPhone = true;
+        _phoneError   = false;
+        _phoneSaved   = false;
+    }
+
+    private void CancelPhoneEdit() { _editingPhone = false; _phoneError = false; }
+
+    private async Task SavePhoneAsync()
+    {
+        if (_profile is null) return;
+        _savingPhone = true;
+        _phoneError  = false;
+        bool ok = await ProfileService.UpdatePhoneAsync(_phoneInput.Trim());
+        if (ok)
+        {
+            _profile.Phone = _phoneInput.Trim();
+            _editingPhone  = false;
+            _phoneSaved    = true;
+            _ = AutoClearAsync(() => _phoneSaved = false, 2500);
+        }
+        else { _phoneError = true; }
+        _savingPhone = false;
+    }
+
+    // ── Theme ─────────────────────────────────────────────────────────────────
+
+    private void SetTheme(string theme)
+    {
+        _prefs.ThemePreference = theme;
+        _ = SafeSetThemeAsync(theme);
+        _ = SavePreferencesAsync();
+    }
+
+    private async Task SafeSetThemeAsync(string theme)
+    {
+        try { await JS.InvokeVoidAsync("gradify.setTheme", theme); }
+        catch { }
+    }
+
+    // ── Notification prefs ────────────────────────────────────────────────────
+
+    private sealed record ToggleDef(
+        string Title,
+        string Sub,
+        Func<StudentPreferencesDto, bool> Get,
+        Action<StudentPreferencesDto> Mutate);
+
+    private readonly ToggleDef[] _notifDefs =
+    {
+        new("התראות על משימות",    "עדכונים כשמשימה מתווספת או משתנה",  p => p.NotifyOnTasks,         p => p.NotifyOnTasks         = !p.NotifyOnTasks),
+        new("תזכורות מועדי הגשה", "תזכורת לפני תאריך יעד",              p => p.NotifyOnDeadlines,     p => p.NotifyOnDeadlines     = !p.NotifyOnDeadlines),
+        new("עדכוני פידבק",       "כאשר מנחה או מרצה מוסיף הערות",     p => p.NotifyOnFeedback,      p => p.NotifyOnFeedback      = !p.NotifyOnFeedback),
+        new("עדכוני הגשות",       "אישור, החזרה ושינויי סטטוס הגשה",   p => p.NotifyOnSubmissions,   p => p.NotifyOnSubmissions   = !p.NotifyOnSubmissions),
+        new("עדכוני מנחה",        "הודעות ופעולות מהמנחה שלך",          p => p.NotifyOnMentorUpdates, p => p.NotifyOnMentorUpdates = !p.NotifyOnMentorUpdates),
+    };
+
+    private void TogglePref(Action<StudentPreferencesDto> mutate)
+    {
+        mutate(_prefs);
+        _ = SavePreferencesAsync();
+    }
+
+    private async Task SavePreferencesAsync()
+    {
+        _prefsSaving = true;
+        _prefsSaved  = false;
+        StateHasChanged();
+        bool ok = await ProfileService.UpdatePreferencesAsync(_prefs);
+        _prefsSaving = false;
+        if (ok)
+        {
+            _prefsSaved = true;
+            _ = AutoClearAsync(() => _prefsSaved = false, 2000);
+        }
+        StateHasChanged();
+    }
+
+    // ── Slack ─────────────────────────────────────────────────────────────────
+
+    private async Task ConnectSlackAsync()
+    {
+        _slackBusy         = true;
+        _slackConnectError = false;
+        StateHasChanged();
+
+        var url = await ProfileService.GetSlackConnectUrlAsync();
+        _slackBusy = false;
+        if (url is not null)
+            Nav.NavigateTo(url, forceLoad: true);
+        else
+        {
+            _slackConnectError = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task DisconnectSlackAsync()
+    {
+        _slackBusy = true;
+        StateHasChanged();
+        bool ok = await ProfileService.DisconnectSlackAsync();
+        if (ok && _profile is not null)
+            _profile.SlackConnection = new SlackConnectionDto();
+        _slackBusy = false;
+        StateHasChanged();
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private string GetInitials()
+    {
+        var first = _profile?.FirstName?.Trim() ?? "";
+        var last  = _profile?.LastName?.Trim()  ?? "";
+        if (first.Length == 0 && last.Length == 0) return "?";
+        return (first.Length > 0 ? first[0].ToString() : "")
+             + (last.Length  > 0 ? last[0].ToString()  : "");
+    }
+
+    private async Task AutoClearAsync(Action clear, int delayMs)
+    {
+        await Task.Delay(delayMs);
+        clear();
+        StateHasChanged();
+    }
+}

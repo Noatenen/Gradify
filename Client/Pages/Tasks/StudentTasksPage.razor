@@ -81,7 +81,7 @@ else
                                     Groups="@FilteredActiveGroups"
                                     IsCompletedSection="false"
                                     ShowAddButton="true"
-                                    EmptyMessage="@(HasAnyFilter ? "אין משימות התואמות לסינון שנבחר" : "אין משימות פעילות או בהמתנה בפרויקט זה")"
+                                    EmptyMessage="@(HasAnyFilter ? "אין משימות התואמות לסינון שנבחר" : "אין משימות פעילות או דורשות תשומת לב בפרויקט זה")"
                                     OnOpenSubmission="OpenSubmission"
                                     OnOpenDetail="OpenDetail" />
         }
@@ -174,8 +174,8 @@ else
     private string ActiveSectionTitle => _summaryFilter switch
     {
         "active"  => "משימות פעילות",
-        "pending" => "משימות בהמתנה",
-        _         => "משימות פעילות ובהמתנה",
+        "pending" => "דורשות תשומת לב",
+        _         => "משימות פעילות ודורשות תשומת לב",
     };
 
     private List<TaskMilestoneGroupDto> FilteredActiveGroups
@@ -184,17 +184,38 @@ else
         {
             if (_data is null) return new();
 
-            // Apply summary (milestone-level) filter
+            if (_summaryFilter == "pending")
+            {
+                // Show only tasks that need student action, across all milestone groups
+                return _data.ActiveGroups
+                    .Select(g => new TaskMilestoneGroupDto
+                    {
+                        ProjectMilestoneId = g.ProjectMilestoneId,
+                        MilestoneTitle     = g.MilestoneTitle,
+                        OrderIndex         = g.OrderIndex,
+                        MilestoneStatus    = g.MilestoneStatus,
+                        DueDate            = g.DueDate,
+                        DoneCount          = g.DoneCount,
+                        TotalCount         = g.TotalCount,
+                        Tasks              = g.Tasks.Where(t => IsNeedsAttentionStatus(t.Status)).ToList(),
+                    })
+                    .Where(g => g.Tasks.Count > 0)
+                    .ToList();
+            }
+
+            // Apply summary (milestone-level) filter for other cases
             var groups = _summaryFilter switch
             {
-                "active"  => _data.ActiveGroups.Where(g => g.MilestoneStatus is "InProgress" or "Delayed").ToList(),
-                "pending" => _data.ActiveGroups.Where(g => g.MilestoneStatus == "NotStarted").ToList(),
-                _         => _data.ActiveGroups,
+                "active" => _data.ActiveGroups.Where(g => g.MilestoneStatus is "InProgress" or "Delayed").ToList(),
+                _        => _data.ActiveGroups,
             };
 
             return ApplyStatusFilter(groups);
         }
     }
+
+    private static bool IsNeedsAttentionStatus(string status) =>
+        status is "ReturnedForRevision" or "SubmittedToMentor" or "RevisionSubmitted";
 
     private List<TaskMilestoneGroupDto> FilteredCompletedGroups
     {

@@ -1,0 +1,638 @@
+@page "/student/assignment"
+@layout AppLayout
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using Microsoft.AspNetCore.Authorization
+@inject IAssignmentService AssignmentSvc
+@inject NavigationManager Nav
+@attribute [Authorize]
+
+<div class="sap-page" dir="rtl">
+
+    <!-- ── Header ── -->
+    <div class="sap-header">
+        <div class="sap-header-top">
+            <button class="sap-back-btn" @onclick='() => Nav.NavigateTo("/" + PageRoutes.StudentCatalog)'>
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+                חזרה לקטלוג
+            </button>
+        </div>
+        <h1 class="sap-title">טופס בחירת פרויקט</h1>
+        <p class="sap-sub">העדפות שיבוץ לפרויקט הגמר</p>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="sap-state-box">
+            <div class="sap-spinner"></div>
+            <span>טוענת נתונים…</span>
+        </div>
+    }
+    else if (_ctx is null)
+    {
+        <div class="sap-state-box sap-state-box--error">
+            <span>⚠ שגיאה בטעינת הטופס. נסי לרענן את הדף.</span>
+        </div>
+    }
+    else if (!_editMode && _ctx.ExistingSubmission is not null)
+    {
+        <!-- ════════════════════════════════════════════════════════════
+             SUMMARY VIEW — shown after submit or on return visit
+             ════════════════════════════════════════════════════════════ -->
+
+        @if (_justSubmitted)
+        {
+            <div class="sap-success-banner">
+                <span class="oi oi-check" aria-hidden="true"></span>
+                הטופס הוגש בהצלחה! ניתן לעדכן את ההגשה בכל עת לפני סגירת המועד.
+            </div>
+        }
+        else
+        {
+            <div class="sap-info-banner">
+                <span class="oi oi-info" aria-hidden="true"></span>
+                הגשה מיום @FormatDate(_ctx.ExistingSubmission.SubmittedAt) — ניתן לעדכן עד סגירת המועד.
+            </div>
+        }
+
+        <div class="sap-summary">
+
+            <!-- Team -->
+            <div class="sap-summary-section">
+                <div class="sap-summary-section-head">
+                    <span class="sap-summary-icon">👥</span>
+                    <h2 class="sap-summary-title">צוות</h2>
+                </div>
+                <div class="sap-summary-members">
+                    @foreach (var m in _ctx.TeamMembers)
+                    {
+                        <div class="sap-summary-member">
+                            <div class="sap-summary-member-name">
+                                <span class="oi oi-person" aria-hidden="true"></span>
+                                <strong>@m.FullName</strong>
+                                @if (m.UserId == _ctx.Me.Id)
+                                {
+                                    <span class="sap-chip-you">את</span>
+                                }
+                            </div>
+                            @if (m.Strengths.Count > 0)
+                            {
+                                <div class="sap-summary-strengths">
+                                    @foreach (var s in m.Strengths)
+                                    {
+                                        <span class="sap-summary-strength-tag">
+                                            @GetStrengthIcon(s) @GetStrengthLabel(s)
+                                        </span>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <span class="sap-summary-none">לא צוינו חוזקות</span>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Project preferences -->
+            <div class="sap-summary-section">
+                <div class="sap-summary-section-head">
+                    <span class="sap-summary-icon">📋</span>
+                    <h2 class="sap-summary-title">העדפות פרויקט</h2>
+                </div>
+                <div class="sap-summary-prefs">
+                    @foreach (var pref in _ctx.ExistingSubmission.Preferences.OrderBy(p => p.Priority))
+                    {
+                        var proj = FindProject(pref.ProjectId);
+                        <div class="sap-summary-pref-row">
+                            <span class="sap-summary-pref-num">@pref.Priority</span>
+                            <div class="sap-summary-pref-text">
+                                <span class="sap-summary-pref-title">
+                                    @if (proj is not null)
+                                    { <text>#@proj.ProjectNumber — @proj.Title</text> }
+                                    else
+                                    { <text>פרויקט #@pref.ProjectId</text> }
+                                </span>
+                                @if (proj?.Description is { Length: > 0 } desc)
+                                {
+                                    <span class="sap-summary-pref-desc">@Truncate(desc, 100)</span>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @if (!_ctx.ExistingSubmission.Preferences.Any())
+                    {
+                        <span class="sap-summary-none">לא נבחרו פרויקטים</span>
+                    }
+                </div>
+            </div>
+
+            <!-- Own project -->
+            <div class="sap-summary-section">
+                <div class="sap-summary-section-head">
+                    <span class="sap-summary-icon">💡</span>
+                    <h2 class="sap-summary-title">פרויקט עצמאי</h2>
+                </div>
+                @if (_ctx.ExistingSubmission.HasOwnProject)
+                {
+                    <div class="sap-summary-own-yes">
+                        <span class="sap-summary-own-badge">כן</span>
+                        @if (!string.IsNullOrWhiteSpace(_ctx.ExistingSubmission.OwnProjectDescription))
+                        {
+                            <p class="sap-summary-own-text">@_ctx.ExistingSubmission.OwnProjectDescription</p>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <span class="sap-summary-none">לא — נבחר מהקטלוג</span>
+                }
+            </div>
+
+            <!-- Notes -->
+            @if (!string.IsNullOrWhiteSpace(_ctx.ExistingSubmission.Notes))
+            {
+                <div class="sap-summary-section">
+                    <div class="sap-summary-section-head">
+                        <span class="sap-summary-icon">📝</span>
+                        <h2 class="sap-summary-title">הערות נוספות</h2>
+                    </div>
+                    <p class="sap-summary-notes">@_ctx.ExistingSubmission.Notes</p>
+                </div>
+            }
+
+        </div>
+
+        <!-- Edit button -->
+        <div class="sap-summary-footer">
+            <button class="sap-edit-btn" @onclick="EnterEditMode">
+                <span class="oi oi-pencil" aria-hidden="true"></span>
+                עדכון הגשה
+            </button>
+        </div>
+    }
+    else
+    {
+        <!-- ════════════════════════════════════════════════════════════
+             EDIT FORM
+             ════════════════════════════════════════════════════════════ -->
+
+        @if (_ctx.ExistingSubmission is not null)
+        {
+            <div class="sap-edit-mode-banner">
+                <span class="oi oi-pencil" aria-hidden="true"></span>
+                עריכת הגשה קיימת — שמרי כדי לעדכן
+                <button class="sap-cancel-edit-btn" @onclick="() => _editMode = false">ביטול</button>
+            </div>
+        }
+
+        <div class="sap-form">
+
+            <!-- ═══ SECTION 1 — Team ═══ -->
+            <div class="sap-section">
+                <div class="sap-section-head">
+                    <span class="sap-section-num">1</span>
+                    <div>
+                        <h2 class="sap-section-title">צוות</h2>
+                        <p class="sap-section-sub">
+                            @if (_ctx.HasTeam) { <span>חברי הצוות שלך</span> }
+                            else               { <span>בחרי שותפה אחת לצוות (חובה)</span> }
+                        </p>
+                    </div>
+                    @if (_ctx.HasTeam || _selectedPartnerIds.Count == 1)
+                    {
+                        <span class="sap-team-ready-badge">✓ @(_ctx.HasTeam ? "צוות מאושר" : "צוות מוכן")</span>
+                    }
+                    else
+                    {
+                        <span class="sap-team-pending-badge">דרושה שותפה</span>
+                    }
+                </div>
+
+                @if (_ctx.HasTeam)
+                {
+                    <div class="sap-member-list">
+                        @foreach (var m in _ctx.TeamMembers)
+                        {
+                            <div class="sap-member-chip @(m.UserId == _ctx.Me.Id ? "sap-chip-me" : "")">
+                                <span class="oi oi-person" aria-hidden="true"></span>
+                                @m.FullName
+                                @if (m.UserId == _ctx.Me.Id) { <span class="sap-chip-you">את</span> }
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="sap-team-preview">
+                        <div class="sap-member-chip sap-chip-me">
+                            <span class="oi oi-person" aria-hidden="true"></span>
+                            @_ctx.Me.FullName
+                            <span class="sap-chip-you">את</span>
+                        </div>
+                        @if (_selectedPartnerIds.Count == 1)
+                        {
+                            var pid     = _selectedPartnerIds.First();
+                            var partner = _ctx.AvailableStudents.FirstOrDefault(s => s.Id == pid);
+                            @if (partner is not null)
+                            {
+                                <span class="sap-team-plus">+</span>
+                                <div class="sap-member-chip">
+                                    <span class="oi oi-person" aria-hidden="true"></span>
+                                    @partner.FullName
+                                    <button class="sap-chip-remove" @onclick="() => RemovePartner(pid)">✕</button>
+                                </div>
+                            }
+                        }
+                        else
+                        {
+                            <span class="sap-team-plus sap-team-plus--empty">+ שותפה</span>
+                        }
+                    </div>
+
+                    @if (_ctx.AvailableStudents.Count == 0)
+                    {
+                        <p class="sap-no-partners">אין סטודנטיות זמינות כרגע.</p>
+                    }
+                    else
+                    {
+                        <div class="sap-partner-search-wrap">
+                            <span class="sap-search-icon">🔍</span>
+                            <input class="sap-partner-search" type="text"
+                                   placeholder="חיפוש לפי שם…"
+                                   @bind="_partnerSearch" @bind:event="oninput" />
+                        </div>
+                        <div class="sap-partner-list">
+                            @foreach (var s in FilteredPartners)
+                            {
+                                bool isSelected = _selectedPartnerIds.Contains(s.Id);
+                                bool isDisabled = !isSelected && _selectedPartnerIds.Count >= 1;
+                                <label class="sap-partner-row @(isSelected ? "sap-partner-row--selected" : "") @(isDisabled ? "sap-partner-row--disabled" : "")">
+                                    <input type="checkbox" class="sap-partner-cb"
+                                           checked="@isSelected" disabled="@isDisabled"
+                                           @onchange="() => TogglePartner(s.Id)" />
+                                    <span class="sap-partner-name">@s.FullName</span>
+                                    @if (isSelected) { <span class="sap-chip-selected-tick">✓</span> }
+                                </label>
+                            }
+                        </div>
+                    }
+                }
+            </div>
+
+            <!-- ═══ SECTION 2 — Strengths ═══ -->
+            <div class="sap-section">
+                <div class="sap-section-head">
+                    <span class="sap-section-num">2</span>
+                    <div>
+                        <h2 class="sap-section-title">חוזקות הצוות</h2>
+                        <p class="sap-section-sub">סמנו את תחומי הכישרון של כל חברת צוות</p>
+                    </div>
+                </div>
+                <div class="sap-strengths-grid-outer">
+                    @foreach (var member in AllTeamMembers)
+                    {
+                        <div class="sap-strengths-member">
+                            <div class="sap-strengths-member-name">
+                                <span class="oi oi-person" aria-hidden="true"></span>
+                                @member.FullName
+                                @if (member.Id == _ctx.Me.Id) { <span class="sap-chip-you">את</span> }
+                            </div>
+                            <div class="sap-strengths-chips">
+                                @foreach (var (key, label, icon) in StrengthOptions)
+                                {
+                                    bool isChecked = _strengths.TryGetValue(member.Id, out var set) && set.Contains(key);
+                                    <label class="sap-strength-chip @(isChecked ? "sap-strength-chip--active" : "")">
+                                        <input type="checkbox" class="sap-hidden-cb" checked="@isChecked"
+                                               @onchange="() => ToggleStrength(member.Id, key)" />
+                                        <span class="sap-strength-icon">@icon</span>
+                                        @label
+                                    </label>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- ═══ SECTION 3 — Project preferences ═══ -->
+            <div class="sap-section">
+                <div class="sap-section-head">
+                    <span class="sap-section-num">3</span>
+                    <div>
+                        <h2 class="sap-section-title">העדפות פרויקט</h2>
+                        <p class="sap-section-sub">בחרי 3 פרויקטים לפי סדר עדיפות (חובה)</p>
+                    </div>
+                    @if (_preferences.Count == 3)
+                    { <span class="sap-team-ready-badge">✓ מלא</span> }
+                    else
+                    { <span class="sap-team-pending-badge">@_preferences.Count / 3 נבחרו</span> }
+                </div>
+                <div class="sap-prefs-list">
+                    @for (int i = 1; i <= 3; i++)
+                    {
+                        int priority   = i;
+                        int currentVal = GetPreference(priority);
+                        var chosen     = currentVal > 0 ? _ctx.Catalog.FirstOrDefault(p => p.Id == currentVal) : null;
+                        <div class="sap-pref-block">
+                            <div class="sap-pref-header">
+                                <span class="sap-pref-num">@priority</span>
+                                <span class="sap-pref-label">
+                                    @(priority == 1 ? "עדיפות ראשונה" : priority == 2 ? "עדיפות שנייה" : "עדיפות שלישית")
+                                </span>
+                            </div>
+                            <select class="sap-pref-select" value="@currentVal"
+                                    @onchange="e => SetPreference(priority, ParseInt(e.Value?.ToString()))">
+                                <option value="0">— בחירה —</option>
+                                @foreach (var p in _ctx.Catalog)
+                                {
+                                    bool usedElsewhere = _preferences.Any(kv => kv.Key != priority && kv.Value == p.Id);
+                                    <option value="@p.Id" disabled="@usedElsewhere">#@p.ProjectNumber — @p.Title</option>
+                                }
+                            </select>
+                            @if (chosen is not null && !string.IsNullOrWhiteSpace(chosen.Description))
+                            {
+                                <p class="sap-pref-desc">@Truncate(chosen.Description, 120)</p>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- ═══ SECTION 4 — Own project ═══ -->
+            <div class="sap-section">
+                <div class="sap-section-head">
+                    <span class="sap-section-num">4</span>
+                    <div>
+                        <h2 class="sap-section-title">פרויקט עצמאי</h2>
+                        <p class="sap-section-sub">האם יש לכם רעיון לפרויקט משלכן? (אופציונלי)</p>
+                    </div>
+                </div>
+                <label class="sap-own-toggle">
+                    <div class="sap-toggle-track @(_hasOwnProject ? "sap-toggle-track--on" : "")"
+                         @onclick="() => _hasOwnProject = !_hasOwnProject">
+                        <div class="sap-toggle-thumb"></div>
+                    </div>
+                    <span class="sap-toggle-label">@(_hasOwnProject ? "כן, יש לנו רעיון" : "לא, נבחר מהקטלוג")</span>
+                </label>
+                @if (_hasOwnProject)
+                {
+                    <textarea class="sap-textarea"
+                              placeholder="תארו את הרעיון — מטרה, קהל יעד, טכנולוגיה מתוכננת…"
+                              rows="4"
+                              @bind="_ownProjectDescription" @bind:event="oninput"></textarea>
+                }
+            </div>
+
+            <!-- ═══ SECTION 5 — Notes ═══ -->
+            <div class="sap-section">
+                <div class="sap-section-head">
+                    <span class="sap-section-num">5</span>
+                    <div>
+                        <h2 class="sap-section-title">הערות נוספות</h2>
+                        <p class="sap-section-sub">מידע נוסף לצוות הקורס (אופציונלי)</p>
+                    </div>
+                </div>
+                <textarea class="sap-textarea"
+                          placeholder="הגבלות זמן, העדפות מיוחדות, שאלות…"
+                          rows="3"
+                          @bind="_notes" @bind:event="oninput"></textarea>
+            </div>
+
+            <!-- ── Footer ── -->
+            <div class="sap-footer">
+                <div class="sap-validation-hints">
+                    <span class="sap-hint @(TeamReady ? "sap-hint--ok" : "sap-hint--missing")">
+                        @(TeamReady ? "✓" : "○") 2 חברות צוות
+                    </span>
+                    <span class="sap-hint @(_preferences.Count == 3 ? "sap-hint--ok" : "sap-hint--missing")">
+                        @(_preferences.Count == 3 ? "✓" : "○") 3 פרויקטים נבחרו
+                    </span>
+                </div>
+                @if (!string.IsNullOrEmpty(_submitError))
+                {
+                    <span class="sap-error-msg">⚠ @_submitError</span>
+                }
+                <button class="sap-submit-btn" @onclick="HandleSubmit"
+                        disabled="@(_submitting || !CanSubmit)">
+                    @if (_submitting)
+                    {
+                        <div class="sap-btn-spinner"></div>
+                        <span>שולחת…</span>
+                    }
+                    else
+                    {
+                        <span class="oi oi-check" aria-hidden="true"></span>
+                        <span>@(_ctx.ExistingSubmission is not null ? "שמירת עדכון" : "הגשת הטופס")</span>
+                    }
+                </button>
+            </div>
+
+        </div>
+    }
+
+</div>
+
+@code {
+
+    private static int    ParseInt(string? s) => int.TryParse(s, out var v) ? v : 0;
+    private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+    private static string FormatDate(string iso) => iso.Length >= 10 ? iso[..10] : iso;
+
+    private static readonly (string Key, string Label, string Icon)[] StrengthOptions =
+    {
+        ("Design",            "עיצוב",         "🎨"),
+        ("Content",           "תוכן",          "✍"),
+        ("Technology",        "טכנולוגיה",     "💻"),
+        ("ProjectManagement", "ניהול פרויקט",  "📋"),
+    };
+
+    private static string GetStrengthLabel(string key) =>
+        StrengthOptions.FirstOrDefault(o => o.Key == key).Label ?? key;
+    private static string GetStrengthIcon(string key) =>
+        StrengthOptions.FirstOrDefault(o => o.Key == key).Icon ?? "";
+
+    private AssignmentCatalogItemDto? FindProject(int id) =>
+        _ctx?.Catalog.FirstOrDefault(p => p.Id == id);
+
+    // ── State ────────────────────────────────────────────────────────────────
+
+    private AssignmentContextDto? _ctx;
+    private bool   _loading       = true;
+    private bool   _submitting    = false;
+    private bool   _justSubmitted = false;   // true only immediately after this session's submit
+    private bool   _editMode      = true;    // false = show summary; true = show editable form
+    private string _submitError   = "";
+
+    private readonly HashSet<int>                   _selectedPartnerIds = new();
+    private string                                  _partnerSearch      = "";
+    private readonly Dictionary<int, HashSet<string>> _strengths        = new();
+    private readonly Dictionary<int, int>           _preferences        = new();
+    private bool   _hasOwnProject        = false;
+    private string _ownProjectDescription = "";
+    private string _notes                = "";
+
+    private bool TeamReady => _ctx?.HasTeam == true || _selectedPartnerIds.Count == 1;
+    private bool CanSubmit => TeamReady && _preferences.Count == 3;
+
+    private IEnumerable<StudentBasicDto> FilteredPartners =>
+        _ctx?.AvailableStudents
+            .Where(s => string.IsNullOrWhiteSpace(_partnerSearch) ||
+                        s.FullName.Contains(_partnerSearch, StringComparison.OrdinalIgnoreCase))
+        ?? Enumerable.Empty<StudentBasicDto>();
+
+    private IEnumerable<(int Id, string FullName)> AllTeamMembers
+    {
+        get
+        {
+            if (_ctx is null) yield break;
+            if (_ctx.HasTeam)
+            {
+                foreach (var m in _ctx.TeamMembers)
+                    yield return (m.UserId, m.FullName);
+            }
+            else
+            {
+                yield return (_ctx.Me.Id, _ctx.Me.FullName);
+                foreach (var pid in _selectedPartnerIds)
+                {
+                    var s = _ctx.AvailableStudents.FirstOrDefault(x => x.Id == pid);
+                    if (s is not null) yield return (s.Id, s.FullName);
+                }
+            }
+        }
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        _ctx     = await AssignmentSvc.GetContextAsync();
+        _loading = false;
+
+        if (_ctx?.ExistingSubmission is { } ex)
+        {
+            // Already submitted → open in summary view
+            _editMode = false;
+            PopulateFromSubmission(ex);
+        }
+
+        if (_ctx?.HasTeam == true)
+            foreach (var m in _ctx.TeamMembers)
+                _strengths[m.UserId] = new HashSet<string>(m.Strengths);
+        else if (_ctx is not null)
+            _strengths[_ctx.Me.Id] = new();
+    }
+
+    private void PopulateFromSubmission(ExistingAssignmentDto ex)
+    {
+        _hasOwnProject         = ex.HasOwnProject;
+        _ownProjectDescription = ex.OwnProjectDescription;
+        _notes                 = ex.Notes;
+        _preferences.Clear();
+        foreach (var pref in ex.Preferences)
+            _preferences[pref.Priority] = pref.ProjectId;
+    }
+
+    private void EnterEditMode()
+    {
+        _submitError   = "";
+        _justSubmitted = false;
+        _editMode      = true;
+
+        // Re-sync strengths from current team context in case they were updated
+        if (_ctx?.HasTeam == true)
+        {
+            _strengths.Clear();
+            foreach (var m in _ctx.TeamMembers)
+                _strengths[m.UserId] = new HashSet<string>(m.Strengths);
+        }
+    }
+
+    // ── Partner / strength helpers ───────────────────────────────────────────
+
+    private void TogglePartner(int studentId)
+    {
+        if (_selectedPartnerIds.Contains(studentId))
+        {
+            _selectedPartnerIds.Remove(studentId);
+            _strengths.Remove(studentId);
+        }
+        else if (_selectedPartnerIds.Count < 1)
+        {
+            _selectedPartnerIds.Add(studentId);
+            _strengths[studentId] = new();
+        }
+    }
+
+    private void RemovePartner(int studentId)
+    {
+        _selectedPartnerIds.Remove(studentId);
+        _strengths.Remove(studentId);
+    }
+
+    private void ToggleStrength(int userId, string strength)
+    {
+        if (!_strengths.ContainsKey(userId)) _strengths[userId] = new();
+        if (!_strengths[userId].Remove(strength)) _strengths[userId].Add(strength);
+    }
+
+    private int  GetPreference(int priority) => _preferences.TryGetValue(priority, out var id) ? id : 0;
+    private void SetPreference(int priority, int projectId)
+    {
+        if (projectId == 0) _preferences.Remove(priority);
+        else                _preferences[priority] = projectId;
+    }
+
+    // ── Submit ───────────────────────────────────────────────────────────────
+
+    private async Task HandleSubmit()
+    {
+        _submitError = "";
+
+        if (!TeamReady)  { _submitError = "יש לבחור שותפה אחת לצוות לפני ההגשה";          return; }
+        if (_preferences.Count < 3) { _submitError = "יש לבחור 3 פרויקטים לפני ההגשה"; return; }
+
+        _submitting = true;
+
+        var strengthsList = new List<StudentStrengthDto>();
+        foreach (var (uid, set) in _strengths)
+            foreach (var s in set)
+                strengthsList.Add(new StudentStrengthDto { UserId = uid, Strength = s });
+
+        bool ok = await AssignmentSvc.SubmitAsync(new SubmitAssignmentRequest
+        {
+            PartnerIds            = _selectedPartnerIds.ToList(),
+            Strengths             = strengthsList,
+            Preferences           = _preferences.Select(kv => new ProjectPreferenceDto { Priority = kv.Key, ProjectId = kv.Value }).ToList(),
+            HasOwnProject         = _hasOwnProject,
+            OwnProjectDescription = _ownProjectDescription,
+            Notes                 = _notes
+        });
+
+        _submitting = false;
+
+        if (ok)
+        {
+            // Reload context so summary has fresh data (team members + strengths + preferences)
+            _ctx           = await AssignmentSvc.GetContextAsync();
+            _justSubmitted = true;
+            _editMode      = false;   // switch to summary view
+
+            if (_ctx?.ExistingSubmission is { } ex)
+                PopulateFromSubmission(ex);
+
+            if (_ctx?.HasTeam == true)
+            {
+                _strengths.Clear();
+                foreach (var m in _ctx.TeamMembers)
+                    _strengths[m.UserId] = new HashSet<string>(m.Strengths);
+            }
+        }
+        else
+        {
+            _submitError = "שגיאה בהגשה. אנא נסי שנית.";
+        }
+    }
+}

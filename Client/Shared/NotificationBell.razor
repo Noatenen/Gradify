@@ -1,0 +1,195 @@
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject INotificationService NotificationService
+@inject NavigationManager Nav
+
+<div class="nbell-wrap" dir="rtl">
+
+    @if (_isOpen)
+    {
+        <!-- Invisible backdrop — closes the panel when clicking outside -->
+        <div class="nbell-backdrop" @onclick="Close"></div>
+
+        <div class="nbell-panel">
+
+            <!-- Panel header -->
+            <div class="nbell-panel-header">
+                <span class="nbell-panel-title">התראות</span>
+                @if (_notifications.Any(n => !n.IsRead))
+                {
+                    <button class="nbell-mark-all-btn" @onclick="MarkAllRead">
+                        סמן הכל כנקרא
+                    </button>
+                }
+            </div>
+
+            <!-- Panel body -->
+            @if (_loading)
+            {
+                <div class="nbell-loading">
+                    <div class="nbell-spinner"></div>
+                    <span>טוען…</span>
+                </div>
+            }
+            else if (!_notifications.Any())
+            {
+                <div class="nbell-empty">
+                    <span class="oi oi-bell nbell-empty-icon" aria-hidden="true"></span>
+                    <span>אין התראות חדשות</span>
+                </div>
+            }
+            else
+            {
+                <div class="nbell-list">
+                    @foreach (var n in _notifications)
+                    {
+                        <div class="nbell-item @(n.IsRead ? "nbell-item-read" : "nbell-item-unread")"
+                             @onclick="() => HandleClick(n)"
+                             title="@n.Message">
+                            <div class="nbell-item-icon nbell-icon-@NotificationIconClass(n.Type)">
+                                <span class="oi @NotificationIcon(n.Type)" aria-hidden="true"></span>
+                            </div>
+                            <div class="nbell-item-body">
+                                <div class="nbell-item-title">@n.Title</div>
+                                <div class="nbell-item-msg">@n.Message</div>
+                                <div class="nbell-item-time">@FormatTime(n.CreatedAt)</div>
+                            </div>
+                            @if (!n.IsRead)
+                            {
+                                <span class="nbell-unread-dot"></span>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+        </div>
+    }
+
+    <!-- Bell trigger button -->
+    <button class="nbell-btn @(_isOpen ? "nbell-btn-active" : "")"
+            @onclick="TogglePanel"
+            title="התראות"
+            aria-label="התראות">
+        <span class="oi oi-bell" aria-hidden="true"></span>
+        @if (_unreadCount > 0)
+        {
+            <span class="nbell-dot"></span>
+        }
+    </button>
+
+</div>
+
+@code {
+    private bool                    _isOpen      = false;
+    private int                     _unreadCount = 0;
+    private List<NotificationDto>   _notifications = new();
+    private bool                    _loading     = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _unreadCount = await NotificationService.GetUnreadCountAsync();
+    }
+
+    private async Task TogglePanel()
+    {
+        _isOpen = !_isOpen;
+        if (_isOpen)
+            await LoadAsync();
+    }
+
+    private void Close() => _isOpen = false;
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _notifications = await NotificationService.GetRecentAsync();
+        _unreadCount   = _notifications.Count(n => !n.IsRead);
+        _loading = false;
+    }
+
+    private async Task HandleClick(NotificationDto n)
+    {
+        // Mark as read regardless of current state
+        if (!n.IsRead)
+        {
+            await NotificationService.MarkReadAsync(n.Id);
+            n.IsRead = true;
+            n.ReadAt = DateTime.Now;
+            _unreadCount = _notifications.Count(x => !x.IsRead);
+        }
+
+        // Close the panel and navigate to the relevant destination
+        _isOpen = false;
+        string? url = GetTargetUrl(n);
+        if (!string.IsNullOrEmpty(url))
+            Nav.NavigateTo(url);
+    }
+
+    /// <summary>
+    /// Maps a notification's Type and RelatedEntity fields to a client-side route.
+    /// Add new cases here as new notification types are introduced.
+    /// </summary>
+    private static string? GetTargetUrl(NotificationDto n) => n.Type switch
+    {
+        // Mentor receives: student submitted for review → global mentor submissions page
+        "SubmissionReceived" => "/mentor/submissions",
+
+        // Student receives: mentor returned submission → submissions page, pre-opens the task modal
+        // RelatedEntityId == TaskId (corrected at notification-creation time)
+        "SubmissionReturned" => n.RelatedEntityId.HasValue
+                               ? $"/submissions?taskId={n.RelatedEntityId}"
+                               : "/submissions",
+
+        // Student receives: request returned with notes → requests page
+        "RequestReturned"    => "/requests",
+
+        // Fallback: route by entity type when Type is not recognised
+        _ => n.RelatedEntityType switch
+        {
+            "TaskSubmission" => "/submissions",
+            "ProjectRequest" => "/requests",
+            _                => null,
+        },
+    };
+
+    private async Task MarkAllRead()
+    {
+        bool ok = await NotificationService.MarkAllReadAsync();
+        if (ok)
+        {
+            foreach (var n in _notifications)
+            {
+                n.IsRead = true;
+                n.ReadAt = DateTime.Now;
+            }
+            _unreadCount = 0;
+        }
+    }
+
+    private static string NotificationIconClass(string type) => type switch
+    {
+        "SubmissionReceived" => "received",
+        "SubmissionReturned" => "returned",
+        "RequestReturned"    => "returned",
+        _                    => "general",
+    };
+
+    private static string NotificationIcon(string type) => type switch
+    {
+        "SubmissionReceived" => "oi-data-transfer-upload",
+        "SubmissionReturned" => "oi-arrow-circle-left",
+        "RequestReturned"    => "oi-loop-circular",
+        _                    => "oi-bell",
+    };
+
+    private static string FormatTime(DateTime dt)
+    {
+        var diff = DateTime.Now - dt;
+        if (diff.TotalMinutes < 1) return "הרגע";
+        if (diff.TotalMinutes < 60) return $"לפני {(int)diff.TotalMinutes} דקות";
+        if (diff.TotalHours   < 24) return $"לפני {(int)diff.TotalHours} שעות";
+        if (diff.TotalDays    < 7)  return $"לפני {(int)diff.TotalDays} ימים";
+        return dt.ToString("dd/MM/yy");
+    }
+}

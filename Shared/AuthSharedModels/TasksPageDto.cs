@@ -28,8 +28,8 @@ public class TasksPageDto
     public int ActiveCount { get; set; }
 
     /// <summary>
-    /// Tasks with Status != "Done" whose parent milestone is NotStarted.
-    /// The milestone has not been opened yet, so the student cannot act on them.
+    /// Tasks that require student action: ReturnedForRevision, SubmittedToMentor, or RevisionSubmitted.
+    /// These are grouped under "דורשות תשומת לב" on the tasks page.
     /// </summary>
     public int PendingCount { get; set; }
 
@@ -101,4 +101,6 @@ public class TaskItemDto
     /// "Pending" | "Approved" | "Returned" — null if never submitted.
     /// </summary>
     public string?   LatestMentorStatus     { get; set; }
+    /// <summary>When the latest submission was created. Null if never submitted.</summary>
+    public DateTime? LatestSubmittedAt      { get; set; }
 }

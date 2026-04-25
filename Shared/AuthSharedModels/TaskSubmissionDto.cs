@@ -148,5 +148,9 @@ public class StudentSubmissionTaskDto
     public int?     LatestSubmissionId      { get; set; }
     /// <summary>"Submitted" | "Reviewed" | "NeedsRevision" — null if never submitted.</summary>
     public string?  LatestSubmissionStatus  { get; set; }
-    public DateTime? LatestSubmittedAt      { get; set; }
+    /// <summary>"Pending" | "Approved" | "Returned" — null if never submitted.</summary>
+    public string?   LatestMentorStatus      { get; set; }
+    /// <summary>When the student forwarded the latest submission to course staff. Null if not yet forwarded.</summary>
+    public DateTime? LatestCourseSubmittedAt { get; set; }
+    public DateTime? LatestSubmittedAt       { get; set; }
 }

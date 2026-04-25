@@ -1,0 +1,797 @@
+@page "/mentor/projects/{Id:int}"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorProjectsService MentorService
+@inject NavigationManager Nav
+
+<!-- ══ Review drawer backdrop ════════════════════════════════════════════════ -->
+@if (_reviewCtx is not null)
+{
+    <div class="mpd-backdrop" @onclick="CloseDrawer"></div>
+    <div class="mpd-drawer" dir="rtl">
+
+        <!-- Drawer header -->
+        <div class="mpd-drawer-header">
+            <div class="mpd-drawer-header-row">
+                <div>
+                    <div class="mpd-drawer-milestone">@_reviewCtx.MilestoneTitle</div>
+                    <div class="mpd-drawer-title">@_reviewCtx.TaskTitle</div>
+                </div>
+                <button class="mpd-drawer-close" @onclick="CloseDrawer" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="mpd-drawer-meta">
+                <div class="mpd-drawer-meta-item">
+                    <span class="oi oi-person" aria-hidden="true"></span>
+                    @_reviewCtx.SubmittedBy
+                </div>
+                <div class="mpd-drawer-meta-item">
+                    <span class="oi oi-clock" aria-hidden="true"></span>
+                    @_reviewCtx.SubmittedAt.ToString("dd/MM/yyyy HH:mm")
+                </div>
+            </div>
+            <!-- Current mentor status badge -->
+            <div class="mpd-drawer-status-row">
+                <span class="mpd-drawer-status-badge @DrawerMentorStatusClass(_reviewCtx.MentorStatus)">
+                    @DrawerMentorStatusLabel(_reviewCtx.MentorStatus)
+                </span>
+            </div>
+        </div>
+
+        <!-- Drawer body -->
+        <div class="mpd-drawer-body">
+
+            @if (_reviewLoading)
+            {
+                <div class="mpd-drawer-loading">
+                    <div class="mpd-drawer-spinner"></div>
+                    <span>טוען פרטי הגשה…</span>
+                </div>
+            }
+            else
+            {
+                <!-- Task description -->
+                @if (!string.IsNullOrWhiteSpace(_reviewCtx.TaskDescription))
+                {
+                    <div class="mpd-drawer-section">
+                        <div class="mpd-drawer-section-title">תיאור המשימה</div>
+                        <div class="mpd-drawer-text">@_reviewCtx.TaskDescription</div>
+                    </div>
+                }
+
+                <!-- Student notes -->
+                @if (!string.IsNullOrWhiteSpace(_reviewCtx.Notes))
+                {
+                    <div class="mpd-drawer-section">
+                        <div class="mpd-drawer-section-title">הערות הסטודנט</div>
+                        <div class="mpd-drawer-text mpd-drawer-notes">@_reviewCtx.Notes</div>
+                    </div>
+                }
+
+                <!-- Files -->
+                <div class="mpd-drawer-section">
+                    <div class="mpd-drawer-section-title">
+                        קבצים מצורפים
+                        <span class="mpd-drawer-file-count">@_reviewCtx.Files.Count</span>
+                    </div>
+                    @if (_reviewCtx.Files.Count == 0)
+                    {
+                        <div class="mpd-drawer-empty">לא צורפו קבצים להגשה זו</div>
+                    }
+                    else
+                    {
+                        <div class="mpd-drawer-file-list">
+                            @foreach (var f in _reviewCtx.Files)
+                            {
+                                <div class="mpd-drawer-file-item">
+                                    <span class="oi @FileIcon(f.ContentType) mpd-drawer-file-icon" aria-hidden="true"></span>
+                                    <div class="mpd-drawer-file-info">
+                                        <span class="mpd-drawer-file-name">@f.OriginalFileName</span>
+                                        <span class="mpd-drawer-file-size">@FormatSize(f.SizeBytes)</span>
+                                    </div>
+                                    <a class="mpd-drawer-file-dl"
+                                       href="/submissions/@f.StoredFileName"
+                                       download="@f.OriginalFileName"
+                                       title="הורדה">
+                                        <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                    </a>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <!-- Submission history — accordion per round, oldest first -->
+                @if (_reviewCtx.History.Count > 0)
+                {
+                    <div class="mpd-drawer-section">
+                        <div class="mpd-drawer-section-title">
+                            היסטוריית הגשות
+                            <span class="mpd-drawer-file-count">@_reviewCtx.History.Count סבבים</span>
+                        </div>
+                        <div class="mpd-drawer-history">
+                            @foreach (var round in _reviewCtx.History)
+                            {
+                                bool isCurrent  = round.SubmissionId == _reviewCtx.SubmissionId;
+                                bool isExpanded = _expandedRounds.Contains(round.SubmissionId);
+
+                                <div class="mpd-history-round @(isCurrent ? "mpd-history-current" : "")">
+
+                                    <!-- Round accordion header -->
+                                    <button class="mpd-history-round-btn"
+                                            @onclick="() => ToggleRound(round.SubmissionId)">
+                                        <div class="mpd-history-round-start">
+                                            <span class="mpd-history-round-num">סבב @round.RoundNumber</span>
+                                            @if (isCurrent)
+                                            {
+                                                <span class="mpd-history-current-tag">נוכחי</span>
+                                            }
+                                            <span class="mpd-history-date">@round.SubmittedAt.ToString("dd/MM/yy HH:mm")</span>
+                                        </div>
+                                        <div class="mpd-history-round-end">
+                                            <span class="mpd-history-mentor-badge mpd-hbadge-@round.MentorStatus.ToLower()">
+                                                @DrawerMentorStatusLabel(round.MentorStatus)
+                                            </span>
+                                            <span class="oi @(isExpanded ? "oi-chevron-top" : "oi-chevron-bottom") mpd-history-chevron"
+                                                  aria-hidden="true"></span>
+                                        </div>
+                                    </button>
+
+                                    <!-- Round detail (expanded) -->
+                                    @if (isExpanded)
+                                    {
+                                        <div class="mpd-history-round-body">
+
+                                            @if (!string.IsNullOrWhiteSpace(round.Notes))
+                                            {
+                                                <div class="mpd-history-block">
+                                                    <span class="mpd-history-block-label">הערות סטודנט</span>
+                                                    <div class="mpd-history-note-text">@round.Notes</div>
+                                                </div>
+                                            }
+
+                                            @if (round.Files.Count > 0)
+                                            {
+                                                <div class="mpd-history-block">
+                                                    <span class="mpd-history-block-label">קבצים (@round.Files.Count)</span>
+                                                    <div class="mpd-drawer-file-list">
+                                                        @foreach (var f in round.Files)
+                                                        {
+                                                            <div class="mpd-drawer-file-item">
+                                                                <span class="oi @FileIcon(f.ContentType) mpd-drawer-file-icon" aria-hidden="true"></span>
+                                                                <div class="mpd-drawer-file-info">
+                                                                    <span class="mpd-drawer-file-name">@f.OriginalFileName</span>
+                                                                    <span class="mpd-drawer-file-size">@FormatSize(f.SizeBytes)</span>
+                                                                </div>
+                                                                <a class="mpd-drawer-file-dl"
+                                                                   href="/submissions/@f.StoredFileName"
+                                                                   download="@f.OriginalFileName"
+                                                                   title="הורדה">
+                                                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                                                </a>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                </div>
+                                            }
+
+                                            @if (!string.IsNullOrWhiteSpace(round.MentorFeedback))
+                                            {
+                                                <div class="mpd-history-feedback mpd-feedback-mentor">
+                                                    <div class="mpd-history-feedback-header">
+                                                        <span class="oi oi-person" aria-hidden="true"></span>
+                                                        <strong>פידבק מנחה</strong>
+                                                        @if (round.MentorReviewedAt.HasValue)
+                                                        {
+                                                            <span class="mpd-history-review-date">
+                                                                @round.MentorReviewedAt.Value.ToString("dd/MM/yy HH:mm")
+                                                            </span>
+                                                        }
+                                                    </div>
+                                                    <p class="mpd-history-feedback-text">@round.MentorFeedback</p>
+                                                </div>
+                                            }
+
+                                            @if (!string.IsNullOrWhiteSpace(round.ReviewerFeedback))
+                                            {
+                                                <div class="mpd-history-feedback mpd-feedback-reviewer">
+                                                    <div class="mpd-history-feedback-header">
+                                                        <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                                        <strong>פידבק מרצה</strong>
+                                                    </div>
+                                                    <p class="mpd-history-feedback-text">@round.ReviewerFeedback</p>
+                                                </div>
+                                            }
+
+                                        </div>
+                                    }
+
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+
+                <!-- Review actions (only when status is still Pending) -->
+                @if (_reviewCtx.MentorStatus == "Pending")
+                {
+                    <div class="mpd-drawer-section mpd-drawer-review-section">
+                        <div class="mpd-drawer-section-title">סקירת מנחה</div>
+
+                        <div class="mpd-review-feedback-wrap">
+                            <label class="mpd-review-feedback-label">פידבק (אופציונלי)</label>
+                            <textarea class="mpd-review-feedback"
+                                      rows="3"
+                                      placeholder="הוסף הערות או הסברים לסטודנט…"
+                                      @bind="_reviewFeedback"
+                                      disabled="@_reviewing">
+                            </textarea>
+                        </div>
+
+                        @if (_reviewError)
+                        {
+                            <div class="mpd-review-error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                שגיאה בשמירה. נסה שנית.
+                            </div>
+                        }
+
+                        <div class="mpd-review-actions">
+                            <button class="mpd-btn-approve"
+                                    @onclick='() => SubmitReviewAsync("Approved")'
+                                    disabled="@_reviewing">
+                                @if (_reviewing && _pendingAction == "Approved")
+                                {
+                                    <span class="mpd-btn-spinner"></span>
+                                }
+                                else
+                                {
+                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                }
+                                <span>אשר הגשה</span>
+                            </button>
+                            <button class="mpd-btn-return"
+                                    @onclick='() => SubmitReviewAsync("Returned")'
+                                    disabled="@_reviewing">
+                                @if (_reviewing && _pendingAction == "Returned")
+                                {
+                                    <span class="mpd-btn-spinner"></span>
+                                }
+                                else
+                                {
+                                    <span class="oi oi-loop-circular" aria-hidden="true"></span>
+                                }
+                                <span>החזר לתיקון</span>
+                            </button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <!-- Already reviewed — show what was decided -->
+                    <div class="mpd-drawer-section">
+                        <div class="mpd-drawer-section-title">החלטת המנחה</div>
+                        <div class="mpd-review-done-banner mpd-review-done-@(_reviewCtx.MentorStatus.ToLower())">
+                            <span class="oi @(_reviewCtx.MentorStatus == "Approved" ? "oi-circle-check" : "oi-loop-circular")" aria-hidden="true"></span>
+                            @DrawerMentorStatusLabel(_reviewCtx.MentorStatus)
+                            @if (!string.IsNullOrWhiteSpace(_reviewCtx.MentorFeedback))
+                            {
+                                <span class="mpd-review-done-feedback">— @_reviewCtx.MentorFeedback</span>
+                            }
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
+<!-- ══ Main page ═════════════════════════════════════════════════════════════ -->
+<div class="mpd-page" dir="rtl">
+
+    <!-- ══ Top bar ═══════════════════════════════════════════════════════════ -->
+    <div class="mpd-topbar">
+        <div class="mpd-topbar-start">
+            <button class="mpd-back-btn" @onclick='() => Nav.NavigateTo("/mentor/projects")' title="חזרה לפרויקטים">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="mpd-breadcrumb">פרויקטים</div>
+                <h1 class="mpd-title">@(_detail?.Title ?? "…")</h1>
+            </div>
+        </div>
+        @if (_detail is not null)
+        {
+            <div class="mpd-topbar-end">
+                <span class="mpd-proj-num">#@_detail.ProjectNumber</span>
+                @if (!string.IsNullOrEmpty(_detail.HealthStatus))
+                {
+                    <span class="mpd-health @HealthClass(_detail.HealthStatus)">@HealthLabel(_detail.HealthStatus)</span>
+                }
+                <span class="mpd-status-badge">@StatusLabel(_detail.Status)</span>
+            </div>
+        }
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="mpd-loading">
+            <div class="mpd-spinner"></div>
+            <span>טוען פרויקט…</span>
+        </div>
+    }
+    else if (_detail is null)
+    {
+        <div class="mpd-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            <p>הפרויקט לא נמצא או שאין לך הרשאה לצפות בו.</p>
+        </div>
+    }
+    else
+    {
+        <!-- ── Overview row ─────────────────────────────────────────────────── -->
+        <div class="mpd-overview-row">
+
+            <!-- Progress -->
+            <div class="mpd-card mpd-prog-card">
+                <div class="mpd-card-label">התקדמות</div>
+                <div class="mpd-prog-pair">
+                    <div class="mpd-prog-item">
+                        <span class="mpd-prog-name">אבני דרך</span>
+                        <div class="mpd-prog-bar-wrap">
+                            <div class="mpd-prog-bar">
+                                <div class="mpd-prog-fill" style="width:@(_detail.MilestoneProgressPct)%"></div>
+                            </div>
+                            <span class="mpd-prog-pct">@(_detail.MilestoneProgressPct)%</span>
+                        </div>
+                    </div>
+                    <div class="mpd-prog-item">
+                        <span class="mpd-prog-name">משימות</span>
+                        <div class="mpd-prog-bar-wrap">
+                            <div class="mpd-prog-bar">
+                                <div class="mpd-prog-fill mpd-prog-fill-tasks" style="width:@(_detail.TaskProgressPct)%"></div>
+                            </div>
+                            <span class="mpd-prog-pct">@(_detail.TaskProgressPct)%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Task counts -->
+            <div class="mpd-card mpd-counts-card">
+                <div class="mpd-card-label">משימות</div>
+                <div class="mpd-count-grid">
+                    <div class="mpd-count-item">
+                        <span class="mpd-count-num">@_detail.TotalTasks</span>
+                        <span class="mpd-count-lbl">סה"כ</span>
+                    </div>
+                    <div class="mpd-count-item mpd-count-open">
+                        <span class="mpd-count-num">@_detail.OpenTasks</span>
+                        <span class="mpd-count-lbl">פתוחות</span>
+                    </div>
+                    <div class="mpd-count-item mpd-count-prog">
+                        <span class="mpd-count-num">@_detail.InProgressTasks</span>
+                        <span class="mpd-count-lbl">בביצוע</span>
+                    </div>
+                    <div class="mpd-count-item mpd-count-done">
+                        <span class="mpd-count-num">@_detail.CompletedTasks</span>
+                        <span class="mpd-count-lbl">הושלמו</span>
+                    </div>
+                    @if (_detail.OverdueTasks > 0)
+                    {
+                        <div class="mpd-count-item mpd-count-overdue">
+                            <span class="mpd-count-num">@_detail.OverdueTasks</span>
+                            <span class="mpd-count-lbl">באיחור</span>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Team -->
+            <div class="mpd-card mpd-team-card">
+                <div class="mpd-card-label">הצוות — @_detail.TeamName</div>
+                <div class="mpd-team-list">
+                    @foreach (var m in _detail.TeamMembers)
+                    {
+                        <div class="mpd-member">
+                            <div class="mpd-member-avatar">@FirstLetter(m.FullName)</div>
+                            <div class="mpd-member-info">
+                                <span class="mpd-member-name">@m.FullName</span>
+                                <span class="mpd-member-contact">@m.Email</span>
+                                @if (!string.IsNullOrEmpty(m.Phone))
+                                {
+                                    <span class="mpd-member-contact">@m.Phone</span>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ── Pending submissions ─────────────────────────────────────────── -->
+        @if (_detail.PendingSubmissions.Count > 0)
+        {
+            <div class="mpd-card mpd-pending-card">
+                <div class="mpd-section-head">
+                    <span class="oi oi-inbox" aria-hidden="true"></span>
+                    <span class="mpd-section-title">הגשות הממתינות לאישורך</span>
+                    <span class="mpd-pending-count">@_detail.PendingSubmissions.Count</span>
+                </div>
+                <div class="mpd-pending-list">
+                    @foreach (var s in _detail.PendingSubmissions)
+                    {
+                        <button class="mpd-pending-row mpd-pending-clickable"
+                                @onclick="() => OpenReviewDrawer(s.SubmissionId)">
+                            <div class="mpd-pending-info">
+                                <span class="mpd-pending-task">@s.TaskTitle</span>
+                                <span class="mpd-pending-meta">
+                                    @s.MilestoneTitle · הוגש ע"י @s.SubmittedBy · @s.SubmittedAt.ToString("dd/MM/yy HH:mm")
+                                </span>
+                            </div>
+                            <div class="mpd-pending-row-right">
+                                <span class="mpd-pending-badge">ממתין לאישורך</span>
+                                <span class="oi oi-chevron-left mpd-pending-arrow" aria-hidden="true"></span>
+                            </div>
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+
+        <!-- ── Milestones & tasks ──────────────────────────────────────────── -->
+        <div class="mpd-milestones">
+            @foreach (var milestone in _detail.Milestones)
+            {
+                // Derive display progress: if milestone is stored as Completed/Done but
+                // task counts disagree (legacy "Completed" status in Tasks table),
+                // treat it as 100% complete to stay visually consistent.
+                bool msCompleted = milestone.Status is "Completed" or "Done" or "Submitted";
+                int displayPct   = msCompleted && milestone.ProgressPct == 0 && milestone.TotalTasks > 0
+                                       ? 100
+                                       : milestone.ProgressPct;
+
+                <div class="mpd-milestone-block">
+                    <div class="mpd-ms-header" @onclick="() => ToggleMilestone(milestone.ProjectMilestoneId)">
+                        <div class="mpd-ms-header-left">
+                            <span class="mpd-ms-num">@milestone.OrderIndex</span>
+                            <div class="mpd-ms-title-wrap">
+                                <span class="mpd-ms-title">@milestone.Title</span>
+                                @if (milestone.DueDate.HasValue)
+                                {
+                                    <span class="mpd-ms-due">עד @milestone.DueDate.Value.ToString("dd/MM/yy")</span>
+                                }
+                            </div>
+                        </div>
+                        <div class="mpd-ms-header-right">
+                            <div class="mpd-ms-prog-wrap">
+                                <div class="mpd-ms-prog-bar">
+                                    <div class="mpd-ms-prog-fill" style="width:@(displayPct)%"></div>
+                                </div>
+                                <span class="mpd-ms-prog-lbl">
+                                    @(msCompleted && milestone.ProgressPct == 0 && milestone.TotalTasks > 0
+                                        ? $"{milestone.TotalTasks}/{milestone.TotalTasks}"
+                                        : $"{milestone.CompletedTasks}/{milestone.TotalTasks}")
+                                </span>
+                            </div>
+                            <span class="mpd-ms-status @MilestoneStatusClass(milestone.Status)">
+                                @MilestoneStatusLabel(milestone.Status)
+                            </span>
+                            <span class="oi @(_expandedMilestones.Contains(milestone.ProjectMilestoneId) ? "oi-chevron-top" : "oi-chevron-bottom") mpd-ms-toggle" aria-hidden="true"></span>
+                        </div>
+                    </div>
+
+                    @if (_expandedMilestones.Contains(milestone.ProjectMilestoneId))
+                    {
+                        <div class="mpd-tasks-list">
+                            @if (milestone.Tasks.Count == 0)
+                            {
+                                <div class="mpd-tasks-empty">אין משימות במיילסטון זה</div>
+                            }
+                            else
+                            {
+                                @foreach (var task in milestone.Tasks)
+                                {
+                                    <div class="mpd-task-row @(task.IsOverdue ? "mpd-task-overdue" : "")">
+                                        <div class="mpd-task-status-dot @TaskDotClass(task)"></div>
+                                        <div class="mpd-task-info">
+                                            <span class="mpd-task-title">@task.Title</span>
+                                            <div class="mpd-task-meta">
+                                                @if (!string.IsNullOrEmpty(task.AssignedToName))
+                                                {
+                                                    <span class="mpd-task-assignee">@task.AssignedToName</span>
+                                                }
+                                                @if (task.DueDate.HasValue)
+                                                {
+                                                    <span class="mpd-task-due @(task.IsOverdue ? "mpd-due-late" : "")">
+                                                        עד @task.DueDate.Value.ToString("dd/MM/yy")
+                                                    </span>
+                                                }
+                                            </div>
+                                        </div>
+                                        <div class="mpd-task-right">
+                                            @if (task.IsSubmission)
+                                            {
+                                                <span class="mpd-task-submission-tag">הגשה</span>
+                                            }
+                                            <span class="mpd-task-status-pill @TaskPillClass(task)">
+                                                @TaskStatusLabel(task)
+                                            </span>
+                                            @if (task.IsSubmission && task.LatestMentorStatus == "Pending")
+                                            {
+                                                <button class="mpd-task-review-pill"
+                                                        @onclick="() => OpenPendingByTask(task.Id)"
+                                                        @onclick:stopPropagation="true">
+                                                    ממתין לאישורך
+                                                </button>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+</div>
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private MentorProjectDetailDto?       _detail    = null;
+    private bool                          _isLoading = true;
+    private readonly HashSet<int>         _expandedMilestones = new();
+
+    // ── Review drawer state ──────────────────────────────────────────────────
+    private MentorSubmissionContextDto? _reviewCtx     = null;
+    private bool                        _reviewLoading  = false;
+    private bool                        _reviewing      = false;
+    private bool                        _reviewError    = false;
+    private string                      _reviewFeedback = "";
+    private string                      _pendingAction  = "";
+    private readonly HashSet<int>       _expandedRounds = new();
+
+    private void ToggleRound(int submissionId)
+    {
+        if (!_expandedRounds.Remove(submissionId))
+            _expandedRounds.Add(submissionId);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _detail = await MentorService.GetProjectDetailAsync(Id);
+        if (_detail is not null)
+        {
+            var first = _detail.Milestones
+                .FirstOrDefault(m => m.Status is not ("Completed" or "Done" or "Submitted"));
+            if (first is not null)
+                _expandedMilestones.Add(first.ProjectMilestoneId);
+        }
+        _isLoading = false;
+    }
+
+    // ── Drawer open/close ────────────────────────────────────────────────────
+
+    private async Task OpenReviewDrawer(int submissionId)
+    {
+        _reviewCtx     = null;
+        _reviewFeedback = "";
+        _reviewError   = false;
+        _reviewLoading = true;
+        StateHasChanged();
+
+        _reviewCtx = await MentorService.GetSubmissionContextAsync(submissionId);
+        _reviewLoading = false;
+
+        // Auto-expand the current round in history
+        _expandedRounds.Clear();
+        if (_reviewCtx is not null)
+            _expandedRounds.Add(_reviewCtx.SubmissionId);
+
+        StateHasChanged();
+    }
+
+    private async Task OpenPendingByTask(int taskId)
+    {
+        if (_detail is null) return;
+        var sub = _detail.PendingSubmissions.FirstOrDefault(s => s.TaskId == taskId);
+        if (sub is not null)
+            await OpenReviewDrawer(sub.SubmissionId);
+    }
+
+    private void CloseDrawer()
+    {
+        _reviewCtx = null;
+        _reviewFeedback = "";
+        _reviewError   = false;
+    }
+
+    // ── Review submit ────────────────────────────────────────────────────────
+
+    private async Task SubmitReviewAsync(string action)
+    {
+        if (_reviewCtx is null || _reviewing) return;
+
+        _reviewing    = true;
+        _pendingAction = action;
+        _reviewError   = false;
+        StateHasChanged();
+
+        bool ok = await MentorService.ReviewSubmissionAsync(
+            _reviewCtx.SubmissionId, action, _reviewFeedback);
+
+        _reviewing = false;
+
+        if (ok)
+        {
+            // Optimistically update the local state so the drawer shows the new status
+            _reviewCtx.MentorStatus   = action;
+            _reviewCtx.MentorFeedback = string.IsNullOrWhiteSpace(_reviewFeedback) ? null : _reviewFeedback;
+
+            // Remove from pending list and reload the project counts
+            _detail!.PendingSubmissions.RemoveAll(s => s.SubmissionId == _reviewCtx.SubmissionId);
+            _detail.PendingMentorReview = _detail.PendingSubmissions.Count;
+
+            // Update task row's mentor status badge
+            foreach (var ms in _detail.Milestones)
+            {
+                var task = ms.Tasks.FirstOrDefault(t => t.Id == _reviewCtx.TaskId);
+                if (task is not null)
+                    task.LatestMentorStatus = action;
+            }
+        }
+        else
+        {
+            _reviewError = true;
+        }
+
+        StateHasChanged();
+    }
+
+    // ── Milestone helpers ────────────────────────────────────────────────────
+
+    private void ToggleMilestone(int msId)
+    {
+        if (!_expandedMilestones.Remove(msId))
+            _expandedMilestones.Add(msId);
+    }
+
+    // ── Display helpers ──────────────────────────────────────────────────────
+
+    private static string FirstLetter(string name) =>
+        string.IsNullOrEmpty(name) ? "?" : name[0].ToString().ToUpper();
+
+    private static string HealthClass(string? h) => h switch
+    {
+        "OnTrack"        => "mpd-health-on",
+        "NeedsAttention" => "mpd-health-warn",
+        "AtRisk"         => "mpd-health-risk",
+        _                => "",
+    };
+
+    private static string HealthLabel(string? h) => h switch
+    {
+        "OnTrack"        => "על המסלול",
+        "NeedsAttention" => "דורש תשומת לב",
+        "AtRisk"         => "בסיכון",
+        _                => "",
+    };
+
+    private static string StatusLabel(string? s) => s switch
+    {
+        "Active"    => "פעיל",
+        "Completed" => "הושלם",
+        "Archived"  => "בארכיון",
+        _           => s ?? "",
+    };
+
+    private static string MilestoneStatusClass(string s) => s switch
+    {
+        "Completed" or "Done" or "Submitted" => "mpd-ms-done",
+        "InProgress"                         => "mpd-ms-progress",
+        _                                    => "mpd-ms-pending",
+    };
+
+    private static string MilestoneStatusLabel(string s) => s switch
+    {
+        "Completed" or "Done" or "Submitted" => "הושלם",
+        "InProgress"                         => "בביצוע",
+        "NotStarted"                         => "טרם החל",
+        "Delayed"                            => "מאחר",
+        _                                    => s,
+    };
+
+    private static string TaskDotClass(MentorTaskDto task)
+    {
+        // Mentor review state takes priority over the raw task status
+        if (task.IsSubmission)
+        {
+            if (task.LatestMentorStatus == "Returned") return "mpd-dot-returned";
+            if (task.LatestMentorStatus == "Approved") return "mpd-dot-done";
+            if (task.LatestMentorStatus == "Pending")  return "mpd-dot-pending";
+        }
+
+        return task.Status switch
+        {
+            "Done" or "Completed" or "ApprovedForSubmission"          => "mpd-dot-done",
+            "InProgress" or "SubmittedToMentor"
+                or "ReturnedForRevision" or "RevisionSubmitted"       => "mpd-dot-progress",
+            _                                                         => "mpd-dot-open",
+        };
+    }
+
+    private static string TaskPillClass(MentorTaskDto task)
+    {
+        // When a resubmission is pending review, the raw task.Status may still be
+        // ReturnedForRevision (set by the previous mentor-review). Override to
+        // the "submitted" style so the mentor sees the correct current state.
+        if (task.IsSubmission && task.LatestMentorStatus == "Pending"
+            && task.Status == "ReturnedForRevision")
+            return "mpd-pill-submitted";
+
+        return task.Status switch
+        {
+            "Done" or "Completed" or "ApprovedForSubmission" => "mpd-pill-done",
+            "InProgress"                                      => "mpd-pill-progress",
+            "SubmittedToMentor" or "RevisionSubmitted"        => "mpd-pill-submitted",
+            "ReturnedForRevision"                             => "mpd-pill-returned",
+            _                                                 => "mpd-pill-open",
+        };
+    }
+
+    private static string TaskStatusLabel(MentorTaskDto task)
+    {
+        if (task.IsSubmission && task.LatestMentorStatus == "Pending"
+            && task.Status == "ReturnedForRevision")
+            return "הוגש מחדש";
+
+        return task.Status switch
+        {
+            "Open"                  => "פתוח",
+            "InProgress"            => "בביצוע",
+            "SubmittedToMentor"     => "הוגש למנחה",
+            "ReturnedForRevision"   => "הוחזר לתיקון",
+            "RevisionSubmitted"     => "תיקון הוגש",
+            "ApprovedForSubmission" => "אושר להגשה",
+            "Done" or "Completed"   => "הושלם",
+            _                       => task.Status,
+        };
+    }
+
+    private static string DrawerMentorStatusClass(string s) => s switch
+    {
+        "Approved" => "mpd-badge-approved",
+        "Returned" => "mpd-badge-returned",
+        _          => "mpd-badge-pending",
+    };
+
+    private static string DrawerMentorStatusLabel(string s) => s switch
+    {
+        "Approved" => "אושר",
+        "Returned" => "הוחזר לתיקון",
+        _          => "ממתין לאישורך",
+    };
+
+    private static string FileIcon(string contentType)
+    {
+        if (contentType.StartsWith("image/"))   return "oi-image";
+        if (contentType == "application/pdf")   return "oi-document";
+        if (contentType.Contains("word"))       return "oi-document";
+        if (contentType.Contains("zip") || contentType.Contains("compressed")) return "oi-layers";
+        return "oi-file";
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)           return $"{bytes} B";
+        if (bytes < 1024 * 1024)    return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024):F1} MB";
+    }
+}

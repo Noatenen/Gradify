@@ -1,5 +1,6 @@
 using AuthWithAdmin.Server.AuthHelpers;
 using AuthWithAdmin.Server.Data;
+using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -34,6 +35,11 @@ builder.Services.AddScoped<FilesManage>();
 //Airtable
 builder.Services.AddHttpClient("Airtable");
 builder.Services.AddScoped<AirtableService>();
+
+//Slack
+builder.Services.AddHttpClient("Slack");
+builder.Services.Configure<SlackOptions>(
+    builder.Configuration.GetSection(SlackOptions.SectionName));
 
 //Mail
 builder.Services.AddSingleton<EmailHelper>();

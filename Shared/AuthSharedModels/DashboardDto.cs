@@ -82,10 +82,15 @@ public class TaskSummaryDto
 {
     public int     Id             { get; set; }
     public string  Title          { get; set; } = "";
-    /// <summary>"Open" | "InProgress" | "Done"</summary>
     public string  Status         { get; set; } = "Open";
     public DateTime? DueDate      { get; set; }
     public string  AssignedToName { get; set; } = "";
+    /// <summary>Reviewer decision on the latest submission. Null if never submitted.</summary>
+    public string?   LatestSubmissionStatus { get; set; }
+    /// <summary>Mentor decision on the latest submission. Null if never submitted.</summary>
+    public string?   LatestMentorStatus     { get; set; }
+    /// <summary>When the latest submission was created. Null if never submitted.</summary>
+    public DateTime? LatestSubmittedAt      { get; set; }
 }
 
 // ── Upcoming deadline ─────────────────────────────────────────────────────────
@@ -93,9 +98,11 @@ public class TaskSummaryDto
 /// <summary>Derived server-side: the nearest incomplete milestone's deadline.</summary>
 public class UpcomingDeadlineDto
 {
-    public int?     TaskId  { get; set; }   // set when the nearest deadline is a specific submission task
-    public string   Title   { get; set; } = "";
-    public DateTime DueDate { get; set; }
+    public int?     TaskId             { get; set; }
+    public string   Title              { get; set; } = "";
+    public DateTime DueDate            { get; set; }
+    /// <summary>Mentor decision on the latest submission. "Returned" means action is required.</summary>
+    public string?  LatestMentorStatus { get; set; }
 }
 
 // ── Open requests ─────────────────────────────────────────────────────────────

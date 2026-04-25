@@ -440,6 +440,8 @@ public class ProjectRequestsController : ControllerBase
         // ── Load current state ────────────────────────────────────────────
         const string currSql = @"
             SELECT  r.Id,
+                    r.Title,
+                    r.ProjectId,
                     r.Status,
                     r.Priority,
                     r.AssignedToUserId,
@@ -558,6 +560,34 @@ public class ProjectRequestsController : ControllerBase
 
             if (commentEventId > 0)
                 await SaveEventAttachmentsAsync(req.Attachments, commentEventId, id);
+        }
+
+        // ── Notify team members when request is returned for more info ────
+        if (req.NewStatus == RequestStatuses.NeedsInfo)
+        {
+            try
+            {
+                const string membersSql = @"
+                    SELECT tm.UserId
+                    FROM   ProjectRequests r
+                    JOIN   Projects        p  ON p.Id      = r.ProjectId
+                    JOIN   Teams           t  ON t.Id      = p.TeamId
+                    JOIN   TeamMembers     tm ON tm.TeamId = t.Id
+                    WHERE  r.Id        = @RequestId
+                      AND  tm.IsActive = 1";
+
+                var studentIds = (await _db.GetRecordsAsync<int>(
+                    membersSql, new { RequestId = id }))?.ToList() ?? new();
+
+                await NotificationHelper.CreateForUsersAsync(
+                    _db, studentIds,
+                    title:             "הבקשה שלך הוחזרה עם הערות",
+                    message:           $"הבקשה \"{curr.Title}\" הוחזרה אליך עם הערות. נא לעיין ולהשיב.",
+                    type:              "RequestReturned",
+                    relatedEntityType: "ProjectRequest",
+                    relatedEntityId:   id);
+            }
+            catch { /* notifications are best-effort */ }
         }
 
         return Ok();
@@ -748,6 +778,8 @@ public class ProjectRequestsController : ControllerBase
     private sealed class CurrentRequestRow
     {
         public int     Id               { get; set; }
+        public string  Title            { get; set; } = "";
+        public int     ProjectId        { get; set; }
         public string  Status           { get; set; } = "";
         public string  Priority         { get; set; } = "";
         public int?    AssignedToUserId { get; set; }

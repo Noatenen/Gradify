@@ -1,6 +1,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
-@inject ITasksService TasksService
+@inject ITasksService          TasksService
+@inject ITaskSubmissionsService SubmissionsService
 
 @* ═══════════════════════════════════════════════════════════════════════════
    TaskDetailModal  — full task detail view for students
@@ -68,6 +69,25 @@
                 <div class="tdm-header-title-row">
                     <h2 class="tdm-title">@_task.Title</h2>
                 </div>
+
+                <!-- ── Course submission state — uses direct LatestMentorStatus field ── -->
+                @if (_task!.LatestMentorStatus == "Approved")
+                {
+                    @if (_task.Status == "Done")
+                    {
+                        <div class="tdm-course-submitted-banner">
+                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                            <span>הוגש לצוות הקורס</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="tdm-course-action-banner">
+                            <span class="oi oi-info" aria-hidden="true"></span>
+                            <span>ההגשה אושרה ע״י המנחה — כעת יש להגיש לצוות הקורס</span>
+                        </div>
+                    }
+                }
 
                 <!-- ── Moodle reminder (shown when latest submission is Reviewed) ── -->
                 @if (LatestSubmission is { Status: "Reviewed" })
@@ -138,23 +158,15 @@
                             <p class="tdm-col-label tdm-col-label-mt">סטטוס שלי</p>
                             <div class="tdm-status-ctrl">
                                 <select class="tdm-status-select"
+                                        value="@StatusForDisplay"
                                         @onchange="OnStatusDropdownChanged"
                                         disabled="@_updatingStatus">
-                                    <option value="Open"
-                                            selected="@(_task.Status == "Open")">ממתין לביצוע</option>
-                                    <option value="InProgress"
-                                            selected="@(_task.Status == "InProgress")">בעבודה</option>
-                                    @if (_task.IsSubmission)
-                                    {
-                                        <option value="SubmittedToMentor"
-                                                selected="@(_task.Status == "SubmittedToMentor")">הועבר לבדיקת מנחה</option>
-                                        <option value="ReturnedForRevision"
-                                                selected="@(_task.Status == "ReturnedForRevision")">הוחזר לתיקונים</option>
-                                        <option value="ApprovedForSubmission"
-                                                selected="@(_task.Status == "ApprovedForSubmission")">אושר להגשה</option>
-                                    }
-                                    <option value="Done"
-                                            selected="@(_task.Status is "Done" or "RevisionSubmitted")">@(_task.IsSubmission ? "הוגש" : "הושלם")</option>
+                                    <option value="Open">ממתין לביצוע</option>
+                                    <option value="InProgress">בעבודה</option>
+                                    <option value="SubmittedToMentor">הועבר לבדיקת מנחה</option>
+                                    <option value="ReturnedForRevision">הוחזר לתיקונים</option>
+                                    <option value="ApprovedForSubmission">אושר להגשה</option>
+                                    <option value="Done">הוגש</option>
                                 </select>
                                 @if (_updatingStatus)
                                 {
@@ -208,15 +220,17 @@
                                 </div>
 
                                 <!-- Feedback banners -->
-                                @if (latest.MentorStatus == "Returned" &&
-                                     !string.IsNullOrWhiteSpace(latest.MentorFeedback))
+                                @if (latest.MentorStatus == "Returned")
                                 {
                                     <div class="tdm-feedback-banner tdm-feedback-returned">
                                         <div class="tdm-feedback-header">
-                                            <span class="oi oi-comment-square" aria-hidden="true"></span>
-                                            <strong>הערות מנחה</strong>
+                                            <span class="oi oi-arrow-circle-left" aria-hidden="true"></span>
+                                            <strong>הגשה הוחזרה ע״י המנחה</strong>
                                         </div>
-                                        <p class="tdm-feedback-text">@latest.MentorFeedback</p>
+                                        @if (!string.IsNullOrWhiteSpace(latest.MentorFeedback))
+                                        {
+                                            <p class="tdm-feedback-text">@latest.MentorFeedback</p>
+                                        }
                                     </div>
                                 }
                                 @if (latest.Status == "NeedsRevision" &&
@@ -270,8 +284,6 @@
                                 <div class="tdm-subtask-form-row tdm-subtask-form-row-meta">
                                     <input class="tdm-subtask-date-input"
                                            type="date"
-                                           title="תאריך יעד"
-                                           placeholder="תאריך יעד"
                                            @bind="_newSubTaskDueDate" />
                                 </div>
                                 <div class="tdm-subtask-form-row">
@@ -330,8 +342,6 @@
                                                 <div class="tdm-subtask-form-row tdm-subtask-form-row-meta">
                                                     <input class="tdm-subtask-date-input"
                                                            type="date"
-                                                           title="תאריך יעד"
-                                                           placeholder="תאריך יעד"
                                                            @bind="_editDueDate" />
                                                 </div>
                                                 <div class="tdm-subtask-form-row">
@@ -357,11 +367,11 @@
                                         else
                                         {
                                             <!-- Normal display row -->
-                                            <button class="tdm-subtask-check @(st.IsDone ? "tdm-subtask-check-done" : "")"
-                                                    @onclick="() => ToggleSubTask(st)"
-                                                    title="@(st.IsDone ? "סמן כלא הושלם" : "סמן כהושלם")">
-                                                <span class="oi @(st.IsDone ? "oi-circle-check" : "oi-circle-x")" aria-hidden="true"></span>
-                                            </button>
+                                            <span class="tdm-subtask-check @(st.IsDone ? "tdm-subtask-check-done" : "")"
+                                                  @onclick="() => ToggleSubTask(st)"
+                                                  title="@(st.IsDone ? "סמן כלא הושלם" : "סמן כהושלם")">
+                                                <span class="tdm-subtask-check-box" aria-hidden="true"></span>
+                                            </span>
                                             <div class="tdm-subtask-body">
                                                 <span class="tdm-subtask-title @(st.IsDone ? "tdm-subtask-title-done" : "")">
                                                     @st.Title
@@ -417,14 +427,15 @@
                                 @foreach (var (sub, idx) in _task.Submissions.Select((s, i) => (s, i)))
                                 {
                                     bool isExpanded = _expandedSubmissions.Contains(sub.Id);
-                                    bool isLatest   = idx == 0;
+                                    // Submissions are oldest-first; the last item is the latest round.
+                                    bool isLatest   = idx == _task.Submissions.Count - 1;
 
                                     <div class="tdm-history-item @(isLatest ? "tdm-history-latest" : "")">
                                         <button class="tdm-history-header"
                                                 @onclick="() => ToggleSubmission(sub.Id)">
                                             <div class="tdm-history-header-start">
                                                 <span class="tdm-history-number">
-                                                    הגשה @(_task.Submissions.Count - idx)
+                                                    הגשה @(idx + 1)
                                                 </span>
                                                 <span class="tdm-submission-badge tdm-sbadge-@sub.Status.ToLower()">
                                                     @SubmissionStatusLabel(sub.Status)
@@ -517,6 +528,23 @@
                 <!-- ── Footer ── -->
                 <div class="tdm-footer">
                     <button class="tdm-btn-ghost" @onclick="Close">סגירה</button>
+                    @if (CanSubmitToCourse)
+                    {
+                        <button class="tdm-btn-course @(_submittingToCourse ? "" : "")"
+                                @onclick="SubmitToCourseAsync"
+                                disabled="@_submittingToCourse">
+                            @if (_submittingToCourse)
+                            {
+                                <div class="tdm-spinner-sm"></div>
+                                <span>שולח…</span>
+                            }
+                            else
+                            {
+                                <span class="oi oi-globe" aria-hidden="true"></span>
+                                <span>הגשה לצוות הקורס</span>
+                            }
+                        </button>
+                    }
                     @if (_task.IsSubmission && CanSubmit)
                     {
                         <button class="tdm-btn-primary" @onclick="OpenSubmission">
@@ -538,10 +566,12 @@
 
     // ── Task detail state ──────────────────────────────────────────────────────
     private TaskDetailDto?   _task;
-    private bool             _loading        = false;
-    private bool             _loadError      = false;
-    private bool             _updatingStatus = false;
-    private bool             _statusError    = false;
+    private bool             _loading           = false;
+    private bool             _loadError         = false;
+    private bool             _updatingStatus    = false;
+    private bool             _statusError       = false;
+    private bool             _submittingToCourse = false;
+    private bool             _submitToCourseError = false;
 
     private readonly HashSet<int> _expandedSubmissions = new();
 
@@ -562,8 +592,32 @@
 
     // ── Computed helpers ───────────────────────────────────────────────────────
 
+    // Derive the effective status to show in the dropdown.
+    // Latest submission/review state takes priority over the stored task status,
+    // because the server may not have synced task.Status yet for older records.
+    private string StatusForDisplay
+    {
+        get
+        {
+            if (_task is null) return "Open";
+            // Mentor returned → student must fix; always override to returned
+            if (LatestSubmission?.MentorStatus == "Returned")
+                return "ReturnedForRevision";
+            // Reviewer returned
+            if (LatestSubmission?.Status == "NeedsRevision")
+                return "ReturnedForRevision";
+            // RevisionSubmitted is functionally "back at mentor" from student POV
+            if (_task.Status is "RevisionSubmitted")
+                return "SubmittedToMentor";
+            return _task.Status;
+        }
+    }
+
+    // Submissions are ordered oldest-first by the server; the latest is the last element.
     private SubmissionHistoryItemDto? LatestSubmission =>
-        _task?.Submissions.FirstOrDefault();
+        _task?.Submissions.Count > 0
+            ? _task.Submissions[^1]
+            : null;
 
     /// <summary>
     /// True when the due date has passed AND the task is not considered "done".
@@ -602,6 +656,13 @@
         }
     }
 
+    // Uses the server-computed LatestMentorStatus field — same approach as the submissions page.
+    // Never null and never affected by IsSubmission or list-ordering issues.
+    private bool CanSubmitToCourse =>
+        _task?.LatestMentorStatus == "Approved"
+        && _task?.Status != "Done"
+        && !_submittingToCourse;
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     protected override async Task OnParametersSetAsync()
@@ -626,8 +687,9 @@
 
         if (_task is not null)
         {
+            // Auto-expand the latest (last) submission — list is oldest-first.
             if (_task.Submissions.Count > 0)
-                _expandedSubmissions.Add(_task.Submissions[0].Id);
+                _expandedSubmissions.Add(_task.Submissions[^1].Id);
 
             await LoadSubTasksAsync();
         }
@@ -648,6 +710,27 @@
     {
         await OnClose.InvokeAsync();
         await OnOpenSubmission.InvokeAsync(TaskId);
+    }
+
+    private async Task SubmitToCourseAsync()
+    {
+        if (_task is null || _task.LatestSubmissionId is null || _submittingToCourse) return;
+        _submittingToCourse  = true;
+        _submitToCourseError = false;
+
+        bool ok = await SubmissionsService.SubmitToCourseAsync(_task.LatestSubmissionId.Value);
+
+        if (ok)
+        {
+            _task.Status = "Done";
+            _task.LatestCourseSubmittedAt = DateTime.Now;
+        }
+        else
+        {
+            _submitToCourseError = true;
+        }
+
+        _submittingToCourse = false;
     }
 
     private async Task OnStatusDropdownChanged(ChangeEventArgs e)

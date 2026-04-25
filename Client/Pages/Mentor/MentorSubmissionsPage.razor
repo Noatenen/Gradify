@@ -1,0 +1,438 @@
+@page "/mentor/submissions"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorProjectsService MentorService
+@inject NavigationManager Nav
+
+<!-- ── Review drawer backdrop ── -->
+@if (_reviewCtx is not null)
+{
+    <div class="msu-backdrop" @onclick="CloseDrawer"></div>
+    <div class="msu-drawer" dir="rtl">
+
+        <div class="msu-drawer-header">
+            <div class="msu-drawer-header-row">
+                <div>
+                    <div class="msu-drawer-milestone">@_reviewCtx.MilestoneTitle</div>
+                    <div class="msu-drawer-title">@_reviewCtx.TaskTitle</div>
+                </div>
+                <button class="msu-drawer-close" @onclick="CloseDrawer" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="msu-drawer-meta">
+                <div class="msu-drawer-meta-item">
+                    <span class="oi oi-person" aria-hidden="true"></span>
+                    @_reviewCtx.SubmittedBy
+                </div>
+                <div class="msu-drawer-meta-item">
+                    <span class="oi oi-clock" aria-hidden="true"></span>
+                    @_reviewCtx.SubmittedAt.ToString("dd/MM/yyyy HH:mm")
+                </div>
+            </div>
+            <div class="msu-drawer-status-row">
+                <span class="msu-drawer-status-badge @DrawerStatusClass(_reviewCtx.MentorStatus)">
+                    @DrawerStatusLabel(_reviewCtx.MentorStatus)
+                </span>
+            </div>
+        </div>
+
+        <div class="msu-drawer-body">
+
+            @if (_reviewLoading)
+            {
+                <div class="msu-drawer-loading">
+                    <div class="msu-drawer-spinner"></div>
+                    <span>טוען פרטי הגשה…</span>
+                </div>
+            }
+            else
+            {
+                @if (!string.IsNullOrWhiteSpace(_reviewCtx.TaskDescription))
+                {
+                    <div class="msu-drawer-section">
+                        <div class="msu-drawer-section-title">תיאור המשימה</div>
+                        <div class="msu-drawer-text">@_reviewCtx.TaskDescription</div>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_reviewCtx.Notes))
+                {
+                    <div class="msu-drawer-section">
+                        <div class="msu-drawer-section-title">הערות הסטודנט</div>
+                        <div class="msu-drawer-text msu-drawer-notes">@_reviewCtx.Notes</div>
+                    </div>
+                }
+
+                <!-- Files of the current submission -->
+                <div class="msu-drawer-section">
+                    <div class="msu-drawer-section-title">
+                        קבצים מצורפים
+                        <span class="msu-drawer-file-count">@_reviewCtx.Files.Count</span>
+                    </div>
+                    @if (_reviewCtx.Files.Count == 0)
+                    {
+                        <div class="msu-drawer-empty">לא צורפו קבצים להגשה זו</div>
+                    }
+                    else
+                    {
+                        <div class="msu-drawer-file-list">
+                            @foreach (var f in _reviewCtx.Files)
+                            {
+                                <div class="msu-drawer-file-item">
+                                    <span class="oi @FileIcon(f.ContentType) msu-drawer-file-icon" aria-hidden="true"></span>
+                                    <div class="msu-drawer-file-info">
+                                        <span class="msu-drawer-file-name">@f.OriginalFileName</span>
+                                        <span class="msu-drawer-file-size">@FormatSize(f.SizeBytes)</span>
+                                    </div>
+                                    <a class="msu-drawer-file-dl"
+                                       href="/submissions/@f.StoredFileName"
+                                       download="@f.OriginalFileName"
+                                       title="הורדה">
+                                        <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                    </a>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <!-- History — accordion per round, oldest first -->
+                @if (_reviewCtx.History.Count > 0)
+                {
+                    <div class="msu-drawer-section">
+                        <div class="msu-drawer-section-title">
+                            היסטוריית הגשות
+                            <span class="msu-drawer-file-count">@_reviewCtx.History.Count סבבים</span>
+                        </div>
+                        <div class="msu-history-list">
+                            @foreach (var round in _reviewCtx.History)
+                            {
+                                bool isCurrent  = round.SubmissionId == _reviewCtx.SubmissionId;
+                                bool isExpanded = _expandedRounds.Contains(round.SubmissionId);
+
+                                <div class="msu-history-round @(isCurrent ? "msu-history-current" : "")">
+                                    <button class="msu-history-round-btn"
+                                            @onclick="() => ToggleRound(round.SubmissionId)">
+                                        <div class="msu-history-round-start">
+                                            <span class="msu-history-round-num">סבב @round.RoundNumber</span>
+                                            @if (isCurrent) { <span class="msu-history-current-tag">נוכחי</span> }
+                                            <span class="msu-history-date">@round.SubmittedAt.ToString("dd/MM/yy HH:mm")</span>
+                                        </div>
+                                        <div class="msu-history-round-end">
+                                            <span class="msu-history-mentor-badge msu-hbadge-@round.MentorStatus.ToLower()">
+                                                @DrawerStatusLabel(round.MentorStatus)
+                                            </span>
+                                            <span class="oi @(isExpanded ? "oi-chevron-top" : "oi-chevron-bottom") msu-history-chevron"
+                                                  aria-hidden="true"></span>
+                                        </div>
+                                    </button>
+
+                                    @if (isExpanded)
+                                    {
+                                        <div class="msu-history-round-body">
+                                            @if (!string.IsNullOrWhiteSpace(round.Notes))
+                                            {
+                                                <div class="msu-history-block">
+                                                    <span class="msu-history-block-label">הערות סטודנט</span>
+                                                    <div class="msu-history-note-text">@round.Notes</div>
+                                                </div>
+                                            }
+                                            @if (round.Files.Count > 0)
+                                            {
+                                                <div class="msu-history-block">
+                                                    <span class="msu-history-block-label">קבצים (@round.Files.Count)</span>
+                                                    <div class="msu-drawer-file-list">
+                                                        @foreach (var f in round.Files)
+                                                        {
+                                                            <div class="msu-drawer-file-item">
+                                                                <span class="oi @FileIcon(f.ContentType) msu-drawer-file-icon" aria-hidden="true"></span>
+                                                                <div class="msu-drawer-file-info">
+                                                                    <span class="msu-drawer-file-name">@f.OriginalFileName</span>
+                                                                    <span class="msu-drawer-file-size">@FormatSize(f.SizeBytes)</span>
+                                                                </div>
+                                                                <a class="msu-drawer-file-dl"
+                                                                   href="/submissions/@f.StoredFileName"
+                                                                   download="@f.OriginalFileName"
+                                                                   title="הורדה">
+                                                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                                                </a>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                </div>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(round.MentorFeedback))
+                                            {
+                                                <div class="msu-history-feedback msu-feedback-mentor">
+                                                    <div class="msu-history-feedback-header">
+                                                        <span class="oi oi-person" aria-hidden="true"></span>
+                                                        <strong>פידבק מנחה</strong>
+                                                        @if (round.MentorReviewedAt.HasValue)
+                                                        {
+                                                            <span class="msu-history-review-date">
+                                                                @round.MentorReviewedAt.Value.ToString("dd/MM/yy HH:mm")
+                                                            </span>
+                                                        }
+                                                    </div>
+                                                    <p class="msu-history-feedback-text">@round.MentorFeedback</p>
+                                                </div>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(round.ReviewerFeedback))
+                                            {
+                                                <div class="msu-history-feedback msu-feedback-reviewer">
+                                                    <div class="msu-history-feedback-header">
+                                                        <span class="oi oi-comment-square" aria-hidden="true"></span>
+                                                        <strong>פידבק מרצה</strong>
+                                                    </div>
+                                                    <p class="msu-history-feedback-text">@round.ReviewerFeedback</p>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+
+                <!-- Review actions -->
+                @if (_reviewCtx.MentorStatus == "Pending")
+                {
+                    <div class="msu-drawer-section msu-drawer-review-section">
+                        <div class="msu-drawer-section-title">סקירת מנחה</div>
+                        <div class="msu-review-feedback-wrap">
+                            <label class="msu-review-feedback-label">פידבק (אופציונלי)</label>
+                            <textarea class="msu-review-feedback"
+                                      rows="3"
+                                      placeholder="הוסף הערות לסטודנט…"
+                                      @bind="_reviewFeedback"
+                                      disabled="@_reviewing">
+                            </textarea>
+                        </div>
+                        @if (_reviewError)
+                        {
+                            <div class="msu-review-error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                שגיאה בשמירה. נסה שנית.
+                            </div>
+                        }
+                        <div class="msu-review-actions">
+                            <button class="msu-btn-approve"
+                                    @onclick='() => SubmitReviewAsync("Approved")'
+                                    disabled="@_reviewing">
+                                @if (_reviewing && _pendingAction == "Approved")
+                                { <span class="msu-btn-spinner"></span> }
+                                else
+                                { <span class="oi oi-circle-check" aria-hidden="true"></span> }
+                                <span>אשר הגשה</span>
+                            </button>
+                            <button class="msu-btn-return"
+                                    @onclick='() => SubmitReviewAsync("Returned")'
+                                    disabled="@_reviewing">
+                                @if (_reviewing && _pendingAction == "Returned")
+                                { <span class="msu-btn-spinner"></span> }
+                                else
+                                { <span class="oi oi-loop-circular" aria-hidden="true"></span> }
+                                <span>החזר לתיקון</span>
+                            </button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="msu-drawer-section">
+                        <div class="msu-drawer-section-title">החלטת המנחה</div>
+                        <div class="msu-review-done-banner msu-review-done-@(_reviewCtx.MentorStatus.ToLower())">
+                            <span class="oi @(_reviewCtx.MentorStatus == "Approved" ? "oi-circle-check" : "oi-loop-circular")" aria-hidden="true"></span>
+                            @DrawerStatusLabel(_reviewCtx.MentorStatus)
+                            @if (!string.IsNullOrWhiteSpace(_reviewCtx.MentorFeedback))
+                            {
+                                <span class="msu-review-done-feedback">— @_reviewCtx.MentorFeedback</span>
+                            }
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
+<!-- ── Main page ── -->
+<div class="msu-page" dir="rtl">
+
+    <div class="msu-topbar">
+        <div>
+            <div class="msu-breadcrumb">מנחה</div>
+            <h1 class="msu-title">הגשות ממתינות לאישור</h1>
+        </div>
+        @if (!_isLoading && _submissions.Count > 0)
+        {
+            <span class="msu-count-badge">@_submissions.Count ממתינות</span>
+        }
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="msu-loading">
+            <div class="msu-spinner"></div>
+            <span>טוען הגשות…</span>
+        </div>
+    }
+    else if (_submissions.Count == 0)
+    {
+        <div class="msu-empty">
+            <span class="oi oi-circle-check msu-empty-icon" aria-hidden="true"></span>
+            <p>אין הגשות הממתינות לאישורך כרגע</p>
+        </div>
+    }
+    else
+    {
+        <div class="msu-list">
+            @foreach (var s in _submissions)
+            {
+                <button class="msu-row"
+                        @onclick="() => OpenDrawer(s.SubmissionId)">
+                    <div class="msu-row-start">
+                        <div class="msu-row-project">
+                            <span class="msu-project-num">#@s.ProjectNumber</span>
+                            @s.ProjectTitle
+                        </div>
+                        <div class="msu-row-task">
+                            <span class="msu-milestone-label">@s.MilestoneTitle</span>
+                            <span class="msu-task-title">@s.TaskTitle</span>
+                        </div>
+                        <div class="msu-row-meta">
+                            <span class="msu-submitter">
+                                <span class="oi oi-person" aria-hidden="true"></span>
+                                @s.SubmittedBy
+                            </span>
+                            <span class="msu-submitted-date">
+                                <span class="oi oi-clock" aria-hidden="true"></span>
+                                @s.SubmittedAt.ToString("dd/MM/yy HH:mm")
+                            </span>
+                        </div>
+                    </div>
+                    <div class="msu-row-end">
+                        <span class="msu-pending-badge">ממתין לאישורך</span>
+                        <span class="oi oi-chevron-left msu-row-arrow" aria-hidden="true"></span>
+                    </div>
+                </button>
+            }
+        </div>
+    }
+
+</div>
+
+@code {
+    private List<MentorPendingSubmissionDto> _submissions = new();
+    private bool                             _isLoading   = true;
+
+    private MentorSubmissionContextDto? _reviewCtx      = null;
+    private bool                        _reviewLoading  = false;
+    private bool                        _reviewing      = false;
+    private bool                        _reviewError    = false;
+    private string                      _reviewFeedback = "";
+    private string                      _pendingAction  = "";
+    private readonly HashSet<int>       _expandedRounds = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _submissions = await MentorService.GetPendingSubmissionsAsync();
+        _isLoading   = false;
+    }
+
+    private async Task OpenDrawer(int submissionId)
+    {
+        _reviewCtx      = null;
+        _reviewFeedback = "";
+        _reviewError    = false;
+        _reviewLoading  = true;
+        StateHasChanged();
+
+        _reviewCtx = await MentorService.GetSubmissionContextAsync(submissionId);
+        _reviewLoading = false;
+
+        _expandedRounds.Clear();
+        if (_reviewCtx is not null)
+            _expandedRounds.Add(_reviewCtx.SubmissionId);
+
+        StateHasChanged();
+    }
+
+    private void CloseDrawer()
+    {
+        _reviewCtx      = null;
+        _reviewFeedback = "";
+        _reviewError    = false;
+    }
+
+    private async Task SubmitReviewAsync(string action)
+    {
+        if (_reviewCtx is null || _reviewing) return;
+
+        _reviewing     = true;
+        _pendingAction = action;
+        _reviewError   = false;
+        StateHasChanged();
+
+        bool ok = await MentorService.ReviewSubmissionAsync(
+            _reviewCtx.SubmissionId, action, _reviewFeedback);
+
+        _reviewing = false;
+
+        if (ok)
+        {
+            _reviewCtx.MentorStatus   = action;
+            _reviewCtx.MentorFeedback = string.IsNullOrWhiteSpace(_reviewFeedback)
+                ? null : _reviewFeedback;
+
+            // Remove the reviewed submission from the list
+            _submissions.RemoveAll(s => s.SubmissionId == _reviewCtx.SubmissionId);
+        }
+        else
+        {
+            _reviewError = true;
+        }
+
+        StateHasChanged();
+    }
+
+    private void ToggleRound(int submissionId)
+    {
+        if (!_expandedRounds.Remove(submissionId))
+            _expandedRounds.Add(submissionId);
+    }
+
+    private static string DrawerStatusClass(string s) => s switch
+    {
+        "Approved" => "msu-badge-approved",
+        "Returned" => "msu-badge-returned",
+        _          => "msu-badge-pending",
+    };
+
+    private static string DrawerStatusLabel(string s) => s switch
+    {
+        "Approved" => "אושר",
+        "Returned" => "הוחזר לתיקון",
+        _          => "ממתין לאישורך",
+    };
+
+    private static string FileIcon(string contentType)
+    {
+        if (contentType.StartsWith("image/"))  return "oi-image";
+        if (contentType == "application/pdf")  return "oi-document";
+        if (contentType.Contains("word"))      return "oi-document";
+        if (contentType.Contains("zip") || contentType.Contains("compressed")) return "oi-layers";
+        return "oi-file";
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)        return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024):F1} MB";
+    }
+}

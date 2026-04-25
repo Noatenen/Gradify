@@ -10,6 +10,7 @@ public interface ITaskSubmissionsService
     Task<StudentSubmissionTaskDto?>       GetSubmissionTaskAsync(int taskId);
     Task<List<TaskSubmissionSummaryDto>?> GetByTaskAsync(int taskId);
     Task<int?>                            CreateSubmissionAsync(CreateSubmissionRequest req);
+    Task<bool>                            SubmitToCourseAsync(int submissionId);
 
     // ── Lecturer / admin-facing ──────────────────────────────────────────────
     Task<List<LecturerSubmissionRowDto>?> GetAllForLecturerAsync();
@@ -63,6 +64,17 @@ public class TaskSubmissionsService : ITaskSubmissionsService
             return result?.Id;
         }
         catch { return null; }
+    }
+
+    public async Task<bool> SubmitToCourseAsync(int submissionId)
+    {
+        try
+        {
+            var resp = await _http.PostAsync(
+                $"api/task-submissions/{submissionId}/submit-to-course", null);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
     }
 
     // ── Lecturer / admin-facing ──────────────────────────────────────────────

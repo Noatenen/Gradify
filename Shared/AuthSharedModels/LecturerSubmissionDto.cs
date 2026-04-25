@@ -35,6 +35,10 @@ public class LecturerSubmissionRowDto
 
     /// <summary>"Submitted" | "Reviewed" | "NeedsRevision"</summary>
     public string   Status            { get; set; } = "Submitted";
+    /// <summary>"Pending" | "Approved" | "Returned"</summary>
+    public string?  MentorStatus      { get; set; }
+    /// <summary>When the student formally forwarded to course staff.</summary>
+    public DateTime? CourseSubmittedAt { get; set; }
 
     public int      FileCount         { get; set; }
 

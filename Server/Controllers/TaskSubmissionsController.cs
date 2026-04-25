@@ -47,9 +47,10 @@ public class TaskSubmissionsController : ControllerBase
 
     // ── GET /api/task-submissions/all ─────────────────────────────────────
     //
-    // Returns all submissions across every project, enriched with project /
-    // team / milestone context. Used by the lecturer "הגשות" monitoring page.
-    // Ordered newest-first.
+    // Returns submissions that have been formally forwarded to course staff
+    // (CourseSubmittedAt IS NOT NULL) or already actioned by course staff
+    // (Status != 'Submitted'), enriched with project / team / milestone context.
+    // Used by the lecturer "הגשות" monitoring page. Ordered newest-first.
     [HttpGet("all")]
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
     public async Task<IActionResult> GetAll(int authUserId)
@@ -68,6 +69,8 @@ public class TaskSubmissionsController : ControllerBase
                 s.SubmittedAt,
                 s.Notes,
                 s.Status,
+                s.MentorStatus,
+                s.CourseSubmittedAt,
                 ay.Id                                AS AcademicYearId,
                 ay.Name                              AS AcademicYearName,
                 COUNT(f.Id)                          AS FileCount
@@ -80,11 +83,55 @@ public class TaskSubmissionsController : ControllerBase
             JOIN   MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
             JOIN   AcademicYears          ay  ON ay.Id  = p.AcademicYearId
             LEFT JOIN TaskSubmissionFiles f   ON f.TaskSubmissionId = s.Id
+            WHERE  (s.CourseSubmittedAt IS NOT NULL OR s.Status != 'Submitted')
             GROUP  BY s.Id
             ORDER  BY s.SubmittedAt DESC";
 
         var rows = await _db.GetRecordsAsync<LecturerSubmissionRowDto>(sql, new { });
         return Ok(rows ?? Enumerable.Empty<LecturerSubmissionRowDto>());
+    }
+
+    // ── POST /api/task-submissions/{id}/submit-to-course ──────────────────
+    //
+    // Student action: formally forward a mentor-approved submission to course staff.
+    // Only allowed when MentorStatus = 'Approved' and CourseSubmittedAt is null.
+    [HttpPost("{id:int}/submit-to-course")]
+    public async Task<IActionResult> SubmitToCourse(int id, int authUserId)
+    {
+        // Verify the submission belongs to the student's project
+        const string checkSql = @"
+            SELECT  s.Id, s.TaskId, s.MentorStatus, s.CourseSubmittedAt, t.ProjectId
+            FROM    TaskSubmissions s
+            JOIN    Tasks           t  ON s.TaskId = t.Id
+            JOIN    Projects        p  ON t.ProjectId = p.Id
+            JOIN    Teams           tm ON p.TeamId    = tm.Id
+            JOIN    TeamMembers     m  ON tm.Id       = m.TeamId
+            WHERE   s.Id         = @SubmissionId
+              AND   m.UserId     = @UserId
+              AND   m.IsActive   = 1";
+
+        var row = (await _db.GetRecordsAsync<CourseSumbitCheckRow>(
+            checkSql, new { SubmissionId = id, UserId = authUserId }))
+            ?.FirstOrDefault();
+
+        if (row is null) return NotFound("ההגשה לא נמצאה או שאין לך הרשאה");
+
+        if (row.MentorStatus != "Approved")
+            return BadRequest("ניתן להגיש לצוות הקורס רק לאחר אישור מנחה");
+
+        // Mark the submission as forwarded to course staff
+        int affected = await _db.SaveDataAsync(
+            "UPDATE TaskSubmissions SET CourseSubmittedAt = datetime('now') WHERE Id = @Id",
+            new { Id = id });
+
+        if (affected == 0) return NotFound("ההגשה לא נמצאה");
+
+        // Update task status to Done — the student has completed all steps
+        await _db.SaveDataAsync(
+            "UPDATE Tasks SET Status = 'Done' WHERE Id = @TaskId AND Status = 'ApprovedForSubmission'",
+            new { row.TaskId });
+
+        return Ok();
     }
 
     // ── GET /api/task-submissions?taskId=N ─────────────────────────────────
@@ -290,7 +337,55 @@ public class TaskSubmissionsController : ControllerBase
             });
         }
 
-        // ── 7. Auto-complete all student sub-tasks for this task + team ─────
+        // ── 7. Sync Tasks.Status to reflect the new submission ───────────────
+        // A resubmission after a return moves the task to RevisionSubmitted;
+        // a first submission moves it to SubmittedToMentor.
+        await _db.SaveDataAsync(@"
+            UPDATE Tasks
+            SET    Status = CASE WHEN Status = 'ReturnedForRevision'
+                                 THEN 'RevisionSubmitted'
+                                 ELSE 'SubmittedToMentor'
+                            END
+            WHERE  Id = @TaskId", new { TaskId = req.TaskId });
+
+        // ── 8. Notify mentor(s) that a submission arrived ────────────────────
+        try
+        {
+            const string contextSql = @"
+                SELECT t.Title AS TaskTitle, tm.TeamName
+                FROM   Tasks    t
+                JOIN   Projects p  ON t.ProjectId = p.Id
+                JOIN   Teams    tm ON p.TeamId    = tm.Id
+                WHERE  t.Id = @TaskId
+                LIMIT 1";
+
+            var ctx = (await _db.GetRecordsAsync<SubmissionNotifyRow>(
+                contextSql, new { TaskId = req.TaskId }))?.FirstOrDefault();
+
+            if (ctx is not null)
+            {
+                const string mentorsSql = @"
+                    SELECT pmt.UserId
+                    FROM   ProjectMentors pmt
+                    JOIN   Tasks          t   ON t.ProjectId = pmt.ProjectId
+                    WHERE  t.Id = @TaskId";
+
+                var mentorIds = (await _db.GetRecordsAsync<int>(
+                    mentorsSql, new { TaskId = req.TaskId }))?.ToList() ?? new();
+
+                string title   = "הגשה חדשה התקבלה";
+                string message = $"צוות {ctx.TeamName} הגיש לבדיקה את המשימה {ctx.TaskTitle}";
+
+                await NotificationHelper.CreateForUsersAsync(
+                    _db, mentorIds, title, message,
+                    type: "SubmissionReceived",
+                    relatedEntityType: "TaskSubmission",
+                    relatedEntityId: req.TaskId);  // TaskId so mentor page can deep-link
+            }
+        }
+        catch { /* notifications are best-effort — never block the main flow */ }
+
+        // ── 9. Auto-complete all student sub-tasks for this task + team ─────
         // Marking sub-tasks done when a submission is created keeps the internal
         // team checklist in sync without requiring a separate student action.
         var teamIdRows = await _db.GetRecordsAsync<int>(@"
@@ -345,6 +440,7 @@ public class TaskSubmissionsController : ControllerBase
     //
     // Allows a mentor to approve or return a submission with feedback.
     // Valid MentorStatus values: "Approved" | "Returned"
+    // Also syncs Tasks.Status so the student task list reflects the decision.
     [HttpPatch("{id:int}/mentor-review")]
     [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
     public async Task<IActionResult> MentorReview(
@@ -353,6 +449,13 @@ public class TaskSubmissionsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.MentorStatus) ||
             (req.MentorStatus != "Approved" && req.MentorStatus != "Returned"))
             return BadRequest("ערך לא תקין. ערכים חוקיים: Approved, Returned");
+
+        // Resolve the TaskId before updating so we can sync Tasks.Status
+        var subRow = (await _db.GetRecordsAsync<SubmissionTaskRow>(
+            "SELECT TaskId FROM TaskSubmissions WHERE Id = @Id", new { Id = id }))
+            ?.FirstOrDefault();
+
+        if (subRow is null) return NotFound("ההגשה לא נמצאה");
 
         const string sql = @"
             UPDATE TaskSubmissions
@@ -370,6 +473,57 @@ public class TaskSubmissionsController : ControllerBase
         });
 
         if (affected == 0) return NotFound("ההגשה לא נמצאה");
+
+        // Notify relevant users of the review decision
+        try
+        {
+            const string contextSql = @"
+                SELECT t.Title AS TaskTitle
+                FROM   TaskSubmissions ts
+                JOIN   Tasks           t  ON ts.TaskId = t.Id
+                WHERE  ts.Id = @Id
+                LIMIT  1";
+
+            var taskTitle = (await _db.GetRecordsAsync<TitleRow>(
+                contextSql, new { Id = id }))?.FirstOrDefault()?.TaskTitle ?? "";
+
+            if (req.MentorStatus == "Returned" && !string.IsNullOrEmpty(taskTitle))
+            {
+                // Notify all active team members that their submission was returned
+                const string membersSql = @"
+                    SELECT m.UserId
+                    FROM   TaskSubmissions ts
+                    JOIN   Tasks           t  ON ts.TaskId   = t.Id
+                    JOIN   Projects        p  ON t.ProjectId = p.Id
+                    JOIN   Teams           tm ON p.TeamId    = tm.Id
+                    JOIN   TeamMembers     m  ON tm.Id       = m.TeamId
+                    WHERE  ts.Id       = @Id
+                      AND  m.IsActive  = 1";
+
+                var studentIds = (await _db.GetRecordsAsync<int>(
+                    membersSql, new { Id = id }))?.ToList() ?? new();
+
+                await NotificationHelper.CreateForUsersAsync(
+                    _db, studentIds,
+                    title:             "ההגשה הוחזרה לתיקון",
+                    message:           $"המשימה {taskTitle} הוחזרה לתיקונים על ידי המנחה",
+                    type:              "SubmissionReturned",
+                    relatedEntityType: "TaskSubmission",
+                    relatedEntityId:   subRow.TaskId);  // TaskId so student submissions page can deep-link
+            }
+        }
+        catch { /* notifications are best-effort */ }
+
+        // Sync Tasks.Status to match the mentor's decision so the student
+        // task list and detail modal always reflect the true review state.
+        string newTaskStatus = req.MentorStatus == "Approved"
+            ? "ApprovedForSubmission"
+            : "ReturnedForRevision";
+
+        await _db.SaveDataAsync(
+            "UPDATE Tasks SET Status = @Status WHERE Id = @TaskId",
+            new { Status = newTaskStatus, subRow.TaskId });
+
         return Ok();
     }
 
@@ -425,6 +579,25 @@ public class TaskSubmissionsController : ControllerBase
     }
 
     // ── Private Dapper row types ─────────────────────────────────────────────
+
+    private sealed class SubmissionTaskRow { public int TaskId { get; set; } }
+
+    private sealed class SubmissionNotifyRow
+    {
+        public string TaskTitle { get; set; } = "";
+        public string TeamName  { get; set; } = "";
+    }
+
+    private sealed class TitleRow { public string TaskTitle { get; set; } = ""; }
+
+    private sealed class CourseSumbitCheckRow
+    {
+        public int      Id                 { get; set; }
+        public int      TaskId             { get; set; }
+        public string   MentorStatus       { get; set; } = "";
+        public string?  CourseSubmittedAt  { get; set; }
+        public int      ProjectId          { get; set; }
+    }
 
     private sealed class TaskPolicyRow
     {

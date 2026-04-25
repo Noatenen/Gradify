@@ -38,7 +38,15 @@ public class TaskDetailDto
     public int?      MaxFileSizeMb    { get; set; }
     public string?   AllowedFileTypes { get; set; }
 
-    // ── Submission history (newest first) ────────────────────────────────────
+    // ── Latest submission state (direct server-computed — always populated) ──
+    /// <summary>Mentor decision on the latest submission. Null if never submitted.</summary>
+    public string?   LatestMentorStatus     { get; set; }
+    /// <summary>Id of the latest TaskSubmissions row. Null if never submitted.</summary>
+    public int?      LatestSubmissionId      { get; set; }
+    /// <summary>When the student forwarded the latest submission to course staff.</summary>
+    public DateTime? LatestCourseSubmittedAt { get; set; }
+
+    // ── Submission history (oldest first) ────────────────────────────────────
     public List<SubmissionHistoryItemDto> Submissions { get; set; } = new();
 }
 
@@ -58,10 +66,12 @@ public class SubmissionHistoryItemDto
     /// <summary>Feedback from reviewer when Status = "NeedsRevision".</summary>
     public string?   ReviewerFeedback { get; set; }
     /// <summary>Mentor decision: "Pending" | "Approved" | "Returned".</summary>
-    public string    MentorStatus     { get; set; } = "Pending";
+    public string    MentorStatus       { get; set; } = "Pending";
     /// <summary>Feedback from mentor when MentorStatus = "Returned".</summary>
-    public string?   MentorFeedback   { get; set; }
-    public DateTime? MentorReviewedAt { get; set; }
+    public string?   MentorFeedback     { get; set; }
+    public DateTime? MentorReviewedAt   { get; set; }
+    /// <summary>When the student formally forwarded this submission to course staff. Null if not yet forwarded.</summary>
+    public DateTime? CourseSubmittedAt  { get; set; }
     public List<TaskSubmissionFileDto> Files { get; set; } = new();
 }
 

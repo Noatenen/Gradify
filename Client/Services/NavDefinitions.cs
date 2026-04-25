@@ -46,9 +46,18 @@ public static class NavDefinitions
     private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
 
     // ── Mentor ───────────────────────────────────────────────────────
-    // Currently mirrors admin; kept separate so it can be customised later.
-    private static readonly IReadOnlyList<NavItem> _mentorMain   = _adminMain;
-    private static readonly IReadOnlyList<NavItem> _mentorBottom = _adminBottom;
+    private static readonly IReadOnlyList<NavItem> _mentorMain = new[]
+    {
+        new NavItem("פרויקטים", "mentor/projects",     "oi-folder",   NavLinkMatch.Prefix),
+        new NavItem("הגשות",    "mentor/submissions", "oi-inbox",    NavLinkMatch.Prefix),
+        new NavItem("בקשות",    "management/requests", "oi-envelope-closed", NavLinkMatch.Prefix),
+    };
+
+    private static readonly IReadOnlyList<NavItem> _mentorBottom = new[]
+    {
+        new NavItem("חומרי עזר", "resource-files", "oi-folder", NavLinkMatch.Prefix),
+        new NavItem("הגדרות",   "settings",        "oi-cog",    NavLinkMatch.Prefix),
+    };
 
     // ─────────────────────────────────────────────────────────────────
     /// <summary>

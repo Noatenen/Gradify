@@ -67,12 +67,19 @@ else
         <div class="sub-cards-grid">
             @foreach (var task in _tasks)
             {
-                bool isOverdue = task.DueDate.HasValue
-                              && task.DueDate.Value.Date < DateTime.Today
-                              && task.LatestSubmissionStatus is null or "NeedsRevision";
-                bool isSubmitted = task.LatestSubmissionId.HasValue;
+                bool isReturned        = task.LatestMentorStatus == "Returned"
+                                      || task.LatestSubmissionStatus == "NeedsRevision";
+                bool isCourseSubmitted = task.LatestCourseSubmittedAt.HasValue;
+                bool isSubmitted       = task.LatestSubmissionId.HasValue && !isReturned;
+                bool isOverdue         = task.DueDate.HasValue
+                                      && task.DueDate.Value.Date < DateTime.Today
+                                      && !task.LatestSubmissionId.HasValue;
+                bool canSubmitToCourse = task.LatestMentorStatus == "Approved"
+                                      && !isCourseSubmitted
+                                      && task.LatestSubmissionId.HasValue;
+                var (badgeCss, badgeLabel) = SubmissionBadgeInfo(task);
 
-                <div class="sub-card @(isOverdue ? "sub-card-overdue" : "") @(isSubmitted ? "sub-card-submitted" : "")">
+                <div class="sub-card @(isReturned ? "sub-card-returned" : isOverdue ? "sub-card-overdue" : isSubmitted ? "sub-card-submitted" : "")">
 
                     <!-- Card header -->
                     <div class="sub-card-header">
@@ -80,17 +87,16 @@ else
                             <span class="sub-card-milestone">@task.MilestoneTitle</span>
                             <h3 class="sub-card-title">@task.TaskTitle</h3>
                         </div>
-                        @if (task.LatestSubmissionStatus is not null)
-                        {
-                            <span class="sub-status-badge sub-badge-@task.LatestSubmissionStatus.ToLower()">
-                                @SubmissionStatusLabel(task.LatestSubmissionStatus)
-                            </span>
-                        }
-                        else
-                        {
-                            <span class="sub-status-badge sub-badge-none">טרם הוגש</span>
-                        }
+                        <span class="sub-status-badge sub-badge-@badgeCss">@badgeLabel</span>
                     </div>
+
+                    @if (isReturned)
+                    {
+                        <div class="sub-card-returned-banner">
+                            <span class="oi oi-arrow-circle-left" aria-hidden="true"></span>
+                            ההגשה הוחזרה — יש לתקן ולהגיש מחדש
+                        </div>
+                    }
 
                     <!-- Due date -->
                     @if (task.DueDate.HasValue)
@@ -105,20 +111,37 @@ else
                     <!-- Last submission info -->
                     @if (task.LatestSubmittedAt.HasValue)
                     {
-                        <div class="sub-card-prev">
-                            <span class="oi oi-check" aria-hidden="true"></span>
+                        <div class="sub-card-prev @(isReturned ? "sub-card-prev-returned" : "")">
+                            <span class="oi @(isReturned ? "oi-arrow-circle-left" : "oi-check")" aria-hidden="true"></span>
                             הוגש לאחרונה: @task.LatestSubmittedAt.Value.ToString("dd/MM/yyyy HH:mm")
                             (@task.SubmissionCount @(task.SubmissionCount == 1 ? "הגשה" : "הגשות"))
                         </div>
                     }
 
+                    <!-- Course submission action (appears after mentor approval) -->
+                    @if (canSubmitToCourse)
+                    {
+                        <button class="sub-card-btn sub-card-btn-course"
+                                @onclick="@(() => SubmitToCourseFromPageAsync(task))">
+                            <span class="oi oi-globe" aria-hidden="true"></span>
+                            הגשה לצוות הקורס
+                        </button>
+                    }
+                    @if (isCourseSubmitted && !isReturned)
+                    {
+                        <div class="sub-card-course-done">
+                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                            הוגש לצוות הקורס · @task.LatestCourseSubmittedAt!.Value.ToString("dd/MM/yy HH:mm")
+                        </div>
+                    }
+
                     <!-- Action button -->
                     <div class="sub-card-actions">
-                        <button class="sub-card-btn @(isSubmitted ? "sub-card-btn-secondary" : "")"
+                        <button class="sub-card-btn @(isReturned ? "sub-card-btn-returned" : isSubmitted ? "sub-card-btn-secondary" : "")"
                                 @onclick="@(() => OpenSubmission(task.TaskId))">
-                            <span class="oi @(isSubmitted ? "oi-pencil" : "oi-data-transfer-upload")"
+                            <span class="oi @(isReturned ? "oi-loop-circular" : isSubmitted ? "oi-pencil" : "oi-data-transfer-upload")"
                                   aria-hidden="true"></span>
-                            @(isSubmitted ? "הגשה נוספת / צפייה" : "הגשה")
+                            @(isReturned ? "הגשה לאחר תיקון" : isSubmitted ? "הגשה נוספת / צפייה" : "הגשה")
                         </button>
                     </div>
 
@@ -153,11 +176,24 @@ else
     private void OpenSubmission(int taskId) => _openTaskId = taskId;
     private void CloseModal()               => _openTaskId = 0;
 
-    private static string SubmissionStatusLabel(string status) => status switch
+    private async Task SubmitToCourseFromPageAsync(StudentSubmissionTaskDto task)
     {
-        "Submitted"     => "הוגש",
-        "Reviewed"      => "נבדק",
-        "NeedsRevision" => "דורש תיקון",
-        _               => status,
-    };
+        if (!task.LatestSubmissionId.HasValue) return;
+        bool ok = await SubmissionsService.SubmitToCourseAsync(task.LatestSubmissionId.Value);
+        if (ok) task.LatestCourseSubmittedAt = DateTime.Now;  // optimistic
+    }
+
+    // Returns (cssClass, label) based on status priority:
+    // returned-by-mentor > needs-revision > reviewed > course-submitted > pending-mentor > submitted > none
+    private static (string Css, string Label) SubmissionBadgeInfo(StudentSubmissionTaskDto task)
+    {
+        if (task.LatestMentorStatus == "Returned")          return ("returned-mentor", "הוחזר ע״י מנחה");
+        if (task.LatestSubmissionStatus == "NeedsRevision") return ("needsrevision",   "דורש תיקון");
+        if (task.LatestSubmissionStatus == "Reviewed")      return ("reviewed",        "נבדק");
+        if (task.LatestCourseSubmittedAt.HasValue)          return ("submitted",       "הוגש לצוות הקורס");
+        if (task.LatestMentorStatus == "Approved")          return ("approved",        "אושר ע״י מנחה");
+        if (task.LatestMentorStatus == "Pending")           return ("submitted",       "ממתין לבדיקה");
+        if (task.LatestSubmissionStatus == "Submitted")     return ("submitted",       "הוגש");
+        return ("none", "טרם הוגש");
+    }
 }

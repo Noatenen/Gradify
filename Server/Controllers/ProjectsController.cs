@@ -114,7 +114,19 @@ public class ProjectsController : ControllerBase
                     t.DueDate,
                     t.ProjectMilestoneId,
                     t.IsSubmission,
-                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName
+                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName,
+                    (SELECT s.Status
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmissionStatus,
+                    (SELECT s.MentorStatus
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMentorStatus,
+                    (SELECT s.SubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt
             FROM    Tasks t
             LEFT JOIN Users u ON t.AssignedToUserId = u.Id
             WHERE   t.ProjectId = @ProjectId
@@ -154,11 +166,14 @@ public class ProjectsController : ControllerBase
             Tasks              = tasksByMilestone[m.ProjectMilestoneId]
                 .Select(t => new TaskSummaryDto
                 {
-                    Id             = t.Id,
-                    Title          = t.Title,
-                    Status         = t.Status,
-                    DueDate        = t.DueDate,
-                    AssignedToName = t.AssignedToName,
+                    Id                     = t.Id,
+                    Title                  = t.Title,
+                    Status                 = NormalizeTaskStatus(t.Status, t.LatestMentorStatus, t.LatestSubmissionStatus),
+                    DueDate                = t.DueDate,
+                    AssignedToName         = t.AssignedToName,
+                    LatestSubmissionStatus = t.LatestSubmissionStatus,
+                    LatestMentorStatus     = t.LatestMentorStatus,
+                    LatestSubmittedAt      = t.LatestSubmittedAt,
                 })
                 .ToList(),
         }).ToList();
@@ -175,9 +190,10 @@ public class ProjectsController : ControllerBase
         {
             nextDeadline = new UpcomingDeadlineDto
             {
-                TaskId  = nearestSubmissionTask.Id,
-                Title   = nearestSubmissionTask.Title,
-                DueDate = nearestSubmissionTask.DueDate!.Value,
+                TaskId             = nearestSubmissionTask.Id,
+                Title              = nearestSubmissionTask.Title,
+                DueDate            = nearestSubmissionTask.DueDate!.Value,
+                LatestMentorStatus = nearestSubmissionTask.LatestMentorStatus,
             };
         }
         else
@@ -337,7 +353,16 @@ public class ProjectsController : ControllerBase
                     pm.CompletedAt,
                     COUNT(t.Id)    AS TotalTasks,
                     COALESCE(SUM(CASE WHEN t.Status = 'Done' THEN 1 ELSE 0 END), 0)
-                                   AS CompletedTasks
+                                   AS CompletedTasks,
+                    CASE WHEN (
+                        SELECT COUNT(*)
+                        FROM   Tasks t2
+                        WHERE  t2.ProjectMilestoneId = pm.Id
+                          AND  (SELECT s.MentorStatus
+                                FROM   TaskSubmissions s
+                                WHERE  s.TaskId = t2.Id
+                                ORDER  BY s.Id DESC LIMIT 1) = 'Returned'
+                    ) > 0 THEN 1 ELSE 0 END AS HasReturnedTask
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
@@ -379,6 +404,7 @@ public class ProjectsController : ControllerBase
                 CompletedTasks     = r.CompletedTasks,
                 ProgressPct        = pct,
                 IsCurrent          = r.ProjectMilestoneId == currentRow?.ProjectMilestoneId,
+                HasReturnedTask    = r.HasReturnedTask,
             };
         }).ToList();
 
@@ -452,7 +478,11 @@ public class ProjectsController : ControllerBase
                     (SELECT s.MentorStatus
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
-                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMentorStatus
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMentorStatus,
+                    (SELECT s.SubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
@@ -474,7 +504,7 @@ public class ProjectsController : ControllerBase
                 {
                     Id                     = r.TaskId,
                     Title                  = r.TaskTitle,
-                    Status                 = NormalizeTaskStatus(r.TaskStatus),
+                    Status                 = NormalizeTaskStatus(r.TaskStatus, r.LatestMentorStatus, r.LatestSubmissionStatus),
                     TaskType               = r.TaskType,
                     IsMandatory            = r.IsMandatory,
                     DueDate                = r.TaskDueDate,
@@ -484,6 +514,7 @@ public class ProjectsController : ControllerBase
                     MilestoneStatus        = NormalizeMilestoneStatus(r.MilestoneStatus),
                     LatestSubmissionStatus = r.LatestSubmissionStatus,
                     LatestMentorStatus     = r.LatestMentorStatus,
+                    LatestSubmittedAt      = r.LatestSubmittedAt,
                 }).ToList();
 
                 return new TaskMilestoneGroupDto
@@ -537,14 +568,14 @@ public class ProjectsController : ControllerBase
             .ToList();
 
         // ── 5. Summary counts ─────────────────────────────────────────────────
-        // Active:    non-Done tasks in InProgress or Delayed milestones (actionable now)
-        // Pending:   non-Done tasks in NotStarted milestones (milestone not yet opened)
-        // Completed: Done tasks regardless of milestone status
+        // NeedsAttention: tasks that require student action (returned or awaiting review)
+        // Active:         remaining non-Done tasks in open milestones that don't need attention
+        // Completed:      Done tasks regardless of milestone status
         var allTaskItems = milestoneGroups.SelectMany(g => g.Tasks).ToList();
+        int pendingCount   = allTaskItems.Count(t => IsNeedsAttentionStatus(t.Status));
         int activeCount    = allTaskItems.Count(t => t.Status != "Done"
+                                && !IsNeedsAttentionStatus(t.Status)
                                 && (t.MilestoneStatus == "InProgress" || t.MilestoneStatus == "Delayed"));
-        int pendingCount   = allTaskItems.Count(t => t.Status != "Done"
-                                && t.MilestoneStatus == "NotStarted");
         int completedCount = allTaskItems.Count(t => t.Status == "Done");
 
         return Ok(new TasksPageDto
@@ -577,6 +608,21 @@ public class ProjectsController : ControllerBase
     // Normalize at the read boundary so all downstream UI checks use "Done".
     private static string NormalizeTaskStatus(string? status) =>
         status is "Completed" ? "Done" : status ?? "Open";
+
+    // Overload used when building TaskItemDto for the tasks-page list.
+    // Latest submission review state takes priority over the stored task status:
+    // a "Done" task whose latest submission was returned is NOT actually done.
+    private static string NormalizeTaskStatus(
+        string? status, string? latestMentorStatus, string? latestSubmissionStatus)
+    {
+        if (latestMentorStatus   == "Returned")      return "ReturnedForRevision";
+        if (latestSubmissionStatus == "NeedsRevision") return "ReturnedForRevision";
+        return NormalizeTaskStatus(status);
+    }
+
+    // Tasks that require immediate student action: returned or awaiting review.
+    private static bool IsNeedsAttentionStatus(string status) =>
+        status is "ReturnedForRevision" or "SubmittedToMentor" or "RevisionSubmitted";
 
     // Valid student progress status values (7-step workflow).
     private static readonly HashSet<string> ValidTaskProgressStatuses =
@@ -637,6 +683,9 @@ public class ProjectsController : ControllerBase
         public int?      ProjectMilestoneId { get; set; }
         public bool      IsSubmission       { get; set; }
         public string    AssignedToName     { get; set; } = "";
+        public string?   LatestSubmissionStatus { get; set; }
+        public string?   LatestMentorStatus     { get; set; }
+        public DateTime? LatestSubmittedAt      { get; set; }
     }
 
     // Used only by GetMyTasks — includes StudentName and milestone context per row.
@@ -665,6 +714,7 @@ public class ProjectsController : ControllerBase
         public DateTime? CompletedAt        { get; set; }
         public int       TotalTasks         { get; set; }
         public int       CompletedTasks     { get; set; }
+        public bool      HasReturnedTask    { get; set; }
     }
 
     // Used by GetMyContext ─────────────────────────────────────────────────────
@@ -708,6 +758,7 @@ public class ProjectsController : ControllerBase
         public bool      IsSubmission        { get; set; }
         public string?   LatestSubmissionStatus { get; set; }
         public string?   LatestMentorStatus     { get; set; }
+        public DateTime? LatestSubmittedAt      { get; set; }
     }
 
     // ── GET /api/projects/my-submission-tasks ────────────────────────────────
@@ -760,6 +811,14 @@ public class ProjectsController : ControllerBase
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmissionStatus,
+                    (SELECT s.MentorStatus
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestMentorStatus,
+                    (SELECT s.CourseSubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestCourseSubmittedAt,
                     (SELECT s.SubmittedAt
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
@@ -824,6 +883,14 @@ public class ProjectsController : ControllerBase
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmissionStatus,
+                    (SELECT s.MentorStatus
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestMentorStatus,
+                    (SELECT s.CourseSubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestCourseSubmittedAt,
                     (SELECT s.SubmittedAt
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
@@ -882,7 +949,19 @@ public class ProjectsController : ControllerBase
                     t.SubmissionInstructions,
                     t.MaxFilesCount,
                     t.MaxFileSizeMb,
-                    t.AllowedFileTypes
+                    t.AllowedFileTypes,
+                    (SELECT s.MentorStatus
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMentorStatus,
+                    (SELECT s.Id
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmissionId,
+                    (SELECT s.CourseSubmittedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestCourseSubmittedAt
             FROM    Tasks                    t
             LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
@@ -911,10 +990,11 @@ public class ProjectsController : ControllerBase
                         s.ReviewerFeedback,
                         s.MentorStatus,
                         s.MentorFeedback,
-                        s.MentorReviewedAt
+                        s.MentorReviewedAt,
+                        s.CourseSubmittedAt
                 FROM    TaskSubmissions s
                 WHERE   s.TaskId = @TaskId
-                ORDER   BY s.Id DESC";
+                ORDER   BY s.Id ASC";
 
             var subs = (await _db.GetRecordsAsync<SubmissionHistoryItemDto>(
                     subsSql, new { TaskId = taskId }))

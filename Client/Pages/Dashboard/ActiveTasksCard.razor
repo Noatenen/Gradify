@@ -27,7 +27,7 @@
             @foreach (var ms in Milestones)
             {
                 bool isOpen = _openMilestones.Contains(ms.ProjectMilestoneId);
-                int  done   = ms.Tasks.Count(t => t.Status == "Done");
+                int  done   = ms.Tasks.Count(t => ResolveEffectiveStatus(t) == "Done");
 
                 <div class="atc-milestone-group @(isOpen ? "atc-ms-open" : "")">
 
@@ -35,7 +35,7 @@
                     <button class="atc-ms-header"
                             @onclick="() => ToggleMilestone(ms.ProjectMilestoneId)">
                         <div class="atc-ms-header-start">
-                            <span class="atc-ms-status-dot atc-dot-@MsClass(ms.Status)"></span>
+                            <span class="atc-ms-status-dot atc-dot-@MsDotClass(ms)"></span>
                             <span class="atc-ms-name">@ms.Title</span>
                             @if (ms.DueDate.HasValue)
                             {
@@ -63,25 +63,24 @@
                             {
                                 @foreach (var task in ms.Tasks)
                                 {
-                                    // A task is overdue when the due date passed and it's not
-                                    // in a "submitted or approved" state (same logic as accordion).
-                                    bool isActionedStatus = task.Status is "Done"
-                                        or "SubmittedToMentor" or "RevisionSubmitted"
-                                        or "ApprovedForSubmission";
+                                    string resolved = ResolveEffectiveStatus(task);
+                                    // Overdue only when the task hasn't been touched and due date passed.
+                                    // Returned/pending-review states already signal "needs action" — don't
+                                    // mask them with "overdue".
                                     bool overdue = task.DueDate.HasValue
                                                 && task.DueDate.Value.Date < DateTime.Today
-                                                && !isActionedStatus;
-                                    string cls = overdue ? "overdue" : TaskClass(task.Status);
+                                                && resolved is "Open" or "InProgress";
+                                    string cls = overdue ? "overdue" : TaskClass(resolved);
 
                                     <div class="atc-task-item atc-task-@cls"
                                          title="לחץ לפרטי המשימה"
                                          @onclick="() => OnOpenDetail.InvokeAsync(task.Id)">
                                         <div class="atc-task-status-icon">
-                                            <span class="oi @TaskIcon(task.Status, overdue)"
+                                            <span class="oi @TaskIcon(resolved, overdue)"
                                                   aria-hidden="true"></span>
                                         </div>
                                         <div class="atc-task-body">
-                                            <span class="atc-task-title @(task.Status == "Done" ? "atc-title-done" : "")">
+                                            <span class="atc-task-title @(resolved == "Done" ? "atc-title-done" : "")">
                                                 @task.Title
                                             </span>
                                             <div class="atc-task-meta">
@@ -90,6 +89,15 @@
                                                     <span class="atc-task-date @(overdue ? "atc-date-overdue" : "")">
                                                         <span class="oi oi-calendar" aria-hidden="true"></span>
                                                         @task.DueDate.Value.ToString("dd/MM/yy")
+                                                    </span>
+                                                }
+                                                @if (task.LatestSubmittedAt.HasValue
+                                                     && resolved is "PendingMentorReview" or "ReturnedByMentor"
+                                                                  or "ReturnedForRevision" or "ApprovedByMentor")
+                                                {
+                                                    <span class="atc-task-date atc-date-submitted">
+                                                        <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                                        הוגש @task.LatestSubmittedAt.Value.ToString("dd/MM/yy")
                                                     </span>
                                                 }
                                                 @if (!string.IsNullOrWhiteSpace(task.AssignedToName))
@@ -102,7 +110,7 @@
                                             </div>
                                         </div>
                                         <span class="atc-status-badge atc-badge-@cls">
-                                            @TaskLabel(task.Status, overdue)
+                                            @TaskLabel(resolved, overdue)
                                         </span>
                                     </div>
                                 }
@@ -141,6 +149,40 @@
 
     private void OnAddTask() { /* TODO: open add-task modal */ }
 
+    // ── Effective status resolution ───────────────────────────────────────────
+    // Same priority logic as TaskMilestoneAccordion — latest submission/mentor
+    // state takes priority over the stored task status field.
+    private static string ResolveEffectiveStatus(TaskSummaryDto task)
+    {
+        if (task.LatestSubmissionStatus is null)
+            return task.Status;
+        if (task.LatestMentorStatus == "Returned")
+            return "ReturnedByMentor";
+        if (task.LatestSubmissionStatus == "NeedsRevision")
+            return "ReturnedForRevision";
+        if (task.LatestMentorStatus == "Pending")
+            return "PendingMentorReview";
+        if (task.LatestMentorStatus == "Approved" && task.LatestSubmissionStatus == "Submitted")
+            return "ApprovedByMentor";
+        return task.Status;
+    }
+
+    // ── Milestone dot class ────────────────────────────────────────────────────
+    // Derives the milestone dot color from the actual state of its tasks:
+    // any returned or overdue task → attention (orange), otherwise stored status.
+    private string MsDotClass(MilestoneSummaryDto ms)
+    {
+        foreach (var t in ms.Tasks)
+        {
+            string resolved = ResolveEffectiveStatus(t);
+            if (resolved is "ReturnedByMentor" or "ReturnedForRevision") return "attention";
+            if (t.DueDate.HasValue
+                && t.DueDate.Value.Date < DateTime.Today
+                && resolved is "Open" or "InProgress") return "attention";
+        }
+        return MsClass(ms.Status);
+    }
+
     // ── DB string → CSS class ─────────────────────────────────────────────────
     // Milestone statuses: "NotStarted" | "InProgress" | "Completed" | "Delayed"
     private static string MsClass(string s) => s switch
@@ -151,7 +193,7 @@
         _            => "notstarted",
     };
 
-    // Maps 7-value task status to a CSS class suffix
+    // Maps resolved task status to a CSS class suffix
     private static string TaskClass(string s) => s switch
     {
         "Done"                  => "completed",
@@ -160,6 +202,9 @@
         "ReturnedForRevision"   => "returned",
         "RevisionSubmitted"     => "revision",
         "ApprovedForSubmission" => "approved",
+        "PendingMentorReview"   => "submitted",
+        "ReturnedByMentor"      => "returned",
+        "ApprovedByMentor"      => "approved",
         _                       => "notstarted",
     };
 
@@ -171,6 +216,9 @@
         "ReturnedForRevision"   => "oi-arrow-circle-left",
         "RevisionSubmitted"     => "oi-loop-circular",
         "ApprovedForSubmission" => "oi-circle-check",
+        "PendingMentorReview"   => "oi-data-transfer-upload",
+        "ReturnedByMentor"      => "oi-arrow-circle-left",
+        "ApprovedByMentor"      => "oi-circle-check",
         _                       => "oi-media-record",
     };
 
@@ -182,6 +230,9 @@
         "ReturnedForRevision"   => "הוחזר לתיקון",
         "RevisionSubmitted"     => "הועבר לבדיקת מנחה",
         "ApprovedForSubmission" => "אושר להגשה",
+        "PendingMentorReview"   => "ממתין לאישור מנחה",
+        "ReturnedByMentor"      => "הוחזר ע״י מנחה",
+        "ApprovedByMentor"      => "ממתין לאישור מרצה",
         _                       => "ממתין לביצוע",
     };
 }
