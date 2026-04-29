@@ -3,11 +3,21 @@
 @using Microsoft.AspNetCore.Authorization
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
+@* TaskDetailModal lives in Pages/Tasks; this page is in Pages/Submissions, so
+   the same-folder fallback that StudentTasksPage gets does not apply here.
+   Without this using, <TaskDetailModal> would silently render as a literal
+   HTML tag (no error) and the "צפייה בהגשה" click would have no visible effect. *@
+@using AuthWithAdmin.Client.Pages.Tasks
 @inject ITaskSubmissionsService SubmissionsService
 @attribute [Authorize]
 
-<!-- Submission modal (hosted on this page) -->
+<!-- Submission upload form (hosted on this page) -->
 <SubmissionModal TaskId="@_openTaskId" OnClose="CloseModal" />
+
+<!-- Read-only submission history / details (hosted on this page) -->
+<TaskDetailModal TaskId="@_detailTaskId"
+                 OnClose="CloseDetail"
+                 OnOpenSubmission="OpenSubmissionFromDetail" />
 
 @if (_isLoading)
 {
@@ -135,14 +145,42 @@ else
                         </div>
                     }
 
-                    <!-- Action button -->
+                    <!-- Action button —
+                         No prior submission   → open the upload form
+                         Returned for revision → open the upload form (resubmit flow)
+                         Already submitted     → open the read-only details + history;
+                                                  the resubmit button inside that modal
+                                                  is gated by CanSubmit on the server. -->
                     <div class="sub-card-actions">
-                        <button class="sub-card-btn @(isReturned ? "sub-card-btn-returned" : isSubmitted ? "sub-card-btn-secondary" : "")"
-                                @onclick="@(() => OpenSubmission(task.TaskId))">
-                            <span class="oi @(isReturned ? "oi-loop-circular" : isSubmitted ? "oi-pencil" : "oi-data-transfer-upload")"
-                                  aria-hidden="true"></span>
-                            @(isReturned ? "הגשה לאחר תיקון" : isSubmitted ? "הגשה נוספת / צפייה" : "הגשה")
-                        </button>
+                        @if (!task.LatestSubmissionId.HasValue)
+                        {
+                            <button class="sub-card-btn"
+                                    @onclick="@(() => OpenSubmission(task.TaskId))">
+                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                הגשה
+                            </button>
+                        }
+                        else if (isReturned)
+                        {
+                            <button class="sub-card-btn sub-card-btn-returned"
+                                    @onclick="@(() => OpenSubmission(task.TaskId))">
+                                <span class="oi oi-loop-circular" aria-hidden="true"></span>
+                                הגשה לאחר תיקון
+                            </button>
+                            <button class="sub-card-btn sub-card-btn-secondary"
+                                    @onclick="@(() => OpenDetail(task.TaskId))">
+                                <span class="oi oi-eye" aria-hidden="true"></span>
+                                צפייה בהגשה
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="sub-card-btn sub-card-btn-secondary"
+                                    @onclick="@(() => OpenDetail(task.TaskId))">
+                                <span class="oi oi-eye" aria-hidden="true"></span>
+                                צפייה בהגשה
+                            </button>
+                        }
                     </div>
 
                 </div>
@@ -159,7 +197,8 @@ else
     private List<StudentSubmissionTaskDto> _tasks   = new();
     private bool _isLoading = true;
     private bool _loadError = false;
-    private int  _openTaskId = 0;
+    private int  _openTaskId   = 0;   // upload form (SubmissionModal)
+    private int  _detailTaskId = 0;   // read-only history (TaskDetailModal)
 
     protected override async Task OnInitializedAsync()
     {
@@ -168,13 +207,41 @@ else
         _tasks     = result ?? new();
         _isLoading = false;
 
-        // Auto-open modal when navigated here with ?taskId=N
+        // Auto-open from ?taskId=N — pick the right modal based on whether the
+        // task already has a submission, so deep-links match in-page behaviour.
         if (TaskId.HasValue && TaskId.Value > 0)
-            _openTaskId = TaskId.Value;
+        {
+            var match = _tasks.FirstOrDefault(t => t.TaskId == TaskId.Value);
+            if (match is not null && match.LatestSubmissionId.HasValue)
+                _detailTaskId = TaskId.Value;
+            else
+                _openTaskId = TaskId.Value;
+        }
     }
 
-    private void OpenSubmission(int taskId) => _openTaskId = taskId;
-    private void CloseModal()               => _openTaskId = 0;
+    private void OpenSubmission(int taskId) => _openTaskId   = taskId;
+
+    // After the upload-form modal closes, refetch tasks so the new
+    // LatestSubmissionId is reflected — the next click on this task will then
+    // route to the read-only details view instead of the form.
+    private async Task CloseModal()
+    {
+        _openTaskId = 0;
+        var result = await SubmissionsService.GetMySubmissionTasksAsync();
+        if (result is not null) _tasks = result;
+    }
+
+    private void OpenDetail(int taskId) => _detailTaskId = taskId;
+    private void CloseDetail()          => _detailTaskId = 0;
+
+    // Bridge from TaskDetailModal: when the student clicks "הגשה מחדש" inside
+    // the read-only view, close detail and open the upload form. CanSubmit
+    // gating in TaskDetailModal already ensures this only fires when allowed.
+    private void OpenSubmissionFromDetail(int taskId)
+    {
+        _detailTaskId = 0;
+        _openTaskId   = taskId;
+    }
 
     private async Task SubmitToCourseFromPageAsync(StudentSubmissionTaskDto task)
     {

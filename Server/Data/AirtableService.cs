@@ -7,17 +7,24 @@ namespace AuthWithAdmin.Server.Data;
 
 /// <summary>
 /// Fetches project records from Airtable and upserts them into the local DB.
-/// All configuration (token, base ID, table name, view, field map) is read from
-/// AirtableOptions so no values are hardcoded — swap appsettings.json each year.
+///
+/// Configuration is supplied per-call via <see cref="AirtableOptions"/>:
+///   · The new admin UI calls <see cref="SyncProjectsAsync(AirtableOptions)"/>
+///     with the saved row from AirtableIntegrationSettings.
+///   · The legacy <see cref="SyncProjectsAsync()"/> entry point — still wired
+///     to /api/airtable/sync-projects — first looks up the active DB
+///     configuration for the current academic year, then falls back to the
+///     "Airtable" section in appsettings.json so existing installations keep
+///     working without immediate admin action.
 /// </summary>
 public class AirtableService
 {
     private const string AirtableApiBase = "https://api.airtable.com/v0";
 
-    private readonly IHttpClientFactory         _httpFactory;
-    private readonly DbRepository               _db;
-    private readonly AirtableOptions            _options;
-    private readonly ILogger<AirtableService>   _log;
+    private readonly IHttpClientFactory       _httpFactory;
+    private readonly DbRepository             _db;
+    private readonly IConfiguration           _config;
+    private readonly ILogger<AirtableService> _log;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -32,34 +39,47 @@ public class AirtableService
     {
         _httpFactory = httpFactory;
         _db          = db;
+        _config      = config;
         _log         = log;
-        _options     = config.GetSection(AirtableOptions.SectionName)
-                             .Get<AirtableOptions>()
-                       ?? new AirtableOptions();
     }
 
-    // ── Public entry point ───────────────────────────────────────────────────
+    // ── Public entry points ──────────────────────────────────────────────────
 
+    /// <summary>Resolves the DB-backed active configuration (or appsettings fallback) and runs the sync.</summary>
     public async Task<AirtableSyncResultDto> SyncProjectsAsync()
     {
-        if (!_options.IsConfigured)
+        var options = await ResolveActiveOptionsAsync();
+        if (options is null)
         {
-            _log.LogWarning("Airtable sync skipped: configuration incomplete (Token/BaseId/TableName missing).");
             return new AirtableSyncResultDto
             {
-                SyncError = "Airtable אינו מוגדר. יש למלא Token, BaseId ו-TableName ב-appsettings."
+                SyncError = "Airtable אינו מוגדר. הגדירו אינטגרציה פעילה דרך ניהול > אינטגרציות."
+            };
+        }
+        return await SyncProjectsAsync(options);
+    }
+
+    /// <summary>Runs the sync with an explicit configuration (used by the admin UI per-row).</summary>
+    public async Task<AirtableSyncResultDto> SyncProjectsAsync(AirtableOptions options)
+    {
+        if (!options.IsConfigured)
+        {
+            return new AirtableSyncResultDto
+            {
+                SyncError = "תצורת Airtable אינה מלאה (Token / BaseId / ProjectsTable חסרים)."
             };
         }
 
+        // Logs use BaseId/Table only — never the token.
         _log.LogInformation(
             "Starting Airtable sync — base: {BaseId}, table: {Table}, view: {View}",
-            _options.BaseId, _options.TableName,
-            string.IsNullOrWhiteSpace(_options.ViewName) ? "(all records)" : _options.ViewName);
+            options.BaseId, options.TableName,
+            string.IsNullOrWhiteSpace(options.ViewName) ? "(all records)" : options.ViewName);
 
         List<AirtableRecord> records;
         try
         {
-            records = await FetchAllRecordsAsync();
+            records = await FetchAllRecordsAsync(options);
             _log.LogInformation("Fetched {Count} raw records from Airtable.", records.Count);
         }
         catch (Exception ex)
@@ -71,11 +91,8 @@ public class AirtableService
             };
         }
 
-        // ── Secondary pool filter ────────────────────────────────────────────
-        // The Airtable view is the primary filter. When StudentVisibleOnly is true
-        // and IncludeInPool is configured, we apply it as a defensive second pass.
-        var fm = _options.FieldMap;
-        if (_options.StudentVisibleOnly && !string.IsNullOrWhiteSpace(fm.IncludeInPool))
+        var fm = options.FieldMap;
+        if (options.StudentVisibleOnly && !string.IsNullOrWhiteSpace(fm.IncludeInPool))
         {
             int before = records.Count;
             records = records
@@ -93,14 +110,12 @@ public class AirtableService
 
         var result = new AirtableSyncResultDto { TotalFetched = records.Count };
 
-        // Pre-load project types: name (lower) → id
         var typeRows = await _db.GetRecordsAsync<ProjectTypeRow>(
             "SELECT Id, Name FROM ProjectTypes");
         var typesByName = typeRows?
             .ToDictionary(t => t.Name.ToLowerInvariant(), t => t.Id)
             ?? new Dictionary<string, int>();
 
-        // Resolve current academic year for new inserts
         int currentYearId = (await _db.GetRecordsAsync<int>(
             "SELECT COALESCE(Id, 0) FROM AcademicYears WHERE IsCurrent = 1 LIMIT 1"))
             .FirstOrDefault();
@@ -108,7 +123,6 @@ public class AirtableService
         if (currentYearId == 0)
             _log.LogWarning("No current AcademicYear found (IsCurrent = 1). New Airtable projects will have AcademicYearId = 0.");
 
-        // Track max project number so auto-assigned numbers don't collide.
         var counter = new Counter
         {
             Value = (await _db.GetRecordsAsync<int>(
@@ -119,25 +133,22 @@ public class AirtableService
         {
             try
             {
-                await UpsertRecordAsync(record, typesByName, counter, currentYearId, result);
+                await UpsertRecordAsync(options, record, typesByName, counter, currentYearId, result);
             }
             catch (Exception ex)
             {
                 result.Failed++;
 
-                // Surface the root cause — include inner exception when present
                 string rootMsg = ex.InnerException?.Message ?? ex.Message;
                 string detail  = $"[{ex.GetType().Name}] {ex.Message}" +
                                  (ex.InnerException is not null
                                      ? $" → {ex.InnerException.Message}"
                                      : "");
 
-                // Include mapped title/number so failures are easy to identify in logs
-                string title  = GetString(record.Fields, _options.FieldMap.Title);
-                int    num    = GetInt   (record.Fields, _options.FieldMap.ProjectNumber);
+                string title  = GetString(record.Fields, options.FieldMap.Title);
+                int    num    = GetInt   (record.Fields, options.FieldMap.ProjectNumber);
 
-                result.Errors.Add(
-                    $"Record {record.Id} (#{num} \"{title}\"): {rootMsg}");
+                result.Errors.Add($"Record {record.Id} (#{num} \"{title}\"): {rootMsg}");
 
                 _log.LogError(ex,
                     "Upsert failed — record: {RecordId}, projectNumber: {Num}, title: \"{Title}\". {Detail}",
@@ -149,8 +160,6 @@ public class AirtableService
             "Airtable sync complete — fetched: {Fetched}, inserted: {Inserted}, updated: {Updated}, failed: {Failed}.",
             result.TotalFetched, result.Inserted, result.Updated, result.Failed);
 
-        // If every record failed, promote the first error to SyncError so the UI
-        // shows a meaningful message rather than just "0 inserted, 0 updated".
         if (result.Failed > 0 && result.Inserted == 0 && result.Updated == 0
             && result.Errors.Count > 0)
         {
@@ -161,9 +170,151 @@ public class AirtableService
         return result;
     }
 
+    /// <summary>Read-only connection check — performs a minimal request and returns sample count.</summary>
+    public async Task<AirtableTestResultDto> TestConnectionAsync(AirtableOptions options)
+    {
+        if (!options.IsConfigured)
+        {
+            return new AirtableTestResultDto
+            {
+                Success = false,
+                Message = "תצורת Airtable אינה מלאה (Token / BaseId / ProjectsTable חסרים)."
+            };
+        }
+
+        try
+        {
+            var url = $"{AirtableApiBase}/{Uri.EscapeDataString(options.BaseId)}" +
+                      $"/{Uri.EscapeDataString(options.TableName)}?maxRecords=1";
+
+            if (!string.IsNullOrWhiteSpace(options.ViewName))
+                url += $"&view={Uri.EscapeDataString(options.ViewName)}";
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.Token);
+
+            var client = _httpFactory.CreateClient("Airtable");
+            var resp   = await client.SendAsync(request);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                string body = await resp.Content.ReadAsStringAsync();
+                _log.LogWarning("Airtable test connection returned {Status}: {Body}",
+                    (int)resp.StatusCode, Truncate(body, 400));
+                return new AirtableTestResultDto
+                {
+                    Success    = false,
+                    Message    = $"Airtable החזיר סטטוס {(int)resp.StatusCode} — {ExplainStatus(resp.StatusCode)}",
+                    Diagnostic = Truncate(body, 400)
+                };
+            }
+
+            var json = await resp.Content.ReadAsStringAsync();
+            var page = JsonSerializer.Deserialize<AirtableListResponse>(json, JsonOpts);
+            int count = page?.Records?.Count ?? 0;
+
+            return new AirtableTestResultDto
+            {
+                Success     = true,
+                Message     = "החיבור לאיירטייבל הצליח",
+                SampleCount = count
+            };
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Airtable test connection threw.");
+            return new AirtableTestResultDto
+            {
+                Success = false,
+                Message = $"שגיאה בחיבור: {ex.Message}"
+            };
+        }
+    }
+
+    // ── Configuration loading ────────────────────────────────────────────────
+
+    /// <summary>Picks the active Airtable config for the current academic year, or null/appsettings-fallback.</summary>
+    public async Task<AirtableOptions?> ResolveActiveOptionsAsync()
+    {
+        var rows = await _db.GetRecordsAsync<int>(
+            "SELECT Id FROM AirtableIntegrationSettings WHERE IsActive = 1 " +
+            "AND AcademicYearId IN (SELECT Id FROM AcademicYears WHERE IsCurrent = 1) LIMIT 1");
+        int settingsId = rows?.FirstOrDefault() ?? 0;
+
+        if (settingsId > 0)
+            return await LoadOptionsAsync(settingsId);
+
+        // Legacy fallback — appsettings.json "Airtable" section.
+        var legacy = _config.GetSection(AirtableOptions.SectionName).Get<AirtableOptions>();
+        return legacy is { IsConfigured: true } ? legacy : null;
+    }
+
+    /// <summary>Builds an <see cref="AirtableOptions"/> from the saved DB rows for a given integration id.</summary>
+    public async Task<AirtableOptions?> LoadOptionsAsync(int settingsId)
+    {
+        var settings = (await _db.GetRecordsAsync<AirtableSettingsRow>(@"
+            SELECT  Id, ApiToken, BaseId, ProjectsTable, ProjectsView, StudentVisibleOnly
+            FROM    AirtableIntegrationSettings
+            WHERE   Id = @Id LIMIT 1",
+            new { Id = settingsId }))?.FirstOrDefault();
+
+        if (settings is null) return null;
+
+        var mappingRows = await _db.GetRecordsAsync<MappingRow>(@"
+            SELECT  LocalFieldName, AirtableFieldName
+            FROM    AirtableFieldMappings
+            WHERE   IntegrationSettingsId = @Id AND EntityType = 'Project'",
+            new { Id = settingsId });
+
+        var fm = new AirtableFieldMap();
+        if (mappingRows is not null)
+        {
+            foreach (var m in mappingRows)
+            {
+                if (string.IsNullOrWhiteSpace(m.AirtableFieldName)) continue;
+                ApplyMapping(fm, m.LocalFieldName, m.AirtableFieldName);
+            }
+        }
+
+        return new AirtableOptions
+        {
+            Token              = settings.ApiToken,
+            BaseId             = settings.BaseId,
+            TableName          = settings.ProjectsTable,
+            ViewName           = settings.ProjectsView,
+            StudentVisibleOnly = settings.StudentVisibleOnly,
+            FieldMap           = fm
+        };
+    }
+
+    private static void ApplyMapping(AirtableFieldMap fm, string localField, string airtableField)
+    {
+        switch (localField)
+        {
+            case AirtableProjectFields.ProjectNumber:    fm.ProjectNumber    = airtableField; break;
+            case AirtableProjectFields.Title:            fm.Title            = airtableField; break;
+            case AirtableProjectFields.OrganizationName: fm.OrganizationName = airtableField; break;
+            case AirtableProjectFields.OrganizationType: fm.OrganizationType = airtableField; break;
+            case AirtableProjectFields.ProjectTopic:     fm.ProjectTopic     = airtableField; break;
+            case AirtableProjectFields.Description:      fm.Description      = airtableField; break;
+            case AirtableProjectFields.TargetAudience:   fm.TargetAudience   = airtableField; break;
+            case AirtableProjectFields.Goals:            fm.Goals            = airtableField; break;
+            case AirtableProjectFields.Contents:         fm.Contents         = airtableField; break;
+            case AirtableProjectFields.ContactPerson:    fm.ContactPerson    = airtableField; break;
+            case AirtableProjectFields.ContactRole:      fm.ContactRole      = airtableField; break;
+            case AirtableProjectFields.ContactEmail:     fm.ContactEmail     = airtableField; break;
+            case AirtableProjectFields.ContactPhone:     fm.ContactPhone     = airtableField; break;
+            case AirtableProjectFields.IncludeInPool:    fm.IncludeInPool    = airtableField; break;
+            case AirtableProjectFields.SubmittedAt:      fm.SubmittedAt      = airtableField; break;
+            case AirtableProjectFields.ProjectType:      fm.ProjectType      = airtableField; break;
+            case AirtableProjectFields.Status:           fm.Status           = airtableField; break;
+            case AirtableProjectFields.Priority:         fm.Priority         = airtableField; break;
+        }
+    }
+
     // ── Paginated fetch from Airtable REST API ───────────────────────────────
 
-    private async Task<List<AirtableRecord>> FetchAllRecordsAsync()
+    private async Task<List<AirtableRecord>> FetchAllRecordsAsync(AirtableOptions options)
     {
         var all    = new List<AirtableRecord>();
         string? offset = null;
@@ -171,13 +322,12 @@ public class AirtableService
 
         do
         {
-            // URL: /v0/{baseId}/{tableName}[?view=...&offset=...]
-            var url = $"{AirtableApiBase}/{Uri.EscapeDataString(_options.BaseId)}" +
-                      $"/{Uri.EscapeDataString(_options.TableName)}";
+            var url = $"{AirtableApiBase}/{Uri.EscapeDataString(options.BaseId)}" +
+                      $"/{Uri.EscapeDataString(options.TableName)}";
 
             var queryParts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(_options.ViewName))
-                queryParts.Add($"view={Uri.EscapeDataString(_options.ViewName)}");
+            if (!string.IsNullOrWhiteSpace(options.ViewName))
+                queryParts.Add($"view={Uri.EscapeDataString(options.ViewName)}");
             if (offset is not null)
                 queryParts.Add($"offset={Uri.EscapeDataString(offset)}");
             if (queryParts.Count > 0)
@@ -185,7 +335,7 @@ public class AirtableService
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", _options.Token);
+                new AuthenticationHeaderValue("Bearer", options.Token);
 
             _log.LogDebug("GET {Url}", url);
             var response = await client.SendAsync(request);
@@ -195,8 +345,8 @@ public class AirtableService
                 var errorBody = await response.Content.ReadAsStringAsync();
                 _log.LogError(
                     "Airtable API returned {Status}: {Body}",
-                    (int)response.StatusCode, errorBody);
-                response.EnsureSuccessStatusCode(); // throws with status code in message
+                    (int)response.StatusCode, Truncate(errorBody, 500));
+                response.EnsureSuccessStatusCode();
             }
 
             var body = await response.Content.ReadAsStringAsync();
@@ -215,16 +365,15 @@ public class AirtableService
     // ── Upsert one Airtable record ────────────────────────────────────────────
 
     private async Task UpsertRecordAsync(
+        AirtableOptions         options,
         AirtableRecord          record,
         Dictionary<string, int> typesByName,
         Counter                 counter,
         int                     academicYearId,
         AirtableSyncResultDto   result)
     {
-        var fm = _options.FieldMap;
+        var fm = options.FieldMap;
         var f  = record.Fields;
-
-        // ── Map fields via FieldMap (no Hebrew is hardcoded here) ────────────
 
         string title = GetString(f, fm.Title);
         if (string.IsNullOrWhiteSpace(title))
@@ -255,11 +404,9 @@ public class AirtableService
         string? audience         = NzGet(f, fm.TargetAudience);
         string? priority         = NzGet(f, fm.Priority);
 
-        // Log missing critical fields at debug level
         if (string.IsNullOrWhiteSpace(orgName))
             _log.LogDebug("Record {Id}: OrganizationName field (\"{Field}\") is empty.", record.Id, fm.OrganizationName);
 
-        // ── Check for existing record by Airtable record ID ──────────────────
         int existingId = (await _db.GetRecordsAsync<int>(
             "SELECT Id FROM Projects WHERE AirtableRecordId = @RecordId",
             new { RecordId = record.Id })).FirstOrDefault();
@@ -311,7 +458,6 @@ public class AirtableService
         }
         else
         {
-            // Ensure project number uniqueness
             int dupCount = (await _db.GetRecordsAsync<int>(
                 "SELECT COUNT(1) FROM Projects WHERE ProjectNumber = @Num",
                 new { Num = projectNumber })).FirstOrDefault();
@@ -319,8 +465,6 @@ public class AirtableService
             if (dupCount > 0)
                 projectNumber = ++counter.Value;
 
-            // Every project requires a team row.
-            // Teams.AcademicYearId is NOT NULL with no default, so we must supply it.
             int teamId = await _db.InsertReturnIdAsync(
                 "INSERT INTO Teams (AcademicYearId) VALUES (@AcademicYearId)",
                 new { AcademicYearId = academicYearId });
@@ -371,10 +515,6 @@ public class AirtableService
 
     // ── Field extraction helpers ──────────────────────────────────────────────
 
-    /// <summary>
-    /// Returns the string value of a field. Returns "" when the field is absent or
-    /// of a type that cannot be converted to text. Never throws.
-    /// </summary>
     private static string GetString(Dictionary<string, JsonElement> fields, string key)
     {
         if (string.IsNullOrWhiteSpace(key))        return "";
@@ -393,7 +533,6 @@ public class AirtableService
         };
     }
 
-    /// <summary>Returns trimmed non-empty string or null.</summary>
     private static string? NzGet(Dictionary<string, JsonElement> fields, string key)
     {
         var v = GetString(fields, key);
@@ -431,6 +570,18 @@ public class AirtableService
         _             => null,
     };
 
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max] + "…";
+
+    private static string ExplainStatus(System.Net.HttpStatusCode code) => code switch
+    {
+        System.Net.HttpStatusCode.Unauthorized => "טוקן לא תקין או פג תוקף",
+        System.Net.HttpStatusCode.Forbidden    => "לטוקן אין הרשאות לבסיס הנבחר",
+        System.Net.HttpStatusCode.NotFound     => "Base ID או שם הטבלה לא קיימים",
+        System.Net.HttpStatusCode.UnprocessableEntity => "פרמטרי הבקשה אינם תקינים",
+        _ => "ראו פירוט נוסף בלוג"
+    };
+
     // ── Internal Airtable response shapes ────────────────────────────────────
 
     private sealed class AirtableListResponse
@@ -457,9 +608,24 @@ public class AirtableService
         public string Name { get; set; } = "";
     }
 
-    /// <summary>Mutable counter used in async loops instead of a ref parameter.</summary>
     private sealed class Counter
     {
         public int Value { get; set; }
+    }
+
+    private sealed class AirtableSettingsRow
+    {
+        public int    Id                 { get; set; }
+        public string ApiToken           { get; set; } = "";
+        public string BaseId             { get; set; } = "";
+        public string ProjectsTable      { get; set; } = "";
+        public string ProjectsView       { get; set; } = "";
+        public bool   StudentVisibleOnly { get; set; }
+    }
+
+    private sealed class MappingRow
+    {
+        public string LocalFieldName    { get; set; } = "";
+        public string AirtableFieldName { get; set; } = "";
     }
 }

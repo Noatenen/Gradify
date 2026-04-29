@@ -1,15 +1,834 @@
 @page "/assignments"
 @layout AppLayout
-@using Microsoft.AspNetCore.Authorization
-@attribute [Authorize]
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@inject IAssignmentManagementService AssignmentManagementService
 
 <div class="ap-page">
     <div class="ap-header">
         <h1 class="ap-title">שיבוצים</h1>
-        <p class="ap-sub">ניהול שיבוצי סטודנטים לפרויקטים, טפסי העדפה ומדד ביקוש</p>
+        <p class="ap-sub">סקירת הגשות, התאמות מומלצות ושיבוץ ידני של צוותים ומנטורים</p>
     </div>
-    <div class="ap-placeholder">
-        <span class="ap-placeholder-icon">🎯</span>
-        <p>עמוד השיבוצים בפיתוח — יהיה זמין בקרוב</p>
+
+    <div class="ap-tabs" role="tablist">
+        <button class="ap-tab @(_view == "submissions" ? "ap-tab-active" : "")"
+                @onclick='() => SwitchView("submissions")' role="tab">
+            <span class="oi oi-document" aria-hidden="true"></span>
+            הגשות
+        </button>
+        <button class="ap-tab @(_view == "board" ? "ap-tab-active" : "")"
+                @onclick='() => SwitchView("board")' role="tab">
+            <span class="oi oi-target" aria-hidden="true"></span>
+            שיבוץ ידני
+        </button>
     </div>
+
+    @if (_view == "submissions")
+    {
+        @if (_subsLoading)
+        {
+            <div class="ap-state ap-state-loading">טוען הגשות…</div>
+        }
+        else if (_subsError)
+        {
+            <div class="ap-state ap-state-error">
+                <span class="ap-state-icon oi oi-warning" aria-hidden="true"></span>
+                שגיאה בטעינת ההגשות. נסו לרענן את הדף.
+            </div>
+        }
+        else if (_submissions.Count == 0)
+        {
+            <div class="ap-state ap-state-empty">
+                <span class="ap-state-icon">📭</span>
+                <div class="ap-state-title">אין עדיין טפסים שהוגשו</div>
+                <div class="ap-state-sub">ברגע שצוותים יגישו את טופס השיבוצים, הם יופיעו כאן</div>
+            </div>
+        }
+        else
+        {
+            <div class="ap-summary">סה"כ הגשות: <strong>@_submissions.Count</strong></div>
+            <div class="ap-list">
+                @foreach (var sub in _submissions)
+                {
+                    <article class="ap-card">
+                        <header class="ap-card-head">
+                            <div class="ap-card-head-main">
+                                <h2 class="ap-card-title">@sub.TeamName</h2>
+                                @if (!string.IsNullOrWhiteSpace(sub.AcademicYear))
+                                {
+                                    <span class="ap-card-year">מחזור @sub.AcademicYear</span>
+                                }
+                            </div>
+                            <div class="ap-card-head-meta">
+                                <span class="ap-meta-label">תאריך הגשה</span>
+                                <span class="ap-meta-value">@FormatDate(sub.SubmittedAt)</span>
+                            </div>
+                        </header>
+
+                        <section class="ap-card-section">
+                            <div class="ap-section-title">חברי הצוות</div>
+                            @if (sub.Members.Count == 0)
+                            {
+                                <div class="ap-empty-line">לא נמצאו חברי צוות פעילים</div>
+                            }
+                            else
+                            {
+                                <ul class="ap-members">
+                                    @foreach (var m in sub.Members)
+                                    {
+                                        <li class="ap-member">
+                                            <div class="ap-member-name">@m.FullName</div>
+                                            @if (!string.IsNullOrWhiteSpace(m.Email))
+                                            {
+                                                <div class="ap-member-email">@m.Email</div>
+                                            }
+                                            @if (m.Strengths.Count > 0)
+                                            {
+                                                <div class="ap-member-strengths">
+                                                    @foreach (var s in m.Strengths)
+                                                    {
+                                                        <span class="ap-chip">
+                                                            <span class="ap-chip-icon">@StrengthIcon(s)</span>
+                                                            @StrengthLabel(s)
+                                                        </span>
+                                                    }
+                                                </div>
+                                            }
+                                        </li>
+                                    }
+                                </ul>
+                            }
+                        </section>
+
+                        <section class="ap-card-section">
+                            <div class="ap-section-title">העדפות פרויקטים</div>
+                            @if (sub.HasOwnProject)
+                            {
+                                <div class="ap-own-project">
+                                    <span class="ap-own-badge">פרויקט עצמאי</span>
+                                    @if (!string.IsNullOrWhiteSpace(sub.OwnProjectDescription))
+                                    {
+                                        <p class="ap-own-text">@sub.OwnProjectDescription</p>
+                                    }
+                                </div>
+                            }
+                            @if (sub.Preferences.Count == 0 && !sub.HasOwnProject)
+                            {
+                                <div class="ap-empty-line">לא דורגו העדפות</div>
+                            }
+                            else if (sub.Preferences.Count > 0)
+                            {
+                                <ol class="ap-prefs">
+                                    @foreach (var pref in sub.Preferences.OrderBy(p => p.Priority))
+                                    {
+                                        <li class="ap-pref">
+                                            <span class="ap-pref-rank">@pref.Priority</span>
+                                            <div class="ap-pref-body">
+                                                <div class="ap-pref-title">
+                                                    <span class="ap-pref-num">#@pref.ProjectNumber</span>
+                                                    @pref.ProjectTitle
+                                                </div>
+                                                @if (!string.IsNullOrWhiteSpace(pref.ProjectType))
+                                                {
+                                                    <span class="ap-pref-type">@pref.ProjectType</span>
+                                                }
+                                            </div>
+                                        </li>
+                                    }
+                                </ol>
+                            }
+                        </section>
+
+                        @if (!string.IsNullOrWhiteSpace(sub.Notes))
+                        {
+                            <section class="ap-card-section">
+                                <div class="ap-section-title">הערות</div>
+                                <p class="ap-notes">@sub.Notes</p>
+                            </section>
+                        }
+                    </article>
+                }
+            </div>
+        }
+    }
+    else if (_view == "board")
+    {
+        @if (_boardLoading)
+        {
+            <div class="ap-state ap-state-loading">טוען לוח שיבוצים…</div>
+        }
+        else if (_boardError)
+        {
+            <div class="ap-state ap-state-error">
+                <span class="ap-state-icon oi oi-warning" aria-hidden="true"></span>
+                שגיאה בטעינת הלוח. נסו לרענן את הדף.
+            </div>
+        }
+        else if (_board is null)
+        {
+            <div class="ap-state ap-state-empty">לא נטענו נתונים.</div>
+        }
+        else
+        {
+            <!-- Publish strip -->
+            <div class="ap-publish-strip">
+                <div class="ap-publish-info">
+                    <div class="ap-publish-title">
+                        מצב פרסום
+                        @if (!string.IsNullOrWhiteSpace(_board.AcademicYearName))
+                        {
+                            <span class="ap-publish-year">· מחזור @_board.AcademicYearName</span>
+                        }
+                    </div>
+                    <div class="ap-publish-status">
+                        @if (_board.AssignmentsPublished && !_board.HasUnpublishedDrafts)
+                        {
+                            <span class="ap-status ap-status-published">פורסם</span>
+                            @if (!string.IsNullOrWhiteSpace(_board.PublishedAt))
+                            {
+                                <span class="ap-publish-meta">בתאריך @FormatDate(_board.PublishedAt)</span>
+                            }
+                        }
+                        else if (_board.AssignmentsPublished && _board.HasUnpublishedDrafts)
+                        {
+                            <span class="ap-status ap-status-published">פורסם</span>
+                            <span class="ap-status ap-status-draft">קיימים שיבוצים חדשים בטיוטה</span>
+                        }
+                        else if (_board.HasUnpublishedDrafts)
+                        {
+                            <span class="ap-status ap-status-unpublished">עדיין לא פורסם לסטודנטים</span>
+                        }
+                        else
+                        {
+                            <span class="ap-status ap-status-neutral">אין שיבוצים לפרסם</span>
+                        }
+                    </div>
+                </div>
+                <button class="ap-btn ap-btn-publish"
+                        disabled="@(_publishBusy || !_board.HasUnpublishedDrafts)"
+                        @onclick="OpenPublishConfirm">
+                    <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                    פרסם שיבוצים
+                </button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_actionMessage))
+            {
+                <div class="ap-action-toast @(_actionError ? "ap-action-toast-error" : "")">
+                    @_actionMessage
+                </div>
+            }
+
+            <div class="ap-board">
+                <!-- ════ Unassigned teams ════ -->
+                <section class="ap-board-col">
+                    <div class="ap-board-col-head">
+                        <h2 class="ap-board-col-title">צוותים לא משובצים</h2>
+                        <span class="ap-board-col-count">@_board.UnassignedTeams.Count</span>
+                    </div>
+
+                    @if (_board.UnassignedTeams.Count == 0)
+                    {
+                        <div class="ap-empty-block">כל הצוותים שהגישו טפסים כבר שובצו</div>
+                    }
+                    else
+                    {
+                        @foreach (var team in _board.UnassignedTeams)
+                        {
+                            <article class="ap-team-card">
+                                <header class="ap-team-card-head">
+                                    <h3 class="ap-team-card-title">@team.TeamName</h3>
+                                    <div class="ap-team-card-headside">
+                                        <span class="ap-status ap-status-unassigned">טרם שובץ</span>
+                                        <span class="ap-team-card-count">@team.Members.Count חברים</span>
+                                    </div>
+                                </header>
+
+                                @if (team.Members.Count > 0)
+                                {
+                                    <div class="ap-team-members">
+                                        @foreach (var m in team.Members)
+                                        {
+                                            <div class="ap-team-member">
+                                                <div class="ap-team-member-name">@m.FullName</div>
+                                                @if (m.Strengths.Count > 0)
+                                                {
+                                                    <div class="ap-mini-chips">
+                                                        @foreach (var s in m.Strengths)
+                                                        {
+                                                            <span class="ap-mini-chip">@StrengthIcon(s) @StrengthLabel(s)</span>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+
+                                @if (team.Preferences.Count > 0)
+                                {
+                                    <div class="ap-team-section">
+                                        <div class="ap-team-section-title">העדפות שהוגשו</div>
+                                        <ol class="ap-mini-prefs">
+                                            @foreach (var pref in team.Preferences)
+                                            {
+                                                <li>
+                                                    <span class="ap-mini-rank">@pref.Priority</span>
+                                                    <span>#@pref.ProjectNumber @pref.ProjectTitle</span>
+                                                </li>
+                                            }
+                                        </ol>
+                                    </div>
+                                }
+
+                                @if (team.TopRecommendations.Count > 0)
+                                {
+                                    <div class="ap-team-section">
+                                        <div class="ap-team-section-title">פרויקטים מומלצים</div>
+                                        <ul class="ap-mini-recs">
+                                            @foreach (var rec in team.TopRecommendations)
+                                            {
+                                                <li class="ap-mini-rec">
+                                                    <div class="ap-mini-rec-main">
+                                                        <span class="ap-mini-rec-title">#@FindProjectNumber(rec.ProjectId) @rec.ProjectName</span>
+                                                        <span class="ap-rec-label @LabelClass(rec.TotalMatchScore)">@rec.RecommendationLabel</span>
+                                                    </div>
+                                                    <div class="ap-mini-rec-meta">
+                                                        ציון התאמה: <strong>@rec.TotalMatchScore</strong>
+                                                        <span class="ap-mini-rec-sep">·</span>
+                                                        העדפה: @rec.PreferenceScore
+                                                        <span class="ap-mini-rec-sep">·</span>
+                                                        כישורים: @rec.SkillScore
+                                                    </div>
+                                                </li>
+                                            }
+                                        </ul>
+                                    </div>
+                                }
+                            </article>
+                        }
+                    }
+                </section>
+
+                <!-- ════ Projects ════ -->
+                <section class="ap-board-col">
+                    <div class="ap-board-col-head">
+                        <h2 class="ap-board-col-title">פרויקטים</h2>
+                        <span class="ap-board-col-count">@_board.Projects.Count</span>
+                    </div>
+
+                    @if (_board.Projects.Count == 0)
+                    {
+                        <div class="ap-empty-block">אין פרויקטים זמינים במחזור הנוכחי</div>
+                    }
+                    else
+                    {
+                        @foreach (var proj in _board.Projects)
+                        {
+                            <article class="ap-project-card">
+                                <header class="ap-project-card-head">
+                                    <div class="ap-project-card-head-main">
+                                        <h3 class="ap-project-card-title">
+                                            <span class="ap-project-num">#@proj.ProjectNumber</span>
+                                            @proj.ProjectName
+                                        </h3>
+                                        <div class="ap-project-card-badges">
+                                            @if (!string.IsNullOrWhiteSpace(proj.ProjectType))
+                                            {
+                                                <span class="ap-pref-type">@proj.ProjectType</span>
+                                            }
+                                            <span class="ap-demand-badge" title="ציון ביקוש">
+                                                ביקוש: <strong>@proj.DemandScore</strong>
+                                            </span>
+                                            @{
+                                                var (badgeClass, badgeText) = ProjectStatusBadge(proj);
+                                            }
+                                            <span class="ap-status @badgeClass">@badgeText</span>
+                                        </div>
+                                    </div>
+                                </header>
+
+                                <!-- Mentors row (multiple, max 2) -->
+                                <div class="ap-mentor-block">
+                                    <div class="ap-mentor-block-head">
+                                        <span class="ap-mentor-label">מנטורים</span>
+                                        <span class="ap-mentor-count">@proj.Mentors.Count / @_board.MaxMentorsPerProject</span>
+                                    </div>
+
+                                    <div class="ap-mentor-chips">
+                                        @if (proj.Mentors.Count == 0)
+                                        {
+                                            <span class="ap-empty-line">אין מנטורים משובצים</span>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var mentor in proj.Mentors)
+                                            {
+                                                <span class="ap-mentor-chip">
+                                                    <span class="ap-mentor-chip-icon oi oi-person" aria-hidden="true"></span>
+                                                    @mentor.FullName
+                                                    <button class="ap-mentor-chip-x"
+                                                            title="הסרת מנטור"
+                                                            disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
+                                                            @onclick="@(() => RemoveMentor(proj, mentor))">×</button>
+                                                </span>
+                                            }
+                                        }
+                                    </div>
+
+                                    @if (proj.Mentors.Count < _board.MaxMentorsPerProject)
+                                    {
+                                        <div class="ap-mentor-add-row">
+                                            <select class="ap-mentor-select"
+                                                    value="@(_mentorAddDraft.TryGetValue(proj.ProjectId, out var mid) ? mid.ToString() : "")"
+                                                    @onchange="@(e => OnMentorAddSelect(proj.ProjectId, e.Value?.ToString()))">
+                                                <option value="">— בחר מנטור להוספה —</option>
+                                                @foreach (var mentor in AvailableMentorsFor(proj))
+                                                {
+                                                    <option value="@mentor.UserId">@mentor.FullName</option>
+                                                }
+                                            </select>
+                                            <button class="ap-btn ap-btn-secondary"
+                                                    disabled="@(!_mentorAddDraft.ContainsKey(proj.ProjectId) || _busyProjectIds.Contains(proj.ProjectId))"
+                                                    @onclick="@(() => AddMentor(proj))">
+                                                הוסף מנטור
+                                            </button>
+                                        </div>
+                                    }
+                                </div>
+
+                                <!-- Currently assigned team -->
+                                <div class="ap-assigned-row">
+                                    @if (proj.AssignedTeamId.HasValue)
+                                    {
+                                        <div class="ap-assigned-info">
+                                            <div class="ap-assigned-title">
+                                                <span class="oi oi-people" aria-hidden="true"></span>
+                                                שובץ: @proj.AssignedTeamName
+                                            </div>
+                                            @if (proj.AssignedMembers.Count > 0)
+                                            {
+                                                <div class="ap-assigned-members">
+                                                    @string.Join(", ", proj.AssignedMembers.Select(m => m.FullName))
+                                                </div>
+                                            }
+                                        </div>
+                                        <button class="ap-btn ap-btn-danger"
+                                                disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
+                                                @onclick="@(() => UnassignTeam(proj))">
+                                            הסר שיבוץ
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <div class="ap-assigned-empty">לא שובץ צוות</div>
+                                    }
+                                </div>
+
+                                <!-- Recommendations -->
+                                <div class="ap-recs">
+                                    <div class="ap-recs-title">צוותים מומלצים</div>
+                                    @if (proj.Recommendations.Count == 0)
+                                    {
+                                        <div class="ap-empty-line">אין נתונים מספיקים להמלצה</div>
+                                    }
+                                    else
+                                    {
+                                        <ul class="ap-recs-list">
+                                            @foreach (var rec in proj.Recommendations)
+                                            {
+                                                bool isCurrent = rec.TeamId == proj.AssignedTeamId;
+                                                _teamAssignedTo.TryGetValue(rec.TeamId, out var elsewhere);
+                                                bool isElsewhere = !isCurrent && elsewhere is not null;
+
+                                                <li class="ap-rec-row @(isCurrent ? "ap-rec-row-current" : "") @(isElsewhere ? "ap-rec-row-elsewhere" : "")">
+                                                    <div class="ap-rec-main">
+                                                        <div class="ap-rec-team">@rec.TeamName</div>
+                                                        <div class="ap-rec-detail">
+                                                            ציון: <strong>@rec.TotalMatchScore</strong>
+                                                            <span class="ap-mini-rec-sep">·</span>
+                                                            העדפה: @rec.PreferenceScore
+                                                            <span class="ap-mini-rec-sep">·</span>
+                                                            כישורים: @rec.SkillScore
+                                                            @if (rec.PreferenceRank.HasValue)
+                                                            {
+                                                                <span class="ap-rec-rank">דורג #@rec.PreferenceRank</span>
+                                                            }
+                                                        </div>
+                                                        @if (isElsewhere)
+                                                        {
+                                                            <div class="ap-rec-elsewhere">
+                                                                כבר שובץ לפרויקט: <strong>@elsewhere</strong>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                    <div class="ap-rec-side">
+                                                        <span class="ap-rec-label @LabelClass(rec.TotalMatchScore)">@rec.RecommendationLabel</span>
+                                                        @if (isCurrent)
+                                                        {
+                                                            <span class="ap-rec-current-label">משובץ</span>
+                                                        }
+                                                        else if (isElsewhere)
+                                                        {
+                                                            <button class="ap-btn ap-btn-warning"
+                                                                    disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
+                                                                    @onclick="@(() => OpenMoveConfirm(rec.TeamId, rec.TeamName, proj.ProjectId, proj.ProjectName, elsewhere!))">
+                                                                העבר צוות
+                                                            </button>
+                                                        }
+                                                        else
+                                                        {
+                                                            <button class="ap-btn ap-btn-primary"
+                                                                    disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
+                                                                    @onclick="@(() => AssignTeam(rec.TeamId, proj.ProjectId))">
+                                                                שבץ צוות
+                                                            </button>
+                                                        }
+                                                    </div>
+                                                </li>
+                                            }
+                                        </ul>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    }
+                </section>
+            </div>
+        }
+    }
 </div>
+
+<!-- ── Move-team confirmation modal ─────────────────────────────────── -->
+@if (_moveConfirm is not null)
+{
+    <div class="ap-modal-backdrop" @onclick="CloseMoveConfirm"></div>
+    <div class="ap-modal" dir="rtl" role="dialog" aria-modal="true">
+        <h2 class="ap-modal-title">העברת שיבוץ</h2>
+        <p class="ap-modal-body">
+            הצוות <strong>@_moveConfirm.TeamName</strong> כבר שובץ לפרויקט
+            <strong>@_moveConfirm.FromProjectName</strong>.
+        </p>
+        <p class="ap-modal-body">
+            האם להעביר אותו לפרויקט <strong>@_moveConfirm.ToProjectName</strong>?
+        </p>
+        <div class="ap-modal-actions">
+            <button class="ap-btn ap-btn-secondary" @onclick="CloseMoveConfirm">בטל</button>
+            <button class="ap-btn ap-btn-warning"
+                    disabled="@(_busyProjectIds.Contains(_moveConfirm.ToProjectId))"
+                    @onclick="ConfirmMove">העבר צוות</button>
+        </div>
+    </div>
+}
+
+<!-- ── Publish confirmation modal ───────────────────────────────────── -->
+@if (_showPublishConfirm)
+{
+    <div class="ap-modal-backdrop" @onclick="ClosePublishConfirm"></div>
+    <div class="ap-modal" dir="rtl" role="dialog" aria-modal="true">
+        <h2 class="ap-modal-title">פרסום שיבוצים</h2>
+        <p class="ap-modal-body">
+            האם לפרסם את כל השיבוצים לסטודנטים?
+        </p>
+        <p class="ap-modal-note">
+            לאחר הפרסום, כל הסטודנטים שמשוייכים לפרויקטים יראו את השיבוץ שלהם בלוח הבקרה.
+        </p>
+        <div class="ap-modal-actions">
+            <button class="ap-btn ap-btn-secondary" @onclick="ClosePublishConfirm">בטל</button>
+            <button class="ap-btn ap-btn-primary"
+                    disabled="@_publishBusy"
+                    @onclick="ConfirmPublish">פרסם שיבוצים</button>
+        </div>
+    </div>
+}
+
+@code {
+    private string _view = "submissions";
+
+    // Submissions tab
+    private List<AssignmentSubmissionListItemDto> _submissions = new();
+    private bool _subsLoading = true;
+    private bool _subsError;
+    private bool _subsLoaded;
+
+    // Board tab
+    private AssignmentBoardDto? _board;
+    private bool _boardLoading;
+    private bool _boardError;
+    private bool _boardLoaded;
+
+    // Per-project mentor add selection (UserId pending add)
+    private readonly Dictionary<int, int> _mentorAddDraft = new();
+    private readonly HashSet<int>         _busyProjectIds = new();
+
+    // Lookup: TeamId → name of the project it's currently assigned to (for "elsewhere" badge)
+    private Dictionary<int, string> _teamAssignedTo = new();
+
+    // Toast
+    private string? _actionMessage;
+    private bool    _actionError;
+
+    // Modals
+    private MoveConfirmState? _moveConfirm;
+    private bool _showPublishConfirm;
+    private bool _publishBusy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSubmissions();
+    }
+
+    private async Task SwitchView(string view)
+    {
+        _view = view;
+        if (view == "submissions" && !_subsLoaded) await LoadSubmissions();
+        else if (view == "board" && !_boardLoaded)  await LoadBoard();
+    }
+
+    private async Task LoadSubmissions()
+    {
+        _subsLoading = true; _subsError = false;
+        var data = await AssignmentManagementService.GetSubmissionsAsync();
+        if (data is null) _subsError = true;
+        else _submissions = data;
+        _subsLoading = false; _subsLoaded = true;
+    }
+
+    private async Task LoadBoard()
+    {
+        _boardLoading = true; _boardError = false;
+        var data = await AssignmentManagementService.GetAssignmentBoardAsync();
+        if (data is null) _boardError = true;
+        else { _board = data; RebuildAssignmentLookup(); _mentorAddDraft.Clear(); }
+        _boardLoading = false; _boardLoaded = true;
+    }
+
+    private async Task ReloadBoard(string successMessage)
+    {
+        var data = await AssignmentManagementService.GetAssignmentBoardAsync();
+        if (data is not null)
+        {
+            _board = data;
+            RebuildAssignmentLookup();
+            _mentorAddDraft.Clear();
+            _actionError = false;
+            _actionMessage = successMessage;
+        }
+        else
+        {
+            _actionError = true;
+            _actionMessage = "שגיאה בטעינה מחודשת של הלוח";
+        }
+    }
+
+    private void RebuildAssignmentLookup()
+    {
+        _teamAssignedTo = _board?.Projects
+            .Where(p => p.AssignedTeamId.HasValue)
+            .ToDictionary(p => p.AssignedTeamId!.Value, p => p.ProjectName)
+            ?? new Dictionary<int, string>();
+    }
+
+    private async Task AssignTeam(int teamId, int projectId)
+    {
+        _busyProjectIds.Add(projectId);
+        var res = await AssignmentManagementService.AssignTeamAsync(teamId, projectId, force: false);
+        _busyProjectIds.Remove(projectId);
+
+        if (res.Outcome == AssignTeamOutcome.Success)
+        {
+            await ReloadBoard("הצוות שובץ לפרויקט (טיוטה)");
+        }
+        else if (res.Outcome == AssignTeamOutcome.Conflict && res.Conflict is not null)
+        {
+            // Should not normally occur from the standard "שבץ" path, but handle defensively.
+            var team = FindTeamName(teamId);
+            var dest = _board?.Projects.FirstOrDefault(p => p.ProjectId == projectId);
+            _moveConfirm = new MoveConfirmState
+            {
+                TeamId            = teamId,
+                TeamName          = team,
+                FromProjectName   = res.Conflict.ProjectName,
+                ToProjectId       = projectId,
+                ToProjectName     = dest?.ProjectName ?? ""
+            };
+        }
+        else
+        {
+            _actionError = true;
+            _actionMessage = "השיבוץ נכשל. נסו שוב.";
+        }
+    }
+
+    private void OpenMoveConfirm(int teamId, string teamName, int toProjectId, string toProjectName, string fromProjectName)
+    {
+        _moveConfirm = new MoveConfirmState
+        {
+            TeamId          = teamId,
+            TeamName        = teamName,
+            FromProjectName = fromProjectName,
+            ToProjectId     = toProjectId,
+            ToProjectName   = toProjectName
+        };
+    }
+
+    private void CloseMoveConfirm() => _moveConfirm = null;
+
+    private async Task ConfirmMove()
+    {
+        if (_moveConfirm is null) return;
+        var state = _moveConfirm;
+        _moveConfirm = null;
+
+        _busyProjectIds.Add(state.ToProjectId);
+        var res = await AssignmentManagementService.AssignTeamAsync(state.TeamId, state.ToProjectId, force: true);
+        _busyProjectIds.Remove(state.ToProjectId);
+
+        if (res.Outcome == AssignTeamOutcome.Success)
+        {
+            await ReloadBoard($"הצוות הועבר ל{state.ToProjectName}");
+        }
+        else
+        {
+            _actionError = true;
+            _actionMessage = "ההעברה נכשלה. נסו שוב.";
+        }
+    }
+
+    private async Task UnassignTeam(AssignmentBoardProjectDto proj)
+    {
+        _busyProjectIds.Add(proj.ProjectId);
+        var ok = await AssignmentManagementService.UnassignTeamAsync(proj.ProjectId);
+        _busyProjectIds.Remove(proj.ProjectId);
+        if (ok) await ReloadBoard("השיבוץ הוסר");
+        else { _actionError = true; _actionMessage = "הסרת השיבוץ נכשלה."; }
+    }
+
+    private void OnMentorAddSelect(int projectId, string? value)
+    {
+        if (string.IsNullOrEmpty(value)) _mentorAddDraft.Remove(projectId);
+        else if (int.TryParse(value, out var id)) _mentorAddDraft[projectId] = id;
+    }
+
+    private async Task AddMentor(AssignmentBoardProjectDto proj)
+    {
+        if (!_mentorAddDraft.TryGetValue(proj.ProjectId, out var mentorId)) return;
+
+        _busyProjectIds.Add(proj.ProjectId);
+        var res = await AssignmentManagementService.AssignMentorAsync(proj.ProjectId, mentorId);
+        _busyProjectIds.Remove(proj.ProjectId);
+
+        switch (res.Outcome)
+        {
+            case AssignMentorOutcome.Success:
+                await ReloadBoard("המנטור נוסף לפרויקט");
+                break;
+            case AssignMentorOutcome.AlreadyAssigned:
+                _actionError = true;
+                _actionMessage = "המנטור כבר משוייך לפרויקט";
+                break;
+            case AssignMentorOutcome.LimitReached:
+                _actionError = true;
+                _actionMessage = $"מספר המנטורים המקסימלי לפרויקט הוא {_board?.MaxMentorsPerProject ?? 2}";
+                break;
+            case AssignMentorOutcome.NotMentor:
+                _actionError = true;
+                _actionMessage = "המשתמש שנבחר אינו מנטור פעיל";
+                break;
+            default:
+                _actionError = true;
+                _actionMessage = "הוספת המנטור נכשלה.";
+                break;
+        }
+    }
+
+    private async Task RemoveMentor(AssignmentBoardProjectDto proj, AssignmentBoardMentorDto mentor)
+    {
+        _busyProjectIds.Add(proj.ProjectId);
+        var ok = await AssignmentManagementService.RemoveMentorAsync(proj.ProjectId, mentor.UserId);
+        _busyProjectIds.Remove(proj.ProjectId);
+        if (ok) await ReloadBoard($"המנטור {mentor.FullName} הוסר");
+        else { _actionError = true; _actionMessage = "הסרת המנטור נכשלה."; }
+    }
+
+    private void OpenPublishConfirm() => _showPublishConfirm = true;
+    private void ClosePublishConfirm() => _showPublishConfirm = false;
+
+    private async Task ConfirmPublish()
+    {
+        if (_board is null) return;
+        _publishBusy = true;
+        var ok = await AssignmentManagementService.PublishAsync(_board.AcademicYearId);
+        _publishBusy = false;
+        _showPublishConfirm = false;
+        if (ok) await ReloadBoard("השיבוצים פורסמו לסטודנטים");
+        else { _actionError = true; _actionMessage = "הפרסום נכשל."; }
+    }
+
+    private IEnumerable<AssignmentBoardMentorDto> AvailableMentorsFor(AssignmentBoardProjectDto proj)
+    {
+        if (_board is null) return Array.Empty<AssignmentBoardMentorDto>();
+        var existing = proj.Mentors.Select(m => m.UserId).ToHashSet();
+        return _board.Mentors.Where(m => !existing.Contains(m.UserId));
+    }
+
+    private string FindTeamName(int teamId)
+    {
+        var t = _board?.UnassignedTeams.FirstOrDefault(u => u.TeamId == teamId);
+        if (t is not null) return t.TeamName;
+        var p = _board?.Projects.FirstOrDefault(p => p.AssignedTeamId == teamId);
+        return p?.AssignedTeamName ?? "צוות";
+    }
+
+    private int FindProjectNumber(int projectId)
+    {
+        if (_board is null) return 0;
+        return _board.Projects.FirstOrDefault(x => x.ProjectId == projectId)?.ProjectNumber ?? 0;
+    }
+
+    private static (string cls, string text) ProjectStatusBadge(AssignmentBoardProjectDto proj)
+    {
+        if (!proj.AssignedTeamId.HasValue) return ("ap-status-unassigned", "טרם שובץ");
+        if (proj.IsDraft)                  return ("ap-status-draft",      "שובץ כטיוטה");
+        return ("ap-status-published", "פורסם");
+    }
+
+    private static string LabelClass(int total) =>
+        total >= 40 ? "ap-rec-label-high" :
+        total >= 25 ? "ap-rec-label-mid"  :
+                      "ap-rec-label-low";
+
+    private static string FormatDate(string raw)
+    {
+        if (DateTime.TryParse(raw, out var dt))
+            return dt.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+        return raw;
+    }
+
+    private static string StrengthLabel(string s) => s switch
+    {
+        "Design"            => "עיצוב",
+        "Content"           => "תוכן",
+        "Technology"        => "טכנולוגיה",
+        "ProjectManagement" => "ניהול פרויקט",
+        _                   => s
+    };
+
+    private static string StrengthIcon(string s) => s switch
+    {
+        "Design"            => "🎨",
+        "Content"           => "✍",
+        "Technology"        => "💻",
+        "ProjectManagement" => "📋",
+        _                   => "•"
+    };
+
+    private sealed class MoveConfirmState
+    {
+        public int    TeamId          { get; set; }
+        public string TeamName        { get; set; } = "";
+        public string FromProjectName { get; set; } = "";
+        public int    ToProjectId     { get; set; }
+        public string ToProjectName   { get; set; } = "";
+    }
+}

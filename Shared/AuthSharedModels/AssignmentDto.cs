@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 namespace AuthWithAdmin.Shared.AuthSharedModels;
 
 public class AssignmentContextDto
@@ -8,6 +10,20 @@ public class AssignmentContextDto
     public List<StudentBasicDto>       AvailableStudents { get; set; } = new();
     public List<AssignmentCatalogItemDto> Catalog        { get; set; } = new();
     public ExistingAssignmentDto?      ExistingSubmission { get; set; }
+    public AssignmentFormStatusDto     FormStatus         { get; set; } = new();
+}
+
+public class AssignmentFormStatusDto
+{
+    public bool    IsOpen               { get; set; } = true;
+    public string? OpensAt              { get; set; }
+    public string? ClosesAt             { get; set; }
+    public bool    AllowEditAfterSubmit { get; set; } = true;
+    public string  Instructions         { get; set; } = "";
+    public string  Status               { get; set; } = "Open"; // 'Draft' | 'Open' | 'Closed'
+    public bool    CanSubmit            { get; set; } = true;
+    public string? ClosedReason         { get; set; }            // 'before-open' | 'after-close' | 'form-closed' | 'edit-locked'
+    public string? ClosedMessage        { get; set; }
 }
 
 public class StudentBasicDto

@@ -9,7 +9,7 @@ namespace AuthWithAdmin.Server.Controllers;
 [Route("api/assignment")]
 [ApiController]
 [ServiceFilter(typeof(AuthCheck))]
-[Authorize]
+[Authorize(Roles = Roles.Student)]
 public class AssignmentController : ControllerBase
 {
     private readonly DbRepository _db;
@@ -126,6 +126,13 @@ public class AssignmentController : ControllerBase
             }
         }
 
+        // Resolve the form-builder gate for the team's academic year. Falls
+        // back to "open with no constraints" when no Form record exists yet
+        // (legacy installations) so the existing student flow is unaffected.
+        int formYearId = await GetCurrentAcademicYearIdAsync();
+        var formRow    = await FormsRepository.GetAssignmentFormAsync(_db, formYearId);
+        var formStatus = FormsRepository.EvaluateGate(formRow, hasExistingSubmission: existing is not null);
+
         return Ok(new AssignmentContextDto
         {
             Me                = new StudentBasicDto { Id = meRow?.Id ?? authUserId, FullName = meRow?.FullName ?? "" },
@@ -141,8 +148,16 @@ public class AssignmentController : ControllerBase
                 Availability  = r.Availability,
                 Description   = r.Description
             }).ToList(),
-            ExistingSubmission = existing
+            ExistingSubmission = existing,
+            FormStatus         = formStatus
         });
+    }
+
+    private async Task<int> GetCurrentAcademicYearIdAsync()
+    {
+        var rows = await _db.GetRecordsAsync<int>(
+            "SELECT Id FROM AcademicYears WHERE IsCurrent = 1 ORDER BY Id DESC LIMIT 1");
+        return rows?.FirstOrDefault() ?? 0;
     }
 
     // POST /api/assignment/submit
@@ -190,6 +205,21 @@ public class AssignmentController : ControllerBase
                     new { TeamId = teamId, UserId = uid });
         }
 
+        // ── Submission gate ────────────────────────────────────────────────
+        // Enforce the form-builder window (open flag, OpensAt, ClosesAt,
+        // AllowEditAfterSubmit). Performed BEFORE any data writes so a closed
+        // form leaves the DB unchanged.
+        bool hasExistingSubmission = await ExistsRowAsync(
+            "SELECT 1 FROM AssignmentFormSubmissions WHERE TeamId = @TeamId LIMIT 1",
+            new { TeamId = teamId });
+
+        int gateYearId = await GetCurrentAcademicYearIdAsync();
+        var gateForm   = await FormsRepository.GetAssignmentFormAsync(_db, gateYearId);
+        var gate       = FormsRepository.EvaluateGate(gateForm, hasExistingSubmission);
+
+        if (!gate.CanSubmit)
+            return BadRequest(gate.ClosedMessage ?? "טופס השיבוצים אינו פתוח להגשה כרגע.");
+
         // Strengths — replace all for team members
         foreach (var uid in memberIds)
             await _db.SaveDataAsync("DELETE FROM StudentStrengths WHERE UserId = @UserId", new { UserId = uid });
@@ -224,6 +254,12 @@ public class AssignmentController : ControllerBase
             });
 
         return Ok(new { teamId });
+    }
+
+    private async Task<bool> ExistsRowAsync(string sql, object parameters)
+    {
+        var rows = await _db.GetRecordsAsync<int>(sql, parameters);
+        return rows is not null && rows.Any();
     }
 
     // ── Private row types ────────────────────────────────────────────────────

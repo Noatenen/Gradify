@@ -5,7 +5,7 @@
 @using Microsoft.AspNetCore.Authorization
 @inject IAssignmentService AssignmentSvc
 @inject NavigationManager Nav
-@attribute [Authorize]
+@attribute [Authorize(Roles = Roles.Student)]
 
 <div class="sap-page" dir="rtl">
 
@@ -34,6 +34,12 @@
             <span>⚠ שגיאה בטעינת הטופס. נסי לרענן את הדף.</span>
         </div>
     }
+    else if (_ctx.FormStatus is { CanSubmit: false } gate && _ctx.ExistingSubmission is null)
+    {
+        <div class="sap-state-box sap-state-box--error">
+            <span>🔒 @gate.ClosedMessage</span>
+        </div>
+    }
     else if (!_editMode && _ctx.ExistingSubmission is not null)
     {
         <!-- ════════════════════════════════════════════════════════════
@@ -52,6 +58,13 @@
             <div class="sap-info-banner">
                 <span class="oi oi-info" aria-hidden="true"></span>
                 הגשה מיום @FormatDate(_ctx.ExistingSubmission.SubmittedAt) — ניתן לעדכן עד סגירת המועד.
+            </div>
+        }
+        @if (_ctx.FormStatus is { CanSubmit: false } locked)
+        {
+            <div class="sap-info-banner">
+                <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                @locked.ClosedMessage
             </div>
         }
 
@@ -164,19 +177,30 @@
 
         </div>
 
-        <!-- Edit button -->
-        <div class="sap-summary-footer">
-            <button class="sap-edit-btn" @onclick="EnterEditMode">
-                <span class="oi oi-pencil" aria-hidden="true"></span>
-                עדכון הגשה
-            </button>
-        </div>
+        <!-- Edit button — hidden when the form gate is closed -->
+        @if (_ctx.FormStatus is null || _ctx.FormStatus.CanSubmit)
+        {
+            <div class="sap-summary-footer">
+                <button class="sap-edit-btn" @onclick="EnterEditMode">
+                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                    עדכון הגשה
+                </button>
+            </div>
+        }
     }
     else
     {
         <!-- ════════════════════════════════════════════════════════════
              EDIT FORM
              ════════════════════════════════════════════════════════════ -->
+
+        @if (!string.IsNullOrWhiteSpace(_ctx.FormStatus?.Instructions))
+        {
+            <div class="sap-info-banner">
+                <span class="oi oi-info" aria-hidden="true"></span>
+                @_ctx.FormStatus.Instructions
+            </div>
+        }
 
         @if (_ctx.ExistingSubmission is not null)
         {
@@ -474,7 +498,7 @@
     private string _notes                = "";
 
     private bool TeamReady => _ctx?.HasTeam == true || _selectedPartnerIds.Count == 1;
-    private bool CanSubmit => TeamReady && _preferences.Count == 3;
+    private bool CanSubmit => TeamReady && _preferences.Count == 3 && (_ctx?.FormStatus?.CanSubmit ?? true);
 
     private IEnumerable<StudentBasicDto> FilteredPartners =>
         _ctx?.AvailableStudents
@@ -601,7 +625,7 @@
             foreach (var s in set)
                 strengthsList.Add(new StudentStrengthDto { UserId = uid, Strength = s });
 
-        bool ok = await AssignmentSvc.SubmitAsync(new SubmitAssignmentRequest
+        var res = await AssignmentSvc.SubmitAsync(new SubmitAssignmentRequest
         {
             PartnerIds            = _selectedPartnerIds.ToList(),
             Strengths             = strengthsList,
@@ -613,7 +637,7 @@
 
         _submitting = false;
 
-        if (ok)
+        if (res.Ok)
         {
             // Reload context so summary has fresh data (team members + strengths + preferences)
             _ctx           = await AssignmentSvc.GetContextAsync();
@@ -632,7 +656,9 @@
         }
         else
         {
-            _submitError = "שגיאה בהגשה. אנא נסי שנית.";
+            _submitError = string.IsNullOrWhiteSpace(res.Error)
+                ? "שגיאה בהגשה. אנא נסי שנית."
+                : res.Error!;
         }
     }
 }

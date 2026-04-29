@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 namespace AuthWithAdmin.Shared.AuthSharedModels;
 
 // ── Overview (list of all mentor's projects) ──────────────────────────────

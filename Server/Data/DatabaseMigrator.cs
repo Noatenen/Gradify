@@ -110,6 +110,13 @@ public static class DatabaseMigrator
             await connection.ExecuteNonQueryAsync(
                 "ALTER TABLE Projects ADD COLUMN ContactPhone TEXT");
 
+        // Tracks lecturer-side draft assignments. Set to 1 by the assignment
+        // board until the global publish action flips it back to 0. Students
+        // only see projects with AssignmentIsDraft = 0.
+        if (!projectColumns.Contains("AssignmentIsDraft"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE Projects ADD COLUMN AssignmentIsDraft INTEGER NOT NULL DEFAULT 0");
+
         // ── Seed milestone templates with applicability examples ────────────
         // Adds two type-specific templates only if they don't already exist.
         // Existing 6 templates have ProjectTypeId=NULL (shared / both types).
@@ -665,6 +672,176 @@ public static class DatabaseMigrator
                 UpdatedAt    TEXT    NOT NULL DEFAULT (datetime('now'))
             )");
 
+        // ── AirtableIntegrationSettings table ────────────────────────────────
+        // Per-academic-year Airtable configuration. The ApiToken column stores
+        // the Personal Access Token; it is never included in GET responses
+        // (controllers expose a masked summary instead).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AirtableIntegrationSettings (
+                Id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                AcademicYearId     INTEGER NOT NULL,
+                Name               TEXT    NOT NULL DEFAULT '',
+                ApiToken           TEXT    NOT NULL DEFAULT '',
+                BaseId             TEXT    NOT NULL DEFAULT '',
+                ProjectsTable      TEXT    NOT NULL DEFAULT '',
+                ProjectsView       TEXT    NOT NULL DEFAULT '',
+                MentorsTable       TEXT    NOT NULL DEFAULT '',
+                MentorsView        TEXT    NOT NULL DEFAULT '',
+                StudentsTable      TEXT    NOT NULL DEFAULT '',
+                StudentsView       TEXT    NOT NULL DEFAULT '',
+                TeamsTable         TEXT    NOT NULL DEFAULT '',
+                TeamsView          TEXT    NOT NULL DEFAULT '',
+                StudentVisibleOnly INTEGER NOT NULL DEFAULT 1,
+                IsActive           INTEGER NOT NULL DEFAULT 0,
+                LastTestedAt       TEXT,
+                LastTestStatus     TEXT,
+                LastImportAt       TEXT,
+                LastImportSummary  TEXT,
+                CreatedAt          TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt          TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id) ON DELETE CASCADE
+            )");
+
+        // ── AirtableFieldMappings table ──────────────────────────────────────
+        // Per-integration mapping of LocalFieldName → AirtableFieldName.
+        // EntityType currently 'Project' (more entity types in the future).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AirtableFieldMappings (
+                Id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                IntegrationSettingsId INTEGER NOT NULL,
+                EntityType            TEXT    NOT NULL,
+                LocalFieldName        TEXT    NOT NULL,
+                AirtableFieldName     TEXT    NOT NULL DEFAULT '',
+                IsRequired            INTEGER NOT NULL DEFAULT 0,
+                CreatedAt             TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt             TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (IntegrationSettingsId, EntityType, LocalFieldName),
+                FOREIGN KEY (IntegrationSettingsId) REFERENCES AirtableIntegrationSettings(Id) ON DELETE CASCADE
+            )");
+
+        // ── Permissions catalog ──────────────────────────────────────────────
+        // Master list of permission keys the application understands. Seeded
+        // idempotently on every startup so newly added keys appear without
+        // manual migrations.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Permissions (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                Key         TEXT    NOT NULL UNIQUE,
+                DisplayName TEXT    NOT NULL,
+                GroupName   TEXT    NOT NULL,
+                Description TEXT    NOT NULL DEFAULT '',
+                SortOrder   INTEGER NOT NULL DEFAULT 0,
+                CreatedAt   TEXT    NOT NULL DEFAULT (datetime('now'))
+            )");
+
+        // ── Role → permission assignments ────────────────────────────────────
+        // Many-to-many (RoleName, PermissionKey). Role gates ([Authorize(Roles=...)])
+        // remain the primary access boundary; permissions refine UI/feature access.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS RolePermissions (
+                Id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                RoleName      TEXT    NOT NULL,
+                PermissionKey TEXT    NOT NULL,
+                CreatedAt     TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (RoleName, PermissionKey)
+            )");
+
+        // Seed the canonical permission catalog.
+        var permissionSeeds = new (string Key, string Display, string Group, string Desc, int Sort)[]
+        {
+            // Project catalog (student-facing)
+            ("ProjectCatalog.View",                  "צפייה בקטלוג הפרויקטים", "ProjectCatalog",        "סטודנטים יכולים לצפות בקטלוג", 10),
+            ("AssignmentForm.Submit",                "הגשת טופס שיבוץ",         "ProjectCatalog",        "הגשה ראשונית של טופס שיבוץ פרויקט", 11),
+            ("AssignmentForm.Edit",                  "עריכת הגשה קיימת",         "ProjectCatalog",        "עדכון הגשת טופס שיבוץ קיימת", 12),
+
+            // Assignment management (admin)
+            ("AssignmentManagement.ViewSubmissions", "צפייה בכל ההגשות",         "AssignmentManagement",  "צפייה בטפסים שהוגשו על ידי כל הצוותים", 20),
+            ("AssignmentManagement.ManageForm",      "ניהול טופס השיבוץ",       "AssignmentManagement",  "פתיחה/סגירה ועריכת טופס השיבוץ", 21),
+            ("AssignmentManagement.ViewAnalytics",   "צפייה באנליטיקת שיבוצים",  "AssignmentManagement",  "צפייה בציוני ביקוש והתאמה", 22),
+            ("AssignmentManagement.ManualAssign",    "שיבוץ ידני של צוותים",     "AssignmentManagement",  "שיבוץ צוותים לפרויקטים ושינוי שיבוצים", 23),
+            ("AssignmentManagement.AssignMentor",    "שיוך מנטור לפרויקט",       "AssignmentManagement",  "הוספה והסרת מנטורים מפרויקטים", 24),
+            ("AssignmentManagement.Publish",         "פרסום שיבוצים",            "AssignmentManagement",  "פרסום השיבוצים לסטודנטים", 25),
+
+            // Project management (admin)
+            ("ProjectManagement.View",               "צפייה בפרויקטים",          "ProjectManagement",     "צפייה ברשימת הפרויקטים והקטלוג", 30),
+            ("ProjectManagement.Create",             "יצירת פרויקט",             "ProjectManagement",     "הוספת פרויקטים חדשים לקטלוג", 31),
+            ("ProjectManagement.Edit",               "עריכת פרויקט",             "ProjectManagement",     "עדכון פרטי פרויקט קיים", 32),
+            ("ProjectManagement.Delete",             "מחיקת פרויקט",             "ProjectManagement",     "הסרת פרויקטים מהמערכת", 33),
+            ("ProjectManagement.ImportAirtable",     "ייבוא פרויקטים מ-Airtable","ProjectManagement",     "הפעלת ייבוא Airtable", 34),
+
+            // Forms management
+            ("FormsManagement.View",                 "צפייה בטפסים",             "FormsManagement",       "צפייה ברשימת הטפסים", 40),
+            ("FormsManagement.Edit",                 "יצירה/עריכת טפסים",        "FormsManagement",       "עריכת הגדרות, בלוקים ואפשרויות", 41),
+            ("FormsManagement.Delete",               "מחיקת טפסים",              "FormsManagement",       "מחיקת טפסים שאינם בשימוש", 42),
+
+            // Integrations
+            ("Integrations.View",                    "צפייה באינטגרציות",        "Integrations",          "צפייה בהגדרות האינטגרציות", 50),
+            ("Integrations.ManageAirtable",          "ניהול Airtable",           "Integrations",          "יצירה ועריכת תצורות Airtable", 51),
+            ("Integrations.TestAirtable",            "בדיקת חיבור Airtable",      "Integrations",          "הרצת בדיקת חיבור", 52),
+            ("Integrations.RunAirtableImport",       "ייבוא Airtable",           "Integrations",          "הרצת ייבוא בפועל", 53),
+
+            // Users / teams / mentors
+            ("Users.View",                           "צפייה במשתמשים",           "UsersTeamsMentors",     "צפייה ברשימת המשתמשים", 60),
+            ("Users.Manage",                         "ניהול משתמשים",            "UsersTeamsMentors",     "הוספה, עריכה והסרה של משתמשים", 61),
+            ("Teams.Manage",                         "ניהול צוותים",             "UsersTeamsMentors",     "ניהול הרכב הצוותים", 62),
+            ("Mentors.Manage",                       "ניהול מנטורים",            "UsersTeamsMentors",     "ניהול מנטורים והשיוך שלהם", 63),
+
+            // Permissions itself (only Admin)
+            ("Permissions.Manage",                   "ניהול הרשאות",             "System",                "עריכת הרשאות לפי תפקיד", 90),
+        };
+
+        foreach (var p in permissionSeeds)
+        {
+            await connection.ExecuteNonQueryAsync(
+                "INSERT OR IGNORE INTO Permissions (Key, DisplayName, GroupName, Description, SortOrder) " +
+                $"VALUES ('{p.Key.Replace("'", "''")}', '{p.Display.Replace("'", "''")}', '{p.Group.Replace("'", "''")}', '{p.Desc.Replace("'", "''")}', {p.Sort})");
+        }
+
+        // Default role → permission mapping. INSERT OR IGNORE keeps user-edited
+        // assignments intact across restarts.
+        var roleSeeds = new (string Role, string[] Keys)[]
+        {
+            ("Student", new[]
+            {
+                "ProjectCatalog.View", "AssignmentForm.Submit", "AssignmentForm.Edit"
+            }),
+            ("Admin", new[]
+            {
+                "AssignmentManagement.ViewSubmissions", "AssignmentManagement.ManageForm",
+                "AssignmentManagement.ViewAnalytics", "AssignmentManagement.ManualAssign",
+                "AssignmentManagement.AssignMentor", "AssignmentManagement.Publish",
+                "ProjectManagement.View", "ProjectManagement.Create", "ProjectManagement.Edit",
+                "ProjectManagement.Delete", "ProjectManagement.ImportAirtable",
+                "FormsManagement.View", "FormsManagement.Edit", "FormsManagement.Delete",
+                "Integrations.View", "Integrations.ManageAirtable",
+                "Integrations.TestAirtable", "Integrations.RunAirtableImport",
+                "Users.View", "Users.Manage", "Teams.Manage", "Mentors.Manage",
+                "Permissions.Manage"
+            }),
+            ("Staff", new[]
+            {
+                "AssignmentManagement.ViewSubmissions", "AssignmentManagement.ManageForm",
+                "AssignmentManagement.ViewAnalytics", "AssignmentManagement.ManualAssign",
+                "AssignmentManagement.AssignMentor",
+                "ProjectManagement.View", "ProjectManagement.Create", "ProjectManagement.Edit",
+                "ProjectManagement.ImportAirtable",
+                "FormsManagement.View", "FormsManagement.Edit",
+                "Integrations.View", "Integrations.RunAirtableImport",
+                "Users.View", "Teams.Manage", "Mentors.Manage"
+            }),
+            ("Mentor", Array.Empty<string>()),
+        };
+
+        foreach (var r in roleSeeds)
+        {
+            foreach (var key in r.Keys)
+            {
+                await connection.ExecuteNonQueryAsync(
+                    "INSERT OR IGNORE INTO RolePermissions (RoleName, PermissionKey) " +
+                    $"VALUES ('{r.Role.Replace("'", "''")}', '{key.Replace("'", "''")}')");
+            }
+        }
+
         // ── ProjectMentors table ─────────────────────────────────────────────
         // Many-to-many junction: links mentor users to the projects they supervise.
         // UNIQUE(ProjectId, UserId) prevents duplicate assignments.
@@ -775,6 +952,72 @@ public static class DatabaseMigrator
                 Notes                TEXT,
                 SubmittedAt          TEXT    NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (TeamId) REFERENCES Teams(Id) ON DELETE CASCADE
+            )");
+
+        // ── AssignmentSettings table ──────────────────────────────────────────
+        // Per academic-year publish flag for assignments. While
+        // AssignmentsPublished = 0, all draft project assignments
+        // (Projects.AssignmentIsDraft = 1) stay hidden from students.
+        // Publishing flips all drafts in the year to visible at once.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AssignmentSettings (
+                AcademicYearId       INTEGER PRIMARY KEY,
+                AssignmentsPublished INTEGER NOT NULL DEFAULT 0,
+                PublishedAt          TEXT,
+                UpdatedAt            TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id) ON DELETE CASCADE
+            )");
+
+        // ── Reusable form-builder system ──────────────────────────────────────
+        // Forms              : top-level form (one per AcademicYear+FormType)
+        // FormBlocks         : ordered blocks (sections / fields) inside a form
+        // FormBlockOptions   : options for choice/ranking blocks
+        //
+        // The existing student assignment-form submissions still live in their
+        // dedicated tables (AssignmentFormSubmissions / TeamProjectPreferences /
+        // StudentStrengths). These three tables describe the FORM STRUCTURE and
+        // SETTINGS only.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Forms (
+                Id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                AcademicYearId       INTEGER NOT NULL,
+                Name                 TEXT    NOT NULL,
+                FormType             TEXT    NOT NULL,
+                Instructions         TEXT,
+                IsOpen               INTEGER NOT NULL DEFAULT 0,
+                OpensAt              TEXT,
+                ClosesAt             TEXT,
+                AllowEditAfterSubmit INTEGER NOT NULL DEFAULT 1,
+                Status               TEXT    NOT NULL DEFAULT 'Draft',
+                CreatedAt            TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt            TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (AcademicYearId, FormType),
+                FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS FormBlocks (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                FormId      INTEGER NOT NULL,
+                BlockType   TEXT    NOT NULL,
+                BlockKey    TEXT,
+                Title       TEXT    NOT NULL,
+                HelperText  TEXT,
+                IsRequired  INTEGER NOT NULL DEFAULT 0,
+                SortOrder   INTEGER NOT NULL DEFAULT 0,
+                CreatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (FormId) REFERENCES Forms(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS FormBlockOptions (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                FormBlockId INTEGER NOT NULL,
+                OptionValue TEXT    NOT NULL,
+                OptionLabel TEXT    NOT NULL,
+                SortOrder   INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (FormBlockId) REFERENCES FormBlocks(Id) ON DELETE CASCADE
             )");
     }
 

@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 namespace AuthWithAdmin.Shared.AuthSharedModels;
 
 /// <summary>Result returned from POST /api/airtable/sync-projects.</summary>

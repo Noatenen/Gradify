@@ -45,6 +45,19 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 // Student assignment / preference form
 builder.Services.AddScoped<IAssignmentService, AssignmentService>();
 
+// Lecturer/Admin assignment-form management (review submissions)
+builder.Services.AddScoped<IAssignmentManagementService, AssignmentManagementService>();
+
+// Reusable form-builder system
+builder.Services.AddScoped<IFormsManagementService, FormsManagementService>();
+
+// Airtable per-academic-year integration management
+builder.Services.AddScoped<IAirtableIntegrationService, AirtableIntegrationService>();
+
+// Permission catalog + per-user cache
+builder.Services.AddScoped<IPermissionService, PermissionService>();
+builder.Services.AddScoped<IPermissionsManagementService, PermissionsManagementService>();
+
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();

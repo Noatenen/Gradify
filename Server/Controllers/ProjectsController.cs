@@ -29,6 +29,8 @@ public class ProjectsController : ControllerBase
     public async Task<IActionResult> GetMyDashboard(int authUserId)
     {
         // ── 1. Resolve user → team → project ─────────────────────────────────
+        // Draft assignments (AssignmentIsDraft = 1) remain hidden from students
+        // until the lecturer publishes them — the row is treated as "no project".
         const string projectSql = @"
             SELECT  p.Id,
                     p.ProjectNumber,
@@ -44,6 +46,7 @@ public class ProjectsController : ControllerBase
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
             WHERE   tm.UserId  = @UserId
               AND   tm.IsActive = 1
+              AND   COALESCE(p.AssignmentIsDraft, 0) = 0
             LIMIT 1";
 
         var projectRow = (await _db.GetRecordsAsync<ProjectRow>(
@@ -237,14 +240,36 @@ public class ProjectsController : ControllerBase
     [HttpGet("my-context")]
     public async Task<IActionResult> GetMyContext(int authUserId)
     {
-        // ── 1. Resolve user → project ─────────────────────────────────────────
+        // ── 1. Resolve user → project + team quick-info ──────────────────────
+        // Single query joins identity + team-context fields. Names and emails
+        // are paired as "FullName<#>Email" records joined with '||' so they
+        // stay aligned regardless of GROUP_CONCAT ordering. Two tiny splits
+        // on the C# side recover the parallel lists. No N+1.
         const string projectSql = @"
-            SELECT  p.Id            AS ProjectId,
+            SELECT  p.Id                        AS ProjectId,
                     p.ProjectNumber,
-                    p.Title         AS ProjectTitle
+                    p.Title                     AS ProjectTitle,
+                    t.TeamName                  AS TeamName,
+                    pt.Name                     AS TrackName,
+                    (SELECT GROUP_CONCAT(
+                                su.FirstName || ' ' || su.LastName
+                                || '<#>' || COALESCE(su.Email, ''),
+                                '||')
+                     FROM   TeamMembers stm
+                     JOIN   users       su ON su.Id = stm.UserId
+                     WHERE  stm.TeamId   = t.Id
+                       AND  stm.IsActive = 1)   AS StudentDetailsCsv,
+                    (SELECT GROUP_CONCAT(
+                                mu.FirstName || ' ' || mu.LastName
+                                || '<#>' || COALESCE(mu.Email, ''),
+                                '||')
+                     FROM   ProjectMentors pm
+                     JOIN   users          mu ON mu.Id = pm.UserId
+                     WHERE  pm.ProjectId = p.Id) AS MentorDetailsCsv
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId  = t.Id
-            JOIN    TeamMembers  tm  ON t.Id       = tm.TeamId
+            LEFT JOIN ProjectTypes pt ON pt.Id = p.ProjectTypeId
+            JOIN    TeamMembers  tm  ON t.Id      = tm.TeamId
             WHERE   tm.UserId  = @UserId
               AND   tm.IsActive = 1
             LIMIT 1";
@@ -257,6 +282,8 @@ public class ProjectsController : ControllerBase
             return Ok((ProjectContextDto?)null);
 
         int projectId = projectRow.ProjectId;
+        var (studentNames, studentEmails) = SplitNameEmailPairs(projectRow.StudentDetailsCsv);
+        var (mentorNames,  mentorEmails)  = SplitNameEmailPairs(projectRow.MentorDetailsCsv);
 
         // ── 2. Milestones (for current-milestone + progress) ──────────────────
         const string milestonesSql = @"
@@ -301,6 +328,12 @@ public class ProjectsController : ControllerBase
             ProjectId                = projectRow.ProjectId,
             ProjectNumber            = projectRow.ProjectNumber,
             ProjectTitle             = projectRow.ProjectTitle,
+            TeamName                 = string.IsNullOrWhiteSpace(projectRow.TeamName)  ? null : projectRow.TeamName,
+            TrackName                = string.IsNullOrWhiteSpace(projectRow.TrackName) ? null : projectRow.TrackName,
+            StudentNames             = studentNames,
+            StudentEmails            = studentEmails,
+            MentorNames              = mentorNames,
+            MentorEmails             = mentorEmails,
             CurrentMilestoneTitle    = currentMs?.Title,
             CurrentMilestoneStatus   = NormalizeMilestoneStatus(currentMs?.Status),
             CurrentMilestoneDueDate  = currentMs?.DueDate,
@@ -311,6 +344,27 @@ public class ProjectsController : ControllerBase
             NextTaskTitle            = nextTask?.Title,
             NextTaskDueDate          = nextTask?.DueDate,
         });
+    }
+
+    // Splits the GROUP_CONCAT result of "Name<#>Email||Name<#>Email|..." into
+    // two parallel lists. Pairs without a name are dropped; missing emails
+    // become empty strings so the client can render a "לא הוגדר" placeholder.
+    private static (List<string> Names, List<string> Emails) SplitNameEmailPairs(string? csv)
+    {
+        var names  = new List<string>();
+        var emails = new List<string>();
+        if (string.IsNullOrWhiteSpace(csv)) return (names, emails);
+
+        foreach (var record in csv.Split("||", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = record.Split("<#>", 2);
+            var name  = parts[0].Trim();
+            var email = parts.Length > 1 ? parts[1].Trim() : "";
+            if (name.Length == 0) continue;
+            names.Add(name);
+            emails.Add(email);
+        }
+        return (names, emails);
     }
 
     // ── GET /api/projects/my-milestones ──────────────────────────────────────
@@ -720,9 +774,13 @@ public class ProjectsController : ControllerBase
     // Used by GetMyContext ─────────────────────────────────────────────────────
     private sealed class ContextProjectRow
     {
-        public int    ProjectId     { get; set; }
-        public int    ProjectNumber { get; set; }
-        public string ProjectTitle  { get; set; } = "";
+        public int     ProjectId         { get; set; }
+        public int     ProjectNumber     { get; set; }
+        public string  ProjectTitle      { get; set; } = "";
+        public string? TeamName          { get; set; }
+        public string? TrackName         { get; set; }
+        public string? StudentDetailsCsv { get; set; }
+        public string? MentorDetailsCsv  { get; set; }
     }
 
     private sealed class ContextMilestoneRow

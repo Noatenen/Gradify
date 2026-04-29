@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 namespace AuthWithAdmin.Shared.AuthSharedModels;
 
 /// <summary>
@@ -11,6 +13,17 @@ public class ProjectContextDto
     public int    ProjectId     { get; set; }
     public int    ProjectNumber { get; set; }
     public string ProjectTitle  { get; set; } = "";
+
+    // ── Team quick-info (for the sidebar TeamQuickInfoPopover) ────────────────
+    // Fetched in the same /api/projects/my-context call so the popover opens
+    // instantly with no extra HTTP request. Names + emails are kept as
+    // parallel lists, ordered identically.
+    public string?      TeamName      { get; set; }
+    public string?      TrackName     { get; set; }
+    public List<string> StudentNames  { get; set; } = new();
+    public List<string> StudentEmails { get; set; } = new();
+    public List<string> MentorNames   { get; set; } = new();
+    public List<string> MentorEmails  { get; set; } = new();
 
     // ── Widget card 1: current milestone ─────────────────────────────────────
     // "Current" = first InProgress → first Delayed → first NotStarted

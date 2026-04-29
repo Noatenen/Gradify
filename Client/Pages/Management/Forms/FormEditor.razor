@@ -1,0 +1,546 @@
+@page "/management/forms/{FormId:int}"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject IFormsManagementService FormsService
+
+<div class="fm-page">
+
+    <div class="fm-topbar">
+        <div class="fm-topbar-start">
+            <button class="fm-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management/forms"))" title="חזרה לרשימה">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="fm-breadcrumb">ניהול · טפסים</div>
+                <h1 class="fm-title">@(_form?.Name ?? "טופס")</h1>
+            </div>
+        </div>
+        @if (_form is not null)
+        {
+            <div class="fm-topbar-end">
+                <span class="fm-status @StatusClass(_form.Status)">@StatusLabel(_form.Status)</span>
+            </div>
+        }
+    </div>
+
+    @if (_loading)
+    {
+        <div class="fm-state">טוען טופס…</div>
+    }
+    else if (_form is null)
+    {
+        <div class="fm-state fm-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            הטופס לא נמצא.
+        </div>
+    }
+    else
+    {
+        @if (!string.IsNullOrEmpty(_message))
+        {
+            <div class="fm-toast @(_messageError ? "fm-toast-error" : "")">@_message</div>
+        }
+
+        <!-- ── Settings panel ────────────────────────────────────────── -->
+        <section class="fm-panel">
+            <div class="fm-panel-head">
+                <h2 class="fm-panel-title">הגדרות הטופס</h2>
+                <button class="fm-btn fm-btn-primary"
+                        disabled="@_savingSettings"
+                        @onclick="SaveSettings">
+                    @(_savingSettings ? "שומר…" : "שמירת הגדרות")
+                </button>
+            </div>
+
+            <div class="fm-grid">
+                <div class="fm-field fm-field-full">
+                    <label class="fm-label">שם הטופס <span class="fm-req">*</span></label>
+                    <input class="fm-input" @bind="_form.Name" maxlength="100" />
+                </div>
+
+                <div class="fm-field fm-field-full">
+                    <label class="fm-label">הוראות לסטודנטים</label>
+                    <textarea class="fm-textarea" rows="3" @bind="_form.Instructions"
+                              placeholder="הסבר קצר שיוצג לסטודנטים בראש הטופס"></textarea>
+                </div>
+
+                <div class="fm-field">
+                    <label class="fm-label">תאריך פתיחה</label>
+                    <input class="fm-input" type="datetime-local"
+                           value="@FormatLocalForInput(_form.OpensAt)"
+                           @oninput="@(e => _form.OpensAt = ParseLocalInput(e.Value?.ToString()))" />
+                </div>
+
+                <div class="fm-field">
+                    <label class="fm-label">תאריך סגירה</label>
+                    <input class="fm-input" type="datetime-local"
+                           value="@FormatLocalForInput(_form.ClosesAt)"
+                           @oninput="@(e => _form.ClosesAt = ParseLocalInput(e.Value?.ToString()))" />
+                </div>
+
+                <div class="fm-field">
+                    <label class="fm-check-row">
+                        <input type="checkbox" @bind="_form.IsOpen" />
+                        <span>הטופס פתוח להגשה</span>
+                    </label>
+                </div>
+
+                <div class="fm-field">
+                    <label class="fm-check-row">
+                        <input type="checkbox" @bind="_form.AllowEditAfterSubmit" />
+                        <span>אפשר עריכה לאחר ההגשה</span>
+                    </label>
+                </div>
+
+                <div class="fm-field fm-field-full">
+                    <label class="fm-label">סטטוס</label>
+                    <select class="fm-input" @bind="_form.Status">
+                        <option value="@FormStatuses.Draft">טיוטה</option>
+                        <option value="@FormStatuses.Open">פתוח</option>
+                        <option value="@FormStatuses.Closed">סגור</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Blocks panel ──────────────────────────────────────────── -->
+        <section class="fm-panel">
+            <div class="fm-panel-head">
+                <h2 class="fm-panel-title">בלוקים בטופס (@_form.Blocks.Count)</h2>
+                <button class="fm-btn fm-btn-secondary"
+                        @onclick="OpenAddBlock">
+                    <span class="oi oi-plus" aria-hidden="true"></span>
+                    הוסף בלוק
+                </button>
+            </div>
+
+            @if (_form.Blocks.Count == 0)
+            {
+                <div class="fm-empty-block">אין עדיין בלוקים. לחצו על "הוסף בלוק" כדי להתחיל.</div>
+            }
+            else
+            {
+                <div class="fm-block-list">
+                    @for (int i = 0; i < _form.Blocks.Count; i++)
+                    {
+                        var idx   = i;
+                        var block = _form.Blocks[idx];
+                        var isSystem = !string.IsNullOrEmpty(block.BlockKey);
+
+                        <article class="fm-block-card">
+                            <header class="fm-block-head">
+                                <div class="fm-block-head-main">
+                                    <span class="fm-block-type">@BlockTypeLabel(block.BlockType)</span>
+                                    @if (isSystem)
+                                    {
+                                        <span class="fm-block-system">בלוק מערכת</span>
+                                    }
+                                    @if (block.IsRequired)
+                                    {
+                                        <span class="fm-block-required">חובה</span>
+                                    }
+                                </div>
+                                <div class="fm-block-actions">
+                                    <button class="fm-icon-btn" title="הזז למעלה"
+                                            disabled="@(idx == 0 || _busyBlock == block.Id)"
+                                            @onclick="@(() => MoveBlock(idx, -1))">
+                                        <span class="oi oi-arrow-top" aria-hidden="true"></span>
+                                    </button>
+                                    <button class="fm-icon-btn" title="הזז למטה"
+                                            disabled="@(idx == _form.Blocks.Count - 1 || _busyBlock == block.Id)"
+                                            @onclick="@(() => MoveBlock(idx, 1))">
+                                        <span class="oi oi-arrow-bottom" aria-hidden="true"></span>
+                                    </button>
+                                    @if (!isSystem)
+                                    {
+                                        <button class="fm-icon-btn fm-icon-btn-danger" title="מחיקת בלוק"
+                                                disabled="@(_busyBlock == block.Id)"
+                                                @onclick="@(() => DeleteBlock(block))">
+                                            <span class="oi oi-trash" aria-hidden="true"></span>
+                                        </button>
+                                    }
+                                </div>
+                            </header>
+
+                            <div class="fm-grid">
+                                <div class="fm-field fm-field-full">
+                                    <label class="fm-label">כותרת / שאלה <span class="fm-req">*</span></label>
+                                    <input class="fm-input" @bind="block.Title" maxlength="200" />
+                                </div>
+
+                                <div class="fm-field fm-field-full">
+                                    <label class="fm-label">טקסט עזר</label>
+                                    <textarea class="fm-textarea" rows="2" @bind="block.HelperText"
+                                              placeholder="טקסט הסבר שיוצג מתחת לכותרת"></textarea>
+                                </div>
+
+                                <div class="fm-field">
+                                    <label class="fm-label">סוג בלוק</label>
+                                    <select class="fm-input" disabled="@isSystem"
+                                            value="@block.BlockType"
+                                            @onchange="@(e => block.BlockType = e.Value?.ToString() ?? block.BlockType)">
+                                        <option value="@FormBlockTypes.Text">טקסט / מידע</option>
+                                        <option value="@FormBlockTypes.SingleChoice">בחירה יחידה</option>
+                                        <option value="@FormBlockTypes.MultiChoice">בחירה מרובה</option>
+                                        <option value="@FormBlockTypes.Ranking">דירוג</option>
+                                        <option value="@FormBlockTypes.OpenText">טקסט פתוח</option>
+                                    </select>
+                                </div>
+
+                                <div class="fm-field">
+                                    <label class="fm-check-row">
+                                        <input type="checkbox" @bind="block.IsRequired" />
+                                        <span>שדה חובה</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="fm-block-card-actions">
+                                <button class="fm-btn fm-btn-secondary"
+                                        disabled="@(_busyBlock == block.Id)"
+                                        @onclick="@(() => SaveBlock(block))">
+                                    שמירת בלוק
+                                </button>
+                            </div>
+
+                            @if (BlockSupportsOptions(block.BlockType))
+                            {
+                                <div class="fm-options-section">
+                                    <div class="fm-options-head">
+                                        <h3 class="fm-options-title">אפשרויות (@block.Options.Count)</h3>
+                                        @if (string.Equals(block.BlockKey, FormBlockKeys.ProjectPreferences, StringComparison.Ordinal))
+                                        {
+                                            <span class="fm-options-note">בלוק זה מוזן אוטומטית מקטלוג הפרויקטים</span>
+                                        }
+                                    </div>
+
+                                    @if (!string.Equals(block.BlockKey, FormBlockKeys.ProjectPreferences, StringComparison.Ordinal))
+                                    {
+                                        <ul class="fm-options-list">
+                                            @foreach (var opt in block.Options.OrderBy(o => o.SortOrder).ToList())
+                                            {
+                                                <li class="fm-option-row">
+                                                    <input class="fm-input fm-option-label" @bind="opt.OptionLabel"
+                                                           placeholder="תווית האפשרות" />
+                                                    <input class="fm-input fm-option-value" @bind="opt.OptionValue"
+                                                           placeholder="ערך (אופציונלי)" />
+                                                    <button class="fm-icon-btn"
+                                                            disabled="@(_busyOption == opt.Id)"
+                                                            @onclick="@(() => SaveOption(opt))" title="שמור">
+                                                        <span class="oi oi-check" aria-hidden="true"></span>
+                                                    </button>
+                                                    <button class="fm-icon-btn fm-icon-btn-danger"
+                                                            disabled="@(_busyOption == opt.Id)"
+                                                            @onclick="@(() => DeleteOption(block, opt))" title="מחק">
+                                                        <span class="oi oi-trash" aria-hidden="true"></span>
+                                                    </button>
+                                                </li>
+                                            }
+                                        </ul>
+
+                                        <div class="fm-option-add">
+                                            <input class="fm-input fm-option-label" @bind="_newOptionLabel"
+                                                   placeholder="תווית אפשרות חדשה" />
+                                            <input class="fm-input fm-option-value" @bind="_newOptionValue"
+                                                   placeholder="ערך (אופציונלי)" />
+                                            <button class="fm-btn fm-btn-secondary"
+                                                    disabled="@(_busyBlock == block.Id || string.IsNullOrWhiteSpace(_newOptionLabel))"
+                                                    @onclick="@(() => AddOption(block))">
+                                                <span class="oi oi-plus" aria-hidden="true"></span>
+                                                הוסף
+                                            </button>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    }
+</div>
+
+<!-- ── Add-block modal ───────────────────────────────────────────────── -->
+@if (_showAddBlock)
+{
+    <div class="fm-modal-backdrop" @onclick="CloseAddBlock"></div>
+    <div class="fm-modal" dir="rtl" role="dialog" aria-modal="true">
+        <h2 class="fm-modal-title">הוספת בלוק חדש</h2>
+        <div class="fm-grid">
+            <div class="fm-field fm-field-full">
+                <label class="fm-label">סוג בלוק</label>
+                <select class="fm-input" @bind="_newBlockType">
+                    <option value="@FormBlockTypes.Text">טקסט / מידע</option>
+                    <option value="@FormBlockTypes.SingleChoice">בחירה יחידה</option>
+                    <option value="@FormBlockTypes.MultiChoice">בחירה מרובה</option>
+                    <option value="@FormBlockTypes.Ranking">דירוג</option>
+                    <option value="@FormBlockTypes.OpenText">טקסט פתוח</option>
+                </select>
+            </div>
+            <div class="fm-field fm-field-full">
+                <label class="fm-label">כותרת <span class="fm-req">*</span></label>
+                <input class="fm-input" @bind="_newBlockTitle" maxlength="200" />
+            </div>
+            <div class="fm-field fm-field-full">
+                <label class="fm-label">טקסט עזר</label>
+                <textarea class="fm-textarea" rows="2" @bind="_newBlockHelper"></textarea>
+            </div>
+            <div class="fm-field">
+                <label class="fm-check-row">
+                    <input type="checkbox" @bind="_newBlockRequired" />
+                    <span>שדה חובה</span>
+                </label>
+            </div>
+        </div>
+        <div class="fm-modal-actions">
+            <button class="fm-btn fm-btn-secondary" @onclick="CloseAddBlock">ביטול</button>
+            <button class="fm-btn fm-btn-primary"
+                    disabled="@(string.IsNullOrWhiteSpace(_newBlockTitle) || _addingBlock)"
+                    @onclick="ConfirmAddBlock">
+                @(_addingBlock ? "מוסיף…" : "הוספה")
+            </button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int FormId { get; set; }
+
+    private FormDetailDto? _form;
+    private bool _loading = true;
+
+    private bool _savingSettings;
+    private string? _message;
+    private bool    _messageError;
+
+    // Per-row "busy" markers to gate buttons during inflight requests.
+    private int _busyBlock;
+    private int _busyOption;
+
+    // Add-block modal state
+    private bool   _showAddBlock;
+    private bool   _addingBlock;
+    private string _newBlockType    = FormBlockTypes.OpenText;
+    private string _newBlockTitle   = "";
+    private string _newBlockHelper  = "";
+    private bool   _newBlockRequired;
+
+    // Buffer for "add option" inputs (per-block, but we keep a single buffer
+    // since only one block's add-row is interacted with at a time).
+    private string _newOptionLabel = "";
+    private string _newOptionValue = "";
+
+    protected override async Task OnInitializedAsync() => await LoadForm();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_form is not null && _form.Id != FormId) await LoadForm();
+    }
+
+    private async Task LoadForm()
+    {
+        _loading = true;
+        _form = await FormsService.GetFormAsync(FormId);
+        _loading = false;
+    }
+
+    private async Task Reload(string? success = null, bool isError = false)
+    {
+        var refreshed = await FormsService.GetFormAsync(FormId);
+        if (refreshed is not null) _form = refreshed;
+        if (success is not null) { _message = success; _messageError = isError; }
+    }
+
+    private async Task SaveSettings()
+    {
+        if (_form is null) return;
+        _savingSettings = true;
+        var ok = await FormsService.UpdateFormAsync(_form.Id, new SaveFormRequest
+        {
+            AcademicYearId       = _form.AcademicYearId,
+            Name                 = _form.Name,
+            FormType             = _form.FormType,
+            Instructions         = _form.Instructions,
+            IsOpen               = _form.IsOpen,
+            OpensAt              = string.IsNullOrWhiteSpace(_form.OpensAt) ? null : _form.OpensAt,
+            ClosesAt             = string.IsNullOrWhiteSpace(_form.ClosesAt) ? null : _form.ClosesAt,
+            AllowEditAfterSubmit = _form.AllowEditAfterSubmit,
+            Status               = _form.Status
+        });
+        _savingSettings = false;
+        if (ok) await Reload("ההגדרות נשמרו");
+        else { _message = "שמירת ההגדרות נכשלה"; _messageError = true; }
+    }
+
+    private void OpenAddBlock()
+    {
+        _newBlockType     = FormBlockTypes.OpenText;
+        _newBlockTitle    = "";
+        _newBlockHelper   = "";
+        _newBlockRequired = false;
+        _showAddBlock     = true;
+    }
+
+    private void CloseAddBlock() => _showAddBlock = false;
+
+    private async Task ConfirmAddBlock()
+    {
+        if (_form is null || string.IsNullOrWhiteSpace(_newBlockTitle)) return;
+        _addingBlock = true;
+        var newId = await FormsService.AddBlockAsync(_form.Id, new SaveBlockRequest
+        {
+            BlockType  = _newBlockType,
+            Title      = _newBlockTitle,
+            HelperText = _newBlockHelper,
+            IsRequired = _newBlockRequired,
+            SortOrder  = (_form.Blocks.LastOrDefault()?.SortOrder ?? 0) + 1
+        });
+        _addingBlock = false;
+        _showAddBlock = false;
+        if (newId is not null) await Reload("הבלוק נוסף");
+        else { _message = "הוספת הבלוק נכשלה"; _messageError = true; }
+    }
+
+    private async Task SaveBlock(FormBlockDto block)
+    {
+        if (_form is null) return;
+        _busyBlock = block.Id;
+        var ok = await FormsService.UpdateBlockAsync(block.Id, new SaveBlockRequest
+        {
+            BlockType  = block.BlockType,
+            Title      = block.Title,
+            HelperText = block.HelperText,
+            IsRequired = block.IsRequired,
+            SortOrder  = block.SortOrder
+        });
+        _busyBlock = 0;
+        if (ok) await Reload("הבלוק נשמר");
+        else { _message = "שמירת הבלוק נכשלה"; _messageError = true; }
+    }
+
+    private async Task DeleteBlock(FormBlockDto block)
+    {
+        if (_form is null) return;
+        _busyBlock = block.Id;
+        var ok = await FormsService.DeleteBlockAsync(block.Id);
+        _busyBlock = 0;
+        if (ok) await Reload("הבלוק נמחק");
+        else { _message = "מחיקת הבלוק נכשלה"; _messageError = true; }
+    }
+
+    private async Task MoveBlock(int index, int delta)
+    {
+        if (_form is null) return;
+        int newIndex = index + delta;
+        if (newIndex < 0 || newIndex >= _form.Blocks.Count) return;
+
+        var a = _form.Blocks[index];
+        var b = _form.Blocks[newIndex];
+
+        // Swap SortOrder values via two PUTs.
+        int aOrder = a.SortOrder, bOrder = b.SortOrder;
+        if (aOrder == bOrder) { aOrder = index + 1; bOrder = newIndex + 1; }
+
+        _busyBlock = a.Id;
+        await FormsService.UpdateBlockAsync(a.Id, new SaveBlockRequest
+        {
+            BlockType  = a.BlockType, Title = a.Title, HelperText = a.HelperText,
+            IsRequired = a.IsRequired, SortOrder = bOrder
+        });
+        await FormsService.UpdateBlockAsync(b.Id, new SaveBlockRequest
+        {
+            BlockType  = b.BlockType, Title = b.Title, HelperText = b.HelperText,
+            IsRequired = b.IsRequired, SortOrder = aOrder
+        });
+        _busyBlock = 0;
+        await Reload();
+    }
+
+    private async Task AddOption(FormBlockDto block)
+    {
+        if (_form is null || string.IsNullOrWhiteSpace(_newOptionLabel)) return;
+        _busyBlock = block.Id;
+        var newId = await FormsService.AddOptionAsync(block.Id, new SaveOptionRequest
+        {
+            OptionLabel = _newOptionLabel,
+            OptionValue = _newOptionValue,
+            SortOrder   = (block.Options.LastOrDefault()?.SortOrder ?? 0) + 1
+        });
+        _busyBlock = 0;
+        _newOptionLabel = ""; _newOptionValue = "";
+        if (newId is not null) await Reload("האפשרות נוספה");
+        else { _message = "הוספת האפשרות נכשלה"; _messageError = true; }
+    }
+
+    private async Task SaveOption(FormBlockOptionDto opt)
+    {
+        _busyOption = opt.Id;
+        var ok = await FormsService.UpdateOptionAsync(opt.Id, new SaveOptionRequest
+        {
+            OptionLabel = opt.OptionLabel,
+            OptionValue = opt.OptionValue,
+            SortOrder   = opt.SortOrder
+        });
+        _busyOption = 0;
+        if (ok) await Reload("האפשרות נשמרה");
+        else { _message = "שמירת האפשרות נכשלה"; _messageError = true; }
+    }
+
+    private async Task DeleteOption(FormBlockDto block, FormBlockOptionDto opt)
+    {
+        _busyOption = opt.Id;
+        var ok = await FormsService.DeleteOptionAsync(opt.Id);
+        _busyOption = 0;
+        if (ok) await Reload("האפשרות נמחקה");
+        else { _message = "מחיקת האפשרות נכשלה"; _messageError = true; }
+    }
+
+    private static bool BlockSupportsOptions(string type) =>
+        type is FormBlockTypes.SingleChoice or FormBlockTypes.MultiChoice or FormBlockTypes.Ranking;
+
+    private static string BlockTypeLabel(string type) => type switch
+    {
+        FormBlockTypes.Text         => "טקסט / מידע",
+        FormBlockTypes.SingleChoice => "בחירה יחידה",
+        FormBlockTypes.MultiChoice  => "בחירה מרובה",
+        FormBlockTypes.Ranking      => "דירוג",
+        FormBlockTypes.OpenText     => "טקסט פתוח",
+        _                           => type
+    };
+
+    private static string StatusLabel(string s) => s switch
+    {
+        FormStatuses.Draft  => "טיוטה",
+        FormStatuses.Open   => "פתוח",
+        FormStatuses.Closed => "סגור",
+        _                   => s
+    };
+
+    private static string StatusClass(string s) => s switch
+    {
+        FormStatuses.Open   => "fm-status-open",
+        FormStatuses.Closed => "fm-status-closed",
+        _                   => "fm-status-draft"
+    };
+
+    // datetime-local <input> wants 'yyyy-MM-ddTHH:mm' with no timezone suffix.
+    private static string FormatLocalForInput(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        return DateTime.TryParse(raw, out var dt)
+            ? dt.ToLocalTime().ToString("yyyy-MM-ddTHH:mm")
+            : "";
+    }
+
+    private static string? ParseLocalInput(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        return DateTime.TryParse(raw, out var dt)
+            ? dt.ToString("yyyy-MM-ddTHH:mm:ss")
+            : null;
+    }
+}

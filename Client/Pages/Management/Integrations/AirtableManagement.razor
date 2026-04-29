@@ -1,0 +1,596 @@
+@page "/management/integrations/airtable"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject IAirtableIntegrationService AirtableService
+@inject IManagementService ManagementService
+
+<div class="atm-page">
+
+    <!-- Top bar -->
+    <div class="atm-topbar">
+        <div class="atm-topbar-start">
+            <button class="atm-back-btn" @onclick='() => Nav.NavigateTo("/management/integrations")' title="חזרה לאינטגרציות">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="atm-breadcrumb">ניהול · אינטגרציות</div>
+                <h1 class="atm-title">Airtable</h1>
+            </div>
+        </div>
+        <div class="atm-topbar-end">
+            <button class="atm-btn atm-btn-primary" @onclick="OpenCreate">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                תצורה חדשה
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="atm-toast @(_messageError ? "atm-toast-error" : "")">@_message</div>
+    }
+
+    @if (_loading)
+    {
+        <div class="atm-state">טוען תצורות…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="atm-state atm-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת התצורות. נסו לרענן את הדף.
+        </div>
+    }
+    else if (_configs.Count == 0)
+    {
+        <div class="atm-state">
+            <p>אין עדיין תצורות Airtable. לחצו על "תצורה חדשה" כדי להתחיל.</p>
+        </div>
+    }
+    else
+    {
+        <div class="atm-list">
+            @foreach (var c in _configs)
+            {
+                <article class="atm-card">
+                    <header class="atm-card-head">
+                        <div class="atm-card-head-main">
+                            <h2 class="atm-card-title">@(string.IsNullOrWhiteSpace(c.Name) ? "Airtable" : c.Name)</h2>
+                            @if (!string.IsNullOrWhiteSpace(c.AcademicYear))
+                            {
+                                <span class="atm-card-year">מחזור @c.AcademicYear</span>
+                            }
+                            <span class="atm-status @(c.IsActive ? "atm-status-on" : "atm-status-off")">
+                                @(c.IsActive ? "פעיל" : "מושבת")
+                            </span>
+                        </div>
+                    </header>
+
+                    <div class="atm-card-meta">
+                        <div class="atm-meta-item">
+                            <span class="atm-meta-label">Base ID</span>
+                            <span class="atm-meta-value atm-mono">@(string.IsNullOrWhiteSpace(c.BaseId) ? "—" : c.BaseId)</span>
+                        </div>
+                        <div class="atm-meta-item">
+                            <span class="atm-meta-label">טבלת פרויקטים</span>
+                            <span class="atm-meta-value">@(string.IsNullOrWhiteSpace(c.ProjectsTable) ? "—" : c.ProjectsTable)</span>
+                        </div>
+                        <div class="atm-meta-item">
+                            <span class="atm-meta-label">טוקן</span>
+                            <span class="atm-meta-value atm-mono">
+                                @(c.HasToken ? c.TokenMasked : "לא הוגדר")
+                            </span>
+                        </div>
+                        <div class="atm-meta-item">
+                            <span class="atm-meta-label">בדיקה אחרונה</span>
+                            <span class="atm-meta-value">@FormatDateOrEmpty(c.LastTestedAt) @StatusSuffix(c.LastTestStatus)</span>
+                        </div>
+                        <div class="atm-meta-item">
+                            <span class="atm-meta-label">ייבוא אחרון</span>
+                            <span class="atm-meta-value">@FormatDateOrEmpty(c.LastImportAt)</span>
+                        </div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(c.LastImportSummary))
+                    {
+                        <div class="atm-card-summary">@c.LastImportSummary</div>
+                    }
+
+                    <div class="atm-card-actions">
+                        <button class="atm-btn atm-btn-primary"
+                                @onclick="@(() => OpenEdit(c.Id))">
+                            <span class="oi oi-pencil" aria-hidden="true"></span>
+                            עריכה
+                        </button>
+                        <button class="atm-btn atm-btn-secondary"
+                                disabled="@(_busyId == c.Id)"
+                                @onclick="@(() => TestConnection(c.Id))">
+                            <span class="oi oi-pulse" aria-hidden="true"></span>
+                            בדיקת חיבור
+                        </button>
+                        <button class="atm-btn atm-btn-secondary"
+                                disabled="@(_busyId == c.Id || !c.HasToken || !c.IsActive)"
+                                @onclick="@(() => RunImport(c.Id))">
+                            <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                            ייבוא מאיירטייבל
+                        </button>
+                        <button class="atm-btn @(c.IsActive ? "atm-btn-danger" : "atm-btn-secondary")"
+                                disabled="@(_busyId == c.Id)"
+                                @onclick="@(() => ToggleActive(c))">
+                            <span class="oi @(c.IsActive ? "oi-power-standby" : "oi-bolt")" aria-hidden="true"></span>
+                            @(c.IsActive ? "השבת" : "הפעל")
+                        </button>
+                    </div>
+                </article>
+            }
+        </div>
+    }
+</div>
+
+<!-- ────────────────────────────────────────────────────────────────────
+     Edit / create modal — full settings + field mappings
+     ──────────────────────────────────────────────────────────────────── -->
+@if (_showEditor)
+{
+    <div class="atm-modal-backdrop" @onclick="CloseEditor"></div>
+    <div class="atm-modal" dir="rtl" role="dialog" aria-modal="true">
+        <header class="atm-modal-head">
+            <h2 class="atm-modal-title">@(_editingId is null ? "תצורת Airtable חדשה" : "עריכת תצורת Airtable")</h2>
+            <button class="atm-icon-btn" @onclick="CloseEditor" title="סגירה">×</button>
+        </header>
+
+        @if (!string.IsNullOrEmpty(_editorError))
+        {
+            <div class="atm-toast atm-toast-error">@_editorError</div>
+        }
+
+        <div class="atm-grid">
+
+            <!-- Academic year -->
+            <div class="atm-field">
+                <label class="atm-label">מחזור אקדמי <span class="atm-req">*</span></label>
+                <select class="atm-input" @bind="_form.AcademicYearId">
+                    <option value="0">— בחר —</option>
+                    @foreach (var y in _years)
+                    {
+                        <option value="@y.Id">@y.Name @(y.IsCurrent ? "(נוכחי)" : "")</option>
+                    }
+                </select>
+            </div>
+
+            <!-- Name -->
+            <div class="atm-field">
+                <label class="atm-label">שם תצורה</label>
+                <input class="atm-input" @bind="_form.Name" maxlength="80" placeholder="לדוגמה: Airtable 2026-2027" />
+            </div>
+
+            <!-- Token -->
+            <div class="atm-field atm-field-full">
+                <label class="atm-label">
+                    Personal Access Token
+                    @if (_editingId is not null && _existingHasToken && string.IsNullOrEmpty(_form.ApiToken))
+                    {
+                        <span class="atm-secret-set">
+                            <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                            מוגדר (@_existingTokenMasked) — השאר ריק לשמירת הטוקן הקיים
+                        </span>
+                    }
+                    else if (_editingId is null)
+                    {
+                        <span class="atm-req">*</span>
+                    }
+                </label>
+                <input class="atm-input atm-mono"
+                       type="password"
+                       autocomplete="new-password"
+                       @bind="_form.ApiToken"
+                       placeholder="@(_existingHasToken ? "••••••••• (שמור קיים)" : "pat••••••••••••")" />
+                <span class="atm-hint">הטוקן נשמר בצד שרת בלבד ולא יוצג שוב במלואו.</span>
+            </div>
+
+            <!-- Base + tables -->
+            <div class="atm-field">
+                <label class="atm-label">Base ID <span class="atm-req">*</span></label>
+                <input class="atm-input atm-mono" @bind="_form.BaseId" placeholder="appXXXXXXXXXXXX" />
+            </div>
+
+            <div class="atm-field">
+                <label class="atm-label">טבלת פרויקטים <span class="atm-req">*</span></label>
+                <input class="atm-input" @bind="_form.ProjectsTable" placeholder="הצעות לפרוייקטים" />
+            </div>
+            <div class="atm-field">
+                <label class="atm-label">תצוגה לפרויקטים</label>
+                <input class="atm-input" @bind="_form.ProjectsView" placeholder="הצגה לסטודנטים (אופציונלי)" />
+            </div>
+
+            <div class="atm-field">
+                <label class="atm-label">טבלת מנטורים</label>
+                <input class="atm-input" @bind="_form.MentorsTable" placeholder="(אופציונלי)" />
+            </div>
+            <div class="atm-field">
+                <label class="atm-label">תצוגת מנטורים</label>
+                <input class="atm-input" @bind="_form.MentorsView" placeholder="(אופציונלי)" />
+            </div>
+
+            <div class="atm-field">
+                <label class="atm-label">טבלת סטודנטים</label>
+                <input class="atm-input" @bind="_form.StudentsTable" placeholder="(אופציונלי)" />
+            </div>
+            <div class="atm-field">
+                <label class="atm-label">תצוגת סטודנטים</label>
+                <input class="atm-input" @bind="_form.StudentsView" placeholder="(אופציונלי)" />
+            </div>
+
+            <div class="atm-field">
+                <label class="atm-label">טבלת צוותים</label>
+                <input class="atm-input" @bind="_form.TeamsTable" placeholder="(אופציונלי)" />
+            </div>
+            <div class="atm-field">
+                <label class="atm-label">תצוגת צוותים</label>
+                <input class="atm-input" @bind="_form.TeamsView" placeholder="(אופציונלי)" />
+            </div>
+
+            <div class="atm-field">
+                <label class="atm-check-row">
+                    <input type="checkbox" @bind="_form.StudentVisibleOnly" />
+                    <span>סנן רק רשומות עם IncludeInPool</span>
+                </label>
+            </div>
+            <div class="atm-field">
+                <label class="atm-check-row">
+                    <input type="checkbox" @bind="_form.IsActive" />
+                    <span>תצורה פעילה למחזור הזה</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Field mappings -->
+        @if (_editingId is not null)
+        {
+            <h3 class="atm-section-title">מיפויי שדות (פרויקטים)</h3>
+            <p class="atm-section-note">קישרו את שמות השדות הפנימיים לעמודות של ה-Airtable Base. שדות חובה מסומנים בכוכבית.</p>
+
+            <div class="atm-mappings">
+                <div class="atm-mapping-head">
+                    <span>שדה פנימי</span>
+                    <span>שם בעמודה ב-Airtable</span>
+                    <span>חובה</span>
+                </div>
+                @for (int i = 0; i < _mappings.Count; i++)
+                {
+                    var idx = i;
+                    var m   = _mappings[idx];
+                    <div class="atm-mapping-row">
+                        <span class="atm-mapping-local">
+                            <strong>@LocalLabel(m.LocalFieldName)</strong>
+                            <span class="atm-mapping-key">@m.LocalFieldName</span>
+                        </span>
+                        <input class="atm-input" @bind="m.AirtableFieldName" placeholder="@m.LocalFieldName" />
+                        <label class="atm-check-row">
+                            <input type="checkbox" @bind="m.IsRequired" />
+                        </label>
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <p class="atm-section-note">מיפויי השדות יווצרו אוטומטית עם ברירות מחדל לאחר השמירה הראשונה.</p>
+        }
+
+        <div class="atm-modal-actions">
+            <button class="atm-btn atm-btn-secondary" @onclick="CloseEditor" disabled="@_saving">ביטול</button>
+            <button class="atm-btn atm-btn-primary" @onclick="SaveAll" disabled="@_saving">
+                @(_saving ? "שומר…" : "שמירה")
+            </button>
+        </div>
+    </div>
+}
+
+<!-- Import results modal -->
+@if (_lastImport is not null)
+{
+    <div class="atm-modal-backdrop" @onclick="CloseImportResult"></div>
+    <div class="atm-modal atm-modal-narrow" dir="rtl">
+        <header class="atm-modal-head">
+            <h2 class="atm-modal-title">סיכום ייבוא</h2>
+            <button class="atm-icon-btn" @onclick="CloseImportResult">×</button>
+        </header>
+        @if (!string.IsNullOrWhiteSpace(_lastImport.SyncError))
+        {
+            <div class="atm-toast atm-toast-error">@_lastImport.SyncError</div>
+        }
+        else
+        {
+            <ul class="atm-import-stats">
+                <li>נטענו: <strong>@_lastImport.TotalFetched</strong></li>
+                <li>נוספו: <strong>@_lastImport.Inserted</strong></li>
+                <li>עודכנו: <strong>@_lastImport.Updated</strong></li>
+                <li>נכשלו: <strong>@_lastImport.Failed</strong></li>
+            </ul>
+            @if (_lastImport.Errors.Count > 0)
+            {
+                <details class="atm-error-details">
+                    <summary>פרטי שגיאות (@_lastImport.Errors.Count)</summary>
+                    <ul class="atm-error-list">
+                        @foreach (var err in _lastImport.Errors.Take(20))
+                        {
+                            <li>@err</li>
+                        }
+                    </ul>
+                </details>
+            }
+        }
+        <div class="atm-modal-actions">
+            <button class="atm-btn atm-btn-primary" @onclick="CloseImportResult">סגור</button>
+        </div>
+    </div>
+}
+
+@code {
+    private List<AirtableIntegrationListItemDto> _configs = new();
+    private List<AcademicYearDto>                _years   = new();
+
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    private string? _message;
+    private bool    _messageError;
+
+    // Editor state
+    private bool _showEditor;
+    private int? _editingId;
+    private SaveAirtableIntegrationRequest _form = new();
+    private List<AirtableFieldMappingDto>  _mappings = new();
+    private bool   _existingHasToken;
+    private string _existingTokenMasked = "";
+    private bool   _saving;
+    private string? _editorError;
+
+    // Action state
+    private int? _busyId;
+
+    // Import results modal
+    private AirtableSyncResultDto? _lastImport;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Reload();
+        _years = (await ManagementService.GetAcademicYearsAsync()) ?? new();
+    }
+
+    private async Task Reload()
+    {
+        _loading = true; _loadError = false;
+        var data = await AirtableService.GetAllAsync();
+        if (data is null) _loadError = true;
+        else _configs = data;
+        _loading = false;
+    }
+
+    private void OpenCreate()
+    {
+        _editingId = null;
+        _form = new SaveAirtableIntegrationRequest
+        {
+            AcademicYearId     = _years.FirstOrDefault(y => y.IsCurrent)?.Id ?? _years.FirstOrDefault()?.Id ?? 0,
+            Name               = "",
+            ApiToken           = "",
+            BaseId             = "",
+            ProjectsTable      = "",
+            ProjectsView       = "",
+            StudentVisibleOnly = true,
+            IsActive           = true
+        };
+        _existingHasToken    = false;
+        _existingTokenMasked = "";
+        _mappings.Clear();
+        _editorError = null;
+        _showEditor  = true;
+    }
+
+    private async Task OpenEdit(int id)
+    {
+        var detail = await AirtableService.GetAsync(id);
+        if (detail is null)
+        {
+            _messageError = true;
+            _message = "התצורה לא נמצאה";
+            return;
+        }
+        _editingId = id;
+        _form = new SaveAirtableIntegrationRequest
+        {
+            AcademicYearId     = detail.AcademicYearId,
+            Name               = detail.Name,
+            ApiToken           = "",  // never display existing token
+            BaseId             = detail.BaseId,
+            ProjectsTable      = detail.ProjectsTable,
+            ProjectsView       = detail.ProjectsView,
+            MentorsTable       = detail.MentorsTable,
+            MentorsView        = detail.MentorsView,
+            StudentsTable      = detail.StudentsTable,
+            StudentsView       = detail.StudentsView,
+            TeamsTable         = detail.TeamsTable,
+            TeamsView          = detail.TeamsView,
+            StudentVisibleOnly = detail.StudentVisibleOnly,
+            IsActive           = detail.IsActive
+        };
+        _existingHasToken    = detail.HasToken;
+        _existingTokenMasked = detail.TokenMasked;
+        _mappings = detail.Mappings ?? new();
+        _editorError = null;
+        _showEditor  = true;
+    }
+
+    private void CloseEditor() => _showEditor = false;
+
+    private async Task SaveAll()
+    {
+        _saving = true;
+        _editorError = null;
+
+        try
+        {
+            if (_editingId is null)
+            {
+                var newId = await AirtableService.CreateAsync(_form);
+                if (newId is null)
+                {
+                    _editorError = "שמירה נכשלה. בדקו שכל שדות החובה מולאו (Token, Base ID, טבלת פרויקטים).";
+                    return;
+                }
+                _editingId = newId;
+                _message = "התצורה נוצרה";
+                _messageError = false;
+            }
+            else
+            {
+                bool ok = await AirtableService.UpdateAsync(_editingId.Value, _form);
+                if (!ok)
+                {
+                    _editorError = "עדכון התצורה נכשל. בדקו את הפרטים.";
+                    return;
+                }
+
+                if (_mappings.Count > 0)
+                {
+                    bool mapsOk = await AirtableService.SaveMappingsAsync(_editingId.Value, _mappings);
+                    if (!mapsOk)
+                    {
+                        _editorError = "התצורה נשמרה אך שמירת המיפויים נכשלה.";
+                        return;
+                    }
+                }
+                _message = "התצורה נשמרה";
+                _messageError = false;
+            }
+
+            _showEditor = false;
+            await Reload();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task TestConnection(int id)
+    {
+        _busyId = id;
+        var res = await AirtableService.TestAsync(id);
+        _busyId = null;
+        if (res is null)
+        {
+            _messageError = true;
+            _message = "בדיקת החיבור לא הצליחה לרוץ";
+        }
+        else
+        {
+            _messageError = !res.Success;
+            _message = res.Success
+                ? $"{res.Message} ({res.SampleCount ?? 0} רשומות לדוגמה)"
+                : res.Message;
+        }
+        await Reload();
+    }
+
+    private async Task RunImport(int id)
+    {
+        _busyId = id;
+        var res = await AirtableService.ImportAsync(id);
+        _busyId = null;
+        if (res is null)
+        {
+            _messageError = true;
+            _message = "פעולת הייבוא נכשלה";
+        }
+        else
+        {
+            _lastImport = res;
+            _messageError = !string.IsNullOrEmpty(res.SyncError);
+            _message = res.SyncError ??
+                $"הייבוא הסתיים — {res.Inserted} נוספו, {res.Updated} עודכנו, {res.Failed} נכשלו";
+        }
+        await Reload();
+    }
+
+    private async Task ToggleActive(AirtableIntegrationListItemDto c)
+    {
+        var detail = await AirtableService.GetAsync(c.Id);
+        if (detail is null) return;
+        var req = new SaveAirtableIntegrationRequest
+        {
+            AcademicYearId     = detail.AcademicYearId,
+            Name               = detail.Name,
+            ApiToken           = "",  // keep existing
+            BaseId             = detail.BaseId,
+            ProjectsTable      = detail.ProjectsTable,
+            ProjectsView       = detail.ProjectsView,
+            MentorsTable       = detail.MentorsTable,
+            MentorsView        = detail.MentorsView,
+            StudentsTable      = detail.StudentsTable,
+            StudentsView       = detail.StudentsView,
+            TeamsTable         = detail.TeamsTable,
+            TeamsView          = detail.TeamsView,
+            StudentVisibleOnly = detail.StudentVisibleOnly,
+            IsActive           = !c.IsActive
+        };
+        _busyId = c.Id;
+        bool ok = await AirtableService.UpdateAsync(c.Id, req);
+        _busyId = null;
+        if (ok)
+        {
+            _messageError = false;
+            _message = c.IsActive ? "התצורה הושבתה" : "התצורה הופעלה";
+            await Reload();
+        }
+        else
+        {
+            _messageError = true;
+            _message = "שינוי הסטטוס נכשל";
+        }
+    }
+
+    private void CloseImportResult() => _lastImport = null;
+
+    private static string LocalLabel(string key) => key switch
+    {
+        AirtableProjectFields.ProjectNumber    => "מספר פרויקט",
+        AirtableProjectFields.Title            => "שם הפרויקט",
+        AirtableProjectFields.OrganizationName => "שם הארגון",
+        AirtableProjectFields.OrganizationType => "סוג הארגון",
+        AirtableProjectFields.ProjectTopic     => "נושא הפרויקט",
+        AirtableProjectFields.Description      => "תיאור",
+        AirtableProjectFields.TargetAudience   => "קהל יעד",
+        AirtableProjectFields.Goals            => "מטרות",
+        AirtableProjectFields.Contents         => "תכנים",
+        AirtableProjectFields.ContactPerson    => "איש קשר",
+        AirtableProjectFields.ContactRole      => "תפקיד איש קשר",
+        AirtableProjectFields.ContactEmail     => "מייל איש קשר",
+        AirtableProjectFields.ContactPhone     => "טלפון איש קשר",
+        AirtableProjectFields.IncludeInPool    => "להכניס למאגר (סינון)",
+        AirtableProjectFields.SubmittedAt      => "תאריך הגשה",
+        AirtableProjectFields.ProjectType      => "סוג הפרויקט",
+        AirtableProjectFields.Status           => "סטטוס",
+        AirtableProjectFields.Priority         => "עדיפות",
+        _ => key
+    };
+
+    private static string FormatDateOrEmpty(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "—";
+        if (DateTime.TryParse(raw, out var dt))
+            return dt.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+        return raw;
+    }
+
+    private static string StatusSuffix(string? status) => status switch
+    {
+        "Success" => "✓",
+        "Failed"  => "✗",
+        _         => ""
+    };
+}

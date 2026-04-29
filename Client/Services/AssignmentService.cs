@@ -3,10 +3,12 @@ using AuthWithAdmin.Shared.AuthSharedModels;
 
 namespace AuthWithAdmin.Client.Services;
 
+public record AssignmentSubmitResult(bool Ok, string? Error);
+
 public interface IAssignmentService
 {
-    Task<AssignmentContextDto?> GetContextAsync();
-    Task<bool>                  SubmitAsync(SubmitAssignmentRequest req);
+    Task<AssignmentContextDto?>  GetContextAsync();
+    Task<AssignmentSubmitResult> SubmitAsync(SubmitAssignmentRequest req);
 }
 
 public class AssignmentService : IAssignmentService
@@ -24,13 +26,19 @@ public class AssignmentService : IAssignmentService
         catch { return null; }
     }
 
-    public async Task<bool> SubmitAsync(SubmitAssignmentRequest req)
+    public async Task<AssignmentSubmitResult> SubmitAsync(SubmitAssignmentRequest req)
     {
         try
         {
             var resp = await _http.PostAsJsonAsync("api/assignment/submit", req);
-            return resp.IsSuccessStatusCode;
+            if (resp.IsSuccessStatusCode) return new AssignmentSubmitResult(true, null);
+
+            string body = await resp.Content.ReadAsStringAsync();
+            return new AssignmentSubmitResult(false, string.IsNullOrWhiteSpace(body) ? null : body);
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            return new AssignmentSubmitResult(false, ex.Message);
+        }
     }
 }

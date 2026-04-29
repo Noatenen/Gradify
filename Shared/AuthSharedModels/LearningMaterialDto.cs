@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 namespace AuthWithAdmin.Shared.AuthSharedModels;
 
 /// <summary>Discriminator constants for LearningMaterials.MaterialType.</summary>

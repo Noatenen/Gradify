@@ -10,7 +10,7 @@ namespace AuthWithAdmin.Server.Controllers;
 [Route("api/student")]
 [ApiController]
 [ServiceFilter(typeof(AuthCheck))]
-[Authorize]
+[Authorize(Roles = Roles.Student)]
 public class StudentController : ControllerBase
 {
     private readonly DbRepository _db;

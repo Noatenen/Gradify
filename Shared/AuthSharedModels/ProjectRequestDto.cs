@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 namespace AuthWithAdmin.Shared.AuthSharedModels;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +128,17 @@ public class ProjectRequestRowDto
 
     public string?  AssignedToName   { get; set; }
     public int      AttachmentCount  { get; set; }
+
+    // ── Team quick-info (rendered in the management list popover) ────────────
+    // Populated server-side from Teams / TeamMembers / ProjectMentors /
+    // ProjectTypes so the client can render the popover without extra calls.
+    // Names and emails are kept as parallel lists ordered identically.
+    public string?       TeamName       { get; set; }
+    public string?       TrackName      { get; set; }
+    public List<string>  StudentNames   { get; set; } = new();
+    public List<string>  StudentEmails  { get; set; } = new();
+    public List<string>  MentorNames    { get; set; } = new();
+    public List<string>  MentorEmails   { get; set; } = new();
 }
 
 /// <summary>

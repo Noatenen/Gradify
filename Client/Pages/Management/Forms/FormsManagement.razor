@@ -1,0 +1,160 @@
+@page "/management/forms"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@inject NavigationManager Nav
+@inject IFormsManagementService FormsService
+
+<div class="fm-page">
+
+    <!-- Top bar -->
+    <div class="fm-topbar">
+        <div class="fm-topbar-start">
+            <button class="fm-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))" title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="fm-breadcrumb">ניהול</div>
+                <h1 class="fm-title">טפסים</h1>
+            </div>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="fm-state">טוען טפסים…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="fm-state fm-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת הטפסים. נסו לרענן את הדף.
+        </div>
+    }
+    else if (_forms.Count == 0)
+    {
+        <div class="fm-state">
+            לא נמצאו טפסים.
+        </div>
+    }
+    else
+    {
+        @if (!string.IsNullOrEmpty(_actionMessage))
+        {
+            <div class="fm-toast @(_actionError ? "fm-toast-error" : "")">@_actionMessage</div>
+        }
+
+        <div class="fm-list">
+            @foreach (var f in _forms)
+            {
+                <article class="fm-card">
+                    <div class="fm-card-head">
+                        <div class="fm-card-head-main">
+                            <h2 class="fm-card-title">@f.Name</h2>
+                            @if (!string.IsNullOrWhiteSpace(f.AcademicYear))
+                            {
+                                <span class="fm-card-year">מחזור @f.AcademicYear</span>
+                            }
+                        </div>
+                        <span class="fm-status @StatusClass(f.Status)">@StatusLabel(f.Status)</span>
+                    </div>
+
+                    <div class="fm-card-meta">
+                        <div class="fm-meta-item">
+                            <span class="fm-meta-label">פתיחה</span>
+                            <span class="fm-meta-value">@FormatDateOrEmpty(f.OpensAt)</span>
+                        </div>
+                        <div class="fm-meta-item">
+                            <span class="fm-meta-label">סגירה</span>
+                            <span class="fm-meta-value">@FormatDateOrEmpty(f.ClosesAt)</span>
+                        </div>
+                        <div class="fm-meta-item">
+                            <span class="fm-meta-label">הגשות</span>
+                            <span class="fm-meta-value">@f.SubmissionCount</span>
+                        </div>
+                    </div>
+
+                    <div class="fm-card-actions">
+                        <button class="fm-btn fm-btn-primary"
+                                @onclick="@(() => Nav.NavigateTo($"/management/forms/{f.Id}"))">
+                            <span class="oi oi-pencil" aria-hidden="true"></span>
+                            עריכה
+                        </button>
+                        <button class="fm-btn fm-btn-secondary"
+                                disabled="@_busyIds.Contains(f.Id)"
+                                @onclick="@(() => ToggleOpen(f))">
+                            <span class="oi @(f.IsOpen ? "oi-lock-locked" : "oi-lock-unlocked")" aria-hidden="true"></span>
+                            @(f.IsOpen ? "סגור טופס" : "פתח טופס")
+                        </button>
+                        <button class="fm-btn fm-btn-secondary"
+                                @onclick="@(() => Nav.NavigateTo("/assignments"))">
+                            <span class="oi oi-document" aria-hidden="true"></span>
+                            צפייה בהגשות
+                        </button>
+                    </div>
+                </article>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private List<FormListItemDto> _forms = new();
+    private bool _loading = true;
+    private bool _loadError;
+    private readonly HashSet<int> _busyIds = new();
+    private string? _actionMessage;
+    private bool    _actionError;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _loading = true; _loadError = false;
+        var data = await FormsService.GetFormsAsync();
+        if (data is null) _loadError = true;
+        else _forms = data;
+        _loading = false;
+    }
+
+    private async Task ToggleOpen(FormListItemDto f)
+    {
+        _busyIds.Add(f.Id);
+        var ok = await FormsService.ToggleOpenAsync(f.Id);
+        _busyIds.Remove(f.Id);
+        if (ok)
+        {
+            _actionError = false;
+            _actionMessage = f.IsOpen ? "הטופס נסגר" : "הטופס נפתח";
+            await Reload();
+        }
+        else
+        {
+            _actionError = true;
+            _actionMessage = "פעולת השינוי נכשלה.";
+        }
+    }
+
+    private static string StatusLabel(string status) => status switch
+    {
+        FormStatuses.Draft  => "טיוטה",
+        FormStatuses.Open   => "פתוח",
+        FormStatuses.Closed => "סגור",
+        _                   => status
+    };
+
+    private static string StatusClass(string status) => status switch
+    {
+        FormStatuses.Open   => "fm-status-open",
+        FormStatuses.Closed => "fm-status-closed",
+        _                   => "fm-status-draft"
+    };
+
+    private static string FormatDateOrEmpty(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "—";
+        if (DateTime.TryParse(raw, out var dt))
+            return dt.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+        return raw;
+    }
+}

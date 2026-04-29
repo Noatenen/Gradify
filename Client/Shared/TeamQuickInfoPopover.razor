@@ -1,0 +1,298 @@
+@inject IJSRuntime JS
+
+@*
+   TeamQuickInfoPopover
+   ─────────────────────
+   Click-to-open popover that surfaces quick contact info for a team:
+     • Team name + project name + track
+     • Each student with email + per-row copy button
+     • Each mentor  with email + per-row copy button
+     • "Copy all emails" action
+   Rendered with position: fixed and a transparent backdrop so it floats
+   above scroll containers and closes on outside click. The trigger consumes
+   its own click — wrap any clickable cell with `@onclick:stopPropagation`
+   in the parent so the surrounding row action does not fire.
+*@
+
+<span class="tqp-anchor"
+      @ref="_anchorRef"
+      @onclick="ToggleAsync"
+      @onclick:stopPropagation="true">
+    @ChildContent
+</span>
+
+@if (_visible)
+{
+    <div class="tqp-portal-host" @ref="_portalRef">
+    <div class="tqp-backdrop" @onclick="Close"></div>
+
+    <div class="tqp-popover"
+         dir="rtl"
+         style="@PositionStyle"
+         @onclick:stopPropagation="true">
+
+        <header class="tqp-header">
+            <div class="tqp-header-text">
+                <span class="oi oi-people tqp-header-icon" aria-hidden="true"></span>
+                <span class="tqp-header-title">פרטי צוות</span>
+            </div>
+            <button type="button"
+                    class="tqp-close-btn"
+                    title="סגירה"
+                    @onclick="Close">
+                <span class="oi oi-x" aria-hidden="true"></span>
+            </button>
+        </header>
+
+        <div class="tqp-body">
+
+            <!-- ── Team summary ────────────────────────────────────────────── -->
+            <section class="tqp-section">
+                <div class="tqp-summary-row">
+                    <span class="tqp-summary-label">צוות:</span>
+                    <span class="tqp-summary-value @MutedClass(TeamName)">@DisplayOrFallback(TeamName)</span>
+                </div>
+                <div class="tqp-summary-row">
+                    <span class="tqp-summary-label">פרויקט:</span>
+                    <span class="tqp-summary-value @MutedClass(ProjectTitle)">@DisplayOrFallback(ProjectTitle)</span>
+                </div>
+                <div class="tqp-summary-row">
+                    <span class="tqp-summary-label">מסלול:</span>
+                    <span class="tqp-summary-value @MutedClass(TrackName)">@DisplayOrFallback(TrackName)</span>
+                </div>
+            </section>
+
+            <!-- ── Students ───────────────────────────────────────────────── -->
+            <section class="tqp-section">
+                <div class="tqp-section-title">
+                    <span class="oi oi-person tqp-section-icon" aria-hidden="true"></span>
+                    סטודנטים
+                </div>
+                @if (StudentNames is { Count: > 0 })
+                {
+                    <ul class="tqp-people">
+                        @for (int i = 0; i < StudentNames.Count; i++)
+                        {
+                            var name  = StudentNames[i];
+                            var email = i < (StudentEmails?.Count ?? 0) ? StudentEmails![i] : "";
+                            @PersonRow(name, email)
+                        }
+                    </ul>
+                }
+                else
+                {
+                    <div class="tqp-empty">לא הוגדרו סטודנטים לצוות זה</div>
+                }
+            </section>
+
+            <!-- ── Mentors ────────────────────────────────────────────────── -->
+            <section class="tqp-section">
+                <div class="tqp-section-title">
+                    <span class="oi oi-badge tqp-section-icon" aria-hidden="true"></span>
+                    מנטורים
+                </div>
+                @if (MentorNames is { Count: > 0 })
+                {
+                    <ul class="tqp-people">
+                        @for (int i = 0; i < MentorNames.Count; i++)
+                        {
+                            var name  = MentorNames[i];
+                            var email = i < (MentorEmails?.Count ?? 0) ? MentorEmails![i] : "";
+                            @PersonRow(name, email)
+                        }
+                    </ul>
+                }
+                else
+                {
+                    <div class="tqp-empty">לא הוגדרו מנטורים</div>
+                }
+            </section>
+
+        </div>
+
+        @if (ShowCopyAll)
+        {
+            <footer class="tqp-footer">
+                <button type="button"
+                        class="tqp-copy-all-btn"
+                        disabled="@(!HasAnyEmail)"
+                        title="@(HasAnyEmail ? "העתק את כל כתובות המייל" : "אין כתובות מייל להעתקה")"
+                        @onclick="CopyAllEmailsAsync">
+                    <span class="oi oi-clipboard" aria-hidden="true"></span>
+                    <span>@CopyAllLabel</span>
+                </button>
+            </footer>
+        }
+    </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string?       TeamName       { get; set; }
+    [Parameter] public string?       ProjectTitle   { get; set; }
+    [Parameter] public string?       TrackName      { get; set; }
+    [Parameter] public List<string>? StudentNames   { get; set; }
+    [Parameter] public List<string>? StudentEmails  { get; set; }
+    [Parameter] public List<string>? MentorNames    { get; set; }
+    [Parameter] public List<string>? MentorEmails   { get; set; }
+    /// <summary>
+    /// Show the bulk "copy all emails" footer button. Default: true (matches
+    /// the requests-management list behaviour). The sidebar usage sets this
+    /// to false so the popover stays compact under the user profile card.
+    /// </summary>
+    [Parameter] public bool          ShowCopyAll    { get; set; } = true;
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private const string FallbackText = "לא הוגדר";
+
+    private ElementReference _anchorRef;
+    private ElementReference _portalRef;
+    private bool   _visible;
+    private double _top;
+    private double _left;
+    private string _copiedKey = "";  // "all" | "<email>" — drives "הועתק" feedback
+    private bool   _allCopied;
+
+    /// <summary>
+    /// After every render where the popover is visible, re-parent its host
+    /// element directly under &lt;body&gt;. This breaks out of any ancestor
+    /// stacking context (e.g. the sidebar's position: sticky + overflow:hidden
+    /// panel) so the popover always floats above dashboard content.
+    /// gradify.portalToBody is a no-op when the element is already a body
+    /// child, so calling it on every render is cheap.
+    /// </summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_visible) return;
+        try { await JS.InvokeVoidAsync("gradify.portalToBody", _portalRef); }
+        catch { /* JS not ready / element gone — popover still renders inline */ }
+    }
+
+    private string PositionStyle =>
+        $"top: {_top.ToString(System.Globalization.CultureInfo.InvariantCulture)}px; " +
+        $"left: {_left.ToString(System.Globalization.CultureInfo.InvariantCulture)}px;";
+
+    private bool HasAnyEmail =>
+        (StudentEmails?.Any(e => !string.IsNullOrWhiteSpace(e)) ?? false) ||
+        (MentorEmails ?.Any(e => !string.IsNullOrWhiteSpace(e)) ?? false);
+
+    private string CopyAllLabel => _allCopied ? "הועתק!" : "העתק את כל המיילים";
+
+    private async Task ToggleAsync()
+    {
+        if (_visible) { Close(); return; }
+        await OpenAsync();
+    }
+
+    private async Task OpenAsync()
+    {
+        _copiedKey = "";
+        _allCopied = false;
+        try
+        {
+            var rect = await JS.InvokeAsync<BoundingRect?>("gradify.getBoundingRect", _anchorRef);
+            if (rect is not null)
+            {
+                const double popoverWidth = 320;
+                const double gap          = 8;
+                // Estimated height — used only to flip above when below would overflow.
+                const double estHeight    = 320;
+
+                double top = rect.Bottom + gap;
+                if (top + estHeight > rect.ViewportHeight && rect.Top - estHeight - gap > 0)
+                    top = rect.Top - estHeight - gap;
+
+                // RTL: align popover right edge with anchor right edge, then clamp.
+                double left = rect.Right - popoverWidth;
+                if (left < 8) left = 8;
+                if (left + popoverWidth > rect.ViewportWidth - 8)
+                    left = rect.ViewportWidth - popoverWidth - 8;
+
+                _top  = top;
+                _left = left;
+            }
+        }
+        catch { /* fall back to inline default — better than not opening at all */ }
+
+        _visible = true;
+    }
+
+    private void Close()
+    {
+        _visible   = false;
+        _copiedKey = "";
+        _allCopied = false;
+    }
+
+    private RenderFragment PersonRow(string name, string email) => __builder =>
+    {
+        bool   hasEmail   = !string.IsNullOrWhiteSpace(email);
+        bool   isCopied   = hasEmail && _copiedKey == email;
+        string copyTitle  = isCopied ? "הועתק!" : "העתק כתובת מייל";
+
+        <li class="tqp-person">
+            <div class="tqp-person-name">@(string.IsNullOrWhiteSpace(name) ? FallbackText : name)</div>
+            <div class="tqp-person-email-row">
+                @if (hasEmail)
+                {
+                    <span class="tqp-person-email" title="@email">@email</span>
+                    <button type="button"
+                            class="tqp-copy-btn @(isCopied ? "tqp-copy-btn--done" : "")"
+                            title="@copyTitle"
+                            @onclick="@(() => CopyEmailAsync(email))">
+                        <span class="oi @(isCopied ? "oi-check" : "oi-clipboard")" aria-hidden="true"></span>
+                    </button>
+                }
+                else
+                {
+                    <span class="tqp-person-email tqp-person-email--muted">@FallbackText</span>
+                }
+            </div>
+        </li>
+    };
+
+    private async Task CopyEmailAsync(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return;
+        var ok = await TryCopyAsync(email);
+        if (ok) { _copiedKey = email; _allCopied = false; }
+    }
+
+    private async Task CopyAllEmailsAsync()
+    {
+        var all = new List<string>();
+        if (StudentEmails is not null) all.AddRange(StudentEmails.Where(e => !string.IsNullOrWhiteSpace(e)));
+        if (MentorEmails  is not null) all.AddRange(MentorEmails .Where(e => !string.IsNullOrWhiteSpace(e)));
+        if (all.Count == 0) return;
+
+        var ok = await TryCopyAsync(string.Join(", ", all));
+        if (ok) { _allCopied = true; _copiedKey = "all"; }
+    }
+
+    private async Task<bool> TryCopyAsync(string text)
+    {
+        try
+        {
+            return await JS.InvokeAsync<bool>("gradify.copyToClipboard", text);
+        }
+        catch { return false; }
+    }
+
+    private static string DisplayOrFallback(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? FallbackText : value!;
+
+    private static string MutedClass(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "tqp-summary-value--muted" : "";
+
+    private sealed class BoundingRect
+    {
+        public double Top            { get; set; }
+        public double Left           { get; set; }
+        public double Right          { get; set; }
+        public double Bottom         { get; set; }
+        public double Width          { get; set; }
+        public double Height         { get; set; }
+        public double ViewportWidth  { get; set; }
+        public double ViewportHeight { get; set; }
+    }
+}

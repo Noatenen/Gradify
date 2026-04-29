@@ -166,6 +166,10 @@ public class ProjectRequestsController : ControllerBase
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
     public async Task<IActionResult> GetAll(int authUserId)
     {
+        // Team-context fields (TeamName, TrackName, StudentNames, MentorName)
+        // are joined as scalar/CSV subqueries so the list still loads in a single
+        // round-trip — no N+1 — and the client can render the hover tooltip
+        // without additional API calls.
         const string sql = @"
             SELECT
                 r.Id,
@@ -181,17 +185,97 @@ public class ProjectRequestsController : ControllerBase
                 r.Status,
                 r.Priority,
                 a.FirstName || ' ' || a.LastName AS AssignedToName,
-                COUNT(att.Id)                    AS AttachmentCount
+                COUNT(att.Id)                    AS AttachmentCount,
+
+                t.TeamName                       AS TeamName,
+                pt.Name                          AS TrackName,
+                -- Each record is FullName<#>Email; records are joined by ||
+                -- so names and emails stay strictly paired regardless of
+                -- GROUP_CONCAT ordering, with two trivial split() calls.
+                (SELECT GROUP_CONCAT(
+                            su.FirstName || ' ' || su.LastName
+                            || '<#>' || COALESCE(su.Email, ''),
+                            '||')
+                 FROM   TeamMembers stm
+                 JOIN   users       su ON su.Id = stm.UserId
+                 WHERE  stm.TeamId   = t.Id
+                   AND  stm.IsActive = 1)        AS StudentDetailsCsv,
+                (SELECT GROUP_CONCAT(
+                            mu.FirstName || ' ' || mu.LastName
+                            || '<#>' || COALESCE(mu.Email, ''),
+                            '||')
+                 FROM   ProjectMentors pm
+                 JOIN   users          mu ON mu.Id = pm.UserId
+                 WHERE  pm.ProjectId = p.Id)     AS MentorDetailsCsv
             FROM   ProjectRequests r
             JOIN   Projects  p ON p.Id = r.ProjectId
+            LEFT JOIN Teams        t  ON t.Id  = p.TeamId
+            LEFT JOIN ProjectTypes pt ON pt.Id = p.ProjectTypeId
             JOIN   users     u ON u.Id = r.CreatedByUserId
             LEFT JOIN users  a ON a.Id = r.AssignedToUserId
             LEFT JOIN ProjectRequestAttachments att ON att.RequestId = r.Id
             GROUP  BY r.Id
             ORDER  BY r.CreatedAt DESC";
 
-        var rows = await _db.GetRecordsAsync<ProjectRequestRowDto>(sql);
-        return Ok(rows ?? Enumerable.Empty<ProjectRequestRowDto>());
+        var rows = (await _db.GetRecordsAsync<ProjectRequestRowWithTeam>(sql))?.ToList()
+                   ?? new List<ProjectRequestRowWithTeam>();
+
+        var result = rows.Select(MapToRowDto).ToList();
+        return Ok(result);
+    }
+
+    // Splits the GROUP_CONCAT CSV columns into the public DTO's list/string
+    // fields. '||' is the separator used in the SQL above so it survives names
+    // that contain commas.
+    private static ProjectRequestRowDto MapToRowDto(ProjectRequestRowWithTeam r)
+    {
+        var (studentNames, studentEmails) = SplitNameEmailPairs(r.StudentDetailsCsv);
+        var (mentorNames,  mentorEmails)  = SplitNameEmailPairs(r.MentorDetailsCsv);
+
+        return new ProjectRequestRowDto
+        {
+            Id              = r.Id,
+            RequestType     = r.RequestType,
+            Title           = r.Title,
+            ProjectId       = r.ProjectId,
+            ProjectNumber   = r.ProjectNumber,
+            ProjectTitle    = r.ProjectTitle,
+            CreatedByUserId = r.CreatedByUserId,
+            CreatedByName   = r.CreatedByName,
+            CreatedAt       = r.CreatedAt,
+            UpdatedAt       = r.UpdatedAt,
+            Status          = r.Status,
+            Priority        = r.Priority,
+            AssignedToName  = r.AssignedToName,
+            AttachmentCount = r.AttachmentCount,
+            TeamName        = string.IsNullOrWhiteSpace(r.TeamName)  ? null : r.TeamName,
+            TrackName       = string.IsNullOrWhiteSpace(r.TrackName) ? null : r.TrackName,
+            StudentNames    = studentNames,
+            StudentEmails   = studentEmails,
+            MentorNames     = mentorNames,
+            MentorEmails    = mentorEmails,
+        };
+    }
+
+    // Splits the GROUP_CONCAT result of "Name<#>Email||Name<#>Email|..." into
+    // two parallel lists. Pairs without a name are dropped; missing emails
+    // become empty strings so the client can render a "לא הוגדר" placeholder.
+    private static (List<string> Names, List<string> Emails) SplitNameEmailPairs(string? csv)
+    {
+        var names  = new List<string>();
+        var emails = new List<string>();
+        if (string.IsNullOrWhiteSpace(csv)) return (names, emails);
+
+        foreach (var record in csv.Split("||", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = record.Split("<#>", 2);
+            var name  = parts[0].Trim();
+            var email = parts.Length > 1 ? parts[1].Trim() : "";
+            if (name.Length == 0) continue;
+            names.Add(name);
+            emails.Add(email);
+        }
+        return (names, emails);
     }
 
     // ── GET /api/project-requests/{id} ────────────────────────────────────
@@ -774,6 +858,32 @@ public class ProjectRequestsController : ControllerBase
     }
 
     // ── Private row types ────────────────────────────────────────────────────
+
+    // Mirrors ProjectRequestRowDto plus the raw CSV team-info columns produced
+    // by the GROUP_CONCAT subqueries. Kept private so the public DTO stays
+    // clean (lists, not CSV strings) on the wire.
+    private sealed class ProjectRequestRowWithTeam
+    {
+        public int      Id               { get; set; }
+        public string   RequestType      { get; set; } = "";
+        public string   Title            { get; set; } = "";
+        public int      ProjectId        { get; set; }
+        public int      ProjectNumber    { get; set; }
+        public string   ProjectTitle     { get; set; } = "";
+        public int      CreatedByUserId  { get; set; }
+        public string   CreatedByName    { get; set; } = "";
+        public DateTime CreatedAt        { get; set; }
+        public DateTime UpdatedAt        { get; set; }
+        public string   Status           { get; set; } = RequestStatuses.New;
+        public string   Priority         { get; set; } = RequestPriorities.Normal;
+        public string?  AssignedToName   { get; set; }
+        public int      AttachmentCount  { get; set; }
+
+        public string?  TeamName          { get; set; }
+        public string?  TrackName         { get; set; }
+        public string?  StudentDetailsCsv { get; set; }
+        public string?  MentorDetailsCsv  { get; set; }
+    }
 
     private sealed class CurrentRequestRow
     {
