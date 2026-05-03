@@ -92,29 +92,38 @@ public class ProjectsController : ControllerBase
             mentorsSql, new { ProjectId = projectId });
 
         // ── 4. Milestones (3-table flatten) ───────────────────────────────────
-        // Merges: MilestoneTemplates → AcademicYearMilestones → ProjectMilestones
+        // Merges: MilestoneTemplates → AcademicYearMilestones → ProjectMilestones.
+        // Effective DueDate = COALESCE(team milestone override, AYM.DueDate).
         const string milestonesSql = @"
             SELECT  pm.Id          AS ProjectMilestoneId,
                     mt.Title,
                     mt.OrderIndex,
                     pm.Status,
-                    aym.DueDate,
+                    COALESCE(mo.OverrideDueDate, aym.DueDate) AS DueDate,
                     pm.CompletedAt
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                                                ON mo.TeamId             = @TeamId
+                                               AND mo.ProjectMilestoneId = pm.Id
             WHERE   pm.ProjectId = @ProjectId
             ORDER   BY mt.OrderIndex";
 
         var milestoneRows = await _db.GetRecordsAsync<MilestoneRow>(
-            milestonesSql, new { ProjectId = projectId });
+            milestonesSql, new { ProjectId = projectId, TeamId = teamId });
 
         // ── 5. Tasks (all, grouped into milestones below) ─────────────────────
+        // Effective DueDate priority chain (per-team only — globals are never
+        // mutated by the postponement/override flow):
+        //   1. TeamTaskDueDateOverrides       (per-task)
+        //   2. TeamMilestoneDueDateOverrides  (per-milestone, fallback)
+        //   3. Tasks.DueDate                  (global default)
         const string tasksSql = @"
             SELECT  t.Id,
                     t.Title,
                     t.Status,
-                    t.DueDate,
+                    COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     t.ProjectMilestoneId,
                     t.IsSubmission,
                     COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName,
@@ -132,11 +141,15 @@ public class ProjectsController : ControllerBase
                      ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt
             FROM    Tasks t
             LEFT JOIN Users u ON t.AssignedToUserId = u.Id
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                            ON tto.TeamId = @TeamId AND tto.TaskId = t.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                            ON mo.TeamId = @TeamId AND mo.ProjectMilestoneId = t.ProjectMilestoneId
             WHERE   t.ProjectId = @ProjectId
-            ORDER   BY t.DueDate";
+            ORDER   BY COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate)";
 
         var taskRows = await _db.GetRecordsAsync<TaskRow>(
-            tasksSql, new { ProjectId = projectId });
+            tasksSql, new { ProjectId = projectId, TeamId = teamId });
 
         // ── 6. Open requests ──────────────────────────────────────────────────
         // Reads from ProjectRequests (unified requests module).
@@ -249,6 +262,7 @@ public class ProjectsController : ControllerBase
             SELECT  p.Id                        AS ProjectId,
                     p.ProjectNumber,
                     p.Title                     AS ProjectTitle,
+                    t.Id                        AS TeamId,
                     t.TeamName                  AS TeamName,
                     pt.Name                     AS TrackName,
                     (SELECT GROUP_CONCAT(
@@ -282,35 +296,45 @@ public class ProjectsController : ControllerBase
             return Ok((ProjectContextDto?)null);
 
         int projectId = projectRow.ProjectId;
+        int teamId    = projectRow.TeamId;
         var (studentNames, studentEmails) = SplitNameEmailPairs(projectRow.StudentDetailsCsv);
         var (mentorNames,  mentorEmails)  = SplitNameEmailPairs(projectRow.MentorDetailsCsv);
 
         // ── 2. Milestones (for current-milestone + progress) ──────────────────
+        // Effective DueDate = COALESCE(team milestone override, AYM.DueDate).
         const string milestonesSql = @"
             SELECT  mt.Title,
                     pm.Status,
-                    aym.DueDate
+                    COALESCE(mo.OverrideDueDate, aym.DueDate) AS DueDate
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                                                ON mo.TeamId             = @TeamId
+                                               AND mo.ProjectMilestoneId = pm.Id
             WHERE   pm.ProjectId = @ProjectId
             ORDER   BY mt.OrderIndex";
 
         var milestones = (await _db.GetRecordsAsync<ContextMilestoneRow>(
-                milestonesSql, new { ProjectId = projectId }))
+                milestonesSql, new { ProjectId = projectId, TeamId = teamId }))
             .ToList();
 
         // ── 3. Tasks (for task counts + next open task) ───────────────────────
+        // Effective DueDate priority: per-task override → per-milestone override → global.
         const string tasksSql = @"
             SELECT  t.Status,
                     t.Title,
-                    t.DueDate
+                    COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate
             FROM    Tasks t
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                            ON tto.TeamId = @TeamId AND tto.TaskId = t.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                            ON mo.TeamId = @TeamId AND mo.ProjectMilestoneId = t.ProjectMilestoneId
             WHERE   t.ProjectId = @ProjectId
-            ORDER   BY t.DueDate NULLS LAST, t.Id";
+            ORDER   BY COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) NULLS LAST, t.Id";
 
         var tasks = (await _db.GetRecordsAsync<ContextTaskRow>(
-                tasksSql, new { ProjectId = projectId }))
+                tasksSql, new { ProjectId = projectId, TeamId = teamId }))
             .ToList();
 
         // ── Derive current milestone ──────────────────────────────────────────
@@ -510,18 +534,40 @@ public class ProjectsController : ControllerBase
         // ── 2. All tasks with milestone context (flat join) ───────────────────
         // Only tasks assigned to a milestone are included.
         // Tasks with null ProjectMilestoneId (unassigned) are excluded here.
+        //
+        // IsUrgent is derived in SQL (single source of truth):
+        //   - The effective milestone due date has passed (per-team override
+        //     applied when present)
+        //   - The task is mandatory
+        //   - The task is still "open" (not Done/Completed/SubmittedToMentor,
+        //     not closed, no existing submission)
+        // Same expression is reusable by the future project-health layer.
         const string tasksSql = @"
             SELECT  pm.Id              AS ProjectMilestoneId,
                     mt.Title           AS MilestoneTitle,
                     mt.OrderIndex      AS MilestoneOrderIndex,
                     pm.Status          AS MilestoneStatus,
-                    aym.DueDate        AS MilestoneDueDate,
+                    aym.OpenDate       AS MilestoneOpenDate,
+                    COALESCE(o.OverrideDueDate, aym.DueDate)   AS MilestoneDueDate,
+                    aym.CloseDate      AS MilestoneCloseDate,
+                    CASE
+                        WHEN (aym.OpenDate  IS NULL OR date(aym.OpenDate)  <= date('now'))
+                         AND (aym.CloseDate IS NULL OR date(aym.CloseDate) >= date('now'))
+                        THEN 1 ELSE 0
+                    END                AS MilestoneIsCurrentlyOpen,
                     t.Id               AS TaskId,
                     t.Title            AS TaskTitle,
                     t.Status           AS TaskStatus,
                     t.TaskType,
                     t.IsMandatory,
-                    t.DueDate          AS TaskDueDate,
+                    -- Effective task DueDate, per the per-team override priority:
+                    --   1. TeamTaskDueDateOverrides       (per-task override)
+                    --   2. TeamMilestoneDueDateOverrides  (per-milestone fallback)
+                    --   3. Tasks.DueDate                  (global)
+                    -- Globals are never mutated; the override tables are
+                    -- written by the extension-decision flow only.
+                    COALESCE(tto.OverrideDueDate, o.OverrideDueDate, t.DueDate)
+                                       AS TaskDueDate,
                     t.ClosedAt         AS CompletedAt,
                     COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName,
                     t.IsSubmission,
@@ -536,18 +582,70 @@ public class ProjectsController : ControllerBase
                     (SELECT s.SubmittedAt
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
-                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt,
+                    CASE
+                        WHEN t.IsMandatory  = 1
+                         AND (t.Status IS NULL OR t.Status NOT IN ('Done','Completed','SubmittedToMentor'))
+                         AND t.ClosedAt IS NULL
+                         AND NOT EXISTS (SELECT 1 FROM TaskSubmissions s WHERE s.TaskId = t.Id)
+                         -- Urgency uses the effective task date (same priority chain).
+                         AND date(COALESCE(tto.OverrideDueDate, o.OverrideDueDate, t.DueDate)) < date('now')
+                        THEN 1 ELSE 0
+                    END AS IsUrgent
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
             JOIN    Tasks                   t   ON t.ProjectMilestoneId = pm.Id
                                                AND t.ProjectId          = @ProjectId
             LEFT JOIN Users                 u   ON t.AssignedToUserId   = u.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides o
+                                                ON o.TeamId             = @TeamId
+                                               AND o.ProjectMilestoneId = pm.Id
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                                                ON tto.TeamId           = @TeamId
+                                               AND tto.TaskId           = t.Id
             WHERE   pm.ProjectId = @ProjectId
-            ORDER   BY mt.OrderIndex, t.DueDate";
+            ORDER   BY mt.OrderIndex, COALESCE(tto.OverrideDueDate, o.OverrideDueDate, t.DueDate)";
 
         var flatRows = (await _db.GetRecordsAsync<TaskFlatRow>(
-            tasksSql, new { ProjectId = projectId })).ToList();
+            tasksSql, new { ProjectId = projectId, TeamId = projectRow.TeamId })).ToList();
+
+        // ── 2b. Milestones with no tasks attached yet ─────────────────────────
+        // The tasks query above uses INNER JOIN Tasks, so a milestone the
+        // staff defined but didn't fill with tasks would be silently dropped.
+        // We surface them here so the visibility rule
+        //   visible = IsCurrentlyOpen OR has open tasks
+        // can decide whether to render them. Empty milestones get an empty
+        // Tasks list and a server-derived IsCurrentlyOpen flag.
+        const string emptyMilestonesSql = @"
+            SELECT  pm.Id              AS ProjectMilestoneId,
+                    mt.Title           AS MilestoneTitle,
+                    mt.OrderIndex      AS MilestoneOrderIndex,
+                    pm.Status          AS MilestoneStatus,
+                    aym.OpenDate       AS MilestoneOpenDate,
+                    COALESCE(o.OverrideDueDate, aym.DueDate)   AS MilestoneDueDate,
+                    aym.CloseDate      AS MilestoneCloseDate,
+                    CASE
+                        WHEN (aym.OpenDate  IS NULL OR date(aym.OpenDate)  <= date('now'))
+                         AND (aym.CloseDate IS NULL OR date(aym.CloseDate) >= date('now'))
+                        THEN 1 ELSE 0
+                    END                AS MilestoneIsCurrentlyOpen
+            FROM    ProjectMilestones       pm
+            JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
+            JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides o
+                                                ON o.TeamId             = @TeamId
+                                               AND o.ProjectMilestoneId = pm.Id
+            WHERE   pm.ProjectId = @ProjectId
+              AND   NOT EXISTS (
+                        SELECT 1 FROM Tasks t
+                        WHERE  t.ProjectMilestoneId = pm.Id
+                          AND  t.ProjectId          = @ProjectId
+                    )
+            ORDER   BY mt.OrderIndex";
+
+        var emptyMilestones = (await _db.GetRecordsAsync<EmptyMilestoneRow>(
+            emptyMilestonesSql, new { ProjectId = projectId, TeamId = projectRow.TeamId }))?.ToList() ?? new();
 
         // ── 3. Group by milestone ─────────────────────────────────────────────
         var milestoneGroups = flatRows
@@ -569,6 +667,7 @@ public class ProjectsController : ControllerBase
                     LatestSubmissionStatus = r.LatestSubmissionStatus,
                     LatestMentorStatus     = r.LatestMentorStatus,
                     LatestSubmittedAt      = r.LatestSubmittedAt,
+                    IsUrgent               = r.IsUrgent == 1,
                 }).ToList();
 
                 return new TaskMilestoneGroupDto
@@ -577,7 +676,10 @@ public class ProjectsController : ControllerBase
                     MilestoneTitle     = g.First().MilestoneTitle,
                     OrderIndex         = g.First().MilestoneOrderIndex,
                     MilestoneStatus    = NormalizeMilestoneStatus(g.First().MilestoneStatus),
+                    OpenDate           = g.First().MilestoneOpenDate,
                     DueDate            = g.First().MilestoneDueDate,
+                    CloseDate          = g.First().MilestoneCloseDate,
+                    IsCurrentlyOpen    = g.First().MilestoneIsCurrentlyOpen == 1,
                     DoneCount          = allTasks.Count(t => t.Status == "Done"),
                     TotalCount         = allTasks.Count,
                     Tasks              = allTasks,
@@ -586,20 +688,49 @@ public class ProjectsController : ControllerBase
             .OrderBy(g => g.OrderIndex)
             .ToList();
 
+        // Append empty milestones (no tasks attached). Their visibility is
+        // governed entirely by the date window — the active filter below
+        // checks IsCurrentlyOpen for these.
+        foreach (var em in emptyMilestones)
+        {
+            milestoneGroups.Add(new TaskMilestoneGroupDto
+            {
+                ProjectMilestoneId = em.ProjectMilestoneId,
+                MilestoneTitle     = em.MilestoneTitle,
+                OrderIndex         = em.MilestoneOrderIndex,
+                MilestoneStatus    = NormalizeMilestoneStatus(em.MilestoneStatus),
+                OpenDate           = em.MilestoneOpenDate,
+                DueDate            = em.MilestoneDueDate,
+                CloseDate          = em.MilestoneCloseDate,
+                IsCurrentlyOpen    = em.MilestoneIsCurrentlyOpen == 1,
+                DoneCount          = 0,
+                TotalCount         = 0,
+                Tasks              = new(),
+            });
+        }
+        milestoneGroups = milestoneGroups.OrderBy(g => g.OrderIndex).ToList();
+
         // ── 4. Split into active / completed groups ───────────────────────────
-        // Active groups:    milestones with at least one non-Done task
-        //                   → group's Tasks contains only non-Done tasks
-        // Completed groups: milestones with at least one Done task
-        //                   → group's Tasks contains only Done tasks
+        // Active groups (visibility rule, per the latest spec):
+        //   - the milestone is currently open by date,    OR
+        //   - it contains at least one non-Done task.
+        // Group's Tasks contains only non-Done tasks. Empty-but-open milestones
+        // pass through with an empty Tasks list so the team can still see the
+        // milestone header.
+        // Completed groups: milestones with at least one Done task.
+        //                   Group's Tasks contains only Done tasks.
         var activeGroups = milestoneGroups
-            .Where(g => g.Tasks.Any(t => t.Status != "Done"))
+            .Where(g => g.IsCurrentlyOpen || g.Tasks.Any(t => t.Status != "Done"))
             .Select(g => new TaskMilestoneGroupDto
             {
                 ProjectMilestoneId = g.ProjectMilestoneId,
                 MilestoneTitle     = g.MilestoneTitle,
                 OrderIndex         = g.OrderIndex,
                 MilestoneStatus    = g.MilestoneStatus,
+                OpenDate           = g.OpenDate,
                 DueDate            = g.DueDate,
+                CloseDate          = g.CloseDate,
+                IsCurrentlyOpen    = g.IsCurrentlyOpen,
                 DoneCount          = g.DoneCount,
                 TotalCount         = g.TotalCount,
                 Tasks              = g.Tasks.Where(t => t.Status != "Done").ToList(),
@@ -614,7 +745,10 @@ public class ProjectsController : ControllerBase
                 MilestoneTitle     = g.MilestoneTitle,
                 OrderIndex         = g.OrderIndex,
                 MilestoneStatus    = g.MilestoneStatus,
+                OpenDate           = g.OpenDate,
                 DueDate            = g.DueDate,
+                CloseDate          = g.CloseDate,
+                IsCurrentlyOpen    = g.IsCurrentlyOpen,
                 DoneCount          = g.DoneCount,
                 TotalCount         = g.TotalCount,
                 Tasks              = g.Tasks.Where(t => t.Status == "Done").ToList(),
@@ -777,6 +911,7 @@ public class ProjectsController : ControllerBase
         public int     ProjectId         { get; set; }
         public int     ProjectNumber     { get; set; }
         public string  ProjectTitle      { get; set; } = "";
+        public int     TeamId            { get; set; }
         public string? TeamName          { get; set; }
         public string? TrackName         { get; set; }
         public string? StudentDetailsCsv { get; set; }
@@ -804,7 +939,11 @@ public class ProjectsController : ControllerBase
         public string    MilestoneTitle      { get; set; } = "";
         public int       MilestoneOrderIndex { get; set; }
         public string    MilestoneStatus     { get; set; } = "";
+        public DateTime? MilestoneOpenDate   { get; set; }
         public DateTime? MilestoneDueDate    { get; set; }
+        public DateTime? MilestoneCloseDate  { get; set; }
+        /// <summary>0/1 — derived in the SELECT.</summary>
+        public int       MilestoneIsCurrentlyOpen { get; set; }
         public int       TaskId              { get; set; }
         public string    TaskTitle           { get; set; } = "";
         public string    TaskStatus          { get; set; } = "";
@@ -817,6 +956,29 @@ public class ProjectsController : ControllerBase
         public string?   LatestSubmissionStatus { get; set; }
         public string?   LatestMentorStatus     { get; set; }
         public DateTime? LatestSubmittedAt      { get; set; }
+        /// <summary>0/1 — derived in the SELECT.</summary>
+        public int       IsUrgent               { get; set; }
+    }
+
+    // GetTaskDetail needs the user's team to apply per-team override JOINs.
+    private sealed class TaskDetailProjectRow
+    {
+        public int Id     { get; set; }
+        public int TeamId { get; set; }
+    }
+
+    // Mirrors the columns selected by the "milestones with no tasks" SQL in
+    // GetMyTasks. Kept private so the public DTO surface stays unchanged.
+    private sealed class EmptyMilestoneRow
+    {
+        public int       ProjectMilestoneId       { get; set; }
+        public string    MilestoneTitle           { get; set; } = "";
+        public int       MilestoneOrderIndex      { get; set; }
+        public string    MilestoneStatus          { get; set; } = "";
+        public DateTime? MilestoneOpenDate        { get; set; }
+        public DateTime? MilestoneDueDate         { get; set; }
+        public DateTime? MilestoneCloseDate       { get; set; }
+        public int       MilestoneIsCurrentlyOpen { get; set; }
     }
 
     // ── GET /api/projects/my-submission-tasks ────────────────────────────────
@@ -826,9 +988,9 @@ public class ProjectsController : ControllerBase
     [HttpGet("my-submission-tasks")]
     public async Task<IActionResult> GetMySubmissionTasks(int authUserId)
     {
-        // ── 1. Resolve project ────────────────────────────────────────────────
+        // ── 1. Resolve project + team (team needed for per-team override JOINs) ──
         const string projectSql = @"
-            SELECT  p.Id
+            SELECT  p.Id, t.Id AS TeamId
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId  = t.Id
             JOIN    TeamMembers  tm  ON t.Id       = tm.TeamId
@@ -836,24 +998,26 @@ public class ProjectsController : ControllerBase
               AND   tm.IsActive = 1
             LIMIT 1";
 
-        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+        var projectRow = (await _db.GetRecordsAsync<TaskDetailProjectRow>(
                 projectSql, new { UserId = authUserId }))
             .FirstOrDefault();
 
-        if (projectIdRow is null)
+        if (projectRow is null)
             return Ok(Enumerable.Empty<StudentSubmissionTaskDto>());
 
-        int projectId = projectIdRow.Id;
+        int projectId = projectRow.Id;
+        int teamId    = projectRow.TeamId;
 
         // ── 2. Submission tasks with latest submission state ──────────────────
         // Correlated subqueries on TaskSubmissions give the latest row's
-        // status and date without a GROUP BY complication.
+        // status and date without a GROUP BY complication. DueDate uses the
+        // per-team override priority chain (task → milestone → global).
         const string sql = @"
             SELECT  t.Id                                   AS TaskId,
                     t.Title                                AS TaskTitle,
                     t.Description,
                     COALESCE(mt.Title, '')                 AS MilestoneTitle,
-                    t.DueDate,
+                    COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     t.Status                               AS TaskStatus,
                     t.SubmissionInstructions,
                     t.MaxFilesCount,
@@ -885,12 +1049,24 @@ public class ProjectsController : ControllerBase
             LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
             LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                            ON mo.TeamId = @TeamId AND mo.ProjectMilestoneId = pm.Id
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                            ON tto.TeamId = @TeamId AND tto.TaskId = t.Id
             WHERE   t.ProjectId    = @ProjectId
               AND   t.IsSubmission = 1
-            ORDER   BY t.DueDate NULLS LAST, t.Id";
+            ORDER   BY COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) NULLS LAST, t.Id";
 
+        // NOTE: lecturer-feedback projection removed from this list endpoint —
+        // the CASE-WHEN expressions on top of correlated subqueries were
+        // making Microsoft.Data.Sqlite hand Dapper rows it couldn't materialize,
+        // and DbRepository.GetRecordsAsync swallows the exception silently,
+        // returning null. The page rendered "no submission tasks" instead of
+        // the actual list. The student-side feedback view continues to work
+        // through GET /api/projects/tasks/{id}/detail (which already returns
+        // ReviewerFeedback per submission round).
         var rows = await _db.GetRecordsAsync<StudentSubmissionTaskDto>(
-            sql, new { ProjectId = projectId });
+            sql, new { ProjectId = projectId, TeamId = teamId });
 
         return Ok(rows ?? Enumerable.Empty<StudentSubmissionTaskDto>());
     }
@@ -901,9 +1077,9 @@ public class ProjectsController : ControllerBase
     [HttpGet("my-submission-tasks/{taskId:int}")]
     public async Task<IActionResult> GetMySubmissionTask(int taskId, int authUserId)
     {
-        // ── 1. Resolve project ────────────────────────────────────────────────
+        // ── 1. Resolve project + team (team needed for per-team override JOINs) ──
         const string projectSql = @"
-            SELECT  p.Id
+            SELECT  p.Id, t.Id AS TeamId
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId  = t.Id
             JOIN    TeamMembers  tm  ON t.Id       = tm.TeamId
@@ -911,13 +1087,14 @@ public class ProjectsController : ControllerBase
               AND   tm.IsActive = 1
             LIMIT 1";
 
-        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+        var projectRow = (await _db.GetRecordsAsync<TaskDetailProjectRow>(
                 projectSql, new { UserId = authUserId }))
             .FirstOrDefault();
 
-        if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
+        if (projectRow is null) return NotFound("פרויקט לא נמצא");
 
-        int projectId = projectIdRow.Id;
+        int projectId = projectRow.Id;
+        int teamId    = projectRow.TeamId;
 
         // ── 2. Single task (must belong to the user's project) ────────────────
         const string sql = @"
@@ -925,7 +1102,7 @@ public class ProjectsController : ControllerBase
                     t.Title                                AS TaskTitle,
                     t.Description,
                     COALESCE(mt.Title, '')                 AS MilestoneTitle,
-                    t.DueDate,
+                    COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     t.Status                               AS TaskStatus,
                     t.SubmissionInstructions,
                     t.MaxFilesCount,
@@ -957,13 +1134,20 @@ public class ProjectsController : ControllerBase
             LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
             LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                            ON mo.TeamId = @TeamId AND mo.ProjectMilestoneId = pm.Id
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                            ON tto.TeamId = @TeamId AND tto.TaskId = t.Id
             WHERE   t.Id         = @TaskId
               AND   t.ProjectId  = @ProjectId
               AND   t.IsSubmission = 1";
 
+        // NOTE: lecturer-feedback projection removed (same reason as the list
+        // endpoint above). Use GET /api/projects/tasks/{id}/detail for the
+        // full submission history including ReviewerFeedback per round.
         var row = (await _db.GetRecordsAsync<StudentSubmissionTaskDto>(
-                sql, new { TaskId = taskId, ProjectId = projectId }))
-            .FirstOrDefault();
+                sql, new { TaskId = taskId, ProjectId = projectId, TeamId = teamId }))
+            ?.FirstOrDefault();
 
         if (row is null) return NotFound("משימת ההגשה לא נמצאה");
         return Ok(row);
@@ -977,30 +1161,34 @@ public class ProjectsController : ControllerBase
     [HttpGet("tasks/{taskId:int}/detail")]
     public async Task<IActionResult> GetTaskDetail(int taskId, int authUserId)
     {
-        // ── 1. Resolve user → project ────────────────────────────────────────
+        // ── 1. Resolve user → project + team (team needed for per-team
+        //     override JOINs in the task fetch below). ────────────────────
         const string projectSql = @"
-            SELECT p.Id
+            SELECT p.Id, t.Id AS TeamId
             FROM   Projects    p
             JOIN   Teams       t  ON p.TeamId = t.Id
             JOIN   TeamMembers tm ON t.Id     = tm.TeamId
             WHERE  tm.UserId   = @UserId AND tm.IsActive = 1
             LIMIT 1";
 
-        var projectIdRow = (await _db.GetRecordsAsync<MilestoneProjectIdRow>(
+        var projectRow = (await _db.GetRecordsAsync<TaskDetailProjectRow>(
                 projectSql, new { UserId = authUserId }))
             .FirstOrDefault();
 
-        if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
-        int projectId = projectIdRow.Id;
+        if (projectRow is null) return NotFound("פרויקט לא נמצא");
+        int projectId = projectRow.Id;
+        int teamId    = projectRow.TeamId;
 
         // ── 2. Fetch task (must belong to the student's project) ─────────────
+        // DueDate uses the per-team override priority chain so the team sees
+        // its effective due date. Globals (Tasks.DueDate) are never mutated.
         const string taskSql = @"
             SELECT  t.Id,
                     t.Title,
                     t.Description,
                     COALESCE(mt.Title, '')  AS MilestoneTitle,
                     t.CreatedAt            AS OpenDate,
-                    t.DueDate,
+                    COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     t.Status,
                     t.TaskType,
                     t.IsSubmission,
@@ -1024,11 +1212,17 @@ public class ProjectsController : ControllerBase
             LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
             LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                                                 ON mo.TeamId             = @TeamId
+                                                AND mo.ProjectMilestoneId = pm.Id
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                                                 ON tto.TeamId = @TeamId
+                                                AND tto.TaskId = t.Id
             WHERE   t.Id        = @TaskId
               AND   t.ProjectId = @ProjectId";
 
         var task = (await _db.GetRecordsAsync<TaskDetailDto>(
-                taskSql, new { TaskId = taskId, ProjectId = projectId }))
+                taskSql, new { TaskId = taskId, ProjectId = projectId, TeamId = teamId }))
             .FirstOrDefault();
 
         if (task is null) return NotFound("המשימה לא נמצאה");
@@ -1049,7 +1243,10 @@ public class ProjectsController : ControllerBase
                         s.MentorStatus,
                         s.MentorFeedback,
                         s.MentorReviewedAt,
-                        s.CourseSubmittedAt
+                        s.CourseSubmittedAt,
+                        COALESCE(s.ReviewStatus, 'PendingReview')   AS ReviewStatus,
+                        COALESCE(s.IsFeedbackPublished, 0)          AS IsFeedbackPublished,
+                        s.FeedbackPublishedAt
                 FROM    TaskSubmissions s
                 WHERE   s.TaskId = @TaskId
                 ORDER   BY s.Id ASC";

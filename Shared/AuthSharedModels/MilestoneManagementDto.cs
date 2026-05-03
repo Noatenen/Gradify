@@ -30,6 +30,14 @@ public class MilestoneTemplateDto
     /// Set server-side so the client doesn't need to resolve the FK.
     /// </summary>
     public string  Applicability { get; set; } = "שניהם";
+
+    // ── Default course-level dates (Option A) ────────────────────────────
+    // These are the GLOBAL defaults a milestone has at the template level.
+    // They get copied into AcademicYearMilestones when a new cycle is built,
+    // and per-team adjustments still go through TeamMilestoneDueDateOverrides.
+    public DateTime? OpenDate  { get; set; }
+    public DateTime? DueDate   { get; set; }
+    public DateTime? CloseDate { get; set; }
 }
 
 /// <summary>Payload for creating or updating a milestone template.</summary>
@@ -42,4 +50,11 @@ public class SaveMilestoneTemplateRequest
     public bool    IsActive      { get; set; } = true;
     /// <summary>Null = both types; 1 = Technological; 2 = Methodological.</summary>
     public int?    ProjectTypeId { get; set; }
+
+    /// <summary>Default course-level open date — nullable.</summary>
+    public DateTime? OpenDate  { get; set; }
+    /// <summary>Default course-level due date — nullable.</summary>
+    public DateTime? DueDate   { get; set; }
+    /// <summary>Default course-level close date — nullable.</summary>
+    public DateTime? CloseDate { get; set; }
 }

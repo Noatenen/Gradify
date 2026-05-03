@@ -1,0 +1,201 @@
+@page "/management/role-settings"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IRoleSettingsManagementService RoleSettingsService
+
+<div class="rs-page" dir="rtl">
+
+    <!-- ── Top bar ── -->
+    <div class="rs-topbar">
+        <div class="rs-topbar-start">
+            <button class="rs-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management"))"
+                    title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="rs-breadcrumb">ניהול</div>
+                <h1 class="rs-page-title">הרשאות לפי תפקיד</h1>
+                <p class="rs-page-subtitle">
+                    הפעלה/השבתה של יכולות לפי תפקיד.
+                    שינויים נכנסים לתוקף עבור משתמשים חדשים מיד; משתמשים קיימים ירעננו את הדף.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Loading / error / empty ── -->
+    @if (_loading)
+    {
+        <div class="rs-empty"><span class="rs-spinner-inline"></span>טוען הרשאות…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="rs-empty rs-empty--error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת ההרשאות. רענן את הדף.
+        </div>
+    }
+    else
+    {
+        <!-- ── Matrix table ── -->
+        <div class="rs-table-panel">
+            <div class="rs-table-wrap">
+                <table class="rs-table">
+                    <thead>
+                        <tr>
+                            <th class="rs-th-role">תפקיד</th>
+                            @foreach (var f in RoleFeatures.All)
+                            {
+                                <th class="rs-th-flag" title="@f">@RoleFeatures.Label(f)</th>
+                            }
+                            <th class="rs-th-actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _rows)
+                        {
+                            <tr class="rs-row @(_dirtyRoles.Contains(row.RoleName) ? "rs-row-dirty" : "")">
+                                <td class="rs-cell-role">
+                                    <span class="rs-role-badge rs-role-@row.RoleName.ToLower()">
+                                        @RoleLabel(row.RoleName)
+                                    </span>
+                                </td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanManageRequests"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageRequests, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanManageMilestones"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageMilestones, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanManageAssignments"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageAssignments, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanManageUsers"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageUsers, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanManageAirtable"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageAirtable, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanOpenRequests"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanOpenRequests, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanViewTasks"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanViewTasks, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanSubmitTasks"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanSubmitTasks, e))" /></td>
+                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
+                                       checked="@row.CanViewLecturerDashboard"
+                                       @onchange="@(e => Toggle(row, RoleFeatures.CanViewLecturerDashboard, e))" /></td>
+                                <td class="rs-cell-actions">
+                                    <button class="rs-save-btn"
+                                            disabled="@(!_dirtyRoles.Contains(row.RoleName) || _savingRoles.Contains(row.RoleName))"
+                                            @onclick="() => SaveRow(row)">
+                                        @if (_savingRoles.Contains(row.RoleName))
+                                        {
+                                            <span class="rs-spinner-sm"></span>
+                                        }
+                                        else
+                                        {
+                                            <span class="oi oi-check" aria-hidden="true"></span>
+                                        }
+                                        שמור
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (!string.IsNullOrEmpty(_saveError))
+            {
+                <div class="rs-table-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_saveError
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private List<RoleSettingsDto> _rows = new();
+    private bool _loading   = true;
+    private bool _loadError;
+    private string _saveError = "";
+
+    // Track which rows have unsaved edits, and which are mid-save.
+    private readonly HashSet<string> _dirtyRoles  = new();
+    private readonly HashSet<string> _savingRoles = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var result = await RoleSettingsService.GetAllAsync();
+        _loadError = result is null;
+        _rows      = result ?? new();
+        _loading   = false;
+    }
+
+    private void Toggle(RoleSettingsDto row, string flag, ChangeEventArgs e)
+    {
+        bool value = e.Value is bool b && b;
+        switch (flag)
+        {
+            case RoleFeatures.CanManageRequests:        row.CanManageRequests        = value; break;
+            case RoleFeatures.CanManageMilestones:      row.CanManageMilestones      = value; break;
+            case RoleFeatures.CanManageAssignments:     row.CanManageAssignments     = value; break;
+            case RoleFeatures.CanManageUsers:           row.CanManageUsers           = value; break;
+            case RoleFeatures.CanManageAirtable:        row.CanManageAirtable        = value; break;
+            case RoleFeatures.CanOpenRequests:          row.CanOpenRequests          = value; break;
+            case RoleFeatures.CanViewTasks:             row.CanViewTasks             = value; break;
+            case RoleFeatures.CanSubmitTasks:           row.CanSubmitTasks           = value; break;
+            case RoleFeatures.CanViewLecturerDashboard: row.CanViewLecturerDashboard = value; break;
+        }
+        _dirtyRoles.Add(row.RoleName);
+        _saveError = "";
+    }
+
+    private async Task SaveRow(RoleSettingsDto row)
+    {
+        _saveError = "";
+        _savingRoles.Add(row.RoleName);
+
+        var ok = await RoleSettingsService.SaveAsync(row.RoleName, new SaveRoleSettingsRequest
+        {
+            CanManageRequests        = row.CanManageRequests,
+            CanManageMilestones      = row.CanManageMilestones,
+            CanManageAssignments     = row.CanManageAssignments,
+            CanManageUsers           = row.CanManageUsers,
+            CanManageAirtable        = row.CanManageAirtable,
+            CanOpenRequests          = row.CanOpenRequests,
+            CanViewTasks             = row.CanViewTasks,
+            CanSubmitTasks           = row.CanSubmitTasks,
+            CanViewLecturerDashboard = row.CanViewLecturerDashboard,
+        });
+
+        _savingRoles.Remove(row.RoleName);
+
+        if (!ok)
+        {
+            _saveError = $"שמירת ההרשאות עבור {RoleLabel(row.RoleName)} נכשלה.";
+            return;
+        }
+
+        _dirtyRoles.Remove(row.RoleName);
+        row.UpdatedAt = DateTime.Now;
+    }
+
+    private static string RoleLabel(string roleName) => roleName switch
+    {
+        "Admin"   => "מנהל",
+        "Staff"   => "מרצה",
+        "Mentor"  => "מנחה",
+        "Student" => "סטודנט",
+        "User"    => "משתמש",
+        _         => roleName,
+    };
+}

@@ -213,9 +213,9 @@
                                         <span>@MentorStatusLabel(latest.MentorStatus)</span>
                                     </div>
                                     <div class="tdm-pipeline-arrow"></div>
-                                    <div class="tdm-pipeline-step tdm-pipeline-@ReviewerPipelineClass(latest.Status, latest.MentorStatus)">
-                                        <span class="oi @ReviewerPipelineIcon(latest.Status, latest.MentorStatus)" aria-hidden="true"></span>
-                                        <span>@ReviewerStatusLabel(latest.Status, latest.MentorStatus)</span>
+                                    <div class="tdm-pipeline-step tdm-pipeline-@ReviewerPipelineClass(latest)">
+                                        <span class="oi @ReviewerPipelineIcon(latest)" aria-hidden="true"></span>
+                                        <span>@ReviewerStatusLabel(latest)</span>
                                     </div>
                                 </div>
 
@@ -233,13 +233,19 @@
                                         }
                                     </div>
                                 }
-                                @if (latest.Status == "NeedsRevision" &&
+                                @if (latest.IsFeedbackPublished &&
                                      !string.IsNullOrWhiteSpace(latest.ReviewerFeedback))
                                 {
                                     <div class="tdm-feedback-banner tdm-feedback-returned">
                                         <div class="tdm-feedback-header">
                                             <span class="oi oi-comment-square" aria-hidden="true"></span>
                                             <strong>הערות מרצה</strong>
+                                            @if (latest.FeedbackPublishedAt.HasValue)
+                                            {
+                                                <span class="tdm-feedback-date">
+                                                    @latest.FeedbackPublishedAt.Value.ToString("dd/MM/yy")
+                                                </span>
+                                            }
                                         </div>
                                         <p class="tdm-feedback-text">@latest.ReviewerFeedback</p>
                                     </div>
@@ -484,12 +490,19 @@
                                                     </div>
                                                 }
 
-                                                @if (!string.IsNullOrWhiteSpace(sub.ReviewerFeedback))
+                                                @if (sub.IsFeedbackPublished &&
+                                                     !string.IsNullOrWhiteSpace(sub.ReviewerFeedback))
                                                 {
                                                     <div class="tdm-feedback-banner tdm-feedback-returned">
                                                         <div class="tdm-feedback-header">
                                                             <span class="oi oi-comment-square" aria-hidden="true"></span>
                                                             <strong>פידבק מרצה</strong>
+                                                            @if (sub.FeedbackPublishedAt.HasValue)
+                                                            {
+                                                                <span class="tdm-feedback-date">
+                                                                    @sub.FeedbackPublishedAt.Value.ToString("dd/MM/yy")
+                                                                </span>
+                                                            }
                                                         </div>
                                                         <p class="tdm-feedback-text">@sub.ReviewerFeedback</p>
                                                     </div>
@@ -889,10 +902,25 @@
         _          => "oi-clock",
     };
 
-    private static string ReviewerPipelineClass(string status, string mentorStatus)
+    // The lecturer/admin pipeline state is driven primarily by the new
+    // ReviewStatus + IsFeedbackPublished columns. The legacy `Status` column
+    // ("Submitted"/"Reviewed"/"NeedsRevision") is kept as a compatibility
+    // fallback only — never as the primary source of truth.
+
+    private static string ReviewerPipelineClass(SubmissionHistoryItemDto sub)
     {
-        if (mentorStatus != "Approved") return "locked";
-        return status switch
+        if (sub.MentorStatus != "Approved") return "locked";
+        if (sub.IsFeedbackPublished)
+        {
+            return sub.ReviewStatus switch
+            {
+                LecturerReviewStatuses.FinalApproved    => "done",
+                LecturerReviewStatuses.FeedbackReturned => "returned",
+                _                                       => "waiting",
+            };
+        }
+        if (sub.ReviewStatus == LecturerReviewStatuses.InReview) return "waiting";
+        return sub.Status switch
         {
             "Reviewed"      => "done",
             "NeedsRevision" => "returned",
@@ -900,10 +928,20 @@
         };
     }
 
-    private static string ReviewerPipelineIcon(string status, string mentorStatus)
+    private static string ReviewerPipelineIcon(SubmissionHistoryItemDto sub)
     {
-        if (mentorStatus != "Approved") return "oi-lock-locked";
-        return status switch
+        if (sub.MentorStatus != "Approved") return "oi-lock-locked";
+        if (sub.IsFeedbackPublished)
+        {
+            return sub.ReviewStatus switch
+            {
+                LecturerReviewStatuses.FinalApproved    => "oi-circle-check",
+                LecturerReviewStatuses.FeedbackReturned => "oi-arrow-circle-left",
+                _                                       => "oi-clock",
+            };
+        }
+        if (sub.ReviewStatus == LecturerReviewStatuses.InReview) return "oi-eye";
+        return sub.Status switch
         {
             "Reviewed"      => "oi-circle-check",
             "NeedsRevision" => "oi-arrow-circle-left",
@@ -911,15 +949,20 @@
         };
     }
 
-    private static string ReviewerStatusLabel(string status, string mentorStatus)
+    private static string ReviewerStatusLabel(SubmissionHistoryItemDto sub)
     {
-        if (mentorStatus != "Approved") return "ממתין לאישור מנחה";
-        return status switch
+        if (sub.MentorStatus != "Approved") return "ממתין לאישור מנחה";
+        if (sub.IsFeedbackPublished)
         {
-            "Reviewed"      => "אושר ע״י מרצה",
-            "NeedsRevision" => "הוחזר ע״י מרצה",
-            _               => "ממתין לאישור מרצה",
-        };
+            return sub.ReviewStatus switch
+            {
+                LecturerReviewStatuses.FinalApproved    => "אושר סופית ע״י מרצה",
+                LecturerReviewStatuses.FeedbackReturned => "הוחזר עם משוב מרצה",
+                _                                       => "ממתין לאישור מרצה",
+            };
+        }
+        if (sub.ReviewStatus == LecturerReviewStatuses.InReview) return "בבדיקת מרצה";
+        return "ממתין לאישור מרצה";
     }
 
     private static string FormatSize(long bytes)

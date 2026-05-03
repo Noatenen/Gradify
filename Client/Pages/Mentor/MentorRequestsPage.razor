@@ -1,0 +1,580 @@
+@page "/mentor-requests"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor)]
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IProjectRequestsService RequestsService
+
+<!-- ── Detail drawer backdrop ── -->
+@if (_drawerRow is not null)
+{
+    <div class="mreq-backdrop" @onclick="CloseDrawer"></div>
+}
+
+<!-- ── Detail drawer ── -->
+@if (_drawerRow is not null)
+{
+    <div class="mreq-drawer" dir="rtl">
+        <div class="mreq-drawer-header">
+            <div class="mreq-drawer-title-row">
+                <div>
+                    <div class="mreq-drawer-type">
+                        <span class="mreq-type-badge mreq-type-@TypeClass(_drawerRow.RequestType)">
+                            @RequestTypes.Label(_drawerRow.RequestType)
+                        </span>
+                    </div>
+                    <div class="mreq-drawer-title">@_drawerRow.Title</div>
+                </div>
+                <button class="mreq-drawer-close" @onclick="CloseDrawer" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="mreq-drawer-meta">
+                <div class="mreq-drawer-meta-item">
+                    <span class="oi oi-folder" aria-hidden="true"></span>
+                    צוות @_drawerRow.ProjectNumber — @_drawerRow.ProjectTitle
+                </div>
+                <div class="mreq-drawer-meta-item">
+                    <span class="oi oi-person" aria-hidden="true"></span>
+                    @_drawerRow.CreatedByName
+                </div>
+                <div class="mreq-drawer-meta-item">
+                    <span class="oi oi-calendar" aria-hidden="true"></span>
+                    @_drawerRow.CreatedAt.ToString("dd/MM/yyyy HH:mm")
+                </div>
+            </div>
+            <div class="mreq-drawer-status-row">
+                <span class="mreq-status-badge mreq-badge-@_drawerRow.Status.ToLower()">
+                    @RequestStatuses.Label(_drawerRow.Status)
+                </span>
+                <span class="mreq-priority-badge mreq-priority-@_drawerRow.Priority.ToLower()">
+                    @RequestPriorities.Label(_drawerRow.Priority)
+                </span>
+            </div>
+        </div>
+
+        <div class="mreq-drawer-body">
+
+            @if (_detailLoading)
+            {
+                <div class="mreq-drawer-loading">
+                    <span class="mreq-spinner-inline"></span>טוען פרטי בקשה…
+                </div>
+            }
+            else if (_detail is null)
+            {
+                <div class="mreq-drawer-empty">לא ניתן לטעון את פרטי הבקשה.</div>
+            }
+            else
+            {
+                @* ── Description ── *@
+                @if (!string.IsNullOrWhiteSpace(_detail.Description))
+                {
+                    <div class="mreq-drawer-section">
+                        <div class="mreq-drawer-section-title">תיאור</div>
+                        <div class="mreq-drawer-text">@_detail.Description</div>
+                    </div>
+                }
+
+                @* ── Extension panel (only for Extension type) ── *@
+                @if (_detail.RequestType == RequestTypes.Extension && _detail.Extension is not null)
+                {
+                    <div class="mreq-drawer-section mreq-extension-block">
+                        <div class="mreq-drawer-section-title">פרטי בקשת הדחייה</div>
+
+                        <div class="mreq-ext-grid">
+                            <div class="mreq-ext-cell">
+                                <div class="mreq-ext-label">משימה / אבן דרך</div>
+                                <div class="mreq-ext-value">
+                                    @if (!string.IsNullOrWhiteSpace(_detail.Extension.TaskTitle))
+                                    {
+                                        <span class="oi oi-task" aria-hidden="true"></span> <span>@_detail.Extension.TaskTitle</span>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(_detail.Extension.MilestoneTitle))
+                                    {
+                                        <span class="oi oi-flag" aria-hidden="true"></span> <span>@_detail.Extension.MilestoneTitle</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="mreq-ext-general">אחר / כללי (ללא משימה ספציפית)</span>
+                                    }
+                                </div>
+                            </div>
+                            <div class="mreq-ext-cell">
+                                <div class="mreq-ext-label">תאריך נוכחי</div>
+                                <div class="mreq-ext-value">
+                                    @(_detail.Extension.CurrentDueDate?.ToString("dd/MM/yyyy") ?? "—")
+                                </div>
+                            </div>
+                            <div class="mreq-ext-cell">
+                                <div class="mreq-ext-label">תאריך מבוקש</div>
+                                <div class="mreq-ext-value mreq-ext-requested">
+                                    @_detail.Extension.RequestedDueDate.ToString("dd/MM/yyyy")
+                                </div>
+                            </div>
+                            <div class="mreq-ext-cell">
+                                <div class="mreq-ext-label">החלטת מנחה</div>
+                                <div class="mreq-ext-value">
+                                    <span class="mreq-ext-decision mreq-ext-dec-@_detail.Extension.MentorDecision.ToLower()">
+                                        @ExtensionDecisionStatuses.Label(_detail.Extension.MentorDecision)
+                                    </span>
+                                </div>
+                            </div>
+                            @if (_detail.Extension.LecturerDecision != ExtensionDecisionStatuses.NotRequired)
+                            {
+                                <div class="mreq-ext-cell">
+                                    <div class="mreq-ext-label">החלטת מרצה</div>
+                                    <div class="mreq-ext-value">
+                                        <span class="mreq-ext-decision mreq-ext-dec-@_detail.Extension.LecturerDecision.ToLower()">
+                                            @ExtensionDecisionStatuses.Label(_detail.Extension.LecturerDecision)
+                                        </span>
+                                    </div>
+                                </div>
+                            }
+                            @if (_detail.Extension.ApprovedDueDate.HasValue)
+                            {
+                                <div class="mreq-ext-cell">
+                                    <div class="mreq-ext-label">תאריך מאושר</div>
+                                    <div class="mreq-ext-value mreq-ext-approved">
+                                        @_detail.Extension.ApprovedDueDate.Value.ToString("dd/MM/yyyy")
+                                    </div>
+                                </div>
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(_detail.Extension.Reason))
+                        {
+                            <div class="mreq-ext-reason">
+                                <div class="mreq-ext-label">נימוק הסטודנט</div>
+                                <div class="mreq-drawer-text">@_detail.Extension.Reason</div>
+                            </div>
+                        }
+
+                        @* ── Mentor decision actions (only when MentorDecision = Pending) ── *@
+                        @if (_detail.Extension.MentorDecision == ExtensionDecisionStatuses.Pending)
+                        {
+                            <div class="mreq-decision-form">
+                                <div class="mreq-decision-form-title">החלטת מנחה</div>
+
+                                @{
+                                    bool hasTarget = _detail.Extension.TaskId.HasValue
+                                                  || _detail.Extension.ProjectMilestoneId.HasValue;
+                                }
+                                @if (hasTarget)
+                                {
+                                    <label class="mreq-decision-label">תאריך מאושר חדש</label>
+                                    <input class="mreq-decision-date"
+                                           type="date"
+                                           @bind="_decisionApprovedDate" />
+                                    <div class="mreq-decision-hint">חובה בעת אישור משימה ספציפית.</div>
+                                }
+
+                                <label class="mreq-decision-label">הערות (אופציונלי)</label>
+                                <textarea class="mreq-decision-notes"
+                                          rows="3"
+                                          maxlength="2000"
+                                          placeholder="כתוב כאן הסבר קצר…"
+                                          @bind="_decisionNotes"></textarea>
+
+                                @if (!string.IsNullOrEmpty(_decisionError))
+                                {
+                                    <div class="mreq-decision-error">
+                                        <span class="oi oi-warning" aria-hidden="true"></span>
+                                        @_decisionError
+                                    </div>
+                                }
+
+                                <div class="mreq-decision-actions">
+                                    <button class="mreq-btn mreq-btn-approve"
+                                            disabled="@_submitting"
+                                            @onclick="@(() => SubmitDecision(ExtensionDecisionStatuses.Approved))">
+                                        <span class="oi oi-check" aria-hidden="true"></span> אישור
+                                    </button>
+                                    <button class="mreq-btn mreq-btn-reject"
+                                            disabled="@_submitting"
+                                            @onclick="@(() => SubmitDecision(ExtensionDecisionStatuses.Rejected))">
+                                        <span class="oi oi-x" aria-hidden="true"></span> דחייה
+                                    </button>
+                                    <button class="mreq-btn mreq-btn-escalate"
+                                            disabled="@_submitting"
+                                            @onclick="@(() => SubmitDecision(ExtensionDecisionStatuses.Escalated))">
+                                        <span class="oi oi-share" aria-hidden="true"></span> העבר למרצה
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+
+                @* ── Attachments ── *@
+                @if (_detail.Attachments.Count > 0)
+                {
+                    <div class="mreq-drawer-section">
+                        <div class="mreq-drawer-section-title">
+                            קבצים מצורפים
+                            <span class="mreq-drawer-count">@_detail.Attachments.Count</span>
+                        </div>
+                        <div class="mreq-file-list">
+                            @foreach (var att in _detail.Attachments)
+                            {
+                                <a class="mreq-file-row"
+                                   href="/request-attachments/@att.StoredFileName"
+                                   download="@att.OriginalFileName"
+                                   title="הורדה">
+                                    <span class="oi oi-file mreq-file-icon" aria-hidden="true"></span>
+                                    <span class="mreq-file-name">@att.OriginalFileName</span>
+                                    <span class="mreq-file-size">@FormatSize(att.SizeBytes)</span>
+                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                </a>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @* ── Thread / events history ── *@
+                <div class="mreq-drawer-section">
+                    <div class="mreq-drawer-section-title">
+                        היסטוריית בקשה
+                        <span class="mreq-drawer-count">@_detail.Events.Count</span>
+                    </div>
+                    @if (_detail.Events.Count == 0)
+                    {
+                        <div class="mreq-drawer-empty">אין הודעות עדיין.</div>
+                    }
+                    else
+                    {
+                        <div class="mreq-events">
+                            @foreach (var evt in _detail.Events)
+                            {
+                                <div class="mreq-event mreq-event-@evt.EventType.ToLower()">
+                                    <div class="mreq-event-head">
+                                        <span class="mreq-event-author">@evt.UserName</span>
+                                        <span class="mreq-event-type">@EventTypeLabel(evt.EventType)</span>
+                                        <span class="mreq-event-date">@evt.CreatedAt.ToString("dd/MM/yy HH:mm")</span>
+                                    </div>
+                                    @if (evt.EventType == RequestEventTypes.Comment && !string.IsNullOrWhiteSpace(evt.Content))
+                                    {
+                                        <div class="mreq-event-body">@evt.Content</div>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(evt.OldValue) || !string.IsNullOrWhiteSpace(evt.NewValue))
+                                    {
+                                        <div class="mreq-event-change">
+                                            @if (!string.IsNullOrWhiteSpace(evt.OldValue))
+                                            {
+                                                <span class="mreq-event-old">@evt.OldValue</span>
+                                                <span class="oi oi-arrow-thick-left" aria-hidden="true"></span>
+                                            }
+                                            <span class="mreq-event-new">@evt.NewValue</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+            }
+        </div>
+    </div>
+}
+
+<!-- ── Page ── -->
+<div class="mreq-page" dir="rtl">
+
+    <!-- ── Page header ── -->
+    <div class="mreq-header-card">
+        <div class="mreq-header-start">
+            <div class="mreq-page-icon">
+                <span class="oi oi-envelope-closed" aria-hidden="true"></span>
+            </div>
+            <div>
+                <h1 class="mreq-page-title">בקשות</h1>
+                <p class="mreq-page-subtitle">בקשות הקשורות לפרויקטים שאני מנחה</p>
+            </div>
+        </div>
+        <div class="mreq-header-end">
+            <span class="mreq-count-pill">@_all.Count</span>
+        </div>
+    </div>
+
+    <!-- ── Filters ── -->
+    <div class="mreq-filters-bar">
+        <div class="mreq-search-wrap">
+            <span class="oi oi-magnifying-glass mreq-search-icon" aria-hidden="true"></span>
+            <input class="mreq-search" type="text"
+                   placeholder="חיפוש לפי כותרת, פרויקט, סטודנט…"
+                   @bind="_searchQuery" @bind:event="oninput" />
+        </div>
+        <div class="mreq-filter-group">
+            <select class="mreq-filter-select" @bind="_filterType">
+                <option value="">כל הסוגים</option>
+                @foreach (var t in RequestTypes.All)
+                {
+                    <option value="@t">@RequestTypes.Label(t)</option>
+                }
+            </select>
+            <select class="mreq-filter-select" @bind="_filterStatus">
+                <option value="">כל הסטטוסים</option>
+                @foreach (var s in RequestStatuses.All)
+                {
+                    <option value="@s">@RequestStatuses.Label(s)</option>
+                }
+            </select>
+        </div>
+    </div>
+
+    <!-- ── Table ── -->
+    <div class="mreq-table-panel">
+        <div class="mreq-table-wrap">
+            <table class="mreq-table">
+                <thead>
+                    <tr>
+                        <th>סוג</th>
+                        <th>כותרת</th>
+                        <th>פרויקט / צוות</th>
+                        <th>פתח על ידי</th>
+                        <th>תאריך</th>
+                        <th>עדיפות</th>
+                        <th>סטטוס</th>
+                        <th class="mreq-th-action"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_loading)
+                    {
+                        <tr><td colspan="8" class="mreq-empty">
+                            <span class="mreq-spinner-inline"></span>טוען בקשות…
+                        </td></tr>
+                    }
+                    else if (_loadError)
+                    {
+                        <tr><td colspan="8" class="mreq-empty mreq-empty--error">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            שגיאה בטעינת הבקשות. נסה לרענן את הדף.
+                        </td></tr>
+                    }
+                    else if (!Filtered.Any())
+                    {
+                        <tr><td colspan="8" class="mreq-empty">
+                            <span class="oi oi-inbox" aria-hidden="true"></span>
+                            @if (_all.Count == 0)
+                            {
+                                <span>אין בקשות לפרויקטים שאתה מנחה.</span>
+                            }
+                            else
+                            {
+                                <span>לא נמצאו בקשות התואמות את הסינון.</span>
+                            }
+                        </td></tr>
+                    }
+                    else
+                    {
+                        foreach (var r in Filtered)
+                        {
+                            bool isSelected = _drawerRow?.Id == r.Id;
+                            <tr class="mreq-row @(isSelected ? "mreq-row-selected" : "")"
+                                @onclick="@(async () => await OpenDrawer(r))">
+                                <td>
+                                    <span class="mreq-type-badge mreq-type-@TypeClass(r.RequestType)">
+                                        @RequestTypes.Label(r.RequestType)
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="mreq-title-cell">
+                                        <span>@r.Title</span>
+                                        @if (r.AttachmentCount > 0)
+                                        {
+                                            <span class="mreq-attach-indicator" title="@r.AttachmentCount קבצים מצורפים">
+                                                <span class="oi oi-paperclip" aria-hidden="true"></span>
+                                            </span>
+                                        }
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="mreq-project-cell">
+                                        <span class="mreq-team-number">צוות @r.ProjectNumber</span>
+                                        <span class="mreq-project-title">@r.ProjectTitle</span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="mreq-name-cell">@r.CreatedByName</span>
+                                </td>
+                                <td class="mreq-date-cell">
+                                    <div>@r.CreatedAt.ToString("dd/MM/yyyy")</div>
+                                    <div class="mreq-time">@r.CreatedAt.ToString("HH:mm")</div>
+                                </td>
+                                <td>
+                                    <span class="mreq-priority-badge mreq-priority-@r.Priority.ToLower()">
+                                        @RequestPriorities.Label(r.Priority)
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="mreq-status-badge mreq-badge-@r.Status.ToLower()">
+                                        @RequestStatuses.Label(r.Status)
+                                    </span>
+                                </td>
+                                <td class="mreq-cell-action">
+                                    <button class="mreq-open-btn"
+                                            title="פתח פרטים"
+                                            @onclick:stopPropagation="true"
+                                            @onclick="@(async () => await OpenDrawer(r))">
+                                        <span class="oi oi-chevron-left" aria-hidden="true"></span>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+@code {
+    // ── List state ───────────────────────────────────────────────────────────
+    private List<ProjectRequestRowDto> _all = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    private string _searchQuery  = "";
+    private string _filterType   = "";
+    private string _filterStatus = "";
+
+    // ── Drawer state ─────────────────────────────────────────────────────────
+    private ProjectRequestRowDto?    _drawerRow;
+    private ProjectRequestDetailDto? _detail;
+    private bool _detailLoading;
+
+    // ── Decision form state ──────────────────────────────────────────────────
+    private DateTime? _decisionApprovedDate;
+    private string    _decisionNotes = "";
+    private string    _decisionError = "";
+    private bool      _submitting;
+
+    protected override async Task OnInitializedAsync() => await LoadList();
+
+    private async Task LoadList()
+    {
+        _loading = true;
+        var result = await RequestsService.GetAllAsync();
+        _loadError = result is null;
+        _all       = result ?? new();
+        _loading   = false;
+    }
+
+    private IEnumerable<ProjectRequestRowDto> Filtered => _all
+        .Where(r => string.IsNullOrEmpty(_filterType)   || r.RequestType == _filterType)
+        .Where(r => string.IsNullOrEmpty(_filterStatus) || r.Status      == _filterStatus)
+        .Where(r => string.IsNullOrEmpty(_searchQuery)
+                 || r.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                 || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                 || r.ProjectNumber.ToString().Contains(_searchQuery)
+                 || r.CreatedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(r => r.CreatedAt);
+
+    // ── Drawer ───────────────────────────────────────────────────────────────
+    private async Task OpenDrawer(ProjectRequestRowDto row)
+    {
+        _drawerRow            = row;
+        _detail               = null;
+        _detailLoading        = true;
+        _decisionError        = "";
+        _decisionNotes        = "";
+        _decisionApprovedDate = null;
+        StateHasChanged();
+
+        _detail = await RequestsService.GetByIdAsync(row.Id);
+
+        // Pre-fill the date input from the requested date so the mentor can
+        // approve as-is or override with a different date.
+        if (_detail?.Extension is not null)
+        {
+            _decisionApprovedDate = _detail.Extension.RequestedDueDate.Date;
+        }
+
+        _detailLoading = false;
+    }
+
+    private void CloseDrawer()
+    {
+        _drawerRow            = null;
+        _detail               = null;
+        _decisionError        = "";
+        _decisionNotes        = "";
+        _decisionApprovedDate = null;
+    }
+
+    // ── Mentor decision submit ───────────────────────────────────────────────
+    private async Task SubmitDecision(string decision)
+    {
+        if (_drawerRow is null || _detail?.Extension is null) return;
+
+        _decisionError = "";
+        bool hasTarget = _detail.Extension.TaskId.HasValue
+                      || _detail.Extension.ProjectMilestoneId.HasValue;
+
+        if (decision == ExtensionDecisionStatuses.Approved && hasTarget && _decisionApprovedDate is null)
+        {
+            _decisionError = "יש לבחור תאריך מאושר.";
+            return;
+        }
+
+        _submitting = true;
+        var err = await RequestsService.SubmitExtensionDecisionAsync(_drawerRow.Id,
+            new ExtensionDecisionRequest
+            {
+                Stage           = "Mentor",
+                Decision        = decision,
+                ApprovedDueDate = (decision == ExtensionDecisionStatuses.Approved && hasTarget)
+                                      ? _decisionApprovedDate
+                                      : null,
+                Notes           = string.IsNullOrWhiteSpace(_decisionNotes) ? null : _decisionNotes.Trim(),
+            });
+        _submitting = false;
+
+        if (err is not null)
+        {
+            _decisionError = err;
+            return;
+        }
+
+        // Refresh list + drawer
+        await LoadList();
+        var refreshed = await RequestsService.GetByIdAsync(_drawerRow.Id);
+        if (refreshed is not null) _detail = refreshed;
+        // Update the drawer row's status badge to match the parent row in the new list
+        var updatedRow = _all.FirstOrDefault(r => r.Id == _drawerRow.Id);
+        if (updatedRow is not null) _drawerRow = updatedRow;
+    }
+
+    // ── Display helpers ──────────────────────────────────────────────────────
+    private static string TypeClass(string t) => t switch
+    {
+        RequestTypes.Extension                 => "extension",
+        RequestTypes.SpecialEvent              => "special",
+        RequestTypes.TechnicalSupport          => "tech",
+        RequestTypes.Meeting                   => "meeting",
+        RequestTypes.ClientChallenge           => "challenge",
+        RequestTypes.ContentChallenge          => "challenge",
+        RequestTypes.CharacterizationChallenge => "challenge",
+        _                                      => "other",
+    };
+
+    private static string EventTypeLabel(string t) => t switch
+    {
+        RequestEventTypes.Comment        => "הודעה",
+        RequestEventTypes.StatusChange   => "שינוי סטטוס",
+        RequestEventTypes.PriorityChange => "שינוי עדיפות",
+        RequestEventTypes.AssigneeChange => "שינוי אחראי",
+        _                                => t,
+    };
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)         return $"{bytes} B";
+        if (bytes < 1_048_576)    return $"{bytes / 1024} KB";
+        return $"{bytes / 1_048_576.0:F1} MB";
+    }
+}

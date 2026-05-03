@@ -153,6 +153,90 @@ public class ProjectRequestDetailDto : ProjectRequestRowDto
 
     public List<ProjectRequestAttachmentDto>  Attachments { get; set; } = new();
     public List<ProjectRequestEventDto>       Events      { get; set; } = new();
+
+    /// <summary>Populated only when RequestType = Extension. Null otherwise.</summary>
+    public ExtensionRequestInfoDto? Extension { get; set; }
+}
+
+// ── Extension request side-data ───────────────────────────────────────────────
+
+/// <summary>Controlled vocabulary for the two-stage extension decision flow.</summary>
+public static class ExtensionDecisionStatuses
+{
+    // Mentor decision states
+    public const string Pending     = "Pending";
+    public const string Approved    = "Approved";
+    public const string Rejected    = "Rejected";
+    public const string Escalated   = "Escalated";
+
+    // Lecturer-stage states
+    public const string NotRequired = "NotRequired";
+
+    public static string Label(string s) => s switch
+    {
+        Pending     => "ממתין להחלטה",
+        Approved    => "אושר",
+        Rejected    => "נדחה",
+        Escalated   => "הועבר למרצה",
+        NotRequired => "לא נדרש",
+        _           => s,
+    };
+}
+
+/// <summary>Carried inside ProjectRequestDetailDto when the request is an Extension.</summary>
+public class ExtensionRequestInfoDto
+{
+    public int       Id                       { get; set; }
+    public int       RequestId                { get; set; }
+    /// <summary>Specific Task this extension targets (mutually exclusive with ProjectMilestoneId).</summary>
+    public int?      TaskId                   { get; set; }
+    public string?   TaskTitle                { get; set; }
+    public int?      ProjectMilestoneId       { get; set; }
+    public string?   MilestoneTitle           { get; set; }
+    /// <summary>Snapshot of the global due date when the request was filed (display only).</summary>
+    public DateTime? CurrentDueDate           { get; set; }
+    /// <summary>Date the student requested.</summary>
+    public DateTime  RequestedDueDate         { get; set; }
+    public string?   Reason                   { get; set; }
+
+    public string    MentorDecision           { get; set; } = ExtensionDecisionStatuses.Pending;
+    public DateTime? MentorDecidedAt          { get; set; }
+    public string?   MentorDecidedByName      { get; set; }
+    public string?   MentorNotes              { get; set; }
+
+    public string    LecturerDecision         { get; set; } = ExtensionDecisionStatuses.NotRequired;
+    public DateTime? LecturerDecidedAt        { get; set; }
+    public string?   LecturerDecidedByName    { get; set; }
+    public string?   LecturerNotes            { get; set; }
+
+    public string    FinalDecision            { get; set; } = ExtensionDecisionStatuses.Pending;
+    /// <summary>Final approved date — written when a decision-maker approves with a chosen date.</summary>
+    public DateTime? ApprovedDueDate          { get; set; }
+}
+
+/// <summary>One pickable target (task or milestone) for the student's
+/// extension-request modal. Returned by GET /api/project-requests/extension-targets.</summary>
+public class ExtensionTargetDto
+{
+    /// <summary>"Task" | "Milestone"</summary>
+    public string    Kind            { get; set; } = "";
+    public int       Id              { get; set; }
+    public string    Title           { get; set; } = "";
+    /// <summary>Parent milestone title for tasks. Empty for milestone-kind rows.</summary>
+    public string?   MilestoneTitle  { get; set; }
+    public DateTime? CurrentDueDate  { get; set; }
+}
+
+/// <summary>Mentor or lecturer decision payload.</summary>
+public class ExtensionDecisionRequest
+{
+    /// <summary>"Mentor" | "Lecturer" — server-validated against the caller's role.</summary>
+    public string    Stage           { get; set; } = "Mentor";
+    /// <summary>"Approved" | "Rejected" | "Escalated" (Escalated only valid at Stage=Mentor).</summary>
+    public string    Decision        { get; set; } = "";
+    /// <summary>Required when Decision = Approved AND the request targets a specific Task or Milestone.</summary>
+    public DateTime? ApprovedDueDate { get; set; }
+    public string?   Notes           { get; set; }
 }
 
 /// <summary>Image attachment metadata for a project request.</summary>
@@ -187,6 +271,10 @@ public class ProjectRequestEventAttachmentDto
 /// Payload for POST /api/project-requests.
 /// Priority is intentionally not a student-controlled field — it defaults to
 /// Normal on the server and can be updated later by Admin / Staff.
+///
+/// When RequestType = "Extension" the extension-specific fields below are
+/// consumed and a side-row is written into ProjectRequestExtensions in the
+/// same insert batch. For all other request types these fields are ignored.
 /// </summary>
 public class CreateProjectRequestRequest
 {
@@ -197,6 +285,14 @@ public class CreateProjectRequestRequest
 
     /// <summary>Image attachments (jpg/png/webp, max 5 MB each, max 5 images).</summary>
     public List<RequestAttachmentUploadRequest> Attachments { get; set; } = new();
+
+    // ── Extension-only fields (used only when RequestType = "Extension") ───
+    /// <summary>Target task — mutually exclusive with TargetMilestoneId.</summary>
+    public int?      TargetTaskId       { get; set; }
+    /// <summary>Target milestone — mutually exclusive with TargetTaskId.</summary>
+    public int?      TargetMilestoneId  { get; set; }
+    /// <summary>Required for Extension when a target is set; the new date the student is asking for.</summary>
+    public DateTime? RequestedDueDate   { get; set; }
 }
 
 /// <summary>One image file within a CreateProjectRequestRequest.</summary>

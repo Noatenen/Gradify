@@ -432,7 +432,94 @@ public class AssignmentManagementController : ControllerBase
                 UpdatedAt            = datetime('now')",
             new { YearId = yearId });
 
+        // Auto-initialize milestones + tasks for every published project in
+        // the year. Replaces the old manual "Apply templates" step. The two
+        // INSERT … SELECT statements are idempotent (NOT EXISTS guards) so
+        // re-publishing or backfilling previously-published projects is safe.
+        await InitializePublishedProjectsAsync(yearId, authUserId);
+
         return Ok();
+    }
+
+    // ── Project initialization on publish ────────────────────────────────────
+    //
+    // Two atomic INSERT … SELECT statements:
+    //   1. ProjectMilestones — one row per (project, AcademicYearMilestone)
+    //      where the milestone template is applicable to the project's type
+    //      (NULL = both types, otherwise must match).
+    //   2. Tasks              — one row per (project, ProjectMilestone, TaskTemplate).
+    //
+    // Both are guarded by NOT EXISTS so already-initialized projects produce
+    // zero new rows. Per-team override tables (TeamTaskDueDateOverrides,
+    // TeamMilestoneDueDateOverrides) are NOT touched.
+    //
+    // Targets every project in the year that is published (AssignmentIsDraft = 0)
+    // and assigned (TeamId IS NOT NULL). Catalog rows (TeamId IS NULL) and
+    // unpublished drafts are skipped.
+    private async Task InitializePublishedProjectsAsync(int yearId, int authUserId)
+    {
+        // 1. ProjectMilestones — instantiate from AcademicYearMilestones,
+        //    filtered by milestone template applicability (project type).
+        const string milestonesSql = @"
+            INSERT INTO ProjectMilestones (ProjectId, AcademicYearMilestoneId, Status)
+            SELECT  p.Id, aym.Id, 'NotStarted'
+            FROM    Projects               p
+            JOIN    AcademicYearMilestones aym ON aym.AcademicYearId = p.AcademicYearId
+            JOIN    MilestoneTemplates     mt  ON mt.Id              = aym.MilestoneTemplateId
+            WHERE   p.AcademicYearId    = @YearId
+              AND   p.AssignmentIsDraft = 0
+              AND   p.TeamId IS NOT NULL
+              AND   aym.IsActive = 1
+              AND   mt.IsActive  = 1
+              AND   (mt.ProjectTypeId IS NULL OR mt.ProjectTypeId = p.ProjectTypeId)
+              AND   NOT EXISTS (
+                        SELECT 1 FROM ProjectMilestones pm
+                        WHERE  pm.ProjectId = p.Id
+                          AND  pm.AcademicYearMilestoneId = aym.Id
+                    )";
+        await _db.SaveDataAsync(milestonesSql, new { YearId = yearId });
+
+        // 2. Tasks — instantiate from TaskTemplates, joined through the
+        //    ProjectMilestone rows we just ensured exist (or were already there).
+        //    Type filtering is implicit: a Tasks row only appears for a project
+        //    that has a matching ProjectMilestones row.
+        const string tasksSql = @"
+            INSERT INTO Tasks
+                (ProjectId, ProjectMilestoneId, Title, Description,
+                 TaskType, Status, DueDate, CreatedByUserId,
+                 IsMandatory, IsSystemTask,
+                 IsSubmission, SubmissionInstructions,
+                 MaxFilesCount, MaxFileSizeMb, AllowedFileTypes)
+            SELECT
+                pm.ProjectId,
+                pm.Id,
+                tt.Title,
+                tt.Description,
+                'System', 'Open',
+                tt.DueDate,
+                @UserId,
+                0, 0,
+                tt.IsSubmission,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.SubmissionInstructions END,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.MaxFilesCount         END,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.MaxFileSizeMb         END,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.AllowedFileTypes      END
+            FROM    TaskTemplates           tt
+            JOIN    AcademicYearMilestones  aym ON aym.MilestoneTemplateId    = tt.MilestoneTemplateId
+            JOIN    ProjectMilestones       pm  ON pm.AcademicYearMilestoneId = aym.Id
+            JOIN    Projects                p   ON p.Id = pm.ProjectId
+            WHERE   tt.IsActive         = 1
+              AND   aym.IsActive        = 1
+              AND   p.AcademicYearId    = @YearId
+              AND   p.AssignmentIsDraft = 0
+              AND   p.TeamId IS NOT NULL
+              AND   NOT EXISTS (
+                        SELECT 1 FROM Tasks t
+                        WHERE  t.ProjectId          = pm.ProjectId
+                          AND  t.ProjectMilestoneId = pm.Id
+                          AND  t.Title              = tt.Title
+                    )";
+        await _db.SaveDataAsync(tasksSql, new { YearId = yearId, UserId = authUserId });
     }
 
     // ─────────────────────────────────────────────────────────────────────────

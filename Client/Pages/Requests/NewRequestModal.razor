@@ -105,6 +105,90 @@
                         }
                     </div>
 
+                    <!-- Postponement (Extension) details — visible only for Extension requests -->
+                    @if (_requestType == RequestTypes.Extension)
+                    {
+                        <div class="nrm-section">
+                            <div class="nrm-section-title">פרטי הדחייה</div>
+
+                            <div class="nrm-field">
+                                <label class="nrm-label">
+                                    בחר משימה / אבן דרך <span class="nrm-required">*</span>
+                                </label>
+                                @if (_targetsLoading)
+                                {
+                                    <div class="nrm-hint">
+                                        <span class="nrm-spinner-sm"></span> טוען רשימה…
+                                    </div>
+                                }
+                                else
+                                {
+                                    <select class="nrm-select @(_touched && string.IsNullOrEmpty(_extTargetKey) ? "nrm-input-error" : "")"
+                                            @bind="_extTargetKey"
+                                            disabled="@(_phase == Phase.Submitting)">
+                                        <option value="">— בחר משימה / אבן דרך —</option>
+                                        @if (_extTargets.Any(t => t.Kind == "Task"))
+                                        {
+                                            <optgroup label="משימות הגשה">
+                                                @foreach (var t in _extTargets.Where(x => x.Kind == "Task"))
+                                                {
+                                                    <option value="@($"Task:{t.Id}")">@t.Title</option>
+                                                }
+                                            </optgroup>
+                                        }
+                                        @if (_extTargets.Any(t => t.Kind == "Milestone"))
+                                        {
+                                            <optgroup label="אבני דרך">
+                                                @foreach (var t in _extTargets.Where(x => x.Kind == "Milestone"))
+                                                {
+                                                    <option value="@($"Milestone:{t.Id}")">@t.Title</option>
+                                                }
+                                            </optgroup>
+                                        }
+                                    </select>
+                                    @if (_touched && string.IsNullOrEmpty(_extTargetKey))
+                                    {
+                                        <div class="nrm-field-error">יש לבחור משימה או אבן דרך</div>
+                                    }
+                                }
+                            </div>
+
+                            @{
+                                var selected = SelectedTarget;
+                            }
+
+                            @if (selected is not null)
+                            {
+                                <div class="nrm-field">
+                                    <label class="nrm-label">תאריך הגשה נוכחי</label>
+                                    <div class="nrm-readonly-value">
+                                        @(selected.CurrentDueDate?.ToString("dd/MM/yyyy") ?? "—")
+                                    </div>
+                                </div>
+                            }
+
+                            <div class="nrm-field">
+                                <label class="nrm-label">
+                                    תאריך מבוקש חדש <span class="nrm-required">*</span>
+                                </label>
+                                <input class="nrm-input @(_touched && _extRequestedDate is null ? "nrm-input-error" : "")"
+                                       type="date"
+                                       @bind="_extRequestedDate"
+                                       disabled="@(_phase == Phase.Submitting)" />
+                                @if (_touched && _extRequestedDate is null)
+                                {
+                                    <div class="nrm-field-error">יש לבחור תאריך מבוקש חדש</div>
+                                }
+                                else if (_touched && selected?.CurrentDueDate is not null
+                                                  && _extRequestedDate is not null
+                                                  && _extRequestedDate.Value.Date <= selected.CurrentDueDate.Value.Date)
+                                {
+                                    <div class="nrm-field-error">התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי</div>
+                                }
+                            </div>
+                        </div>
+                    }
+
                     <!-- Image attachments -->
                     <div class="nrm-field">
                         <label class="nrm-label">צירוף תמונות (אופציונלי)</label>
@@ -215,12 +299,46 @@
     // Resolved on first open
     private int _projectId;
 
+    // Extension-only state — populated when the student opens the modal and
+    // selects type=Extension. The picker source is fetched once per modal open
+    // so the student doesn't pay the cost when they choose a different type.
+    private List<ExtensionTargetDto> _extTargets       = new();
+    private bool                     _extTargetsLoaded;
+    private bool                     _targetsLoading;
+    /// <summary>"Task:{id}" or "Milestone:{id}" — keys the dropdown.</summary>
+    private string                   _extTargetKey = "";
+    private DateTime?                _extRequestedDate;
+
+    /// <summary>The chosen target row (or null when nothing selected).</summary>
+    private ExtensionTargetDto? SelectedTarget
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_extTargetKey)) return null;
+            var parts = _extTargetKey.Split(':', 2);
+            if (parts.Length != 2) return null;
+            if (!int.TryParse(parts[1], out var id)) return null;
+            return _extTargets.FirstOrDefault(t => t.Kind == parts[0] && t.Id == id);
+        }
+    }
+
     protected override async Task OnParametersSetAsync()
     {
         if (IsOpen && _projectId == 0)
         {
             var ctx = await ProjectContext.GetAsync();
             _projectId = ctx?.ProjectId ?? 0;
+        }
+
+        // Load extension picker targets the first time the modal opens.
+        // Targets are project-scoped, so they're cached per modal lifetime.
+        if (IsOpen && !_extTargetsLoaded && !_targetsLoading)
+        {
+            _targetsLoading = true;
+            var list = await RequestsService.GetExtensionTargetsAsync();
+            _extTargets       = list ?? new();
+            _extTargetsLoaded = true;
+            _targetsLoading   = false;
         }
     }
 
@@ -289,6 +407,32 @@
             return;
         }
 
+        // Extension-specific validation — runs only when type=Extension.
+        int?      extTaskId      = null;
+        int?      extMilestoneId = null;
+        if (_requestType == RequestTypes.Extension)
+        {
+            var sel = SelectedTarget;
+            if (sel is null)
+            {
+                _submitError = "יש לבחור משימה או אבן דרך";
+                return;
+            }
+            if (_extRequestedDate is null)
+            {
+                _submitError = "יש לבחור תאריך מבוקש חדש";
+                return;
+            }
+            if (sel.CurrentDueDate is not null
+                && _extRequestedDate.Value.Date <= sel.CurrentDueDate.Value.Date)
+            {
+                _submitError = "התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי";
+                return;
+            }
+            if (sel.Kind == "Task")           extTaskId      = sel.Id;
+            else if (sel.Kind == "Milestone") extMilestoneId = sel.Id;
+        }
+
         _phase = Phase.Submitting;
 
         var req = new CreateProjectRequestRequest
@@ -304,6 +448,11 @@
                 ContentType      = a.ContentType,
                 SizeBytes        = a.Size,
             }).ToList(),
+
+            // Extension fields — silently ignored server-side for non-Extension types.
+            TargetTaskId       = extTaskId,
+            TargetMilestoneId  = extMilestoneId,
+            RequestedDueDate   = _requestType == RequestTypes.Extension ? _extRequestedDate : null,
         };
 
         var newId = await RequestsService.CreateAsync(req);
@@ -329,6 +478,10 @@
         _fileError   = "";
         _touched     = false;
         _submitError = "";
+
+        // Extension-only state
+        _extTargetKey     = "";
+        _extRequestedDate = null;
     }
 
     private async Task TryClose()

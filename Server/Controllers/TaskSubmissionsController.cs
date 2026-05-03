@@ -39,6 +39,11 @@ public class TaskSubmissionsController : ControllerBase
     private static readonly HashSet<string> ValidStatuses =
         new(StringComparer.OrdinalIgnoreCase) { "Submitted", "Reviewed", "NeedsRevision" };
 
+    // Lecturer-feedback file upload policy. Reuses wwwroot/submissions/.
+    private const int  MaxLecturerFilesPerCall = 5;
+    private const int  MaxLecturerFileMb       = 10;
+    private const long MaxLecturerFileBytes    = (long)MaxLecturerFileMb * 1_048_576;
+
     public TaskSubmissionsController(DbRepository db, FilesManage filesManage)
     {
         _db          = db;
@@ -55,6 +60,14 @@ public class TaskSubmissionsController : ControllerBase
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
     public async Task<IActionResult> GetAll(int authUserId)
     {
+        // Visibility gate: a submission becomes visible to lecturers/admins
+        // only after the mentor approves it. The legacy "course-submitted OR
+        // already actioned" gate is preserved as a safety fallback for old
+        // rows. AssignedMentorName is built via a correlated GROUP_CONCAT —
+        // single round-trip, no N+1.
+        // Lecturer-uploaded files are excluded from FileCount (that's the
+        // student-uploaded count; lecturer files are counted separately in
+        // the detail view).
         const string sql = @"
             SELECT
                 s.Id                                 AS SubmissionId,
@@ -70,10 +83,18 @@ public class TaskSubmissionsController : ControllerBase
                 s.Notes,
                 s.Status,
                 s.MentorStatus,
+                s.MentorReviewedAt,
                 s.CourseSubmittedAt,
+                COALESCE(s.ReviewStatus, 'PendingReview')   AS ReviewStatus,
+                COALESCE(s.IsFeedbackPublished, 0)          AS IsFeedbackPublished,
+                s.FeedbackPublishedAt,
                 ay.Id                                AS AcademicYearId,
                 ay.Name                              AS AcademicYearName,
-                COUNT(f.Id)                          AS FileCount
+                SUM(CASE WHEN COALESCE(f.IsLecturerFeedback,0) = 0 THEN 1 ELSE 0 END) AS FileCount,
+                (SELECT GROUP_CONCAT(mu.FirstName || ' ' || mu.LastName, ', ')
+                 FROM   ProjectMentors pmm
+                 JOIN   users          mu ON mu.Id = pmm.UserId
+                 WHERE  pmm.ProjectId = p.Id)        AS AssignedMentorName
             FROM   TaskSubmissions        s
             JOIN   Tasks                  t   ON t.Id   = s.TaskId
             JOIN   users                  u   ON u.Id   = s.SubmittedByUserId
@@ -83,7 +104,9 @@ public class TaskSubmissionsController : ControllerBase
             JOIN   MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
             JOIN   AcademicYears          ay  ON ay.Id  = p.AcademicYearId
             LEFT JOIN TaskSubmissionFiles f   ON f.TaskSubmissionId = s.Id
-            WHERE  (s.CourseSubmittedAt IS NOT NULL OR s.Status != 'Submitted')
+            WHERE  s.MentorStatus = 'Approved'
+              OR   s.CourseSubmittedAt IS NOT NULL
+              OR   s.Status != 'Submitted'
             GROUP  BY s.Id
             ORDER  BY s.SubmittedAt DESC";
 
@@ -511,6 +534,28 @@ public class TaskSubmissionsController : ControllerBase
                     relatedEntityType: "TaskSubmission",
                     relatedEntityId:   subRow.TaskId);  // TaskId so student submissions page can deep-link
             }
+            else if (req.MentorStatus == "Approved" && !string.IsNullOrEmpty(taskTitle))
+            {
+                // Notify lecturers/admins — a final submission is now ready for review.
+                const string lecturersSql = @"
+                    SELECT u.Id
+                    FROM   users u
+                    JOIN   UserRoles ur ON ur.UserId = u.Id
+                    WHERE  ur.Role IN ('Admin','Staff')
+                      AND  u.IsActive = 1";
+                var lecturerIds = (await _db.GetRecordsAsync<int>(lecturersSql))?.ToList() ?? new();
+
+                if (lecturerIds.Count > 0)
+                {
+                    await NotificationHelper.CreateForUsersAsync(
+                        _db, lecturerIds,
+                        title:             "הגשה סופית חדשה לבדיקה",
+                        message:           $"התקבלה הגשה סופית חדשה לבדיקה — {taskTitle}",
+                        type:              "FinalSubmissionAvailable",
+                        relatedEntityType: "TaskSubmission",
+                        relatedEntityId:   id);
+                }
+            }
         }
         catch { /* notifications are best-effort */ }
 
@@ -527,6 +572,366 @@ public class TaskSubmissionsController : ControllerBase
         return Ok();
     }
 
+    // ── GET /api/task-submissions/{id}/lecturer-detail ────────────────────
+    //
+    // Full detail for the lecturer review drawer: identity, mentor side,
+    // lecturer review fields, and attached files in one round-trip.
+    // Visibility is gated on MentorStatus = 'Approved' so drafts never leak.
+    [HttpGet("{id:int}/lecturer-detail")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> GetLecturerDetail(int id, int authUserId)
+    {
+        const string sql = @"
+            SELECT  s.Id,
+                    s.TaskId,
+                    t.Title                              AS TaskTitle,
+                    p.Id                                 AS ProjectId,
+                    p.ProjectNumber,
+                    p.Title                              AS ProjectTitle,
+                    tm.TeamName                          AS TeamName,
+                    mt.Title                             AS MilestoneTitle,
+                    s.SubmittedByUserId,
+                    u.FirstName || ' ' || u.LastName     AS SubmittedByName,
+                    s.SubmittedAt,
+                    s.Notes,
+                    s.MentorStatus,
+                    s.MentorFeedback,
+                    s.MentorReviewedAt,
+                    s.CourseSubmittedAt,
+                    s.Status,
+                    COALESCE(s.ReviewStatus, 'PendingReview') AS ReviewStatus,
+                    s.ReviewerFeedback,
+                    COALESCE(s.IsFeedbackPublished, 0)   AS IsFeedbackPublished,
+                    s.FeedbackPublishedAt,
+                    rb.FirstName || ' ' || rb.LastName   AS ReviewedByName,
+                    (SELECT GROUP_CONCAT(mu.FirstName || ' ' || mu.LastName, ', ')
+                     FROM   ProjectMentors pmm
+                     JOIN   users          mu ON mu.Id = pmm.UserId
+                     WHERE  pmm.ProjectId = p.Id)        AS MentorName
+            FROM    TaskSubmissions       s
+            JOIN    Tasks                 t   ON t.Id   = s.TaskId
+            JOIN    users                 u   ON u.Id   = s.SubmittedByUserId
+            JOIN    ProjectMilestones     pm  ON pm.Id  = t.ProjectMilestoneId
+            JOIN    Projects              p   ON p.Id   = pm.ProjectId
+            LEFT JOIN Teams               tm  ON tm.Id  = p.TeamId
+            JOIN    AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+            JOIN    MilestoneTemplates    mt  ON mt.Id  = aym.MilestoneTemplateId
+            LEFT JOIN users               rb  ON rb.Id  = s.ReviewedByUserId
+            WHERE   s.Id = @Id
+              AND   s.MentorStatus = 'Approved'
+            LIMIT   1";
+
+        var row = (await _db.GetRecordsAsync<LecturerSubmissionDetailDto>(
+                      sql, new { Id = id }))?.FirstOrDefault();
+
+        if (row is null)
+            return NotFound("ההגשה לא נמצאה או שטרם אושרה על ידי המנחה");
+
+        const string filesSql = @"
+            SELECT  Id, TaskSubmissionId, OriginalFileName, StoredFileName,
+                    ContentType, SizeBytes, UploadedAt,
+                    COALESCE(IsLecturerFeedback, 0) AS IsLecturerFeedback,
+                    FilePublishedAt
+            FROM    TaskSubmissionFiles
+            WHERE   TaskSubmissionId = @SubId
+            ORDER   BY Id";
+        row.Files = (await _db.GetRecordsAsync<TaskSubmissionFileDto>(
+                        filesSql, new { SubId = id }))?.ToList() ?? new();
+
+        // ── Full submission history for this task (newest first) ─────────────
+        const string historySql = @"
+            SELECT  s.Id,
+                    s.SubmittedAt,
+                    s.Notes,
+                    s.Status,
+                    s.ReviewerFeedback,
+                    s.MentorStatus,
+                    s.MentorFeedback,
+                    s.MentorReviewedAt,
+                    s.CourseSubmittedAt,
+                    COALESCE(s.ReviewStatus, 'PendingReview') AS ReviewStatus,
+                    COALESCE(s.IsFeedbackPublished, 0)        AS IsFeedbackPublished,
+                    s.FeedbackPublishedAt
+            FROM    TaskSubmissions s
+            WHERE   s.TaskId = @TaskId
+            ORDER   BY s.Id DESC";
+
+        var history = (await _db.GetRecordsAsync<SubmissionHistoryItemDto>(
+                          historySql, new { row.TaskId }))?.ToList() ?? new();
+
+        if (history.Count > 0)
+        {
+            const string historyFilesSql = @"
+                SELECT  f.Id, f.TaskSubmissionId, f.OriginalFileName, f.StoredFileName,
+                        f.ContentType, f.SizeBytes, f.UploadedAt,
+                        COALESCE(f.IsLecturerFeedback, 0) AS IsLecturerFeedback,
+                        f.FilePublishedAt
+                FROM    TaskSubmissionFiles f
+                WHERE   f.TaskSubmissionId IN
+                    (SELECT s2.Id FROM TaskSubmissions s2 WHERE s2.TaskId = @TaskId)
+                ORDER   BY f.TaskSubmissionId DESC, f.Id";
+
+            var historyFiles = (await _db.GetRecordsAsync<TaskSubmissionFileDto>(
+                                   historyFilesSql, new { row.TaskId }))?.ToList() ?? new();
+
+            var filesBySub = historyFiles
+                .GroupBy(f => f.TaskSubmissionId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var h in history)
+                h.Files = filesBySub.GetValueOrDefault(h.Id) ?? new();
+        }
+
+        row.SubmissionHistory = history;
+
+        return Ok(row);
+    }
+
+    // ── PATCH /api/task-submissions/{id}/lecturer-review ──────────────────
+    //
+    // Save-draft endpoint: stores the lecturer's review status + draft feedback.
+    // Does NOT publish the feedback to students (IsFeedbackPublished stays 0).
+    // Allowed only on submissions the mentor already approved.
+    [HttpPatch("{id:int}/lecturer-review")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> SaveLecturerReview(
+        int id, [FromBody] SaveLecturerReviewRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.ReviewStatus) ||
+            !LecturerReviewStatuses.All.Contains(req.ReviewStatus))
+            return BadRequest("סטטוס בדיקה לא תקין");
+
+        // Verify the submission exists and is mentor-approved
+        const string checkSql = @"
+            SELECT MentorStatus FROM TaskSubmissions WHERE Id = @Id LIMIT 1";
+        var mentorStatus = (await _db.GetRecordsAsync<string>(
+            checkSql, new { Id = id }))?.FirstOrDefault();
+
+        if (mentorStatus is null) return NotFound("ההגשה לא נמצאה");
+        if (mentorStatus != "Approved")
+            return BadRequest("ניתן לבדוק רק הגשות שאושרו על ידי המנחה");
+
+        const string updateSql = @"
+            UPDATE TaskSubmissions
+            SET    ReviewStatus     = @ReviewStatus,
+                   ReviewerFeedback = @ReviewerFeedback,
+                   ReviewedByUserId = @AuthUserId
+            WHERE  Id = @Id";
+
+        await _db.SaveDataAsync(updateSql, new
+        {
+            req.ReviewStatus,
+            ReviewerFeedback = string.IsNullOrWhiteSpace(req.ReviewerFeedback)
+                ? null : req.ReviewerFeedback.Trim(),
+            AuthUserId = authUserId,
+            Id         = id,
+        });
+
+        return Ok();
+    }
+
+    // ── POST /api/task-submissions/{id}/publish-feedback ──────────────────
+    //
+    // Publishes the previously-saved review to the team. Sets
+    // IsFeedbackPublished = 1, FeedbackPublishedAt = now, stamps any pending
+    // lecturer files (FilePublishedAt IS NULL → now), and notifies all active
+    // team members. Refuses to publish empty feedback.
+    [HttpPost("{id:int}/publish-feedback")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> PublishFeedback(int id, int authUserId)
+    {
+        const string loadSql = @"
+            SELECT s.Id, s.TaskId, s.MentorStatus,
+                   COALESCE(s.ReviewStatus, 'PendingReview')   AS ReviewStatus,
+                   s.ReviewerFeedback,
+                   COALESCE(s.IsFeedbackPublished, 0)          AS IsFeedbackPublished,
+                   t.Title    AS TaskTitle,
+                   p.Id       AS ProjectId
+            FROM   TaskSubmissions s
+            JOIN   Tasks    t ON s.TaskId    = t.Id
+            JOIN   Projects p ON t.ProjectId = p.Id
+            WHERE  s.Id = @Id
+            LIMIT  1";
+
+        var row = (await _db.GetRecordsAsync<PublishLoadRow>(
+                      loadSql, new { Id = id }))?.FirstOrDefault();
+
+        if (row is null) return NotFound("ההגשה לא נמצאה");
+        if (row.MentorStatus != "Approved")
+            return BadRequest("ניתן לפרסם משוב רק לאחר אישור מנחה");
+        if (string.IsNullOrWhiteSpace(row.ReviewerFeedback))
+            return BadRequest("לא ניתן לפרסם משוב ריק. כתבי משוב לפני הפרסום.");
+
+        const string updateSql = @"
+            UPDATE TaskSubmissions
+            SET    IsFeedbackPublished = 1,
+                   FeedbackPublishedAt = datetime('now'),
+                   ReviewedByUserId    = @AuthUserId,
+                   ReviewStatus        = CASE
+                       WHEN COALESCE(ReviewStatus,'PendingReview') = 'PendingReview'
+                            THEN 'FeedbackReturned'
+                       ELSE ReviewStatus
+                   END
+            WHERE  Id = @Id";
+        await _db.SaveDataAsync(updateSql, new { Id = id, AuthUserId = authUserId });
+
+        // Stamp any pending lecturer files so they become visible to students.
+        await _db.SaveDataAsync(@"
+            UPDATE TaskSubmissionFiles
+            SET    FilePublishedAt = datetime('now')
+            WHERE  TaskSubmissionId               = @Id
+              AND  COALESCE(IsLecturerFeedback,0) = 1
+              AND  FilePublishedAt IS NULL", new { Id = id });
+
+        // Notify all active team members. Best-effort.
+        try
+        {
+            const string teamSql = @"
+                SELECT m.UserId
+                FROM   Projects   p
+                JOIN   Teams      tm ON tm.Id = p.TeamId
+                JOIN   TeamMembers m  ON m.TeamId = tm.Id
+                WHERE  p.Id      = @ProjectId
+                  AND  m.IsActive = 1";
+            var memberIds = (await _db.GetRecordsAsync<int>(
+                                teamSql, new { row.ProjectId }))?.ToList() ?? new();
+
+            if (memberIds.Count > 0)
+            {
+                await NotificationHelper.CreateForUsersAsync(
+                    _db, memberIds,
+                    title:             "התקבל משוב מרצה חדש",
+                    message:           $"התקבל משוב מרצה חדש עבור {row.TaskTitle}",
+                    type:              "LecturerFeedbackPublished",
+                    relatedEntityType: "TaskSubmission",
+                    relatedEntityId:   row.TaskId);
+            }
+        }
+        catch { /* notifications are best-effort */ }
+
+        return Ok();
+    }
+
+    // ── POST /api/task-submissions/{id}/lecturer-files ────────────────────
+    //
+    // Uploads one or more lecturer-feedback files. Reuses wwwroot/submissions/
+    // and TaskSubmissionFiles, flagged with IsLecturerFeedback = 1.
+    // Newly-uploaded files have FilePublishedAt = NULL until republish.
+    // Allowed only on mentor-approved submissions; admin/staff only.
+    [HttpPost("{id:int}/lecturer-files")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> UploadLecturerFiles(
+        int id, [FromBody] UploadLecturerFilesRequest req, int authUserId)
+    {
+        if (req.Files.Count == 0)
+            return BadRequest("יש לבחור לפחות קובץ אחד להעלאה");
+        if (req.Files.Count > MaxLecturerFilesPerCall)
+            return BadRequest("ניתן להעלות עד " + MaxLecturerFilesPerCall + " קבצים בפעם אחת");
+
+        const string checkSql = "SELECT MentorStatus FROM TaskSubmissions WHERE Id = @Id LIMIT 1";
+        var mentorStatus = (await _db.GetRecordsAsync<string>(checkSql, new { Id = id }))?.FirstOrDefault();
+        if (mentorStatus is null) return NotFound("ההגשה לא נמצאה");
+        if (mentorStatus != "Approved")
+            return BadRequest("ניתן להעלות קבצי משוב רק להגשות שאושרו על ידי המנחה");
+
+        for (int i = 0; i < req.Files.Count; i++)
+        {
+            var f       = req.Files[i];
+            int fileNo  = i + 1;
+            string name = f.OriginalFileName ?? "";
+            if (string.IsNullOrWhiteSpace(name))
+                return BadRequest("קובץ " + fileNo + ": חסר שם קובץ");
+            if (string.IsNullOrWhiteSpace(f.FileBase64))
+                return BadRequest("קובץ " + fileNo + ": חסר תוכן קובץ");
+            if (f.SizeBytes > MaxLecturerFileBytes)
+                return BadRequest("קובץ \"" + name + "\" חורג מהגודל המקסימלי ("
+                                  + MaxLecturerFileMb + " MB)");
+        }
+
+        // Skip duplicates: an existing lecturer-file with the same OriginalFileName
+        // is a no-op. Caller can replace by deleting first.
+        const string existingSql = @"
+            SELECT LOWER(OriginalFileName)
+            FROM   TaskSubmissionFiles
+            WHERE  TaskSubmissionId = @SubId AND COALESCE(IsLecturerFeedback,0) = 1";
+        var existing = (await _db.GetRecordsAsync<string>(existingSql, new { SubId = id }))
+            ?.ToHashSet() ?? new HashSet<string>();
+
+        const string insertFileSql = @"
+            INSERT INTO TaskSubmissionFiles
+                (TaskSubmissionId, OriginalFileName, StoredFileName, ContentType, SizeBytes,
+                 UploadedAt, IsLecturerFeedback, FilePublishedAt)
+            VALUES
+                (@SubId, @OriginalFileName, @StoredFileName, @ContentType, @SizeBytes,
+                 datetime('now'), 1, NULL)";
+
+        int saved = 0;
+        foreach (var f in req.Files)
+        {
+            if (existing.Contains(f.OriginalFileName.ToLowerInvariant())) continue;
+
+            string storedFileName;
+            try
+            {
+                storedFileName = await _filesManage.SaveRawFile(f.FileBase64, f.OriginalFileName, Container);
+            }
+            catch { continue; }
+
+            await _db.SaveDataAsync(insertFileSql, new
+            {
+                SubId            = id,
+                OriginalFileName = f.OriginalFileName,
+                StoredFileName   = storedFileName,
+                ContentType      = string.IsNullOrWhiteSpace(f.ContentType)
+                                       ? "application/octet-stream"
+                                       : f.ContentType,
+                SizeBytes        = f.SizeBytes,
+            });
+            saved++;
+        }
+
+        return Ok(new { saved });
+    }
+
+    // ── DELETE /api/task-submissions/{id}/lecturer-files/{fileId} ─────────
+    //
+    // Removes a single lecturer-feedback file at any time. After publish,
+    // students lose access to the file immediately. Lecturers can re-upload
+    // and re-publish to roll forward. Admin/staff only.
+    [HttpDelete("{id:int}/lecturer-files/{fileId:int}")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> DeleteLecturerFile(
+        int id, int fileId, int authUserId,
+        [FromServices] IWebHostEnvironment env)
+    {
+        const string loadSql = @"
+            SELECT  f.Id                              AS FileId,
+                    f.StoredFileName,
+                    COALESCE(f.IsLecturerFeedback, 0) AS IsLecturerFeedback
+            FROM    TaskSubmissionFiles f
+            WHERE   f.Id               = @FileId
+              AND   f.TaskSubmissionId = @SubId
+            LIMIT   1";
+
+        var row = (await _db.GetRecordsAsync<DeleteLecturerFileRow>(
+                      loadSql, new { SubId = id, FileId = fileId }))?.FirstOrDefault();
+        if (row is null) return NotFound("הקובץ לא נמצא");
+        if (row.IsLecturerFeedback != 1)
+            return BadRequest("ניתן למחוק רק קבצי משוב מרצה דרך נקודת קצה זו");
+
+        await _db.SaveDataAsync(
+            "DELETE FROM TaskSubmissionFiles WHERE Id = @FileId", new { FileId = fileId });
+
+        try
+        {
+            string path = Path.Combine(env.WebRootPath, Container, row.StoredFileName);
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+        catch { /* non-fatal */ }
+
+        return Ok();
+    }
+
     // ── GET /api/task-submissions/{id}/files/{fileId}/download ────────────
     //
     // Streams a submission file back to the caller.
@@ -539,8 +944,12 @@ public class TaskSubmissionsController : ControllerBase
         const string sql = @"
             SELECT  f.OriginalFileName,
                     f.StoredFileName,
-                    f.ContentType
+                    f.ContentType,
+                    COALESCE(f.IsLecturerFeedback, 0)  AS IsLecturerFeedback,
+                    f.FilePublishedAt                  AS FilePublishedAt,
+                    COALESCE(s.IsFeedbackPublished, 0) AS IsFeedbackPublished
             FROM    TaskSubmissionFiles f
+            JOIN    TaskSubmissions     s ON s.Id = f.TaskSubmissionId
             WHERE   f.Id               = @FileId
               AND   f.TaskSubmissionId = @SubId";
 
@@ -549,6 +958,15 @@ public class TaskSubmissionsController : ControllerBase
                   ?.FirstOrDefault();
 
         if (row is null) return NotFound("הקובץ לא נמצא");
+
+        // Gate lecturer-feedback files for students. Visible only when the
+        // parent feedback is published AND this specific file has been
+        // stamped with FilePublishedAt (handles republish-after-edit cleanly).
+        if (row.IsLecturerFeedback == 1 && User.IsInRole(Roles.Student))
+        {
+            if (row.IsFeedbackPublished != 1 || row.FilePublishedAt is null)
+                return NotFound("הקובץ לא זמין");
+        }
 
         string path = Path.Combine(env.WebRootPath, Container, row.StoredFileName);
         if (!System.IO.File.Exists(path)) return NotFound("קובץ לא נמצא בדיסק");
@@ -610,8 +1028,30 @@ public class TaskSubmissionsController : ControllerBase
 
     private sealed class FileDownloadRow
     {
-        public string OriginalFileName { get; set; } = "";
-        public string StoredFileName   { get; set; } = "";
-        public string ContentType      { get; set; } = "";
+        public string    OriginalFileName    { get; set; } = "";
+        public string    StoredFileName      { get; set; } = "";
+        public string    ContentType         { get; set; } = "";
+        public int       IsLecturerFeedback  { get; set; }
+        public DateTime? FilePublishedAt     { get; set; }
+        public int       IsFeedbackPublished { get; set; }
+    }
+
+    private sealed class DeleteLecturerFileRow
+    {
+        public int    FileId             { get; set; }
+        public string StoredFileName     { get; set; } = "";
+        public int    IsLecturerFeedback { get; set; }
+    }
+
+    private sealed class PublishLoadRow
+    {
+        public int     Id                  { get; set; }
+        public int     TaskId              { get; set; }
+        public string  MentorStatus        { get; set; } = "";
+        public string? ReviewStatus        { get; set; }
+        public string? ReviewerFeedback    { get; set; }
+        public int     IsFeedbackPublished { get; set; }
+        public string  TaskTitle           { get; set; } = "";
+        public int     ProjectId           { get; set; }
     }
 }

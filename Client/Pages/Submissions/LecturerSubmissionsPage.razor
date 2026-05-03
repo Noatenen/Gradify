@@ -1,6 +1,7 @@
 @page "/lecturer-submissions"
 @layout AppLayout
 @using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Forms
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
@@ -43,24 +44,18 @@
                 </div>
             </div>
 
-            <!-- Status row -->
+            <!-- Review-status badge + published indicator -->
             <div class="lsub-drawer-status-row">
-                <span class="lsub-status-badge lsub-badge-@_drawer.Status.ToLower()">
-                    @StatusLabel(_drawer.Status)
+                <span class="lsub-rstatus-badge lsub-rstatus-@(_drawer.ReviewStatus.ToLower())">
+                    @LecturerReviewStatuses.Label(_drawer.ReviewStatus)
                 </span>
-                <div class="lsub-drawer-status-actions">
-                    @foreach (var s in new[] { "Submitted", "Reviewed", "NeedsRevision" })
-                    {
-                        if (s != _drawer.Status)
-                        {
-                            <button class="lsub-status-btn lsub-status-btn-@s.ToLower()"
-                                    disabled="@_statusUpdating"
-                                    @onclick="@(async () => await SetStatus(s))">
-                                @StatusLabel(s)
-                            </button>
-                        }
-                    }
-                </div>
+                @if (_drawer.IsFeedbackPublished)
+                {
+                    <span class="lsub-published-pill" title="המשוב פורסם לסטודנטים">
+                        <span class="oi oi-check" aria-hidden="true"></span>
+                        משוב פורסם
+                    </span>
+                }
             </div>
         </div>
 
@@ -74,12 +69,44 @@
                 </div>
             }
 
+            @* ── Mentor approval block ── *@
+            @if (_detail is not null)
+            {
+                <div class="lsub-drawer-section lsub-mentor-block">
+                    <div class="lsub-drawer-section-title">אישור המנחה</div>
+                    <div class="lsub-mentor-meta">
+                        <span class="lsub-mentor-status-approved">
+                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                            אושר על ידי המנחה
+                        </span>
+                        @if (_detail.MentorReviewedAt is not null)
+                        {
+                            <span class="lsub-mentor-date">
+                                <span class="oi oi-clock" aria-hidden="true"></span>
+                                @_detail.MentorReviewedAt.Value.ToString("dd/MM/yyyy HH:mm")
+                            </span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(_detail.MentorName))
+                        {
+                            <span class="lsub-mentor-date">
+                                <span class="oi oi-person" aria-hidden="true"></span>
+                                @_detail.MentorName
+                            </span>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(_detail.MentorFeedback))
+                    {
+                        <div class="lsub-mentor-feedback">@_detail.MentorFeedback</div>
+                    }
+                </div>
+            }
+
+            @* ── Student-uploaded files ── *@
             <div class="lsub-drawer-section">
                 <div class="lsub-drawer-section-title">
-                    קבצים מצורפים
-                    <span class="lsub-drawer-file-count">@_drawer.FileCount</span>
+                    קבצי הסטודנטים
+                    <span class="lsub-drawer-file-count">@StudentFiles.Count</span>
                 </div>
-
                 @if (_detailLoading)
                 {
                     <div class="lsub-drawer-file-loading">
@@ -87,14 +114,14 @@
                         טוען קבצים…
                     </div>
                 }
-                else if (_detailFiles.Count == 0)
+                else if (StudentFiles.Count == 0)
                 {
                     <div class="lsub-drawer-empty-files">לא צורפו קבצים</div>
                 }
                 else
                 {
                     <div class="lsub-file-list">
-                        @foreach (var f in _detailFiles)
+                        @foreach (var f in StudentFiles)
                         {
                             <div class="lsub-file-item">
                                 <span class="lsub-file-icon oi @FileIcon(f.ContentType)" aria-hidden="true"></span>
@@ -113,6 +140,289 @@
                     </div>
                 }
             </div>
+
+            @* ── Submission history (only when more than one submission for this task) ── *@
+            @if (_detail is not null && _detail.SubmissionHistory.Count > 1)
+            {
+                <div class="lsub-drawer-section lsub-history-block">
+                    <div class="lsub-drawer-section-title">
+                        היסטוריית הגשות
+                        <span class="lsub-drawer-file-count">@_detail.SubmissionHistory.Count</span>
+                    </div>
+                    <div class="lsub-history-list">
+                        @foreach (var (h, idx) in _detail.SubmissionHistory.Select((x, i) => (x, i)))
+                        {
+                            bool expanded = _expandedHistory.Contains(h.Id);
+                            bool isCurrent = h.Id == _detail.Id;
+                            int  number   = _detail.SubmissionHistory.Count - idx; // newest = highest number
+                            var  studentFiles  = h.Files.Where(f => !f.IsLecturerFeedback).ToList();
+                            var  lecturerFiles = h.Files.Where(f =>  f.IsLecturerFeedback &&
+                                                                     f.FilePublishedAt is not null).ToList();
+
+                            <div class="lsub-history-item @(isCurrent ? "lsub-history-current" : "")">
+                                <button type="button"
+                                        class="lsub-history-header"
+                                        @onclick="() => ToggleHistoryItem(h.Id)">
+                                    <div class="lsub-history-header-start">
+                                        <span class="lsub-history-number">הגשה @number</span>
+                                        @if (isCurrent)
+                                        {
+                                            <span class="lsub-history-current-pill">נבחרה</span>
+                                        }
+                                        <span class="lsub-mentor-badge lsub-mbadge-@(h.MentorStatus.ToLower())">
+                                            מנחה: @MentorStatusLabel(h.MentorStatus)
+                                        </span>
+                                        <span class="lsub-rstatus-badge lsub-rstatus-@((h.ReviewStatus ?? "PendingReview").ToLower())">
+                                            @LecturerReviewStatuses.Label(h.ReviewStatus ?? "PendingReview")
+                                        </span>
+                                        @if (h.IsFeedbackPublished)
+                                        {
+                                            <span class="lsub-published-pill">
+                                                <span class="oi oi-check" aria-hidden="true"></span>
+                                                פורסם
+                                            </span>
+                                        }
+                                    </div>
+                                    <div class="lsub-history-header-end">
+                                        <span class="lsub-history-date">
+                                            @h.SubmittedAt.ToString("dd/MM/yy HH:mm")
+                                        </span>
+                                        <span class="oi @(expanded ? "oi-chevron-top" : "oi-chevron-bottom") lsub-history-chevron"
+                                              aria-hidden="true"></span>
+                                    </div>
+                                </button>
+
+                                @if (expanded)
+                                {
+                                    <div class="lsub-history-body">
+                                        @if (!string.IsNullOrWhiteSpace(h.Notes))
+                                        {
+                                            <div class="lsub-history-notes">
+                                                <div class="lsub-history-sub-title">הערות הסטודנט</div>
+                                                <div class="lsub-history-notes-text">@h.Notes</div>
+                                            </div>
+                                        }
+
+                                        @if (studentFiles.Count > 0)
+                                        {
+                                            <div class="lsub-history-files">
+                                                <div class="lsub-history-sub-title">קבצי ההגשה</div>
+                                                <div class="lsub-file-list">
+                                                    @foreach (var f in studentFiles)
+                                                    {
+                                                        <div class="lsub-file-item">
+                                                            <span class="lsub-file-icon oi @FileIcon(f.ContentType)" aria-hidden="true"></span>
+                                                            <div class="lsub-file-info">
+                                                                <span class="lsub-file-name">@f.OriginalFileName</span>
+                                                                <span class="lsub-file-size">@FormatSize(f.SizeBytes)</span>
+                                                            </div>
+                                                            <a class="lsub-file-download"
+                                                               href="/submissions/@f.StoredFileName"
+                                                               download="@f.OriginalFileName"
+                                                               title="הורדה">
+                                                                <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                                            </a>
+                                                        </div>
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+
+                                        @if (!string.IsNullOrWhiteSpace(h.MentorFeedback))
+                                        {
+                                            <div class="lsub-history-feedback lsub-history-feedback-mentor">
+                                                <div class="lsub-history-sub-title">פידבק מנחה</div>
+                                                <div class="lsub-history-feedback-text">@h.MentorFeedback</div>
+                                                @if (h.MentorReviewedAt is not null)
+                                                {
+                                                    <div class="lsub-history-feedback-date">
+                                                        @h.MentorReviewedAt.Value.ToString("dd/MM/yy HH:mm")
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+
+                                        @* Lecturer feedback: only if published *@
+                                        @if (h.IsFeedbackPublished &&
+                                             !string.IsNullOrWhiteSpace(h.ReviewerFeedback))
+                                        {
+                                            <div class="lsub-history-feedback lsub-history-feedback-lecturer">
+                                                <div class="lsub-history-sub-title">
+                                                    פידבק מרצה
+                                                    @if (h.FeedbackPublishedAt is not null)
+                                                    {
+                                                        <span class="lsub-history-feedback-date">
+                                                            @h.FeedbackPublishedAt.Value.ToString("dd/MM/yy HH:mm")
+                                                        </span>
+                                                    }
+                                                </div>
+                                                <div class="lsub-history-feedback-text">@h.ReviewerFeedback</div>
+                                            </div>
+                                        }
+
+                                        @if (lecturerFiles.Count > 0)
+                                        {
+                                            <div class="lsub-history-files">
+                                                <div class="lsub-history-sub-title">קבצי משוב מרצה</div>
+                                                <div class="lsub-file-list">
+                                                    @foreach (var f in lecturerFiles)
+                                                    {
+                                                        <div class="lsub-file-item">
+                                                            <span class="lsub-file-icon oi @FileIcon(f.ContentType)" aria-hidden="true"></span>
+                                                            <div class="lsub-file-info">
+                                                                <span class="lsub-file-name">@f.OriginalFileName</span>
+                                                                <span class="lsub-file-size">@FormatSize(f.SizeBytes)</span>
+                                                            </div>
+                                                            <a class="lsub-file-download"
+                                                               href="/submissions/@f.StoredFileName"
+                                                               download="@f.OriginalFileName"
+                                                               title="הורדה">
+                                                                <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                                            </a>
+                                                        </div>
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @* ── Lecturer review section ── *@
+            @if (_detail is not null)
+            {
+                <div class="lsub-drawer-section lsub-review-block">
+                    <div class="lsub-drawer-section-title">משוב מרצה</div>
+
+                    <label class="lsub-review-label">סטטוס בדיקה</label>
+                    <select class="lsub-review-select"
+                            @bind="_reviewStatus"
+                            disabled="@(_savingDraft || _publishing)">
+                        @foreach (var s in LecturerReviewStatuses.All)
+                        {
+                            <option value="@s">@LecturerReviewStatuses.Label(s)</option>
+                        }
+                    </select>
+
+                    <label class="lsub-review-label">משוב לסטודנטים</label>
+                    <textarea class="lsub-review-textarea"
+                              rows="6"
+                              maxlength="4000"
+                              placeholder="כתבי כאן את המשוב הסופי. הסטודנטים יראו אותו רק לאחר 'פרסם משוב'."
+                              value="@_feedbackDraft"
+                              @oninput="@(e => _feedbackDraft = e.Value?.ToString() ?? "")"
+                              disabled="@(_savingDraft || _publishing)"></textarea>
+
+                    @* Lecturer feedback files *@
+                    <label class="lsub-review-label">קבצים מהמרצה</label>
+                    @if (LecturerFiles.Count > 0)
+                    {
+                        <div class="lsub-file-list lsub-feedback-file-list">
+                            @foreach (var f in LecturerFiles)
+                            {
+                                bool pending = f.FilePublishedAt is null;
+                                <div class="lsub-file-item @(pending ? "lsub-file-item-pending" : "")">
+                                    <span class="lsub-file-icon oi @FileIcon(f.ContentType)" aria-hidden="true"></span>
+                                    <div class="lsub-file-info">
+                                        <span class="lsub-file-name">@f.OriginalFileName</span>
+                                        <span class="lsub-file-size">@FormatSize(f.SizeBytes)</span>
+                                    </div>
+                                    @if (pending)
+                                    {
+                                        <span class="lsub-file-pending-pill" title="טרם פורסם לסטודנטים">
+                                            <span class="oi oi-clock" aria-hidden="true"></span>
+                                            טיוטה
+                                        </span>
+                                    }
+                                    <a class="lsub-file-download"
+                                       href="/submissions/@f.StoredFileName"
+                                       download="@f.OriginalFileName"
+                                       title="הורדה">
+                                        <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                    </a>
+                                    <button class="lsub-file-remove"
+                                            type="button"
+                                            title="הסר קובץ"
+                                            disabled="@_uploadingFiles"
+                                            @onclick="@(() => DeleteLecturerFile(f.Id))">
+                                        <span class="oi oi-x" aria-hidden="true"></span>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="lsub-drawer-empty-files lsub-feedback-empty">לא צורפו קבצים למשוב</div>
+                    }
+
+                    @if (HasPendingFileChanges)
+                    {
+                        <div class="lsub-feedback-pending-banner">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            יש קבצים שלא פורסמו לסטודנטים — לחצי "פרסם מחדש לסטודנטים" כדי לעדכן.
+                        </div>
+                    }
+
+                    <label class="lsub-feedback-upload-zone">
+                        <span class="oi oi-cloud-upload" aria-hidden="true"></span>
+                        <span>
+                            @(_uploadingFiles
+                                ? "מעלה קבצים…"
+                                : "לחצי לבחירת קבצים (עד " + MaxLecturerFiles + " קבצים, עד "
+                                  + MaxLecturerFileMb + " MB לכל אחד)")
+                        </span>
+                        <InputFile class="lsub-feedback-upload-input"
+                                   multiple
+                                   OnChange="OnLecturerFilesSelected"
+                                   disabled="@_uploadingFiles" />
+                    </label>
+                    @if (!string.IsNullOrEmpty(_uploadError))
+                    {
+                        <div class="lsub-review-error">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            @_uploadError
+                        </div>
+                    }
+
+                    @if (_drawer.IsFeedbackPublished && _drawer.FeedbackPublishedAt is not null)
+                    {
+                        <div class="lsub-review-published-note">
+                            <span class="oi oi-info" aria-hidden="true"></span>
+                            המשוב פורסם בתאריך @_drawer.FeedbackPublishedAt.Value.ToString("dd/MM/yyyy HH:mm")
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrEmpty(_reviewError))
+                    {
+                        <div class="lsub-review-error">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            @_reviewError
+                        </div>
+                    }
+
+                    <div class="lsub-review-actions">
+                        <button class="lsub-review-btn lsub-review-btn-draft"
+                                disabled="@(_savingDraft || _publishing)"
+                                @onclick="SaveDraft">
+                            @if (_savingDraft) { <span class="lsub-spinner-sm"></span> }
+                            else                { <span class="oi oi-document" aria-hidden="true"></span> }
+                            <span>שמור טיוטה</span>
+                        </button>
+                        <button class="lsub-review-btn lsub-review-btn-publish"
+                                disabled="@(_savingDraft || _publishing || string.IsNullOrWhiteSpace(_feedbackDraft))"
+                                @onclick="PublishFeedback">
+                            @if (_publishing) { <span class="lsub-spinner-sm"></span> }
+                            else               { <span class="oi oi-share-boxed" aria-hidden="true"></span> }
+                            <span>@PublishButtonLabel</span>
+                        </button>
+                    </div>
+                </div>
+            }
 
         </div>
     </div>
@@ -150,23 +460,23 @@ else
             </div>
         </div>
 
-        <!-- ── KPI summary ── -->
+        <!-- ── KPI summary (clickable filters) ── -->
         <div class="lsub-kpi-row">
             <div class="lsub-kpi-card">
                 <div class="lsub-kpi-value">@_all.Count</div>
-                <div class="lsub-kpi-label">סה"כ הגשות</div>
+                <div class="lsub-kpi-label">סה"כ הגשות סופיות</div>
             </div>
             <div class="lsub-kpi-card lsub-kpi--new">
-                <div class="lsub-kpi-value">@_all.Count(s => s.Status == "Submitted")</div>
-                <div class="lsub-kpi-label">ממתינות לבדיקה</div>
+                <div class="lsub-kpi-value">@_all.Count(s => s.ReviewStatus == LecturerReviewStatuses.PendingReview)</div>
+                <div class="lsub-kpi-label">ממתין לבדיקה</div>
             </div>
             <div class="lsub-kpi-card lsub-kpi--week">
-                <div class="lsub-kpi-value">@_all.Count(s => s.SubmittedAt.Date >= DateTime.Today.AddDays(-7))</div>
-                <div class="lsub-kpi-label">הוגשו השבוע</div>
+                <div class="lsub-kpi-value">@_all.Count(s => s.ReviewStatus == LecturerReviewStatuses.InReview)</div>
+                <div class="lsub-kpi-label">בבדיקה</div>
             </div>
             <div class="lsub-kpi-card lsub-kpi--revision">
-                <div class="lsub-kpi-value">@_all.Count(s => s.Status == "NeedsRevision")</div>
-                <div class="lsub-kpi-label">דורשות תיקון</div>
+                <div class="lsub-kpi-value">@_all.Count(s => s.ReviewStatus == LecturerReviewStatuses.FeedbackReturned)</div>
+                <div class="lsub-kpi-label">הוחזר עם משוב</div>
             </div>
         </div>
 
@@ -195,9 +505,10 @@ else
                 </select>
                 <select class="lsub-filter-select" @bind="_filterStatus">
                     <option value="">כל הסטטוסים</option>
-                    <option value="Submitted">ממתין לבדיקה</option>
-                    <option value="Reviewed">נבדק</option>
-                    <option value="NeedsRevision">דורש תיקון</option>
+                    @foreach (var s in LecturerReviewStatuses.All)
+                    {
+                        <option value="@s">@LecturerReviewStatuses.Label(s)</option>
+                    }
                 </select>
             </div>
         </div>
@@ -275,9 +586,15 @@ else
                                         }
                                     </td>
                                     <td>
-                                        <span class="lsub-status-badge lsub-badge-@row.Status.ToLower()">
-                                            @StatusLabel(row.Status)
+                                        <span class="lsub-rstatus-badge lsub-rstatus-@row.ReviewStatus.ToLower()">
+                                            @LecturerReviewStatuses.Label(row.ReviewStatus)
                                         </span>
+                                        @if (row.IsFeedbackPublished)
+                                        {
+                                            <span class="lsub-published-pill lsub-published-pill-sm" title="המשוב פורסם">
+                                                <span class="oi oi-check" aria-hidden="true"></span>
+                                            </span>
+                                        }
                                     </td>
                                     <td class="lsub-cell-action">
                                         <button class="lsub-open-btn" title="פתח פרטים"
@@ -321,11 +638,40 @@ else
     private string _filterStatus    = "";
 
     // ── Drawer ────────────────────────────────────────────────────────────────
-    private LecturerSubmissionRowDto? _drawer;
-    private List<TaskSubmissionFileDto> _detailFiles = new();
+    private LecturerSubmissionRowDto?    _drawer;
+    private LecturerSubmissionDetailDto? _detail;
+    private List<TaskSubmissionFileDto>  _detailFiles = new();
     private bool _drawerLoading;
     private bool _detailLoading;
-    private bool _statusUpdating;
+
+    // ── Review form state ────────────────────────────────────────────────────
+    private string _reviewStatus  = LecturerReviewStatuses.InReview;
+    private string _feedbackDraft = "";
+    private bool   _savingDraft;
+    private bool   _publishing;
+    private string _reviewError   = "";
+
+    // ── Lecturer-feedback file upload state ──────────────────────────────────
+    private bool   _uploadingFiles;
+    private string _uploadError = "";
+    private const int  MaxLecturerFiles      = 5;
+    private const int  MaxLecturerFileMb     = 10;
+    private const long MaxLecturerFileBytes  = (long)MaxLecturerFileMb * 1_048_576;
+
+    private List<TaskSubmissionFileDto> StudentFiles  =>
+        _detailFiles.Where(f => !f.IsLecturerFeedback).ToList();
+    private List<TaskSubmissionFileDto> LecturerFiles =>
+        _detailFiles.Where(f =>  f.IsLecturerFeedback).ToList();
+
+    private bool HasPendingFileChanges =>
+        LecturerFiles.Any(f => f.FilePublishedAt is null);
+
+    private string PublishButtonLabel =>
+        _drawer is null
+            ? "פרסם משוב לסטודנטים"
+            : (_drawer.IsFeedbackPublished || HasPendingFileChanges
+                ? "פרסם מחדש לסטודנטים"
+                : "פרסם משוב לסטודנטים");
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
@@ -354,7 +700,7 @@ else
         .Where(r => string.IsNullOrEmpty(_filterMilestone)
                  || r.MilestoneTitle == _filterMilestone)
         .Where(r => string.IsNullOrEmpty(_filterStatus)
-                 || r.Status == _filterStatus)
+                 || r.ReviewStatus == _filterStatus)
         .Where(r => string.IsNullOrEmpty(_searchQuery)
                  || r.TaskTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                  || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
@@ -365,37 +711,188 @@ else
     // ── Drawer ────────────────────────────────────────────────────────────
     private async Task OpenDrawer(LecturerSubmissionRowDto row)
     {
-        _drawer      = row;
-        _detailFiles = new();
+        _drawer        = row;
+        _detail        = null;
+        _detailFiles   = new();
+        _reviewError   = "";
+        _uploadError   = "";
+        _expandedHistory.Clear();
         _detailLoading = true;
         StateHasChanged();
 
-        var detail = await SubmissionsService.GetSubmissionDetailAsync(row.SubmissionId);
-        _detailFiles   = detail?.Files ?? new();
+        _detail = await SubmissionsService.GetLecturerDetailAsync(row.SubmissionId);
+        if (_detail is not null)
+        {
+            _detailFiles   = _detail.Files;
+            _reviewStatus  = string.IsNullOrWhiteSpace(_detail.ReviewStatus)
+                ? LecturerReviewStatuses.InReview
+                : _detail.ReviewStatus;
+            _feedbackDraft = _detail.ReviewerFeedback ?? "";
+        }
         _detailLoading = false;
     }
 
     private void CloseDrawer()
     {
-        _drawer      = null;
-        _detailFiles = new();
+        _drawer        = null;
+        _detail        = null;
+        _detailFiles   = new();
+        _feedbackDraft = "";
+        _reviewError   = "";
+        _uploadError   = "";
     }
 
-    private async Task SetStatus(string newStatus)
+    private async Task SaveDraft()
     {
         if (_drawer is null) return;
-        _statusUpdating = true;
+        _savingDraft = true;
+        _reviewError = "";
 
-        bool ok = await SubmissionsService.UpdateSubmissionStatusAsync(_drawer.SubmissionId, newStatus);
+        var trimmed = string.IsNullOrWhiteSpace(_feedbackDraft) ? null : _feedbackDraft.Trim();
+        bool ok = await SubmissionsService.SaveLecturerReviewAsync(
+            _drawer.SubmissionId, _reviewStatus, trimmed);
+
         if (ok)
         {
-            // Update in-memory
-            _drawer.Status = newStatus;
+            _drawer.ReviewStatus = _reviewStatus;
             var listRow = _all.FirstOrDefault(r => r.SubmissionId == _drawer.SubmissionId);
-            if (listRow is not null) listRow.Status = newStatus;
+            if (listRow is not null) listRow.ReviewStatus = _reviewStatus;
+            if (_detail is not null)
+            {
+                _detail.ReviewStatus     = _reviewStatus;
+                _detail.ReviewerFeedback = trimmed;
+            }
+        }
+        else
+        {
+            _reviewError = "שמירה נכשלה. נסי שוב.";
+        }
+        _savingDraft = false;
+    }
+
+    private async Task PublishFeedback()
+    {
+        if (_drawer is null) return;
+        if (string.IsNullOrWhiteSpace(_feedbackDraft))
+        {
+            _reviewError = "לא ניתן לפרסם משוב ריק.";
+            return;
         }
 
-        _statusUpdating = false;
+        _publishing  = true;
+        _reviewError = "";
+
+        bool savedOk = await SubmissionsService.SaveLecturerReviewAsync(
+            _drawer.SubmissionId, _reviewStatus, _feedbackDraft.Trim());
+        if (!savedOk) { _reviewError = "שמירה נכשלה. נסי שוב."; _publishing = false; return; }
+
+        var (ok, err) = await SubmissionsService.PublishFeedbackAsync(_drawer.SubmissionId);
+        if (ok)
+        {
+            var stamp = DateTime.UtcNow;
+            _drawer.IsFeedbackPublished = true;
+            _drawer.FeedbackPublishedAt = stamp;
+            var listRow = _all.FirstOrDefault(r => r.SubmissionId == _drawer.SubmissionId);
+            if (listRow is not null)
+            {
+                listRow.IsFeedbackPublished = true;
+                listRow.FeedbackPublishedAt = stamp;
+                if (listRow.ReviewStatus == LecturerReviewStatuses.PendingReview)
+                    listRow.ReviewStatus = LecturerReviewStatuses.FeedbackReturned;
+            }
+            if (_detail is not null)
+            {
+                _detail.IsFeedbackPublished = true;
+                _detail.FeedbackPublishedAt = stamp;
+            }
+            // Stamp pending lecturer files locally so the badges clear without refetch.
+            foreach (var f in _detailFiles)
+                if (f.IsLecturerFeedback && f.FilePublishedAt is null)
+                    f.FilePublishedAt = stamp;
+        }
+        else
+        {
+            _reviewError = err ?? "פרסום נכשל.";
+        }
+        _publishing = false;
+    }
+
+    // ── Lecturer-feedback file upload / delete ───────────────────────────────
+    private async Task OnLecturerFilesSelected(InputFileChangeEventArgs e)
+    {
+        if (_drawer is null) return;
+        _uploadError = "";
+
+        int slotsLeft = MaxLecturerFiles - LecturerFiles.Count;
+        if (slotsLeft <= 0)
+        {
+            _uploadError = "חרגת ממכסת הקבצים (" + MaxLecturerFiles + "). יש למחוק קובץ קיים לפני העלאה נוספת.";
+            return;
+        }
+
+        var picked = e.GetMultipleFiles(slotsLeft).ToList();
+        if (picked.Count == 0) return;
+
+        var existing = LecturerFiles.Select(f => f.OriginalFileName.ToLowerInvariant()).ToHashSet();
+        var payload = new List<SubmissionFileRequest>();
+        foreach (var browserFile in picked)
+        {
+            if (existing.Contains(browserFile.Name.ToLowerInvariant())) continue;
+            if (browserFile.Size > MaxLecturerFileBytes)
+            {
+                _uploadError = "הקובץ \"" + browserFile.Name + "\" חורג מהגודל המקסימלי ("
+                               + MaxLecturerFileMb + " MB).";
+                continue;
+            }
+            try
+            {
+                using var stream = browserFile.OpenReadStream(MaxLecturerFileBytes);
+                using var ms     = new System.IO.MemoryStream();
+                await stream.CopyToAsync(ms);
+                payload.Add(new SubmissionFileRequest
+                {
+                    OriginalFileName = browserFile.Name,
+                    FileBase64       = Convert.ToBase64String(ms.ToArray()),
+                    ContentType      = browserFile.ContentType,
+                    SizeBytes        = browserFile.Size,
+                });
+            }
+            catch
+            {
+                _uploadError = "שגיאה בקריאת \"" + browserFile.Name + "\".";
+            }
+        }
+
+        if (payload.Count == 0) return;
+
+        _uploadingFiles = true;
+        StateHasChanged();
+
+        var (ok, err, _) = await SubmissionsService.UploadLecturerFilesAsync(_drawer.SubmissionId, payload);
+        if (!ok)
+        {
+            _uploadError = err ?? "העלאה נכשלה.";
+        }
+        else
+        {
+            // Refresh detail to get the new file metadata + ids needed for delete.
+            var refreshed = await SubmissionsService.GetLecturerDetailAsync(_drawer.SubmissionId);
+            if (refreshed is not null)
+            {
+                _detail      = refreshed;
+                _detailFiles = refreshed.Files;
+            }
+        }
+        _uploadingFiles = false;
+    }
+
+    private async Task DeleteLecturerFile(int fileId)
+    {
+        if (_drawer is null) return;
+        var (ok, err) = await SubmissionsService.DeleteLecturerFileAsync(_drawer.SubmissionId, fileId);
+        if (!ok) { _uploadError = err ?? "מחיקה נכשלה."; return; }
+        _detailFiles = _detailFiles.Where(f => f.Id != fileId).ToList();
+        if (_detail is not null) _detail.Files = _detailFiles;
     }
 
     // ── Display helpers ───────────────────────────────────────────────────
@@ -406,6 +903,23 @@ else
         "NeedsRevision" => "דורש תיקון",
         _               => s,
     };
+
+    private static string MentorStatusLabel(string s) => s switch
+    {
+        "Approved" => "אושר",
+        "Returned" => "הוחזר",
+        "Pending"  => "ממתין",
+        _          => s,
+    };
+
+    // History expand/collapse state — persists per drawer open.
+    private readonly HashSet<int> _expandedHistory = new();
+
+    private void ToggleHistoryItem(int submissionId)
+    {
+        if (!_expandedHistory.Add(submissionId))
+            _expandedHistory.Remove(submissionId);
+    }
 
     private static string FileIcon(string contentType) => contentType switch
     {

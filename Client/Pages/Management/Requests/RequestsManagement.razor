@@ -98,6 +98,123 @@
                 </div>
             }
 
+            <!-- Postponement (Extension) details — visible only for Extension requests -->
+            @if (_drawer.RequestType == RequestTypes.Extension && _drawer.Extension is not null)
+            {
+                <div class="req-drawer-section req-extension-block">
+                    <div class="req-drawer-section-title">פרטי הדחייה</div>
+
+                    <div class="req-ext-grid">
+                        <div class="req-ext-cell">
+                            <div class="req-ext-label">אבן דרך / משימה</div>
+                            <div class="req-ext-value">
+                                @if (!string.IsNullOrWhiteSpace(_drawer.Extension.TaskTitle))
+                                {
+                                    <span class="oi oi-task" aria-hidden="true"></span>
+                                    <span>@_drawer.Extension.TaskTitle</span>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(_drawer.Extension.MilestoneTitle))
+                                {
+                                    <span class="oi oi-flag" aria-hidden="true"></span>
+                                    <span>@_drawer.Extension.MilestoneTitle</span>
+                                }
+                                else
+                                {
+                                    <span class="req-ext-general">אחר / כללי (ללא משימה ספציפית)</span>
+                                }
+                            </div>
+                        </div>
+                        <div class="req-ext-cell">
+                            <div class="req-ext-label">תאריך נוכחי</div>
+                            <div class="req-ext-value">
+                                @(_drawer.Extension.CurrentDueDate?.ToString("dd/MM/yyyy") ?? "—")
+                            </div>
+                        </div>
+                        <div class="req-ext-cell">
+                            <div class="req-ext-label">תאריך מבוקש</div>
+                            <div class="req-ext-value req-ext-requested">
+                                @_drawer.Extension.RequestedDueDate.ToString("dd/MM/yyyy")
+                            </div>
+                        </div>
+                        <div class="req-ext-cell">
+                            <div class="req-ext-label">החלטת מנחה</div>
+                            <div class="req-ext-value">
+                                <span class="req-ext-decision req-ext-dec-@_drawer.Extension.MentorDecision.ToLower()">
+                                    @ExtensionDecisionStatuses.Label(_drawer.Extension.MentorDecision)
+                                </span>
+                            </div>
+                        </div>
+                        @if (_drawer.Extension.LecturerDecision != ExtensionDecisionStatuses.NotRequired)
+                        {
+                            <div class="req-ext-cell">
+                                <div class="req-ext-label">החלטת מרצה</div>
+                                <div class="req-ext-value">
+                                    <span class="req-ext-decision req-ext-dec-@_drawer.Extension.LecturerDecision.ToLower()">
+                                        @ExtensionDecisionStatuses.Label(_drawer.Extension.LecturerDecision)
+                                    </span>
+                                </div>
+                            </div>
+                        }
+                        @if (_drawer.Extension.ApprovedDueDate.HasValue)
+                        {
+                            <div class="req-ext-cell">
+                                <div class="req-ext-label">תאריך חדש מאושר</div>
+                                <div class="req-ext-value req-ext-approved">
+                                    @_drawer.Extension.ApprovedDueDate.Value.ToString("dd/MM/yyyy")
+                                </div>
+                            </div>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_drawer.Extension.Reason))
+                    {
+                        <div class="req-ext-reason">
+                            <div class="req-ext-label">נימוק הסטודנט</div>
+                            <div class="req-drawer-text-block">@_drawer.Extension.Reason</div>
+                        </div>
+                    }
+
+                    @if (ExtensionPendingStage is not null)
+                    {
+                        bool hasTarget = _drawer.Extension.TaskId.HasValue
+                                      || _drawer.Extension.ProjectMilestoneId.HasValue;
+                        <div class="req-ext-decision-form">
+                            <div class="req-ext-decision-title">
+                                @(ExtensionPendingStage == "Lecturer" ? "החלטת מרצה" : "החלטה")
+                            </div>
+
+                            <div class="req-handle-field">
+                                <label class="req-handle-label">החלטה</label>
+                                <select class="req-handle-select"
+                                        @bind="_extDecision"
+                                        disabled="@_handling">
+                                    <option value="@ExtensionDecisionStatuses.Approved">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Approved)</option>
+                                    <option value="@ExtensionDecisionStatuses.Rejected">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Rejected)</option>
+                                    @if (ExtensionPendingStage == "Mentor")
+                                    {
+                                        <option value="@ExtensionDecisionStatuses.Escalated">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Escalated)</option>
+                                    }
+                                </select>
+                            </div>
+
+                            @if (hasTarget && _extDecision == ExtensionDecisionStatuses.Approved)
+                            {
+                                <div class="req-handle-field">
+                                    <label class="req-handle-label">תאריך חדש מאושר</label>
+                                    <input class="req-handle-select req-ext-date-input"
+                                           type="date"
+                                           @bind="_extApprovedDate"
+                                           disabled="@_handling" />
+                                    <div class="req-ext-decision-hint">
+                                        התאריך יעודכן עבור אבן הדרך של הצוות בלבד.
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
             <!-- Image attachments -->
             @if (_drawer.Attachments.Count > 0)
             {
@@ -687,6 +804,32 @@
     private string _handleFileError = "";
     private const int MaxEventAttachments = 3;
 
+    // Extension-decision form state (only used when the open request is an
+    // Extension request whose mentor or lecturer decision is still Pending).
+    // Keeping the ApprovedDueDate as `string` so `<input type="date" @bind=…>`
+    // round-trips cleanly through empty values.
+    private string    _extDecision         = ExtensionDecisionStatuses.Approved;
+    private DateTime? _extApprovedDate;
+
+    // Determines which stage applies to the currently-open extension request,
+    // or null when the drawer is not on a pending extension. Drives the
+    // decision form visibility and the Stage value sent to the server.
+    private string? ExtensionPendingStage
+    {
+        get
+        {
+            if (_drawer is null
+                || _drawer.RequestType != RequestTypes.Extension
+                || _drawer.Extension is null)
+                return null;
+            if (_drawer.Extension.MentorDecision == ExtensionDecisionStatuses.Pending)
+                return "Mentor";
+            if (_drawer.Extension.LecturerDecision == ExtensionDecisionStatuses.Pending)
+                return "Lecturer";
+            return null;
+        }
+    }
+
     // ── Debug panel ──────────────────────────────────────────────────────────
     private bool _showDebug;
 
@@ -804,6 +947,12 @@
         _handleError       = "";
         _showDebug         = false;
         _justOpenedModal   = true;
+
+        // Reset the extension-decision form. Pre-fill the date input with the
+        // student's requested date so the approver only types it when they want
+        // to override the requested date.
+        _extDecision     = ExtensionDecisionStatuses.Approved;
+        _extApprovedDate = detail.Extension?.RequestedDueDate.Date;
 
         StartPolling();
     }
@@ -935,12 +1084,62 @@
     public void Dispose() => StopPolling();
 
     // ── Handle action ─────────────────────────────────────────────────────
+    //
+    // Postponement (Extension) requests with a pending decision are routed to
+    // the dedicated extension/decision endpoint, which writes the per-team
+    // due-date override on Approved. Generic (non-extension) requests still go
+    // through the existing handle endpoint — that path is untouched.
     private async Task SubmitHandle()
     {
         if (_drawer is null) return;
         _handling    = true;
         _handleError = "";
 
+        var stage = ExtensionPendingStage;
+        if (stage is not null)
+        {
+            // Extension decision path
+            bool hasTarget = _drawer.Extension!.TaskId.HasValue
+                          || _drawer.Extension!.ProjectMilestoneId.HasValue;
+
+            DateTime? approvedDate = null;
+            if (_extDecision == ExtensionDecisionStatuses.Approved && hasTarget)
+            {
+                if (_extApprovedDate is null)
+                {
+                    _handleError = "יש לבחור תאריך חדש לפני אישור הדחייה";
+                    _handling    = false;
+                    return;
+                }
+                approvedDate = _extApprovedDate.Value.Date;
+            }
+
+            var decisionReq = new ExtensionDecisionRequest
+            {
+                Stage           = stage,
+                Decision        = _extDecision,
+                ApprovedDueDate = approvedDate,
+                Notes           = string.IsNullOrWhiteSpace(_handleComment) ? null : _handleComment.Trim(),
+            };
+
+            var decErr = await RequestsService.SubmitExtensionDecisionAsync(_drawer.Id, decisionReq);
+            _handling = false;
+            if (decErr is not null) { _handleError = decErr.Trim('"', ' '); return; }
+
+            // Reflect the new state in the list row before closing
+            var listRowExt = _all.FirstOrDefault(r => r.Id == _drawer.Id);
+            if (listRowExt is not null)
+            {
+                listRowExt.Status    = _extDecision == ExtensionDecisionStatuses.Escalated
+                                          ? RequestStatuses.InProgress
+                                          : RequestStatuses.Resolved;
+                listRowExt.UpdatedAt = DateTime.Now;
+            }
+            CloseDrawer();
+            return;
+        }
+
+        // ── Non-extension generic path (untouched) ──────────────────────
         var req = new HandleProjectRequestRequest
         {
             NewStatus        = _handleStatus,

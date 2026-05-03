@@ -28,4 +28,20 @@ public static class RoleService
         if (IsStudent(user)) return "סטודנט";
         return "";
     }
+
+    /// <summary>
+    /// Default landing route after login / when the app starts at "/".
+    /// Single source of truth — every redirect site (Index, LoginPage,
+    /// SignupPage, APIRedirect) calls this so role-based routing stays
+    /// consistent. Server-side [Authorize] gates remain the actual access
+    /// boundary; this helper only chooses a sensible starting page.
+    /// </summary>
+    public static string GetDefaultLandingRoute(User? user)
+    {
+        if (IsAdminOrStaff(user)) return "/dashboard/lecturer";
+        if (IsMentor(user))       return "/dashboard/mentor";
+        // Students keep the legacy /dashboard route — that page already
+        // handles the "team-without-project" → catalog redirect internally.
+        return PageRoutes.Dashboard;
+    }
 }

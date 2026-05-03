@@ -256,6 +256,22 @@ public static class DatabaseMigrator
 
         // ── ALTER TABLE guards for databases created before each column was added ──
         // Each guard is idempotent: skipped when the column already exists.
+        // ── MilestoneTemplates — default course-level dates ───────────────────
+        // OpenDate / DueDate / CloseDate are the global defaults that get copied
+        // into AcademicYearMilestones when a new cycle is created. Per-team
+        // postponements continue to use TeamMilestoneDueDateOverrides — adding
+        // these columns does not change that flow.
+        var mtColumns = await GetColumnsAsync(connection, "MilestoneTemplates");
+        if (!mtColumns.Contains("OpenDate"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE MilestoneTemplates ADD COLUMN OpenDate DATE");
+        if (!mtColumns.Contains("DueDate"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE MilestoneTemplates ADD COLUMN DueDate DATE");
+        if (!mtColumns.Contains("CloseDate"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE MilestoneTemplates ADD COLUMN CloseDate DATE");
+
         var rfColumns = await GetColumnsAsync(connection, "ResourceFiles");
 
         if (!rfColumns.Contains("ProjectType"))
@@ -452,6 +468,18 @@ public static class DatabaseMigrator
                 FOREIGN KEY (TaskSubmissionId) REFERENCES TaskSubmissions(Id) ON DELETE CASCADE
             )");
 
+        // Lecturer feedback files share this table with student submission files.
+        //  IsLecturerFeedback = 0 → student-uploaded (always visible to the team)
+        //  IsLecturerFeedback = 1 → lecturer/admin-uploaded; gated for students
+        //                            until FilePublishedAt IS NOT NULL.
+        var submissionFilesColumns = await GetColumnsAsync(connection, "TaskSubmissionFiles");
+        if (!submissionFilesColumns.Contains("IsLecturerFeedback"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissionFiles ADD COLUMN IsLecturerFeedback INTEGER NOT NULL DEFAULT 0");
+        if (!submissionFilesColumns.Contains("FilePublishedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissionFiles ADD COLUMN FilePublishedAt TEXT");
+
         // ── ProjectRequests table ─────────────────────────────────────────────
         // Unified requests module: one table covers all request types
         // (Extension, SpecialEvent, TechnicalSupport, Meeting, and three
@@ -534,6 +562,86 @@ public static class DatabaseMigrator
                 FOREIGN KEY (RequestId) REFERENCES ProjectRequests(Id)      ON DELETE CASCADE
             )");
 
+        // ── ProjectRequestExtensions — extension-request side-table ──────────
+        // 1:1 with ProjectRequests when RequestType = 'Extension'.
+        // Carries fields that are meaningful only for an extension request, so
+        // the generic ProjectRequests row stays untouched.
+        //
+        // TaskId / ProjectMilestoneId — exactly one may be set; both NULL means
+        // the request is "אחר / כללי" (general — no per-team override).
+        // Decision columns track the two-stage flow (mentor first, then lecturer
+        // if escalated). FinalDecision / ApprovedDueDate are written when the
+        // flow terminates; the override row is created from those.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectRequestExtensions (
+                Id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                RequestId                INTEGER NOT NULL UNIQUE,
+                TaskId                   INTEGER,
+                ProjectMilestoneId       INTEGER,
+                CurrentDueDate           TEXT,
+                RequestedDueDate         TEXT    NOT NULL,
+                Reason                   TEXT,
+                MentorDecision           TEXT    NOT NULL DEFAULT 'Pending',
+                MentorDecidedByUserId    INTEGER,
+                MentorDecidedAt          TEXT,
+                MentorNotes              TEXT,
+                LecturerDecision         TEXT    NOT NULL DEFAULT 'NotRequired',
+                LecturerDecidedByUserId  INTEGER,
+                LecturerDecidedAt        TEXT,
+                LecturerNotes            TEXT,
+                FinalDecision            TEXT    NOT NULL DEFAULT 'Pending',
+                ApprovedDueDate          TEXT,
+                FOREIGN KEY (RequestId)               REFERENCES ProjectRequests(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (TaskId)                  REFERENCES Tasks(Id)              ON DELETE SET NULL,
+                FOREIGN KEY (ProjectMilestoneId)      REFERENCES ProjectMilestones(Id)  ON DELETE SET NULL,
+                FOREIGN KEY (MentorDecidedByUserId)   REFERENCES users(Id)              ON DELETE SET NULL,
+                FOREIGN KEY (LecturerDecidedByUserId) REFERENCES users(Id)              ON DELETE SET NULL
+            )");
+
+        // ── TeamTaskDueDateOverrides — per-team task due-date override ───────
+        // Written when an extension request that targets a specific Task is
+        // approved (mentor or lecturer). Reading code uses
+        //     COALESCE(o.OverrideDueDate, t.DueDate)
+        // when displaying the due date to the team that owns this override.
+        // Other teams continue to see Tasks.DueDate.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS TeamTaskDueDateOverrides (
+                Id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                TeamId            INTEGER NOT NULL,
+                TaskId            INTEGER NOT NULL,
+                OriginalDueDate   TEXT,
+                OverrideDueDate   TEXT    NOT NULL,
+                SourceRequestId   INTEGER,
+                ApprovedByUserId  INTEGER,
+                CreatedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (TeamId, TaskId),
+                FOREIGN KEY (TeamId)           REFERENCES Teams(Id)            ON DELETE CASCADE,
+                FOREIGN KEY (TaskId)           REFERENCES Tasks(Id)            ON DELETE CASCADE,
+                FOREIGN KEY (SourceRequestId)  REFERENCES ProjectRequests(Id)  ON DELETE SET NULL,
+                FOREIGN KEY (ApprovedByUserId) REFERENCES users(Id)            ON DELETE SET NULL
+            )");
+
+        // ── TeamMilestoneDueDateOverrides — per-team milestone-level override ─
+        // Same shape as TeamTaskDueDateOverrides but keyed on ProjectMilestoneId.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS TeamMilestoneDueDateOverrides (
+                Id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                TeamId              INTEGER NOT NULL,
+                ProjectMilestoneId  INTEGER NOT NULL,
+                OriginalDueDate     TEXT,
+                OverrideDueDate     TEXT    NOT NULL,
+                SourceRequestId     INTEGER,
+                ApprovedByUserId    INTEGER,
+                CreatedAt           TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt           TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (TeamId, ProjectMilestoneId),
+                FOREIGN KEY (TeamId)              REFERENCES Teams(Id)              ON DELETE CASCADE,
+                FOREIGN KEY (ProjectMilestoneId)  REFERENCES ProjectMilestones(Id)  ON DELETE CASCADE,
+                FOREIGN KEY (SourceRequestId)     REFERENCES ProjectRequests(Id)    ON DELETE SET NULL,
+                FOREIGN KEY (ApprovedByUserId)    REFERENCES users(Id)              ON DELETE SET NULL
+            )");
+
         // ── TaskSubmissions — mentor + reviewer columns ───────────────────────
         // These columns extend the existing approval workflow to support a
         // two-stage review: mentor first, then lecturer/staff.
@@ -572,6 +680,30 @@ public static class DatabaseMigrator
                 WHERE  MentorStatus = 'Approved'
                   AND  CourseSubmittedAt IS NULL");
         }
+
+        // ── Lecturer/admin final-review fields (idempotent) ─────────────────────
+        //  ReviewStatus           : 'PendingReview' | 'InReview' | 'FeedbackReturned' | 'FinalApproved'
+        //                            Lives separately from Status — student/mentor
+        //                            flows continue to use Status; this column is
+        //                            for the lecturer review queue exclusively.
+        //  IsFeedbackPublished    : 0 = draft (lecturer-only) | 1 = released to students
+        //  FeedbackPublishedAt    : when the lecturer pressed "פרסם משוב"
+        //  ReviewedByUserId       : the lecturer/admin who last saved the review
+        if (!submissionsColumns.Contains("ReviewStatus"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN ReviewStatus TEXT NOT NULL DEFAULT 'PendingReview'");
+
+        if (!submissionsColumns.Contains("IsFeedbackPublished"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN IsFeedbackPublished INTEGER NOT NULL DEFAULT 0");
+
+        if (!submissionsColumns.Contains("FeedbackPublishedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN FeedbackPublishedAt TEXT");
+
+        if (!submissionsColumns.Contains("ReviewedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN ReviewedByUserId INTEGER");
 
         // ── StudentSubTasks table ────────────────────────────────────────────
         // Lightweight internal checklist items created by a student team under
@@ -745,6 +877,52 @@ public static class DatabaseMigrator
                 CreatedAt     TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE (RoleName, PermissionKey)
             )");
+
+        // ── RoleSettings — simple feature-flag matrix per role ────────────────
+        // Wide table, one row per role, one column per flag. Decoupled from the
+        // larger Permissions/RolePermissions key-based system above; the two
+        // coexist. The PermissionService surface that pages will eventually
+        // consume reads from this table.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS RoleSettings (
+                RoleName                  TEXT    PRIMARY KEY,
+                CanManageRequests         INTEGER NOT NULL DEFAULT 0,
+                CanManageMilestones       INTEGER NOT NULL DEFAULT 0,
+                CanManageAssignments      INTEGER NOT NULL DEFAULT 0,
+                CanManageUsers            INTEGER NOT NULL DEFAULT 0,
+                CanManageAirtable         INTEGER NOT NULL DEFAULT 0,
+                CanOpenRequests           INTEGER NOT NULL DEFAULT 0,
+                CanViewTasks              INTEGER NOT NULL DEFAULT 0,
+                CanSubmitTasks            INTEGER NOT NULL DEFAULT 0,
+                CanViewLecturerDashboard  INTEGER NOT NULL DEFAULT 0,
+                UpdatedAt                 TEXT    NOT NULL DEFAULT (datetime('now'))
+            )");
+
+        // Seed sensible defaults per role. INSERT OR IGNORE keeps it idempotent —
+        // an admin who flipped a flag won't have it reset on the next migration.
+        // Tuple order: ManageRequests, ManageMilestones, ManageAssignments,
+        // ManageUsers, ManageAirtable, OpenRequests, ViewTasks, SubmitTasks,
+        // ViewLecturerDashboard.
+        var roleSettingsSeeds = new (string Role,
+                                     int MR, int MM, int MA, int MU, int MAir,
+                                     int OR, int VT, int ST, int VLD)[]
+        {
+            ("Admin",   1,1,1,1,1, 1,1,0,1),
+            ("Staff",   1,1,1,0,0, 1,1,0,1),
+            ("Mentor",  1,0,0,0,0, 1,1,0,0),
+            ("Student", 0,0,0,0,0, 1,1,1,0),
+            ("User",    0,0,0,0,0, 0,0,0,0),
+        };
+        foreach (var s in roleSettingsSeeds)
+        {
+            await connection.ExecuteNonQueryAsync(
+                "INSERT OR IGNORE INTO RoleSettings " +
+                "(RoleName, CanManageRequests, CanManageMilestones, CanManageAssignments, " +
+                " CanManageUsers, CanManageAirtable, CanOpenRequests, CanViewTasks, " +
+                " CanSubmitTasks, CanViewLecturerDashboard) VALUES " +
+                $"('{s.Role}', {s.MR}, {s.MM}, {s.MA}, {s.MU}, {s.MAir}, " +
+                $" {s.OR}, {s.VT}, {s.ST}, {s.VLD})");
+        }
 
         // Seed the canonical permission catalog.
         var permissionSeeds = new (string Key, string Display, string Group, string Desc, int Sort)[]

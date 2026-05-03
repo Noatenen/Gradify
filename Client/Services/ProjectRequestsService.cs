@@ -13,6 +13,8 @@ public interface IProjectRequestsService
     Task<string?>                        HandleAsync(int id, HandleProjectRequestRequest req);
     Task<string?>                        ReplyAsync(int id, string comment, List<RequestAttachmentUploadRequest>? attachments = null);
     Task<string?>                        UpdateAsync(int id, UpdateProjectRequestRequest req);
+    Task<string?>                        SubmitExtensionDecisionAsync(int id, ExtensionDecisionRequest req);
+    Task<List<ExtensionTargetDto>?>      GetExtensionTargetsAsync();
 }
 
 public class ProjectRequestsService : IProjectRequestsService
@@ -94,6 +96,28 @@ public class ProjectRequestsService : IProjectRequestsService
             return await resp.Content.ReadAsStringAsync();
         }
         catch { return "שגיאת תקשורת"; }
+    }
+
+    public async Task<string?> SubmitExtensionDecisionAsync(int id, ExtensionDecisionRequest req)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync($"api/project-requests/{id}/extension/decision", req);
+            if (resp.IsSuccessStatusCode) return null;
+            string body = await resp.Content.ReadAsStringAsync();
+            return string.IsNullOrWhiteSpace(body) ? "שגיאה בשליחת ההחלטה" : body.Trim('"');
+        }
+        catch { return "שגיאת תקשורת"; }
+    }
+
+    public async Task<List<ExtensionTargetDto>?> GetExtensionTargetsAsync()
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<List<ExtensionTargetDto>>(
+                "api/project-requests/extension-targets");
+        }
+        catch { return null; }
     }
 
     private sealed class CreateResult { public int Id { get; set; } }

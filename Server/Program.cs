@@ -8,8 +8,8 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authentication.Google;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.OAuth;
-
-var builder = WebApplication.CreateBuilder(args);
+using Microsoft.AspNetCore.Hosting.StaticWebAssets;var builder = WebApplication.CreateBuilder(args);
+StaticWebAssetsLoader.UseStaticWebAssets(builder.Environment, builder.Configuration);
 
 // Add services to the container.
 
@@ -133,7 +133,6 @@ app.UseAuthorization();
 
 app.MapRazorPages();
 app.MapControllers();
-app.MapStaticAssets();
 app.MapFallbackToFile("index.html");
 
 await DatabaseMigrator.MigrateAsync(app.Configuration);

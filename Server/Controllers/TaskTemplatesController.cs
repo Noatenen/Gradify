@@ -133,6 +133,13 @@ public class TaskTemplatesController : ControllerBase
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
 
         await SaveResourceFileLinksAsync(newId, req.LinkedResourceFileIds);
+
+        // Auto-propagate the new template into per-project Tasks rows so the
+        // student/team views pick it up immediately — no manual ApplyTemplates
+        // run required.
+        if (req.IsActive)
+            await PropagateTemplateToProjectsAsync(newId, authUserId);
+
         return Ok(new { id = newId });
     }
 
@@ -297,6 +304,63 @@ public class TaskTemplatesController : ControllerBase
 
         foreach (var t in templates)
             t.LinkedResourceFiles = byTemplate.GetValueOrDefault(t.Id) ?? new();
+    }
+
+    // ── Auto-propagation: TaskTemplate → per-project Tasks ──────────────────
+    //
+    // Mirrors what AcademicYearsController.ApplyTemplates does for a whole
+    // year, but scoped to a single TaskTemplate. Runs as a single
+    // INSERT … SELECT so it's atomic and trivially idempotent (the NOT EXISTS
+    // clause skips any project that already has the row).
+    //
+    // Filtering rules (match the existing batch endpoint):
+    //   - The template must be active (IsActive = 1).
+    //   - AcademicYearMilestone must be active.
+    //   - Project must be a real assigned project (Status NOT IN
+    //     'Available'/'Unavailable' — catalog/parking-lot projects skipped).
+    //   - The (ProjectId, ProjectMilestoneId, Title) tuple must not already
+    //     exist in Tasks.
+    //
+    // The created Tasks rows mirror the column set used by ApplyTemplates:
+    //   TaskType='System', Status='Open', IsMandatory=0, IsSystemTask=0.
+    private async Task PropagateTemplateToProjectsAsync(int templateId, int authUserId)
+    {
+        const string sql = @"
+            INSERT INTO Tasks
+                (ProjectId, ProjectMilestoneId, Title, Description,
+                 TaskType, Status, DueDate, CreatedByUserId,
+                 IsMandatory, IsSystemTask,
+                 IsSubmission, SubmissionInstructions,
+                 MaxFilesCount, MaxFileSizeMb, AllowedFileTypes)
+            SELECT
+                pm.ProjectId,
+                pm.Id,
+                tt.Title,
+                tt.Description,
+                'System', 'Open',
+                tt.DueDate,
+                @UserId,
+                0, 0,
+                tt.IsSubmission,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.SubmissionInstructions END,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.MaxFilesCount         END,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.MaxFileSizeMb         END,
+                CASE WHEN tt.IsSubmission = 1 THEN tt.AllowedFileTypes      END
+            FROM   TaskTemplates           tt
+            JOIN   AcademicYearMilestones  aym ON aym.MilestoneTemplateId    = tt.MilestoneTemplateId
+            JOIN   ProjectMilestones       pm  ON pm.AcademicYearMilestoneId = aym.Id
+            JOIN   Projects                p   ON p.Id = pm.ProjectId
+            WHERE  tt.Id        = @TemplateId
+              AND  tt.IsActive  = 1
+              AND  aym.IsActive = 1
+              AND  p.Status NOT IN ('Available', 'Unavailable')
+              AND  NOT EXISTS (
+                       SELECT 1 FROM Tasks t
+                       WHERE  t.ProjectId          = pm.ProjectId
+                         AND  t.ProjectMilestoneId = pm.Id
+                         AND  t.Title              = tt.Title
+                   )";
+        await _db.SaveDataAsync(sql, new { TemplateId = templateId, UserId = authUserId });
     }
 
     // Inserts resource file links for a template. Silently skips unknown file IDs.

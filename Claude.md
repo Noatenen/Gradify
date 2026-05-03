@@ -104,3 +104,17 @@ Always:
 - Do NOT over-engineer
 - Keep things simple and scalable
 - Prefer incremental improvements over big rewrites
+
+---
+
+## Local Dev Workflow
+
+After Client / Shared changes, do **not** restart the server with a plain `dotnet run`. The Blazor `_framework/` directory accumulates multiple hashed `.wasm` / `.pdb` versions across rebuilds, which causes the browser to 404 on stale files (e.g. `AuthWithAdmin.Client.<hash>.wasm`).
+
+Instead, run:
+
+```
+scripts/dev-reset.sh
+```
+
+It stops running server processes, deletes ONLY `Client/{bin,obj}`, `Server/{bin,obj}`, `Shared/{bin,obj}`, runs `dotnet build AuthWithAdmin.sln`, and starts the Server. The DB, `wwwroot/uploads`, `.git`, and source files are never touched.

@@ -58,9 +58,23 @@ public class TaskMilestoneGroupDto
     public int       ProjectMilestoneId { get; set; }
     public string    MilestoneTitle     { get; set; } = "";
     public int       OrderIndex         { get; set; }
-    /// <summary>"NotStarted" | "InProgress" | "Completed" | "Delayed"</summary>
+    /// <summary>"NotStarted" | "InProgress" | "Completed" | "Delayed".
+    /// Progress indicator only — does NOT gate visibility. The client uses
+    /// IsCurrentlyOpen for visibility decisions per the date-based rules.</summary>
     public string    MilestoneStatus    { get; set; } = "";
+    public DateTime? OpenDate           { get; set; }
+    /// <summary>Effective due date for the team (per-team override applied if present).</summary>
     public DateTime? DueDate            { get; set; }
+    public DateTime? CloseDate          { get; set; }
+    /// <summary>
+    /// Server-derived. True when today is inside the milestone's effective
+    /// visibility window:
+    ///   (OpenDate IS NULL OR today &gt;= OpenDate)
+    ///   AND (CloseDate IS NULL OR today &lt;= CloseDate).
+    /// Independent of MilestoneStatus and unrelated to whether previous
+    /// milestones have been completed.
+    /// </summary>
+    public bool      IsCurrentlyOpen    { get; set; }
     public int       DoneCount          { get; set; }
     public int       TotalCount         { get; set; }
     public List<TaskItemDto> Tasks      { get; set; } = new();
@@ -91,6 +105,16 @@ public class TaskItemDto
     /// this task is "pending" (NotStarted milestone) without extra lookups.
     /// </summary>
     public string    MilestoneStatus { get; set; } = "";
+
+    /// <summary>
+    /// Server-derived urgency flag.
+    /// True when the parent milestone's effective due date (per-team override
+    /// applied if present) has passed AND the task is mandatory AND still open
+    /// (not Done / not Completed / not SubmittedToMentor / not closed / no
+    /// submission yet). Computed in SQL so all student readers get consistent
+    /// values and the project-health layer can reuse the same input.
+    /// </summary>
+    public bool      IsUrgent        { get; set; }
 
     // ── Latest submission state (populated only when IsSubmission = true) ────
     /// <summary>

@@ -123,6 +123,32 @@
                 </div>
             </div>
 
+            <!-- ── Default course-level dates (Option A) ──
+                 These are the GLOBAL defaults that propagate to AcademicYearMilestones
+                 when a new cycle is created. Per-team postponements still go through
+                 TeamMilestoneDueDateOverrides — adding these fields does not change
+                 that flow. -->
+            <div class="ms-form-section ms-form-section-dates">
+                <div class="ms-form-section-title">תאריכי אבן הדרך</div>
+                <div class="ms-form-grid">
+                    <div class="ms-field">
+                        <label class="ms-label">תאריך התחלה</label>
+                        <input type="date" class="ms-input" @bind="_formOpenDate" />
+                    </div>
+                    <div class="ms-field">
+                        <label class="ms-label">תאריך יעד</label>
+                        <input type="date" class="ms-input" @bind="_formDueDate" />
+                    </div>
+                    <div class="ms-field">
+                        <label class="ms-label">תאריך סיום</label>
+                        <input type="date" class="ms-input" @bind="_formCloseDate" />
+                    </div>
+                </div>
+                <div class="ms-form-hint">
+                    משימות פתוחות באבן דרך זו יסומנו כדחופות לאחר תאריך היעד.
+                </div>
+            </div>
+
             @if (!string.IsNullOrEmpty(_formError))
             {
                 <div class="ms-form-error">
@@ -180,6 +206,7 @@
                         <th>שם אבן הדרך</th>
                         <th>תיאור</th>
                         <th>רלוונטי ל</th>
+                        <th>תאריכים</th>
                         <th class="ms-cell-center">חובה</th>
                         <th>סטטוס</th>
                         <th class="ms-th-actions">פעולות</th>
@@ -189,7 +216,7 @@
                     @if (_loading)
                     {
                         <tr>
-                            <td colspan="7" class="ms-empty">
+                            <td colspan="8" class="ms-empty">
                                 <span class="ms-spinner-inline"></span>
                                 טוען אבני דרך...
                             </td>
@@ -198,7 +225,7 @@
                     else if (_loadError)
                     {
                         <tr>
-                            <td colspan="7" class="ms-empty ms-empty--error">
+                            <td colspan="8" class="ms-empty ms-empty--error">
                                 <span class="oi oi-warning" aria-hidden="true"></span>
                                 שגיאה בטעינת אבני הדרך. רענן את הדף.
                             </td>
@@ -207,7 +234,7 @@
                     else if (!FilteredTemplates.Any())
                     {
                         <tr>
-                            <td colspan="7" class="ms-empty">
+                            <td colspan="8" class="ms-empty">
                                 <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
                                 לא נמצאו אבני דרך התואמות את הסינון
                             </td>
@@ -240,6 +267,38 @@
                                     <span class="ms-applicability-badge ms-applicability--@ApplicabilityKey(t.ProjectTypeId)">
                                         @t.Applicability
                                     </span>
+                                </td>
+                                <td class="ms-cell-dates">
+                                    @if (t.OpenDate is null && t.DueDate is null && t.CloseDate is null)
+                                    {
+                                        <span class="ms-dash">—</span>
+                                    }
+                                    else
+                                    {
+                                        <div class="ms-dates-stack">
+                                            @if (t.OpenDate is not null)
+                                            {
+                                                <div class="ms-date-row">
+                                                    <span class="ms-date-label">התחלה:</span>
+                                                    <span class="ms-date-value">@t.OpenDate.Value.ToString("dd/MM/yy")</span>
+                                                </div>
+                                            }
+                                            @if (t.DueDate is not null)
+                                            {
+                                                <div class="ms-date-row">
+                                                    <span class="ms-date-label">יעד:</span>
+                                                    <span class="ms-date-value ms-date-due">@t.DueDate.Value.ToString("dd/MM/yy")</span>
+                                                </div>
+                                            }
+                                            @if (t.CloseDate is not null)
+                                            {
+                                                <div class="ms-date-row">
+                                                    <span class="ms-date-label">סיום:</span>
+                                                    <span class="ms-date-value">@t.CloseDate.Value.ToString("dd/MM/yy")</span>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
                                 </td>
                                 <td class="ms-cell-center">
                                     @if (t.IsRequired)
@@ -390,6 +449,12 @@
     private bool   _formIsActive    = true;
     private string _formError       = "";
 
+    // Default course-level dates — bound to <input type="date"> so they
+    // round-trip nullable cleanly. Validated in SubmitForm + on the server.
+    private DateTime? _formOpenDate;
+    private DateTime? _formDueDate;
+    private DateTime? _formCloseDate;
+
     private void OpenAddForm()
     {
         _editingId        = 0;
@@ -399,6 +464,9 @@
         _formProjectTypeId = "";
         _formIsRequired   = true;
         _formIsActive     = true;
+        _formOpenDate     = null;
+        _formDueDate      = null;
+        _formCloseDate    = null;
         _formError        = "";
         _showForm         = true;
         CloseAllMenus();
@@ -414,6 +482,9 @@
         _formProjectTypeId = t.ProjectTypeId?.ToString() ?? "";
         _formIsRequired   = t.IsRequired;
         _formIsActive     = t.IsActive;
+        _formOpenDate     = t.OpenDate;
+        _formDueDate      = t.DueDate;
+        _formCloseDate    = t.CloseDate;
         _formError        = "";
         _showForm         = true;
     }
@@ -430,6 +501,20 @@
         if (string.IsNullOrWhiteSpace(_formTitle)) { _formError = "שם אבן הדרך הוא שדה חובה"; return; }
         if (_formOrder < 0)                        { _formError = "מספר סדר חייב להיות אפס או יותר"; return; }
 
+        // Date ordering — only enforced when both endpoints are present.
+        if (_formOpenDate is not null && _formDueDate is not null
+            && _formDueDate.Value.Date < _formOpenDate.Value.Date)
+        {
+            _formError = "תאריך היעד חייב להיות אחרי תאריך ההתחלה";
+            return;
+        }
+        if (_formOpenDate is not null && _formCloseDate is not null
+            && _formCloseDate.Value.Date < _formOpenDate.Value.Date)
+        {
+            _formError = "תאריך הסיום חייב להיות אחרי תאריך ההתחלה";
+            return;
+        }
+
         _formSaving = true;
 
         int? typeId = string.IsNullOrEmpty(_formProjectTypeId)
@@ -444,6 +529,9 @@
             ProjectTypeId = typeId,
             IsRequired    = _formIsRequired,
             IsActive      = _formIsActive,
+            OpenDate      = _formOpenDate,
+            DueDate       = _formDueDate,
+            CloseDate     = _formCloseDate,
         };
 
         string? error = _editingId == 0

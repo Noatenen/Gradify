@@ -1,0 +1,373 @@
+@* Two routes — same component, different Scope. Server enforces actual access. *@
+@page "/dashboard/lecturer"
+@page "/dashboard/mentor"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff + "," + Roles.Mentor)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IDashboardOverviewService DashboardService
+
+<div class="ovd-page" dir="rtl">
+
+    <!-- ── Page header ── -->
+    <div class="ovd-header-card">
+        <div class="ovd-header-start">
+            <div class="ovd-page-icon">
+                <span class="oi oi-dashboard" aria-hidden="true"></span>
+            </div>
+            <div>
+                <h1 class="ovd-page-title">@PageTitle</h1>
+                <p class="ovd-page-subtitle">תמונת מצב כללית — בריאות פרויקטים, הגשות ובקשות</p>
+            </div>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="ovd-empty"><span class="ovd-spinner-inline"></span>טוען נתונים…</div>
+    }
+    else if (_loadError || _data is null)
+    {
+        <div class="ovd-empty ovd-empty--error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת הדשבורד. נסה לרענן את הדף.
+        </div>
+    }
+    else if (_data.Projects.Count == 0)
+    {
+        <div class="ovd-empty">
+            <span class="oi oi-inbox" aria-hidden="true"></span>
+            לא נמצאו פרויקטים להצגה
+        </div>
+    }
+    else
+    {
+        @* ── Summary cards ── *@
+        <div class="ovd-kpi-row">
+            <div class="ovd-kpi-card">
+                <div class="ovd-kpi-value">@_data.Summary.TotalProjects</div>
+                <div class="ovd-kpi-label">סך פרויקטים</div>
+            </div>
+            <div class="ovd-kpi-card ovd-kpi--active">
+                <div class="ovd-kpi-value">@_data.Summary.ActiveProjects</div>
+                <div class="ovd-kpi-label">פרויקטים פעילים</div>
+            </div>
+            <div class="ovd-kpi-card ovd-kpi--ok">
+                <div class="ovd-kpi-value">@_data.Summary.SubmissionsCompleted</div>
+                <div class="ovd-kpi-label">הגשות שהוגשו</div>
+            </div>
+            <div class="ovd-kpi-card ovd-kpi--warn">
+                <div class="ovd-kpi-value">@_data.Summary.SubmissionsMissing</div>
+                <div class="ovd-kpi-label">הגשות שטרם הוגשו</div>
+            </div>
+            <div class="ovd-kpi-card ovd-kpi--danger">
+                <div class="ovd-kpi-value">@_data.Summary.OverdueTasks</div>
+                <div class="ovd-kpi-label">משימות באיחור</div>
+            </div>
+            <div class="ovd-kpi-card ovd-kpi--info">
+                <div class="ovd-kpi-value">@_data.Summary.OpenRequests</div>
+                <div class="ovd-kpi-label">בקשות פתוחות</div>
+            </div>
+        </div>
+
+        @* ── Charts row ── *@
+        <div class="ovd-charts-row">
+            @* Health donut *@
+            <div class="ovd-chart-card">
+                <div class="ovd-chart-title">בריאות פרויקטים</div>
+                @{
+                    int healthTotal = _data.Charts.HealthHealthy + _data.Charts.HealthAttention + _data.Charts.HealthAtRisk;
+                    int hH  = _data.Charts.HealthHealthy;
+                    int hM  = _data.Charts.HealthAttention;
+                    int hL  = _data.Charts.HealthAtRisk;
+                    double a1 = healthTotal == 0 ? 0 : (hH + hM)        * 360.0 / healthTotal;
+                    double a2 = healthTotal == 0 ? 0 :  hM              * 360.0 / healthTotal;
+                    string seg1End = PolarToXY(0, a1 - a2);
+                    string seg2End = PolarToXY(a1 - a2, a1);
+                }
+                <div class="ovd-donut-wrap">
+                    <svg class="ovd-donut" viewBox="0 0 36 36" aria-hidden="true">
+                        @* Background ring (atRisk = the "miss" colour) *@
+                        <circle class="ovd-donut-bg" cx="18" cy="18" r="15.9" />
+                        @* Healthy arc (green) *@
+                        @if (hH > 0)
+                        {
+                            <path class="ovd-donut-arc-healthy"
+                                  d="@DonutArcPath(0, hH * 360.0 / healthTotal)" />
+                        }
+                        @* Attention arc (amber) *@
+                        @if (hM > 0)
+                        {
+                            <path class="ovd-donut-arc-attention"
+                                  d="@DonutArcPath(hH * 360.0 / healthTotal, (hH + hM) * 360.0 / healthTotal)" />
+                        }
+                        <text class="ovd-donut-num" x="18" y="18.5" text-anchor="middle">@healthTotal</text>
+                        <text class="ovd-donut-cap" x="18" y="22.5" text-anchor="middle">פרויקטים</text>
+                    </svg>
+                    <ul class="ovd-legend">
+                        <li><span class="ovd-dot ovd-dot-healthy"></span>תקין <span class="ovd-legend-num">@hH</span></li>
+                        <li><span class="ovd-dot ovd-dot-attention"></span>דורש תשומת לב <span class="ovd-legend-num">@hM</span></li>
+                        <li><span class="ovd-dot ovd-dot-risk"></span>בסיכון <span class="ovd-legend-num">@hL</span></li>
+                    </ul>
+                </div>
+            </div>
+
+            @* Submission split *@
+            <div class="ovd-chart-card">
+                <div class="ovd-chart-title">סטטוס הגשות</div>
+                @{
+                    int subSubmitted = _data.Charts.SubmissionsSubmitted;
+                    int subPending   = _data.Charts.SubmissionsNotYet;
+                    int subTotal     = subSubmitted + subPending;
+                    int subPct       = subTotal == 0 ? 0 : (int)Math.Round(subSubmitted * 100.0 / subTotal);
+                }
+                <div class="ovd-bar-stack">
+                    <div class="ovd-bar-track">
+                        <div class="ovd-bar-fill ovd-bar-fill-ok" style="width:@(subPct)%;"></div>
+                    </div>
+                    <div class="ovd-bar-meta">
+                        <span class="ovd-bar-meta-strong">@subSubmitted / @subTotal</span>
+                        <span class="ovd-bar-meta-muted">הוגשו</span>
+                    </div>
+                </div>
+                <ul class="ovd-legend">
+                    <li><span class="ovd-dot ovd-dot-ok"></span>הוגשו <span class="ovd-legend-num">@subSubmitted</span></li>
+                    <li><span class="ovd-dot ovd-dot-warn"></span>טרם הוגשו <span class="ovd-legend-num">@subPending</span></li>
+                </ul>
+            </div>
+
+            @* Overdue tasks by milestone *@
+            <div class="ovd-chart-card">
+                <div class="ovd-chart-title">משימות באיחור לפי אבן דרך</div>
+                @if (_data.Charts.OverdueByMilestone.Count == 0)
+                {
+                    <div class="ovd-chart-empty">אין משימות באיחור</div>
+                }
+                else
+                {
+                    int maxOverdue = _data.Charts.OverdueByMilestone.Max(b => b.OverdueTaskCount);
+                    if (maxOverdue == 0) maxOverdue = 1;
+                    <div class="ovd-bar-list">
+                        @foreach (var b in _data.Charts.OverdueByMilestone)
+                        {
+                            int pct = (int)Math.Round(b.OverdueTaskCount * 100.0 / maxOverdue);
+                            <div class="ovd-bar-row">
+                                <div class="ovd-bar-row-label">@b.MilestoneTitle</div>
+                                <div class="ovd-bar-track">
+                                    <div class="ovd-bar-fill ovd-bar-fill-danger" style="width:@(pct)%;"></div>
+                                </div>
+                                <div class="ovd-bar-row-value">@b.OverdueTaskCount</div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* ── Filters bar ── *@
+        <div class="ovd-filters-bar">
+            <div class="ovd-search-wrap">
+                <span class="oi oi-magnifying-glass ovd-search-icon" aria-hidden="true"></span>
+                <input class="ovd-search" type="text"
+                       placeholder="חיפוש לפי שם פרויקט / צוות"
+                       @bind="_searchQuery" @bind:event="oninput" />
+            </div>
+            <div class="ovd-filter-group">
+                <select class="ovd-filter-select" @bind="_filterHealth">
+                    <option value="">בריאות: הכל</option>
+                    <option value="@HealthBuckets.Healthy">תקין</option>
+                    <option value="@HealthBuckets.Attention">דורש תשומת לב</option>
+                    <option value="@HealthBuckets.AtRisk">בסיכון</option>
+                </select>
+                <select class="ovd-filter-select" @bind="_filterMilestone">
+                    <option value="">אבן דרך: הכל</option>
+                    @foreach (var m in MilestoneOptions)
+                    {
+                        <option value="@m">@m</option>
+                    }
+                </select>
+                @if (Scope == "lecturer")
+                {
+                    <select class="ovd-filter-select" @bind="_filterMentor">
+                        <option value="">מנחה: הכל</option>
+                        @foreach (var m in MentorOptions)
+                        {
+                            <option value="@m">@m</option>
+                        }
+                    </select>
+                }
+            </div>
+        </div>
+
+        @* ── Project list table ── *@
+        <div class="ovd-table-panel">
+            <div class="ovd-table-wrap">
+                <table class="ovd-table">
+                    <thead>
+                        <tr>
+                            <th>שם פרויקט</th>
+                            <th>צוות</th>
+                            <th>מנחים</th>
+                            <th>אבן דרך נוכחית</th>
+                            <th class="ovd-cell-num">משימות באיחור</th>
+                            <th class="ovd-cell-num">הגשות חסרות</th>
+                            <th class="ovd-cell-num">בקשות פתוחות</th>
+                            <th>בריאות</th>
+                            <th class="ovd-cell-action"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!Filtered.Any())
+                        {
+                            <tr><td colspan="9" class="ovd-empty-row">
+                                <span class="oi oi-inbox" aria-hidden="true"></span>
+                                לא נמצאו פרויקטים התואמים את הסינון
+                            </td></tr>
+                        }
+                        else
+                        {
+                            foreach (var r in Filtered)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="ovd-project-cell">
+                                            <span class="ovd-project-num">צוות @r.ProjectNumber</span>
+                                            <span class="ovd-project-title">@r.ProjectTitle</span>
+                                        </div>
+                                    </td>
+                                    <td>@(r.TeamName ?? "—")</td>
+                                    <td>@(r.MentorNames ?? "—")</td>
+                                    <td>
+                                        @if (string.IsNullOrWhiteSpace(r.CurrentMilestoneTitle))
+                                        { <span class="ovd-dash">—</span> }
+                                        else
+                                        {
+                                            <div class="ovd-ms-cell">
+                                                <span>@r.CurrentMilestoneTitle</span>
+                                                @if (r.CurrentMilestoneDueDate is not null)
+                                                {
+                                                    <span class="ovd-ms-due">@r.CurrentMilestoneDueDate.Value.ToString("dd/MM/yy")</span>
+                                                }
+                                            </div>
+                                        }
+                                    </td>
+                                    <td class="ovd-cell-num"><span class="ovd-num-pill @(r.OverdueTaskCount > 0 ? "ovd-num-pill-danger" : "")">@r.OverdueTaskCount</span></td>
+                                    <td class="ovd-cell-num"><span class="ovd-num-pill @(r.MissingSubmissionCount > 0 ? "ovd-num-pill-warn" : "")">@r.MissingSubmissionCount</span></td>
+                                    <td class="ovd-cell-num"><span class="ovd-num-pill @(r.OpenRequestCount > 0 ? "ovd-num-pill-info" : "")">@r.OpenRequestCount</span></td>
+                                    <td>
+                                        <div class="ovd-health-cell">
+                                            <div class="ovd-health-track">
+                                                <div class="ovd-health-fill @HealthFillClass(r.HealthBucket)" style="width:@(r.HealthScore)%;"></div>
+                                            </div>
+                                            <span class="ovd-health-badge ovd-health-@(r.HealthBucket.ToLower())">
+                                                @HealthBuckets.Label(r.HealthBucket)
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td class="ovd-cell-action">
+                                        <button class="ovd-open-btn" @onclick="@(() => Nav.NavigateTo(ProjectViewLink(r.ProjectId)))">
+                                            <span class="oi oi-eye" aria-hidden="true"></span>
+                                            צפייה בפרויקט
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private DashboardOverviewDto? _data;
+    private bool _loading   = true;
+    private bool _loadError;
+
+    // Filters
+    private string _searchQuery    = "";
+    private string _filterHealth   = "";
+    private string _filterMilestone = "";
+    private string _filterMentor   = "";
+
+    /// <summary>Resolved per-route — "lecturer" or "mentor".</summary>
+    private string Scope =>
+        Nav.ToBaseRelativePath(Nav.Uri).StartsWith("dashboard/mentor", StringComparison.OrdinalIgnoreCase)
+            ? "mentor" : "lecturer";
+
+    private string PageTitle => Scope == "mentor" ? "דשבורד מנחה" : "דשבורד מרצה";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var result = await DashboardService.GetAsync(Scope);
+        _loadError = result is null;
+        _data      = result;
+        _loading   = false;
+    }
+
+    // Filter options derived from the loaded rows
+    private IEnumerable<string> MilestoneOptions =>
+        _data?.Projects
+            .Where(p => !string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle))
+            .Select(p => p.CurrentMilestoneTitle!)
+            .Distinct()
+            .OrderBy(m => m)
+        ?? Enumerable.Empty<string>();
+
+    private IEnumerable<string> MentorOptions =>
+        (_data?.Projects ?? new())
+            .Where(p => !string.IsNullOrWhiteSpace(p.MentorNames))
+            .SelectMany(p => p.MentorNames!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            .Distinct()
+            .OrderBy(m => m);
+
+    private IEnumerable<DashboardProjectRowDto> Filtered =>
+        (_data?.Projects ?? new())
+            .Where(r => string.IsNullOrEmpty(_filterHealth)    || r.HealthBucket == _filterHealth)
+            .Where(r => string.IsNullOrEmpty(_filterMilestone) || r.CurrentMilestoneTitle == _filterMilestone)
+            .Where(r => string.IsNullOrEmpty(_filterMentor)
+                     || (r.MentorNames is not null && r.MentorNames.Contains(_filterMentor)))
+            .Where(r => string.IsNullOrEmpty(_searchQuery)
+                     || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                     || (r.TeamName is not null && r.TeamName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+                     || r.ProjectNumber.ToString().Contains(_searchQuery))
+            .OrderBy(r => r.HealthScore)   // sickest first
+            .ThenBy(r => r.ProjectNumber);
+
+    private static string HealthFillClass(string bucket) => bucket switch
+    {
+        HealthBuckets.Healthy   => "ovd-health-fill-healthy",
+        HealthBuckets.Attention => "ovd-health-fill-attention",
+        _                       => "ovd-health-fill-risk",
+    };
+
+    /// <summary>Project view link — points to the existing project surface for the user's role.</summary>
+    private string ProjectViewLink(int projectId) =>
+        Scope == "mentor" ? $"/mentor/projects/{projectId}" : $"/projects/{projectId}";
+
+    // ── Donut helpers (SVG path math) ────────────────────────────────────────
+    private static string PolarToXY(double startDeg, double endDeg)
+    {
+        // Normalises to a 36×36 viewBox circle centered at (18,18) radius 15.9.
+        double rad = (endDeg - 90) * Math.PI / 180.0;
+        double x = 18 + 15.9 * Math.Cos(rad);
+        double y = 18 + 15.9 * Math.Sin(rad);
+        return $"{x.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)} {y.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}";
+    }
+
+    private static string DonutArcPath(double startDeg, double endDeg)
+    {
+        // Build an SVG arc from startDeg to endDeg (clockwise, top=0deg).
+        double startRad = (startDeg - 90) * Math.PI / 180.0;
+        double endRad   = (endDeg   - 90) * Math.PI / 180.0;
+        double sx = 18 + 15.9 * Math.Cos(startRad);
+        double sy = 18 + 15.9 * Math.Sin(startRad);
+        double ex = 18 + 15.9 * Math.Cos(endRad);
+        double ey = 18 + 15.9 * Math.Sin(endRad);
+        int largeArc = (endDeg - startDeg) > 180 ? 1 : 0;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return $"M {sx.ToString("F4", inv)} {sy.ToString("F4", inv)} A 15.9 15.9 0 {largeArc} 1 {ex.ToString("F4", inv)} {ey.ToString("F4", inv)}";
+    }
+}

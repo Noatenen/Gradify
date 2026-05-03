@@ -65,8 +65,15 @@ public class SubmissionHistoryItemDto
     public string?   Notes            { get; set; }
     /// <summary>Reviewer (admin/staff) decision: "Submitted" | "Reviewed" | "NeedsRevision".</summary>
     public string    Status           { get; set; } = "Submitted";
-    /// <summary>Feedback from reviewer when Status = "NeedsRevision".</summary>
+    /// <summary>Feedback from reviewer. The client must only render this when IsFeedbackPublished = true
+    /// (or, for legacy NeedsRevision flows, when Status = "NeedsRevision"). Drafts are still wired through
+    /// for backward compatibility but should never be exposed without the gate.</summary>
     public string?   ReviewerFeedback { get; set; }
+    /// <summary>One of LecturerReviewStatuses.* — the lecturer review queue state for this submission.</summary>
+    public string?   ReviewStatus        { get; set; }
+    /// <summary>True ⇒ lecturer feedback (text + files) has been published to the student.</summary>
+    public bool      IsFeedbackPublished { get; set; }
+    public DateTime? FeedbackPublishedAt { get; set; }
     /// <summary>Mentor decision: "Pending" | "Approved" | "Returned".</summary>
     public string    MentorStatus       { get; set; } = "Pending";
     /// <summary>Feedback from mentor when MentorStatus = "Returned".</summary>

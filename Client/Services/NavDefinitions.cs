@@ -12,9 +12,12 @@ namespace AuthWithAdmin.Client.Services;
 public static class NavDefinitions
 {
     // ── Admin / Staff (Lecturer) ─────────────────────────────────────
+    // The legacy generic "דשבורד" item (route /dashboard) was removed from
+    // the sidebar in favor of the dedicated "דשבורד מרצה" page. The /dashboard
+    // route still resolves so any deep link / external bookmark keeps working.
     private static readonly IReadOnlyList<NavItem> _adminMain = new[]
     {
-        new NavItem("דשבורד",            "dashboard",             "oi-dashboard",             NavLinkMatch.All),
+        new NavItem("דשבורד מרצה",        "dashboard/lecturer",    "oi-pulse",                 NavLinkMatch.Prefix),
         new NavItem("פרויקטים",          "projects",              "oi-folder",                NavLinkMatch.Prefix),
         new NavItem("שיבוצים",           "assignments",           "oi-target",                NavLinkMatch.Prefix),
         new NavItem("אבני דרך",          "milestones",            "oi-flag",                  NavLinkMatch.Prefix),
@@ -48,9 +51,10 @@ public static class NavDefinitions
     // ── Mentor ───────────────────────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _mentorMain = new[]
     {
-        new NavItem("פרויקטים", "mentor/projects",     "oi-folder",   NavLinkMatch.Prefix),
-        new NavItem("הגשות",    "mentor/submissions", "oi-inbox",    NavLinkMatch.Prefix),
-        new NavItem("בקשות",    "management/requests", "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("דשבורד מנחה", "dashboard/mentor",   "oi-pulse",            NavLinkMatch.Prefix),
+        new NavItem("פרויקטים",    "mentor/projects",    "oi-folder",           NavLinkMatch.Prefix),
+        new NavItem("הגשות",       "mentor/submissions", "oi-inbox",            NavLinkMatch.Prefix),
+        new NavItem("בקשות",       "mentor-requests",    "oi-envelope-closed",  NavLinkMatch.Prefix),
     };
 
     private static readonly IReadOnlyList<NavItem> _mentorBottom = new[]

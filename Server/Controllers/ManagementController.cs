@@ -21,8 +21,19 @@ public class ManagementController : ControllerBase
     public ManagementController(DbRepository db) => _db = db;
 
     // ── GET /api/management/projects ────────────────────────────────────────
-    // Returns all projects with resolved type name, team size, and derived
-    // academic year (taken from the team's first active member).
+    //
+    // Returns ACTIVE assigned projects only — same definition as the lecturer
+    // and mentor dashboards (kept in sync intentionally):
+    //   1. p.TeamId IS NOT NULL                    (via the JOIN below)
+    //   2. COALESCE(p.AssignmentIsDraft, 0) = 0    (assignment was published)
+    //   3. p.Status NOT IN ('Available','Unavailable')
+    //                                              (excludes catalog rows
+    //                                               whose TeamId is leftover
+    //                                               from earlier sessions)
+    //
+    // The Status condition is a catalog-state EXCLUSION, not a catalog-state
+    // INCLUSION rule — we drop the two browse states. Catalog browsing has
+    // its own page at /management/catalog.
     [HttpGet("projects")]
     public async Task<IActionResult> GetProjects(int authUserId)
     {
@@ -57,6 +68,8 @@ public class ManagementController : ControllerBase
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId       = t.Id
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
+            WHERE   COALESCE(p.AssignmentIsDraft, 0) = 0
+              AND   p.Status NOT IN ('Available', 'Unavailable')
             ORDER   BY p.ProjectNumber";
 
         var rows = await _db.GetRecordsAsync<ProjectManagementDto>(sql);

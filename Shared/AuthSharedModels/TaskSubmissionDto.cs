@@ -71,6 +71,11 @@ public class TaskSubmissionFileDto
     /// <summary>Raw size in bytes. Stored for display and policy re-check without disk reads.</summary>
     public long     SizeBytes        { get; set; }
     public DateTime UploadedAt       { get; set; }
+    /// <summary>true ⇒ uploaded by lecturer/admin as feedback. false ⇒ student submission file.</summary>
+    public bool     IsLecturerFeedback { get; set; }
+    /// <summary>When this lecturer-feedback file became visible to students. NULL ⇒ draft.
+    /// Always NULL for student-uploaded files (they are visible immediately).</summary>
+    public DateTime? FilePublishedAt { get; set; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,4 +160,15 @@ public class StudentSubmissionTaskDto
     /// <summary>When the student forwarded the latest submission to course staff. Null if not yet forwarded.</summary>
     public DateTime? LatestCourseSubmittedAt { get; set; }
     public DateTime? LatestSubmittedAt       { get; set; }
+
+    // ── Lecturer published feedback (read-only on the student side) ──────────
+    // The server fills these only when IsFeedbackPublished = 1 — drafts are
+    // never serialized to students.
+    public string?   LecturerFeedback              { get; set; }
+    public DateTime? LecturerFeedbackPublishedAt   { get; set; }
+    /// <summary>One of LecturerReviewStatuses.* — only for published reviews.</summary>
+    public string?   LecturerReviewStatus          { get; set; }
+    /// <summary>Lecturer-uploaded files visible to students (FilePublishedAt IS NOT NULL).
+    /// Empty when there is no published feedback yet.</summary>
+    public List<TaskSubmissionFileDto> LecturerFeedbackFiles { get; set; } = new();
 }

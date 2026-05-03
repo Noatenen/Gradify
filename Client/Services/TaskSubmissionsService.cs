@@ -13,9 +13,14 @@ public interface ITaskSubmissionsService
     Task<bool>                            SubmitToCourseAsync(int submissionId);
 
     // ── Lecturer / admin-facing ──────────────────────────────────────────────
-    Task<List<LecturerSubmissionRowDto>?> GetAllForLecturerAsync();
-    Task<TaskSubmissionDto?>              GetSubmissionDetailAsync(int submissionId);
-    Task<bool>                            UpdateSubmissionStatusAsync(int submissionId, string status);
+    Task<List<LecturerSubmissionRowDto>?>     GetAllForLecturerAsync();
+    Task<TaskSubmissionDto?>                  GetSubmissionDetailAsync(int submissionId);
+    Task<LecturerSubmissionDetailDto?>        GetLecturerDetailAsync(int submissionId);
+    Task<bool>                                UpdateSubmissionStatusAsync(int submissionId, string status);
+    Task<bool>                                SaveLecturerReviewAsync(int submissionId, string reviewStatus, string? feedback);
+    Task<(bool Ok, string? Error)>            PublishFeedbackAsync(int submissionId);
+    Task<(bool Ok, string? Error, int Saved)> UploadLecturerFilesAsync(int submissionId, List<SubmissionFileRequest> files);
+    Task<(bool Ok, string? Error)>            DeleteLecturerFileAsync(int submissionId, int fileId);
 }
 
 public class TaskSubmissionsService : ITaskSubmissionsService
@@ -111,5 +116,77 @@ public class TaskSubmissionsService : ITaskSubmissionsService
         catch { return false; }
     }
 
-    private sealed class CreateResult { public int Id { get; set; } }
+    public async Task<LecturerSubmissionDetailDto?> GetLecturerDetailAsync(int submissionId)
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<LecturerSubmissionDetailDto>(
+                $"api/task-submissions/{submissionId}/lecturer-detail");
+        }
+        catch { return null; }
+    }
+
+    public async Task<bool> SaveLecturerReviewAsync(int submissionId, string reviewStatus, string? feedback)
+    {
+        try
+        {
+            var resp = await _http.PatchAsJsonAsync(
+                $"api/task-submissions/{submissionId}/lecturer-review",
+                new SaveLecturerReviewRequest
+                {
+                    ReviewStatus     = reviewStatus,
+                    ReviewerFeedback = feedback,
+                });
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    public async Task<(bool Ok, string? Error)> PublishFeedbackAsync(int submissionId)
+    {
+        try
+        {
+            var resp = await _http.PostAsync(
+                $"api/task-submissions/{submissionId}/publish-feedback", null);
+            if (resp.IsSuccessStatusCode) return (true, null);
+            string body = await resp.Content.ReadAsStringAsync();
+            return (false, string.IsNullOrWhiteSpace(body) ? "שגיאה בפרסום המשוב" : body.Trim('"'));
+        }
+        catch { return (false, "שגיאה בפרסום המשוב"); }
+    }
+
+    public async Task<(bool Ok, string? Error, int Saved)> UploadLecturerFilesAsync(
+        int submissionId, List<SubmissionFileRequest> files)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(
+                $"api/task-submissions/{submissionId}/lecturer-files",
+                new UploadLecturerFilesRequest { Files = files });
+            if (resp.IsSuccessStatusCode)
+            {
+                var result = await resp.Content.ReadFromJsonAsync<UploadLecturerFilesResult>();
+                return (true, null, result?.Saved ?? 0);
+            }
+            string body = await resp.Content.ReadAsStringAsync();
+            return (false, string.IsNullOrWhiteSpace(body) ? "שגיאה בהעלאת הקבצים" : body.Trim('"'), 0);
+        }
+        catch { return (false, "שגיאה בהעלאת הקבצים", 0); }
+    }
+
+    public async Task<(bool Ok, string? Error)> DeleteLecturerFileAsync(int submissionId, int fileId)
+    {
+        try
+        {
+            var resp = await _http.DeleteAsync(
+                $"api/task-submissions/{submissionId}/lecturer-files/{fileId}");
+            if (resp.IsSuccessStatusCode) return (true, null);
+            string body = await resp.Content.ReadAsStringAsync();
+            return (false, string.IsNullOrWhiteSpace(body) ? "שגיאה במחיקת הקובץ" : body.Trim('"'));
+        }
+        catch { return (false, "שגיאה במחיקת הקובץ"); }
+    }
+
+    private sealed class CreateResult              { public int Id    { get; set; } }
+    private sealed class UploadLecturerFilesResult { public int Saved { get; set; } }
 }

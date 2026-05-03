@@ -44,6 +44,9 @@ public class MilestoneTemplatesController : ControllerBase
                     mt.IsRequired,
                     mt.IsActive,
                     mt.ProjectTypeId,
+                    mt.OpenDate,
+                    mt.DueDate,
+                    mt.CloseDate,
                     CASE mt.ProjectTypeId
                         WHEN 1 THEN 'טכנולוגי'
                         WHEN 2 THEN 'מתודולוגי'
@@ -78,6 +81,9 @@ public class MilestoneTemplatesController : ControllerBase
                     mt.IsRequired,
                     mt.IsActive,
                     mt.ProjectTypeId,
+                    mt.OpenDate,
+                    mt.DueDate,
+                    mt.CloseDate,
                     CASE mt.ProjectTypeId
                         WHEN 1 THEN 'טכנולוגי'
                         WHEN 2 THEN 'מתודולוגי'
@@ -104,8 +110,12 @@ public class MilestoneTemplatesController : ControllerBase
             return BadRequest("סוג הפרויקט לא נמצא");
 
         const string sql = @"
-            INSERT INTO MilestoneTemplates (Title, Description, OrderIndex, IsRequired, IsActive, ProjectTypeId)
-            VALUES (@Title, @Description, @OrderIndex, @IsRequired, @IsActive, @ProjectTypeId)";
+            INSERT INTO MilestoneTemplates
+                (Title, Description, OrderIndex, IsRequired, IsActive, ProjectTypeId,
+                 OpenDate, DueDate, CloseDate)
+            VALUES
+                (@Title, @Description, @OrderIndex, @IsRequired, @IsActive, @ProjectTypeId,
+                 @OpenDate, @DueDate, @CloseDate)";
 
         int newId = await _db.InsertReturnIdAsync(sql, new
         {
@@ -115,6 +125,9 @@ public class MilestoneTemplatesController : ControllerBase
             IsRequired   = req.IsRequired ? 1 : 0,
             IsActive     = req.IsActive   ? 1 : 0,
             req.ProjectTypeId,
+            OpenDate     = req.OpenDate?.ToString("yyyy-MM-dd"),
+            DueDate      = req.DueDate?.ToString("yyyy-MM-dd"),
+            CloseDate    = req.CloseDate?.ToString("yyyy-MM-dd"),
         });
 
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת אבן הדרך");
@@ -139,7 +152,10 @@ public class MilestoneTemplatesController : ControllerBase
                    OrderIndex    = @OrderIndex,
                    IsRequired    = @IsRequired,
                    IsActive      = @IsActive,
-                   ProjectTypeId = @ProjectTypeId
+                   ProjectTypeId = @ProjectTypeId,
+                   OpenDate      = @OpenDate,
+                   DueDate       = @DueDate,
+                   CloseDate     = @CloseDate
             WHERE  Id = @Id";
 
         int affected = await _db.SaveDataAsync(sql, new
@@ -150,6 +166,9 @@ public class MilestoneTemplatesController : ControllerBase
             IsRequired   = req.IsRequired ? 1 : 0,
             IsActive     = req.IsActive   ? 1 : 0,
             req.ProjectTypeId,
+            OpenDate     = req.OpenDate?.ToString("yyyy-MM-dd"),
+            DueDate      = req.DueDate?.ToString("yyyy-MM-dd"),
+            CloseDate    = req.CloseDate?.ToString("yyyy-MM-dd"),
             Id           = id,
         });
 
@@ -177,6 +196,16 @@ public class MilestoneTemplatesController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(req.Title)) return "שם אבן הדרך הוא שדה חובה";
         if (req.OrderIndex < 0)                   return "מספר סדר חייב להיות אפס או יותר";
+
+        // Date ordering — only enforced when both endpoints are set.
+        if (req.OpenDate is not null && req.DueDate is not null
+            && req.DueDate.Value.Date < req.OpenDate.Value.Date)
+            return "תאריך היעד חייב להיות אחרי תאריך ההתחלה";
+
+        if (req.OpenDate is not null && req.CloseDate is not null
+            && req.CloseDate.Value.Date < req.OpenDate.Value.Date)
+            return "תאריך הסיום חייב להיות אחרי תאריך ההתחלה";
+
         return null;
     }
 

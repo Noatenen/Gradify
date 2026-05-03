@@ -54,9 +54,16 @@ builder.Services.AddScoped<IFormsManagementService, FormsManagementService>();
 // Airtable per-academic-year integration management
 builder.Services.AddScoped<IAirtableIntegrationService, AirtableIntegrationService>();
 
-// Permission catalog + per-user cache
+// Permission catalog + per-user cache (legacy keyed system)
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 builder.Services.AddScoped<IPermissionsManagementService, PermissionsManagementService>();
+
+// RoleSettings — simple feature-flag matrix (independent surface for new pages)
+builder.Services.AddScoped<IRoleFeatureService, RoleFeatureService>();
+builder.Services.AddScoped<IRoleSettingsManagementService, RoleSettingsManagementService>();
+
+// Lecturer / Mentor dashboard
+builder.Services.AddScoped<IDashboardOverviewService, DashboardOverviewService>();
 
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
