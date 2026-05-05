@@ -11,6 +11,19 @@ public static class DatabaseMigrator
         await using var connection = new SqliteConnection(connectionString);
         await connection.OpenAsync();
 
+        // ── Base schema bootstrap ───────────────────────────────────────────
+        //
+        // On hosted environments (e.g. Render), the SQLite DB starts EMPTY,
+        // so every table the migrator subsequently ALTERs / UPDATEs / INSERTs
+        // into must exist first. This block creates the seven core tables
+        // with their FINAL canonical column set; the per-column ALTER guards
+        // below are then no-ops on a fresh DB and remain effective on older
+        // DBs that pre-date a particular column.
+        //
+        // CREATE TABLE IF NOT EXISTS is naturally idempotent — re-running
+        // this block on a populated DB is a no-op.
+        await EnsureBaseSchemaAsync(connection);
+
         var existingColumns = await GetColumnsAsync(connection, "users");
 
         if (!existingColumns.Contains("Phone"))
@@ -1213,6 +1226,271 @@ public static class DatabaseMigrator
         }
 
         return columns;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureBaseSchemaAsync
+    //
+    //  Creates the seven core tables required by everything else in the
+    //  migrator. Uses CREATE TABLE IF NOT EXISTS, so re-running is a no-op.
+    //
+    //  Each CREATE statement declares the FINAL canonical column set for the
+    //  table (i.e. base columns + every column that older code added later
+    //  via ALTER). The per-column ALTER guards further down then become
+    //  no-ops on a freshly-bootstrapped DB while still bringing forward
+    //  legacy DBs that pre-date a particular column.
+    //
+    //  Order is dependency-friendly even though SQLite does not enforce FKs
+    //  by default — keeps it readable.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureBaseSchemaAsync(SqliteConnection connection)
+    {
+        // AcademicYears — referenced by Teams, Projects, etc.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AcademicYears (
+                Id        INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                Name      TEXT    NOT NULL,
+                StartDate DATE    NOT NULL,
+                EndDate   DATE    NOT NULL,
+                IsActive  BOOLEAN NOT NULL DEFAULT 0,
+                IsCurrent BOOLEAN NOT NULL DEFAULT 0,
+                CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                Status    TEXT,
+                CONSTRAINT unique_AY_Name UNIQUE (Name)
+            )");
+
+        // ProjectTypes — referenced by Projects.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectTypes (
+                Id   INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                Name TEXT    NOT NULL UNIQUE
+            )");
+
+        // users — auth root. Final column set including columns historically
+        // added via ALTER (Phone, IsActive, AcademicYear, IdNumber, ProfileImagePath).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS users (
+                Id               INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                Email            TEXT    NOT NULL,
+                PasswordHash     TEXT    NOT NULL,
+                FirstName        TEXT    NOT NULL,
+                LastName         TEXT    NOT NULL,
+                IsVerified       BOOLEAN NOT NULL DEFAULT 0,
+                RegisterDate     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                Phone            TEXT    NOT NULL DEFAULT '',
+                IsActive         INTEGER NOT NULL DEFAULT 1,
+                UpdatedAt        DATETIME,
+                CreatedAt        DATETIME,
+                AcademicYearId   INTEGER,
+                AcademicYear     TEXT    NOT NULL DEFAULT '2025-2026',
+                IdNumber         TEXT    NOT NULL DEFAULT '',
+                ProfileImagePath TEXT,
+                CONSTRAINT unique_users_Email UNIQUE (Email)
+            )");
+
+        // UserRoles — many-to-many between users and role names.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS UserRoles (
+                Id     INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                UserId INTEGER NOT NULL,
+                Role   TEXT    NOT NULL,
+                CONSTRAINT lnk_users_UserRoles
+                    FOREIGN KEY (UserId) REFERENCES users(Id)
+                    ON DELETE CASCADE ON UPDATE CASCADE
+            )");
+
+        // Teams — final column set including TeamName.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Teams (
+                Id              INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+                AcademicYearId  INTEGER  NOT NULL,
+                IsExceptional   BOOLEAN  NOT NULL DEFAULT 0,
+                CreatedAt       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                TeamName        TEXT     NOT NULL DEFAULT '',
+                CONSTRAINT fk_Teams_AcademicYear
+                    FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id)
+            )");
+
+        // TeamMembers — links users to teams.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS TeamMembers (
+                Id         INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+                TeamId     INTEGER  NOT NULL,
+                UserId     INTEGER  NOT NULL,
+                JoinedAt   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                IsActive   BOOLEAN  NOT NULL DEFAULT 1,
+                MemberRole TEXT,
+                CONSTRAINT fk_TeamMembers_Team FOREIGN KEY (TeamId) REFERENCES Teams(Id),
+                CONSTRAINT fk_TeamMembers_User FOREIGN KEY (UserId) REFERENCES users(Id),
+                CONSTRAINT unique_Team_User UNIQUE (TeamId, UserId)
+            )");
+
+        // Projects — final column set including all metadata columns added
+        // historically via ALTER. Column-existence guards further down stay
+        // valid because they only ALTER when the column is missing.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Projects (
+                Id                INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+                ProjectNumber     INTEGER  NOT NULL UNIQUE,
+                AcademicYearId    INTEGER  NOT NULL,
+                TeamId            INTEGER  UNIQUE,
+                Title             TEXT     NOT NULL,
+                Description       TEXT,
+                ProjectTypeId     INTEGER  NOT NULL,
+                Status            TEXT     NOT NULL,
+                HealthStatus      TEXT,
+                CreatedAt         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt         DATETIME,
+                SourceType        TEXT     NOT NULL DEFAULT 'Manual',
+                AirtableRecordId  TEXT,
+                OrganizationName  TEXT,
+                ContactPerson     TEXT,
+                ContactRole       TEXT,
+                Goals             TEXT,
+                TargetAudience    TEXT,
+                InternalNotes     TEXT,
+                Priority          TEXT,
+                LastSyncedAt      TEXT,
+                OrganizationType  TEXT,
+                ProjectTopic      TEXT,
+                Contents          TEXT,
+                ContactEmail      TEXT,
+                ContactPhone      TEXT,
+                AssignmentIsDraft INTEGER  NOT NULL DEFAULT 0,
+                CONSTRAINT fk_Projects_AcademicYear
+                    FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id),
+                CONSTRAINT fk_Projects_Team
+                    FOREIGN KEY (TeamId) REFERENCES Teams(Id),
+                CONSTRAINT fk_Projects_Type
+                    FOREIGN KEY (ProjectTypeId) REFERENCES ProjectTypes(Id)
+            )");
+
+        // ── Milestone backbone ──────────────────────────────────────────────
+        // These three tables were originally shipped in the local DB dump
+        // but never declared in the migrator. On a fresh empty DB (Render)
+        // they must be created here so subsequent INSERT/SELECT statements
+        // (and the per-project initialisation flow) succeed.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS MilestoneTemplates (
+                Id            INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                Title         TEXT    NOT NULL,
+                Description   TEXT,
+                OrderIndex    INTEGER NOT NULL,
+                IsRequired    BOOLEAN NOT NULL DEFAULT 1,
+                ProjectTypeId INTEGER,
+                IsActive      BOOLEAN NOT NULL DEFAULT 1,
+                OpenDate      DATE,
+                DueDate       DATE,
+                CloseDate     DATE,
+                CONSTRAINT fk_MilestoneTemplates_ProjectType
+                    FOREIGN KEY (ProjectTypeId) REFERENCES ProjectTypes(Id)
+            )");
+
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AcademicYearMilestones (
+                Id                  INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                AcademicYearId      INTEGER NOT NULL,
+                MilestoneTemplateId INTEGER NOT NULL,
+                OpenDate            DATE,
+                DueDate             DATE    NOT NULL,
+                CloseDate           DATE,
+                IsActive            BOOLEAN NOT NULL DEFAULT 1,
+                CONSTRAINT fk_AYM_Year     FOREIGN KEY (AcademicYearId)      REFERENCES AcademicYears(Id),
+                CONSTRAINT fk_AYM_Template FOREIGN KEY (MilestoneTemplateId) REFERENCES MilestoneTemplates(Id),
+                CONSTRAINT unique_AYM_Year_Template UNIQUE (AcademicYearId, MilestoneTemplateId)
+            )");
+
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectMilestones (
+                Id                      INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                ProjectId               INTEGER NOT NULL,
+                AcademicYearMilestoneId INTEGER NOT NULL,
+                Status                  TEXT    NOT NULL,
+                CompletedAt             DATETIME,
+                Notes                   TEXT,
+                CONSTRAINT fk_PM_Project        FOREIGN KEY (ProjectId)               REFERENCES Projects(Id),
+                CONSTRAINT fk_PM_YearMilestone  FOREIGN KEY (AcademicYearMilestoneId) REFERENCES AcademicYearMilestones(Id),
+                CONSTRAINT unique_PM_Project_AYM UNIQUE (ProjectId, AcademicYearMilestoneId)
+            )");
+
+        // Tasks — operational task rows (system / personal / mentor) plus
+        // submission policy snapshot fields.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Tasks (
+                Id                     INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                ProjectId              INTEGER NOT NULL,
+                ProjectMilestoneId     INTEGER,
+                Title                  TEXT    NOT NULL,
+                Description            TEXT,
+                TaskType               TEXT    NOT NULL,
+                Status                 TEXT    NOT NULL,
+                DueDate                DATETIME,
+                CreatedByUserId        INTEGER NOT NULL,
+                AssignedToUserId       INTEGER,
+                IsMandatory            BOOLEAN NOT NULL DEFAULT 0,
+                IsSystemTask           BOOLEAN NOT NULL DEFAULT 0,
+                RequiresClosure        BOOLEAN NOT NULL DEFAULT 0,
+                ClosedAt               DATETIME,
+                CreatedAt              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                IsSubmission           BOOLEAN,
+                SubmissionLink         TEXT,
+                SubmittedAt            DATETIME DEFAULT CURRENT_TIMESTAMP,
+                SubmittedByUserId      INTEGER,
+                MaxFilesCount          INTEGER,
+                MaxFileSizeMb          INTEGER,
+                AllowedFileTypes       TEXT,
+                SubmissionInstructions TEXT,
+                CONSTRAINT fk_Tasks_Project          FOREIGN KEY (ProjectId)          REFERENCES Projects(Id),
+                CONSTRAINT fk_Tasks_ProjectMilestone FOREIGN KEY (ProjectMilestoneId) REFERENCES ProjectMilestones(Id),
+                CONSTRAINT fk_Tasks_CreatedBy        FOREIGN KEY (CreatedByUserId)    REFERENCES users(Id),
+                CONSTRAINT fk_Tasks_AssignedTo       FOREIGN KEY (AssignedToUserId)   REFERENCES users(Id),
+                CONSTRAINT fk_Tasks_SubmittedBy      FOREIGN KEY (SubmittedByUserId)  REFERENCES users(Id)
+            )");
+
+        // BlackList — JWT revocation list used by TokenBlacklistMiddleware.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS BlackList (
+                ID            INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+                Token         TEXT     NOT NULL,
+                BlacklistedAt DATETIME NOT NULL,
+                ExpiresAt     DATETIME NOT NULL
+            )");
+
+        // Legacy Requests / RequestTypes — present in the original DB dump
+        // but superseded by the ProjectRequests* tables. Created here so
+        // anything that still references them at startup keeps working.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS RequestTypes (
+                Id   INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                Name TEXT    NOT NULL UNIQUE
+            )");
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS Requests (
+                Id               INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+                ProjectId        INTEGER  NOT NULL,
+                CreatedByUserId  INTEGER  NOT NULL,
+                RequestTypeId    INTEGER  NOT NULL,
+                Title            TEXT     NOT NULL,
+                Description      TEXT,
+                Status           TEXT     NOT NULL,
+                OpenedAt         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ResolvedAt       DATETIME,
+                AssignedToUserId INTEGER,
+                CONSTRAINT fk_Requests_Project    FOREIGN KEY (ProjectId)        REFERENCES Projects(Id),
+                CONSTRAINT fk_Requests_CreatedBy  FOREIGN KEY (CreatedByUserId)  REFERENCES users(Id),
+                CONSTRAINT fk_Requests_Type       FOREIGN KEY (RequestTypeId)    REFERENCES RequestTypes(Id),
+                CONSTRAINT fk_Requests_AssignedTo FOREIGN KEY (AssignedToUserId) REFERENCES users(Id)
+            )");
+
+        // ── Canonical reference-data seeds ──────────────────────────────────
+        // The two ProjectTypes rows are referenced by the MilestoneTemplates
+        // seed below in the migrator (ProjectTypeId = 1 / 2). On a fresh DB
+        // those targets do not exist and the FK check trips. INSERT OR IGNORE
+        // keeps this idempotent.
+        await connection.ExecuteNonQueryAsync(
+            "INSERT OR IGNORE INTO ProjectTypes (Id, Name) VALUES (1, 'Technological')");
+        await connection.ExecuteNonQueryAsync(
+            "INSERT OR IGNORE INTO ProjectTypes (Id, Name) VALUES (2, 'Methodological')");
     }
 
     private static async Task ExecuteNonQueryAsync(this SqliteConnection connection, string sql)
