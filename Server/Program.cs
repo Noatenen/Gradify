@@ -8,7 +8,10 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authentication.Google;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.OAuth;
-using Microsoft.AspNetCore.Hosting.StaticWebAssets;var builder = WebApplication.CreateBuilder(args);
+using Microsoft.AspNetCore.Hosting.StaticWebAssets;
+var builder = WebApplication.CreateBuilder(args);
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://*:{port}");
 StaticWebAssetsLoader.UseStaticWebAssets(builder.Environment, builder.Configuration);
 
 // Add services to the container.
