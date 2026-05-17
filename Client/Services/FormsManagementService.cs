@@ -19,6 +19,13 @@ public interface IFormsManagementService
     Task<int?>                   AddOptionAsync(int blockId, SaveOptionRequest req);
     Task<bool>                   UpdateOptionAsync(int optionId, SaveOptionRequest req);
     Task<bool>                   DeleteOptionAsync(int optionId);
+
+    /// <summary>
+    /// Returns (newFormId, errorMessage). On success errorMessage is null.
+    /// On HTTP 409 (target year already has a form of the same type) the
+    /// server's Hebrew message is surfaced so the modal can show it directly.
+    /// </summary>
+    Task<(int? NewFormId, string? Error)> DuplicateFormAsync(int formId, DuplicateFormRequest req);
 }
 
 public class FormsManagementService : IFormsManagementService
@@ -143,6 +150,25 @@ public class FormsManagementService : IFormsManagementService
             return res.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    public async Task<(int? NewFormId, string? Error)> DuplicateFormAsync(
+        int formId, DuplicateFormRequest req)
+    {
+        try
+        {
+            var res = await _http.PostAsJsonAsync($"api/forms/{formId}/duplicate", req);
+            if (res.IsSuccessStatusCode)
+            {
+                var body = await res.Content.ReadFromJsonAsync<DuplicateFormResponse>();
+                return (body?.NewFormId, null);
+            }
+            string err = await res.Content.ReadAsStringAsync();
+            return (null, string.IsNullOrWhiteSpace(err)
+                              ? "שגיאה בשכפול הטופס"
+                              : err.Trim('"'));
+        }
+        catch { return (null, "שגיאת תקשורת"); }
     }
 
     private sealed class IdResponse { public int Id { get; set; } }

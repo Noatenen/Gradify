@@ -24,6 +24,10 @@ public class ProjectContextDto
     public List<string> StudentEmails { get; set; } = new();
     public List<string> MentorNames   { get; set; } = new();
     public List<string> MentorEmails  { get; set; } = new();
+    /// <summary>Mentor user IDs, ordered identically to MentorNames /
+    /// MentorEmails. Used to open the read-only mentor-profile modal from
+    /// the sidebar popover.</summary>
+    public List<int>    MentorUserIds { get; set; } = new();
 
     // ── Widget card 1: current milestone ─────────────────────────────────────
     // "Current" = first InProgress → first Delayed → first NotStarted

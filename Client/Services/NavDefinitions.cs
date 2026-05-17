@@ -19,9 +19,16 @@ public static class NavDefinitions
     {
         new NavItem("דשבורד מרצה",        "dashboard/lecturer",    "oi-pulse",                 NavLinkMatch.Prefix),
         new NavItem("פרויקטים",          "projects",              "oi-folder",                NavLinkMatch.Prefix),
+        new NavItem("בריאות פרויקטים",   "project-health",        "oi-heart",                 NavLinkMatch.Prefix),
         new NavItem("שיבוצים",           "assignments",           "oi-target",                NavLinkMatch.Prefix),
-        new NavItem("אבני דרך",          "milestones",            "oi-flag",                  NavLinkMatch.Prefix),
-        new NavItem("הגשות",             "lecturer-submissions",  "oi-inbox",                 NavLinkMatch.Prefix),
+        // Lecturer/Admin "אבני דרך" — cross-project overview, NOT the
+        // student-style /milestones page. Template editing lives at
+        // /management/milestones (kept under the "ניהול" area).
+        new NavItem("אבני דרך",          "milestones-overview",   "oi-flag",                  NavLinkMatch.Prefix),
+        // "הגשות" (/lecturer-submissions) was removed on 2026-05-17 when the
+        // lecturer-final-review flow was retired. Mentor review remains the
+        // only review surface; the route itself still resolves to a
+        // deprecation card so old bookmarks don't 404.
         new NavItem("בקשות",             "management/requests",   "oi-envelope-closed",       NavLinkMatch.Prefix),
     };
 
@@ -35,26 +42,33 @@ public static class NavDefinitions
     // ── Student ──────────────────────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
-        new NavItem("דשבורד",          "dashboard",   "oi-dashboard",       NavLinkMatch.All),
-        new NavItem("משימות",          "tasks",       "oi-task",            NavLinkMatch.Prefix),
-        new NavItem("הגשות",           "submissions", "oi-document",        NavLinkMatch.Prefix),
-        new NavItem("יומן",            "journal",     "oi-calendar",        NavLinkMatch.Prefix),
-        new NavItem("בקשות",           "requests",    "oi-envelope-closed", NavLinkMatch.Prefix),
-        new NavItem("אבני דרך",        "milestones",  "oi-flag",            NavLinkMatch.Prefix),
-        new NavItem("חומרי עזר",       "files",       "oi-folder",          NavLinkMatch.Prefix),
-        new NavItem("חומרי למידה",     "learning",    "oi-book",            NavLinkMatch.Prefix),
+        new NavItem("דשבורד",          "dashboard",         "oi-dashboard",       NavLinkMatch.All),
+        new NavItem("משימות",          "tasks",             "oi-task",            NavLinkMatch.Prefix),
+        new NavItem("הגשות",           "submissions",       "oi-document",        NavLinkMatch.Prefix),
+        new NavItem("יומן",            "journal",           "oi-calendar",        NavLinkMatch.Prefix),
+        new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("צוות חדשנות",     "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
+        new NavItem("אבני דרך",        "milestones",        "oi-flag",            NavLinkMatch.Prefix),
+        new NavItem("חומרי עזר",       "files",             "oi-folder",          NavLinkMatch.Prefix),
+        new NavItem("חומרי למידה",     "learning",          "oi-book",            NavLinkMatch.Prefix),
     };
 
-    // Settings for students lives in the sidebar header as a compact icon button.
-    private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
+    // Sidebar settings entry — same row position as Mentor / Staff so the
+    // הגדרות nav item appears in a consistent place for every role.
+    private static readonly IReadOnlyList<NavItem> _studentBottom = new[]
+    {
+        new NavItem("הגדרות", "settings", "oi-cog", NavLinkMatch.Prefix),
+    };
 
     // ── Mentor ───────────────────────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _mentorMain = new[]
     {
-        new NavItem("דשבורד מנחה", "dashboard/mentor",   "oi-pulse",            NavLinkMatch.Prefix),
-        new NavItem("פרויקטים",    "mentor/projects",    "oi-folder",           NavLinkMatch.Prefix),
-        new NavItem("הגשות",       "mentor/submissions", "oi-inbox",            NavLinkMatch.Prefix),
-        new NavItem("בקשות",       "mentor-requests",    "oi-envelope-closed",  NavLinkMatch.Prefix),
+        new NavItem("דשבורד מנחה", "dashboard/mentor",     "oi-pulse",            NavLinkMatch.Prefix),
+        new NavItem("פרויקטים",    "mentor/projects",      "oi-folder",           NavLinkMatch.Prefix),
+        new NavItem("בריאות פרויקטים", "project-health",   "oi-heart",            NavLinkMatch.Prefix),
+        new NavItem("אבני דרך",    "milestones-overview",  "oi-flag",             NavLinkMatch.Prefix),
+        new NavItem("הגשות",       "mentor/submissions",   "oi-inbox",            NavLinkMatch.Prefix),
+        new NavItem("בקשות",       "mentor-requests",      "oi-envelope-closed",  NavLinkMatch.Prefix),
     };
 
     private static readonly IReadOnlyList<NavItem> _mentorBottom = new[]
@@ -66,11 +80,24 @@ public static class NavDefinitions
     // ─────────────────────────────────────────────────────────────────
     /// <summary>
     /// Returns the (Main, Bottom) nav items for the given user's role.
+    /// Students take priority (they only have one role). For users who hold
+    /// *both* Staff and Mentor roles, the active view mode from
+    /// <see cref="UserModeService"/> decides which nav set is rendered —
+    /// flipping the toggle re-runs this method via AppSideNav's subscription.
     /// Falls back to the student view for unrecognised roles.
     /// </summary>
     public static (IReadOnlyList<NavItem> Main, IReadOnlyList<NavItem> Bottom) GetNavItems(User? user)
     {
-        if (RoleService.IsStudent(user))      return (_studentMain, _studentBottom);
+        if (RoleService.IsStudent(user)) return (_studentMain, _studentBottom);
+
+        // Dual-role users (Staff + Mentor): the active mode picks.
+        if (UserModeService.IsDualRole(user))
+        {
+            return UserModeService.EffectiveMode(user) == UserModes.Mentor
+                ? (_mentorMain, _mentorBottom)
+                : (_adminMain,  _adminBottom);
+        }
+
         if (RoleService.IsMentor(user))       return (_mentorMain,  _mentorBottom);
         if (RoleService.IsAdminOrStaff(user)) return (_adminMain,   _adminBottom);
 

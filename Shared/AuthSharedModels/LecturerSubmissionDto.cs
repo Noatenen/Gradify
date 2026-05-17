@@ -122,7 +122,16 @@ public class UploadLecturerFilesRequest
     public List<SubmissionFileRequest> Files { get; set; } = new();
 }
 
-/// <summary>Controlled vocabulary for the lecturer/admin final-review flow.</summary>
+/// <summary>
+/// Controlled vocabulary for the lecturer/admin final-review flow.
+/// </summary>
+/// <remarks>
+/// Deprecated 2026-05-17. The lecturer-final-review flow has been retired —
+/// final deliverables now go through Moodle (external) and our system only
+/// surfaces mentor review. Kept here so legacy DB rows / read-paths still
+/// compile; new code must not introduce additional callers.
+/// </remarks>
+[Obsolete("Lecturer final-review flow removed; submission finalisation lives in Moodle.")]
 public static class LecturerReviewStatuses
 {
     public const string PendingReview    = "PendingReview";

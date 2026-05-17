@@ -1,0 +1,274 @@
+@page "/management/pending-mentor-approvals"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IPendingMentorApprovalsService Approvals
+
+<div class="pma-page">
+
+    <div class="pma-topbar">
+        <button class="pma-back-btn"
+                @onclick="@(() => Nav.NavigateTo("/management"))"
+                title="חזרה לניהול">
+            <span class="oi oi-chevron-right" aria-hidden="true"></span>
+        </button>
+        <div>
+            <div class="pma-breadcrumb">ניהול</div>
+            <h1 class="pma-title">משימות ממתינות לאישור מנחה</h1>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="pma-loading">
+            <div class="pma-spinner"></div>
+            <span>טוען…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="pma-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת הנתונים. נסי לרענן את הדף.
+        </div>
+    }
+    else if (_rows.Count == 0)
+    {
+        <div class="pma-empty">
+            <span class="oi oi-circle-check pma-empty-icon" aria-hidden="true"></span>
+            <span>לא נמצאו משימות שממתינות לאישור מנחה</span>
+        </div>
+    }
+    else
+    {
+        <div class="pma-table-wrap">
+            <table class="pma-table">
+                <thead>
+                    <tr>
+                        <th>שם פרויקט</th>
+                        <th>צוות</th>
+                        <th>מנחה</th>
+                        <th>אבן דרך</th>
+                        <th>משימה</th>
+                        <th>תאריך הגשה</th>
+                        <th>כמה ימים ממתינה</th>
+                        <th>סטטוס</th>
+                        <th class="pma-actions-col">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _rows)
+                    {
+                        <tr>
+                            <td>
+                                <div class="pma-project-num">#@r.ProjectNumber</div>
+                                <div class="pma-project-title">@r.ProjectTitle</div>
+                            </td>
+                            <td>@(r.TeamName ?? "—")</td>
+                            <td>@(string.IsNullOrWhiteSpace(r.MentorName) ? "—" : r.MentorName)</td>
+                            <td>@r.MilestoneTitle</td>
+                            <td>@r.TaskTitle</td>
+                            <td>@r.SubmittedAt.ToString("dd/MM/yyyy")</td>
+                            <td>
+                                <span class="pma-days @(r.DaysWaiting > 3 ? "pma-days-late" : "")">
+                                    @r.DaysWaiting
+                                </span>
+                            </td>
+                            <td>
+                                <span class="pma-status pma-status-pending">ממתין לאישור מנחה</span>
+                            </td>
+                            <td class="pma-actions-col">
+                                <div class="pma-row-actions">
+                                    @if (r.DaysWaiting > 3)
+                                    {
+                                        <button class="pma-btn pma-btn-remind"
+                                                disabled="@(_rowBusy.Contains(r.SubmissionId))"
+                                                @onclick="() => RemindAsync(r)"
+                                                title="שליחת תזכורת למנחה">
+                                            <span class="oi oi-bell" aria-hidden="true"></span>
+                                            שליחת תזכורת למנחה
+                                        </button>
+                                    }
+                                    <button class="pma-btn pma-btn-override"
+                                            disabled="@(_rowBusy.Contains(r.SubmissionId))"
+                                            @onclick="() => OpenOverrideModal(r)"
+                                            title="אישור מרצה חריג">
+                                        <span class="oi oi-shield" aria-hidden="true"></span>
+                                        אישור מרצה חריג
+                                    </button>
+                                </div>
+
+                                @if (_rowMessages.TryGetValue(r.SubmissionId, out var msg) && !string.IsNullOrEmpty(msg))
+                                {
+                                    <div class="pma-row-msg pma-row-msg-@(_rowMessageKind.GetValueOrDefault(r.SubmissionId, "info"))">
+                                        @msg
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+</div>
+
+@* ── Override modal ───────────────────────────────────────────────────────── *@
+@if (_overrideTarget is not null)
+{
+    <div class="pma-modal-overlay" @onclick="CloseOverrideModal">
+        <div class="pma-modal" @onclick:stopPropagation="true">
+            <div class="pma-modal-header">
+                <h2 class="pma-modal-title">אישור מרצה חריג</h2>
+                <button class="pma-modal-close"
+                        @onclick="CloseOverrideModal"
+                        disabled="@_overrideSubmitting"
+                        aria-label="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="pma-modal-body">
+                <div class="pma-modal-context">
+                    <div><strong>פרויקט:</strong> @_overrideTarget.ProjectTitle (#@_overrideTarget.ProjectNumber)</div>
+                    <div><strong>משימה:</strong> @_overrideTarget.TaskTitle</div>
+                </div>
+
+                <label class="pma-modal-label">סיבת עקיפה פנימית</label>
+                <textarea class="pma-modal-textarea"
+                          rows="4"
+                          maxlength="2000"
+                          placeholder="הסבר קצר — נשמר פנימית בלבד ולא יוצג לסטודנט"
+                          disabled="@_overrideSubmitting"
+                          @bind="_overrideReason"></textarea>
+
+                @if (!string.IsNullOrEmpty(_overrideError))
+                {
+                    <div class="pma-modal-error">
+                        <span class="oi oi-warning" aria-hidden="true"></span>
+                        @_overrideError
+                    </div>
+                }
+            </div>
+
+            <div class="pma-modal-actions">
+                <button class="pma-btn pma-btn-ghost"
+                        @onclick="CloseOverrideModal"
+                        disabled="@_overrideSubmitting">
+                    ביטול
+                </button>
+                <button class="pma-btn pma-btn-override"
+                        @onclick="ConfirmOverride"
+                        disabled="@(_overrideSubmitting || string.IsNullOrWhiteSpace(_overrideReason))">
+                    @if (_overrideSubmitting)
+                    {
+                        <span class="pma-spinner pma-spinner-sm"></span>
+                    }
+                    else
+                    {
+                        <span class="oi oi-check" aria-hidden="true"></span>
+                    }
+                    אשר ללא אישור מנחה
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<PendingMentorApprovalRowDto> _rows = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    // Per-row UX state
+    private readonly HashSet<int>           _rowBusy        = new();
+    private readonly Dictionary<int,string> _rowMessages    = new();
+    // Either "ok" or "err" — drives the inline message style.
+    private readonly Dictionary<int,string> _rowMessageKind = new();
+
+    // Override modal state
+    private PendingMentorApprovalRowDto? _overrideTarget;
+    private string                       _overrideReason     = "";
+    private string                       _overrideError      = "";
+    private bool                         _overrideSubmitting;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading   = true;
+        _loadError = false;
+        var result = await Approvals.GetPendingAsync();
+        _loadError = result is null;
+        _rows      = result ?? new();
+        _loading   = false;
+    }
+
+    private async Task RemindAsync(PendingMentorApprovalRowDto row)
+    {
+        _rowBusy.Add(row.SubmissionId);
+        _rowMessages.Remove(row.SubmissionId);
+        _rowMessageKind.Remove(row.SubmissionId);
+        StateHasChanged();
+
+        var err = await Approvals.RemindMentorAsync(row.SubmissionId);
+        _rowBusy.Remove(row.SubmissionId);
+
+        if (err is null)
+        {
+            _rowMessages[row.SubmissionId]    = "תזכורת נשלחה למנחה";
+            _rowMessageKind[row.SubmissionId] = "ok";
+            row.LastMentorReminderAt          = DateTime.Now;
+        }
+        else
+        {
+            _rowMessages[row.SubmissionId]    = err;
+            _rowMessageKind[row.SubmissionId] = "err";
+        }
+    }
+
+    private void OpenOverrideModal(PendingMentorApprovalRowDto row)
+    {
+        _overrideTarget     = row;
+        _overrideReason     = "";
+        _overrideError      = "";
+        _overrideSubmitting = false;
+    }
+
+    private void CloseOverrideModal()
+    {
+        if (_overrideSubmitting) return;
+        _overrideTarget = null;
+        _overrideReason = "";
+        _overrideError  = "";
+    }
+
+    private async Task ConfirmOverride()
+    {
+        if (_overrideTarget is null) return;
+        var reason = _overrideReason.Trim();
+        if (reason.Length == 0)
+        {
+            _overrideError = "חובה להזין סיבה לעקיפה";
+            return;
+        }
+
+        _overrideSubmitting = true;
+        var err = await Approvals.OverrideApproveAsync(_overrideTarget.SubmissionId, reason);
+        _overrideSubmitting = false;
+
+        if (err is not null)
+        {
+            _overrideError = err;
+            return;
+        }
+
+        // Drop the approved row from the list — it's no longer pending.
+        var approvedId = _overrideTarget.SubmissionId;
+        _rows.RemoveAll(r => r.SubmissionId == approvedId);
+        _overrideTarget = null;
+    }
+}

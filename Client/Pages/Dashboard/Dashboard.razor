@@ -26,6 +26,7 @@ else if (_loadError)
     <div class="sdash-error">
         <span class="oi oi-warning" aria-hidden="true"></span>
         <p>אירעה שגיאה בטעינת הדשבורד. נסי לרענן את הדף.</p>
+        <button class="btn btn-primary" @onclick="ReloadDashboard">נסי שוב</button>
     </div>
 }
 else if (_data?.Project is null)
@@ -39,16 +40,16 @@ else
 {
     <div class="student-dashboard">
         <ProjectDetailsCard Project="@_data.Project"
-                            TeamMembers="@_data.TeamMembers"
-                            Mentors="@_data.Mentors" />
+                            TeamMembers="@(_data.TeamMembers ?? new())"
+                            Mentors="@(_data.Mentors ?? new())" />
 
-        <ProjectProgressCard Milestones="@_data.Milestones" />
+        <ProjectProgressCard Milestones="@(_data.Milestones ?? new())" />
 
         <div class="sdash-lower">
-            <ActiveTasksCard        Milestones="@_data.Milestones"
+            <ActiveTasksCard        Milestones="@(_data.Milestones ?? new())"
                                    OnOpenDetail="OpenDetail" />
             <UpcomingSubmissionCard Deadline="@_data.NextDeadline"
-                                   OpenRequests="@_data.OpenRequests"
+                                   OpenRequests="@(_data.OpenRequests ?? new())"
                                    OnOpenNewRequest="@(() => _showNewRequest = true)" />
         </div>
     </div>
@@ -66,20 +67,46 @@ else
     private bool _loadError = false;
     private bool _showNewRequest;
     private int  _detailTaskId;
+    private bool _loadStarted;
 
-    protected override async Task OnInitializedAsync()
+    // The cascading _user is hydrated asynchronously by App.razor, so it can
+    // be null on the first parameter-set. We gate the load on _user being
+    // available and use a flag to ensure we only run once.
+    protected override async Task OnParametersSetAsync()
     {
+        if (_loadStarted || _user is null) return;
+        _loadStarted = true;
+
         // Non-students that land on the legacy /dashboard route are bounced
-        // to their dedicated dashboard. The student flow continues below.
+        // to their dedicated dashboard. Guard against redirecting to the
+        // same route, which would leave the page stuck in the loading state.
         if (!RoleService.IsStudent(_user))
         {
-            Nav.NavigateTo(RoleService.GetDefaultLandingRoute(_user), replace: true);
+            var landing = RoleService.GetDefaultLandingRoute(_user);
+            if (landing != PageRoutes.Dashboard && landing != "/" + PageRoutes.Dashboard)
+            {
+                Nav.NavigateTo(landing, replace: true);
+                return;
+            }
+            _isLoading = false;
+            _loadError = true;
             return;
         }
 
-        _data = await DashboardService.GetDashboardAsync();
-        _loadError = _data is null;
-        _isLoading = false;
+        try
+        {
+            _data = await DashboardService.GetDashboardAsync();
+            _loadError = _data is null;
+        }
+        catch
+        {
+            _loadError = true;
+            _data = null;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
 
         // Any student without an assigned project → catalog experience
         // Covers both: has team but no project, and no team at all.
@@ -103,6 +130,21 @@ else
 
     private async Task ReloadDashboard()
     {
-        _data = await DashboardService.GetDashboardAsync();
+        _isLoading = true;
+        _loadError = false;
+        try
+        {
+            _data = await DashboardService.GetDashboardAsync();
+            _loadError = _data is null;
+        }
+        catch
+        {
+            _loadError = true;
+            _data = null;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 }

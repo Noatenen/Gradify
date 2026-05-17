@@ -1,0 +1,319 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+@*
+    ProjectMentorsEditor
+    ────────────────────
+    Compact, inline mentor manager for the lecturer/admin project-edit
+    surfaces. Designed to drop into an existing modal as a section.
+
+    Behaviour
+      • Lists currently-assigned mentors as removable chips.
+      • Inline search box reveals a dropdown of candidates.
+      • Candidates come from GET /api/projects/{id}/mentors/candidates
+        (server filters to active users with Mentor / Admin / Staff role
+        AND excludes already-assigned users).
+      • Add/remove use the existing ProjectMentorsController endpoints —
+        no role mutations, only ProjectMentors row writes.
+      • Idempotent — re-adding an already-assigned user is treated as a
+        no-op by the server and shows a non-fatal toast.
+*@
+
+<div class="pme-wrap" dir="rtl">
+
+    @if (_loading)
+    {
+        <div class="pme-state">טוען מנחים…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="pme-state pme-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת רשימת המנחים.
+            @if (!string.IsNullOrWhiteSpace(_loadDetail))
+            {
+                <div class="pme-debug">@_loadDetail</div>
+            }
+        </div>
+    }
+    else
+    {
+        <!-- Current mentors -->
+        @if (_current.Count == 0)
+        {
+            <div class="pme-empty">לא הוגדרו מנחים לפרויקט זה.</div>
+        }
+        else
+        {
+            <ul class="pme-chips">
+                @foreach (var m in _current)
+                {
+                    <li class="pme-chip">
+                        <div class="pme-chip-main">
+                            <span class="pme-chip-name">@m.FullName</span>
+                            @if (!string.IsNullOrWhiteSpace(m.Email))
+                            {
+                                <span class="pme-chip-email" dir="ltr">@m.Email</span>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(m.Roles))
+                            {
+                                <span class="pme-chip-roles">@RoleLabels(m.Roles)</span>
+                            }
+                        </div>
+                        <button type="button"
+                                class="pme-chip-remove"
+                                disabled="@(_busyUserIds.Contains(m.UserId) || ReadOnly)"
+                                title="הסר מנחה"
+                                @onclick="@(() => RemoveAsync(m))">
+                            <span class="oi oi-x" aria-hidden="true"></span>
+                        </button>
+                    </li>
+                }
+            </ul>
+        }
+
+        @if (!ReadOnly)
+        {
+            <!-- Add picker -->
+            <div class="pme-picker">
+                <div class="pme-picker-input-wrap">
+                    <span class="oi oi-plus pme-picker-icon" aria-hidden="true"></span>
+                    <input type="text"
+                           class="pme-picker-input"
+                           placeholder="הוסף מנחה — חיפוש לפי שם או אימייל"
+                           dir="auto"
+                           @bind="_query"
+                           @bind:event="oninput"
+                           @onfocus="@(async _ => await OpenPickerAsync())"
+                           @onkeyup="@(async _ => await ScheduleSearchAsync())" />
+                </div>
+
+                @if (_pickerOpen)
+                {
+                    <div class="pme-picker-results">
+                        @if (_searchLoading)
+                        {
+                            <div class="pme-state">מחפש…</div>
+                        }
+                        else if (_candidates.Count == 0)
+                        {
+                            <div class="pme-state">
+                                @(string.IsNullOrWhiteSpace(_query)
+                                    ? "אין מועמדים זמינים."
+                                    : "לא נמצאו תוצאות.")
+                            </div>
+                        }
+                        else
+                        {
+                            <ul class="pme-list">
+                                @foreach (var c in _candidates)
+                                {
+                                    <li>
+                                        <button type="button"
+                                                class="pme-list-row"
+                                                disabled="@(_busyUserIds.Contains(c.UserId))"
+                                                @onclick="@(() => AddAsync(c))">
+                                            <div class="pme-list-row-main">
+                                                <span class="pme-list-row-name">@c.FullName</span>
+                                                <span class="pme-list-row-email" dir="ltr">@c.Email</span>
+                                            </div>
+                                            <span class="pme-list-row-roles">@RoleLabels(c.Roles)</span>
+                                        </button>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_toast))
+        {
+            <div class="pme-toast @(_toastError ? "pme-toast-error" : "")">@_toast</div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public int ProjectId { get; set; }
+    /// <summary>When true the editor renders as a read-only list (no add /
+    /// remove). Useful for non-Admin viewers.</summary>
+    [Parameter] public bool ReadOnly { get; set; }
+    /// <summary>Fires after any add/remove so parents can refresh related UI.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private List<ProjectMentorDto>    _current    = new();
+    private List<MentorCandidateDto>  _candidates = new();
+
+    private string _query = "";
+    private bool   _pickerOpen;
+    private bool   _searchLoading;
+    private int?   _searchToken;
+
+    private bool   _loading = true;
+    private bool   _loadError;
+    private string _loadDetail = "";
+
+    private readonly HashSet<int> _busyUserIds = new();
+    private string _toast = "";
+    private bool   _toastError;
+
+    private int _lastLoadedId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Re-fetch when the ProjectId changes (e.g. opening the editor for a
+        // different project without unmounting).
+        if (ProjectId > 0 && ProjectId != _lastLoadedId)
+        {
+            _lastLoadedId = ProjectId;
+            await ReloadCurrentAsync();
+        }
+    }
+
+    private async Task ReloadCurrentAsync()
+    {
+        _loading = true;
+        _loadError = false;
+        _loadDetail = "";
+        try
+        {
+            var list = await Http.GetFromJsonAsync<List<ProjectMentorDto>>(
+                $"api/projects/{ProjectId}/mentors");
+            _current = list ?? new();
+        }
+        catch (Exception ex)
+        {
+            _loadError = true;
+            _loadDetail = ex.Message;
+            _current = new();
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OpenPickerAsync()
+    {
+        if (_pickerOpen) return;
+        _pickerOpen = true;
+        // Initial open → run an empty search so the user sees the top
+        // candidates without having to type anything.
+        await RunSearchAsync();
+    }
+
+    private async Task ScheduleSearchAsync()
+    {
+        int token = (_searchToken ?? 0) + 1;
+        _searchToken = token;
+        await Task.Delay(220);
+        if (_searchToken != token) return;
+        await RunSearchAsync();
+    }
+
+    private async Task RunSearchAsync()
+    {
+        _searchLoading = true;
+        StateHasChanged();
+        try
+        {
+            var url = $"api/projects/{ProjectId}/mentors/candidates" +
+                      (string.IsNullOrWhiteSpace(_query)
+                          ? ""
+                          : $"?q={Uri.EscapeDataString(_query.Trim())}");
+            _candidates = await Http.GetFromJsonAsync<List<MentorCandidateDto>>(url) ?? new();
+        }
+        catch (Exception ex)
+        {
+            _candidates = new();
+            ShowToast("שגיאה בחיפוש: " + ex.Message, true);
+        }
+        finally
+        {
+            _searchLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task AddAsync(MentorCandidateDto c)
+    {
+        if (_busyUserIds.Contains(c.UserId)) return;
+        _busyUserIds.Add(c.UserId);
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(
+                $"api/projects/{ProjectId}/mentors",
+                new AddProjectMentorRequest { UserId = c.UserId });
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = (await resp.Content.ReadAsStringAsync()).Trim('"');
+                ShowToast(string.IsNullOrWhiteSpace(body) ? "ההוספה נכשלה" : body, true);
+                return;
+            }
+
+            ShowToast($"{c.FullName} נוסף/ה כמנחה", false);
+            _query = "";
+            await ReloadCurrentAsync();
+            await RunSearchAsync(); // refresh candidate list (now excludes them)
+            if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) { ShowToast(ex.Message, true); }
+        finally { _busyUserIds.Remove(c.UserId); }
+    }
+
+    private async Task RemoveAsync(ProjectMentorDto m)
+    {
+        if (_busyUserIds.Contains(m.UserId)) return;
+        _busyUserIds.Add(m.UserId);
+        try
+        {
+            var resp = await Http.DeleteAsync(
+                $"api/projects/{ProjectId}/mentors/{m.UserId}");
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = (await resp.Content.ReadAsStringAsync()).Trim('"');
+                ShowToast(string.IsNullOrWhiteSpace(body) ? "ההסרה נכשלה" : body, true);
+                return;
+            }
+            ShowToast($"{m.FullName} הוסר/ה כמנחה", false);
+            await ReloadCurrentAsync();
+            if (_pickerOpen) await RunSearchAsync(); // candidate is now eligible again
+            if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) { ShowToast(ex.Message, true); }
+        finally { _busyUserIds.Remove(m.UserId); }
+    }
+
+    private void ShowToast(string msg, bool isError)
+    {
+        _toast = msg;
+        _toastError = isError;
+        _ = HideToastSoon();
+    }
+
+    private async Task HideToastSoon()
+    {
+        await Task.Delay(2200);
+        _toast = "";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string RoleLabels(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join(" · ", parts.Select(p => p switch
+        {
+            "Admin"   => "מנהל",
+            "Staff"   => "מרצה",
+            "Mentor"  => "מנחה",
+            "Student" => "סטודנט",
+            _         => p,
+        }));
+    }
+}

@@ -31,8 +31,13 @@ public class AssignmentManagementController : ControllerBase
     private const int MaxMentorsPerProject = 2;
 
     private readonly DbRepository _db;
+    private readonly EmailHelper  _email;
 
-    public AssignmentManagementController(DbRepository db) => _db = db;
+    public AssignmentManagementController(DbRepository db, EmailHelper email)
+    {
+        _db    = db;
+        _email = email;
+    }
 
     // ── GET /api/assignment-management/submissions ──────────────────────────
     [HttpGet("submissions")]
@@ -437,6 +442,35 @@ public class AssignmentManagementController : ControllerBase
         // INSERT … SELECT statements are idempotent (NOT EXISTS guards) so
         // re-publishing or backfilling previously-published projects is safe.
         await InitializePublishedProjectsAsync(yearId, authUserId);
+
+        // Notify every active student in a published team — in-app always,
+        // email per their NotificationTypes.AssignmentPublished preference
+        // (defaults to ON). Best-effort: failures don't fail the publish.
+        try
+        {
+            const string studentsSql = @"
+                SELECT DISTINCT tm.UserId
+                FROM   Projects    p
+                JOIN   Teams       t  ON t.Id = p.TeamId
+                JOIN   TeamMembers tm ON tm.TeamId = t.Id
+                WHERE  p.AcademicYearId    = @YearId
+                  AND  COALESCE(p.AssignmentIsDraft, 0) = 0
+                  AND  p.TeamId IS NOT NULL
+                  AND  tm.IsActive = 1";
+            var ids = (await _db.GetRecordsAsync<int>(
+                studentsSql, new { YearId = yearId }))?.ToList() ?? new();
+            if (ids.Count > 0)
+            {
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, ids,
+                    title:             "השיבוצים פורסמו",
+                    message:           "השיבוצים למחזור פורסמו. ניתן לראות את הפרויקט שלך בעמוד הפרויקטים.",
+                    type:              NotificationTypes.AssignmentPublished,
+                    relatedEntityType: "AssignmentPublish",
+                    relatedEntityId:   yearId);
+            }
+        }
+        catch { /* notifications are best-effort */ }
 
         return Ok();
     }

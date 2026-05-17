@@ -77,16 +77,13 @@ else
         <div class="sub-cards-grid">
             @foreach (var task in _tasks)
             {
+                bool isMentorApproved  = task.LatestMentorStatus == "Approved";
                 bool isReturned        = task.LatestMentorStatus == "Returned"
                                       || task.LatestSubmissionStatus == "NeedsRevision";
-                bool isCourseSubmitted = task.LatestCourseSubmittedAt.HasValue;
                 bool isSubmitted       = task.LatestSubmissionId.HasValue && !isReturned;
                 bool isOverdue         = task.DueDate.HasValue
                                       && task.DueDate.Value.Date < DateTime.Today
                                       && !task.LatestSubmissionId.HasValue;
-                bool canSubmitToCourse = task.LatestMentorStatus == "Approved"
-                                      && !isCourseSubmitted
-                                      && task.LatestSubmissionId.HasValue;
                 var (badgeCss, badgeLabel) = SubmissionBadgeInfo(task);
 
                 <div class="sub-card @(isReturned ? "sub-card-returned" : isOverdue ? "sub-card-overdue" : isSubmitted ? "sub-card-submitted" : "")">
@@ -128,71 +125,19 @@ else
                         </div>
                     }
 
-                    <!-- Course submission action (appears after mentor approval) -->
-                    @if (canSubmitToCourse)
+                    @* Mentor approval reminder. The official final submission
+                       happens in Moodle (external) — our system only handles
+                       mentor review now (refactor: 2026-05-17). *@
+                    @if (isMentorApproved && !isReturned)
                     {
-                        <button class="sub-card-btn sub-card-btn-course"
-                                @onclick="@(() => SubmitToCourseFromPageAsync(task))">
-                            <span class="oi oi-globe" aria-hidden="true"></span>
-                            הגשה לצוות הקורס
-                        </button>
-                    }
-                    @if (isCourseSubmitted && !isReturned)
-                    {
-                        <div class="sub-card-course-done">
+                        <div class="sub-card-moodle-reminder">
                             <span class="oi oi-circle-check" aria-hidden="true"></span>
-                            הוגש לצוות הקורס · @task.LatestCourseSubmittedAt!.Value.ToString("dd/MM/yy HH:mm")
-                        </div>
-                    }
-
-                    @* Lecturer feedback — server emits these fields ONLY when
-                       IsFeedbackPublished = 1 on the latest submission, so the
-                       presence of feedback text or files means it's safe to show. *@
-                    @if (!string.IsNullOrWhiteSpace(task.LecturerFeedback)
-                         || task.LecturerFeedbackFiles.Count > 0)
-                    {
-                        <div class="sub-card-lecturer-feedback">
-                            <div class="sub-card-lecturer-head">
-                                <span class="oi oi-comment-square" aria-hidden="true"></span>
-                                <span class="sub-card-lecturer-title">משוב מרצה</span>
-                                @if (!string.IsNullOrWhiteSpace(task.LecturerReviewStatus))
-                                {
-                                    <span class="sub-lec-rstatus sub-lec-rstatus-@task.LecturerReviewStatus.ToLower()">
-                                        @LecturerReviewStatuses.Label(task.LecturerReviewStatus)
-                                    </span>
-                                }
-                                @if (task.LecturerFeedbackPublishedAt.HasValue)
-                                {
-                                    <span class="sub-card-lecturer-date">
-                                        @task.LecturerFeedbackPublishedAt.Value.ToString("dd/MM/yy HH:mm")
-                                    </span>
-                                }
-                            </div>
-                            @if (!string.IsNullOrWhiteSpace(task.LecturerFeedback))
-                            {
-                                <div class="sub-card-lecturer-text">@task.LecturerFeedback</div>
-                            }
-                            @if (task.LatestSubmissionId.HasValue && task.LecturerFeedbackFiles.Count > 0)
-                            {
-                                <div class="sub-card-lecturer-files">
-                                    <div class="sub-card-lecturer-files-title">
-                                        <span class="oi oi-paperclip" aria-hidden="true"></span>
-                                        קבצים מהמרצה
-                                    </div>
-                                    @foreach (var f in task.LecturerFeedbackFiles)
-                                    {
-                                        <a class="sub-lecturer-file"
-                                           href="api/task-submissions/@task.LatestSubmissionId.Value/files/@f.Id/download"
-                                           target="_blank" rel="noopener"
-                                           title="@f.OriginalFileName">
-                                            <span class="oi oi-document sub-lecturer-file-icon" aria-hidden="true"></span>
-                                            <span class="sub-lecturer-file-name">@f.OriginalFileName</span>
-                                            <span class="sub-lecturer-file-size">@FormatBytes(f.SizeBytes)</span>
-                                            <span class="oi oi-cloud-download sub-lecturer-file-dl" aria-hidden="true"></span>
-                                        </a>
-                                    }
+                            <div>
+                                <div class="sub-moodle-reminder-title">אישור מנחה התקבל</div>
+                                <div class="sub-moodle-reminder-body">
+                                    יש לבצע את ההגשה הרשמית במודל בהתאם להנחיות הקורס.
                                 </div>
-                            }
+                            </div>
                         </div>
                     }
 
@@ -294,28 +239,12 @@ else
         _openTaskId   = taskId;
     }
 
-    private async Task SubmitToCourseFromPageAsync(StudentSubmissionTaskDto task)
-    {
-        if (!task.LatestSubmissionId.HasValue) return;
-        bool ok = await SubmissionsService.SubmitToCourseAsync(task.LatestSubmissionId.Value);
-        if (ok) task.LatestCourseSubmittedAt = DateTime.Now;  // optimistic
-    }
-
-    // Returns (cssClass, label) based on status priority:
-    // returned-by-mentor > needs-revision > reviewed > course-submitted > pending-mentor > submitted > none
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024)         return bytes + " B";
-        if (bytes < 1_048_576)    return (bytes / 1024) + " KB";
-        return (bytes / 1_048_576.0).ToString("F1") + " MB";
-    }
-
+    // Status badge — reflects the mentor-review-only world.
+    // Priority: returned-by-mentor > approved-by-mentor > pending-mentor > submitted > none.
     private static (string Css, string Label) SubmissionBadgeInfo(StudentSubmissionTaskDto task)
     {
         if (task.LatestMentorStatus == "Returned")          return ("returned-mentor", "הוחזר ע״י מנחה");
         if (task.LatestSubmissionStatus == "NeedsRevision") return ("needsrevision",   "דורש תיקון");
-        if (task.LatestSubmissionStatus == "Reviewed")      return ("reviewed",        "נבדק");
-        if (task.LatestCourseSubmittedAt.HasValue)          return ("submitted",       "הוגש לצוות הקורס");
         if (task.LatestMentorStatus == "Approved")          return ("approved",        "אושר ע״י מנחה");
         if (task.LatestMentorStatus == "Pending")           return ("submitted",       "ממתין לבדיקה");
         if (task.LatestSubmissionStatus == "Submitted")     return ("submitted",       "הוגש");

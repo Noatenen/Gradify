@@ -1,0 +1,147 @@
+@page "/project-health"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff + "," + Roles.Mentor)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IProjectHealthService HealthService
+
+<div class="ph-page">
+
+    <header class="ph-header">
+        <h1 class="ph-title">בריאות פרויקטים</h1>
+        <p class="ph-subtitle">תמונת מצב פנימית של פערי לוחות זמנים מול לוח הקורס</p>
+
+        @if (!_loading && !_loadError && _rows.Count > 0)
+        {
+            <div class="ph-summary" role="status">
+                <span class="ph-chip ph-chip-green">
+                    <span class="ph-dot ph-dot-green"></span>
+                    תקין <strong>@CountByStatus(ProjectHealthStatuses.Green)</strong>
+                </span>
+                <span class="ph-chip ph-chip-orange">
+                    <span class="ph-dot ph-dot-orange"></span>
+                    דורש תשומת לב <strong>@CountByStatus(ProjectHealthStatuses.Orange)</strong>
+                </span>
+                <span class="ph-chip ph-chip-red">
+                    <span class="ph-dot ph-dot-red"></span>
+                    בסיכון <strong>@CountByStatus(ProjectHealthStatuses.Red)</strong>
+                </span>
+            </div>
+        }
+    </header>
+
+    @if (_loading)
+    {
+        <div class="ph-loading">
+            <div class="ph-spinner"></div>
+            <span>טוען…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="ph-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת בריאות הפרויקטים. נסי לרענן את הדף.
+        </div>
+    }
+    else if (_rows.Count == 0)
+    {
+        <div class="ph-empty">
+            <span class="oi oi-circle-check ph-empty-icon" aria-hidden="true"></span>
+            <span>לא נמצאו פרויקטים פעילים</span>
+        </div>
+    }
+    else
+    {
+        <div class="ph-table-wrap">
+            <table class="ph-table">
+                <thead>
+                    <tr>
+                        <th class="ph-status-col">סטטוס</th>
+                        <th>שם פרויקט</th>
+                        <th>צוות</th>
+                        <th>מנחה</th>
+                        <th>אבן דרך נוכחית</th>
+                        <th>תאריך מתוכנן</th>
+                        <th>תאריך הגשה בפועל</th>
+                        <th>ימי איחור</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _rows)
+                    {
+                        <tr>
+                            <td class="ph-status-col">
+                                <span class="ph-light @StatusClass(r.Status)" title="@ProjectHealthStatuses.Label(r.Status)">
+                                    <span class="ph-light-dot"></span>
+                                    @ProjectHealthStatuses.Label(r.Status)
+                                </span>
+                            </td>
+                            <td>
+                                <div class="ph-project-num">#@r.ProjectNumber</div>
+                                <div class="ph-project-title">@r.ProjectTitle</div>
+                            </td>
+                            <td>
+                                <div>@(string.IsNullOrWhiteSpace(r.TeamName) ? "—" : r.TeamName)</div>
+                                @if (!string.IsNullOrWhiteSpace(r.StudentNames))
+                                {
+                                    <div class="ph-students">@r.StudentNames</div>
+                                }
+                            </td>
+                            <td>@(string.IsNullOrWhiteSpace(r.MentorName) ? "—" : r.MentorName)</td>
+                            <td>@(string.IsNullOrWhiteSpace(r.RelevantMilestoneTitle) ? "—" : r.RelevantMilestoneTitle)</td>
+                            <td>@(r.PlannedDueDate?.ToString("dd/MM/yyyy") ?? "—")</td>
+                            <td>
+                                @if (r.ActualCompletedAt.HasValue)
+                                {
+                                    @r.ActualCompletedAt.Value.ToString("dd/MM/yyyy")
+                                }
+                                else
+                                {
+                                    <span class="ph-not-submitted">טרם הוגש</span>
+                                }
+                            </td>
+                            <td class="ph-delay-col">
+                                @if (r.DelayDays > 0)
+                                {
+                                    <span class="ph-delay-badge @StatusClass(r.Status)">
+                                        @r.DelayDays
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span class="ph-delay-zero">—</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+</div>
+
+@code {
+    private List<ProjectHealthRowDto> _rows = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var result = await HealthService.GetAllAsync();
+        _loadError = result is null;
+        _rows      = result ?? new();
+        _loading   = false;
+    }
+
+    private int CountByStatus(string status) => _rows.Count(r => r.Status == status);
+
+    private static string StatusClass(string status) => status switch
+    {
+        ProjectHealthStatuses.Green  => "ph-status-green",
+        ProjectHealthStatuses.Orange => "ph-status-orange",
+        ProjectHealthStatuses.Red    => "ph-status-red",
+        _                            => "ph-status-green",
+    };
+}

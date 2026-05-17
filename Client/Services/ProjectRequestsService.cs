@@ -14,6 +14,7 @@ public interface IProjectRequestsService
     Task<string?>                        ReplyAsync(int id, string comment, List<RequestAttachmentUploadRequest>? attachments = null);
     Task<string?>                        UpdateAsync(int id, UpdateProjectRequestRequest req);
     Task<string?>                        SubmitExtensionDecisionAsync(int id, ExtensionDecisionRequest req);
+    Task<string?>                        SubmitMentorRecommendationAsync(int id, MentorRecommendationRequest req);
     Task<List<ExtensionTargetDto>?>      GetExtensionTargetsAsync();
 }
 
@@ -106,6 +107,19 @@ public class ProjectRequestsService : IProjectRequestsService
             if (resp.IsSuccessStatusCode) return null;
             string body = await resp.Content.ReadAsStringAsync();
             return string.IsNullOrWhiteSpace(body) ? "שגיאה בשליחת ההחלטה" : body.Trim('"');
+        }
+        catch { return "שגיאת תקשורת"; }
+    }
+
+    public async Task<string?> SubmitMentorRecommendationAsync(int id, MentorRecommendationRequest req)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(
+                $"api/project-requests/{id}/mentor-recommendation", req);
+            if (resp.IsSuccessStatusCode) return null;
+            string body = await resp.Content.ReadAsStringAsync();
+            return string.IsNullOrWhiteSpace(body) ? "שגיאה בשליחת ההמלצה" : body.Trim('"');
         }
         catch { return "שגיאת תקשורת"; }
     }

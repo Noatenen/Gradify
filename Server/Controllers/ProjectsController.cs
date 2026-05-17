@@ -39,11 +39,13 @@ public class ProjectsController : ControllerBase
                     p.Status,
                     p.HealthStatus,
                     pt.Name  AS ProjectType,
+                    COALESCE(ay.Name, '') AS AcademicYear,
                     t.Id     AS TeamId
             FROM    Projects     p
-            JOIN    Teams        t   ON p.TeamId       = t.Id
-            JOIN    TeamMembers  tm  ON t.Id            = tm.TeamId
-            JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
+            JOIN    Teams        t   ON p.TeamId         = t.Id
+            JOIN    TeamMembers  tm  ON t.Id              = tm.TeamId
+            JOIN    ProjectTypes pt  ON p.ProjectTypeId   = pt.Id
+            LEFT JOIN AcademicYears ay ON ay.Id           = p.AcademicYearId
             WHERE   tm.UserId  = @UserId
               AND   tm.IsActive = 1
               AND   COALESCE(p.AssignmentIsDraft, 0) = 0
@@ -234,6 +236,7 @@ public class ProjectsController : ControllerBase
                 Status        = projectRow.Status,
                 HealthStatus  = projectRow.HealthStatus,
                 ProjectType   = projectRow.ProjectType,
+                AcademicYear  = projectRow.AcademicYear ?? "",
             },
             TeamMembers  = members.ToList(),
             Mentors      = mentors.ToList(),
@@ -279,7 +282,14 @@ public class ProjectsController : ControllerBase
                                 '||')
                      FROM   ProjectMentors pm
                      JOIN   users          mu ON mu.Id = pm.UserId
-                     WHERE  pm.ProjectId = p.Id) AS MentorDetailsCsv
+                     WHERE  pm.ProjectId = p.Id) AS MentorDetailsCsv,
+                    -- Parallel id list used by the client to open the
+                    -- read-only mentor-profile modal. Order matches
+                    -- MentorDetailsCsv so the i-th name/email pairs with
+                    -- the i-th id.
+                    (SELECT GROUP_CONCAT(pm.UserId, ',')
+                     FROM   ProjectMentors pm
+                     WHERE  pm.ProjectId = p.Id) AS MentorUserIdsCsv
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId  = t.Id
             LEFT JOIN ProjectTypes pt ON pt.Id = p.ProjectTypeId
@@ -299,6 +309,14 @@ public class ProjectsController : ControllerBase
         int teamId    = projectRow.TeamId;
         var (studentNames, studentEmails) = SplitNameEmailPairs(projectRow.StudentDetailsCsv);
         var (mentorNames,  mentorEmails)  = SplitNameEmailPairs(projectRow.MentorDetailsCsv);
+        // Mentor IDs travel in a separate CSV ("12,34,56") to keep the
+        // existing name/email parser untouched. Order is identical to
+        // mentorNames / mentorEmails.
+        var mentorUserIds = (projectRow.MentorUserIdsCsv ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.TryParse(s, out var v) ? v : 0)
+            .Where(v => v > 0)
+            .ToList();
 
         // ── 2. Milestones (for current-milestone + progress) ──────────────────
         // Effective DueDate = COALESCE(team milestone override, AYM.DueDate).
@@ -358,6 +376,7 @@ public class ProjectsController : ControllerBase
             StudentEmails            = studentEmails,
             MentorNames              = mentorNames,
             MentorEmails             = mentorEmails,
+            MentorUserIds            = mentorUserIds,
             CurrentMilestoneTitle    = currentMs?.Title,
             CurrentMilestoneStatus   = NormalizeMilestoneStatus(currentMs?.Status),
             CurrentMilestoneDueDate  = currentMs?.DueDate,
@@ -849,6 +868,7 @@ public class ProjectsController : ControllerBase
         public string  Status       { get; set; } = "";
         public string? HealthStatus { get; set; }
         public string  ProjectType  { get; set; } = "";
+        public string? AcademicYear { get; set; }
         public int     TeamId       { get; set; }
     }
 
@@ -916,6 +936,7 @@ public class ProjectsController : ControllerBase
         public string? TrackName         { get; set; }
         public string? StudentDetailsCsv { get; set; }
         public string? MentorDetailsCsv  { get; set; }
+        public string? MentorUserIdsCsv  { get; set; }
     }
 
     private sealed class ContextMilestoneRow

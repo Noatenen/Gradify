@@ -1,0 +1,268 @@
+@page "/milestones-overview"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff + "," + Roles.Mentor)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IMilestonesOverviewService OverviewService
+
+<div class="mov-page" dir="rtl">
+
+    <!-- ── Page header ── -->
+    <div class="mov-header-card">
+        <div class="mov-header-start">
+            <div class="mov-page-icon">
+                <span class="oi oi-flag" aria-hidden="true"></span>
+            </div>
+            <div>
+                <h1 class="mov-page-title">תמונת מצב אבני דרך</h1>
+                <p class="mov-page-subtitle">מבט-על על אבני הדרך הנוכחיות בכל הפרויקטים הפעילים בשנה זו</p>
+            </div>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="mov-empty"><span class="mov-spinner-inline"></span>טוען נתונים…</div>
+    }
+    else if (_loadError || _data is null)
+    {
+        <div class="mov-empty mov-empty--error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת תמונת המצב. נסה לרענן את הדף.
+        </div>
+    }
+    else if (_data.Rows.Count == 0)
+    {
+        <div class="mov-empty">
+            <span class="oi oi-inbox" aria-hidden="true"></span>
+            לא נמצאו פרויקטים פעילים להצגה
+        </div>
+    }
+    else
+    {
+        @* ── Summary cards ── *@
+        <div class="mov-kpi-row">
+            <div class="mov-kpi-card">
+                <div class="mov-kpi-value">@_data.Summary.TotalActiveProjects</div>
+                <div class="mov-kpi-label">סך פרויקטים פעילים</div>
+            </div>
+            <div class="mov-kpi-card mov-kpi--danger">
+                <div class="mov-kpi-value">@_data.Summary.OverdueMilestones</div>
+                <div class="mov-kpi-label">אבני דרך באיחור</div>
+            </div>
+            <div class="mov-kpi-card mov-kpi--ok">
+                <div class="mov-kpi-value">@_data.Summary.CompletedTasks</div>
+                <div class="mov-kpi-label">משימות שהושלמו</div>
+            </div>
+            <div class="mov-kpi-card mov-kpi--info">
+                <div class="mov-kpi-value">@_data.Summary.OpenTasks</div>
+                <div class="mov-kpi-label">משימות פתוחות</div>
+            </div>
+            <div class="mov-kpi-card mov-kpi--warn">
+                <div class="mov-kpi-value">@_data.Summary.TeamsNeedingAttention</div>
+                <div class="mov-kpi-label">צוותים שדורשים תשומת לב</div>
+            </div>
+        </div>
+
+        @* ── Filters ── *@
+        <div class="mov-filters-bar">
+            <div class="mov-search-wrap">
+                <span class="oi oi-magnifying-glass mov-search-icon" aria-hidden="true"></span>
+                <input class="mov-search" type="text"
+                       placeholder="חיפוש לפי שם פרויקט / צוות"
+                       @bind="_searchQuery" @bind:event="oninput" />
+            </div>
+            <div class="mov-filter-group">
+                <select class="mov-filter-select" @bind="_filterProjectType">
+                    <option value="">סוג פרויקט: הכל</option>
+                    @foreach (var t in _data.Filters.ProjectTypes)
+                    {
+                        <option value="@t">@TypeLabel(t)</option>
+                    }
+                </select>
+                <select class="mov-filter-select" @bind="_filterMilestone">
+                    <option value="">אבן דרך: הכל</option>
+                    @foreach (var m in _data.Filters.Milestones)
+                    {
+                        <option value="@m">@m</option>
+                    }
+                </select>
+                <select class="mov-filter-select" @bind="_filterStatus">
+                    <option value="">סטטוס: הכל</option>
+                    <option value="@MilestoneOverviewStatuses.Healthy">תקין</option>
+                    <option value="@MilestoneOverviewStatuses.Overdue">באיחור</option>
+                    <option value="@MilestoneOverviewStatuses.NeedsAttention">דורש תשומת לב</option>
+                </select>
+                @if (Scope == "lecturer" && _data.Filters.Mentors.Count > 0)
+                {
+                    <select class="mov-filter-select" @bind="_filterMentor">
+                        <option value="">מנחה: הכל</option>
+                        @foreach (var m in _data.Filters.Mentors)
+                        {
+                            <option value="@m">@m</option>
+                        }
+                    </select>
+                }
+                <label class="mov-toggle">
+                    <input type="checkbox" @bind="_onlyOverdue" />
+                    <span>הצג רק באיחור</span>
+                </label>
+            </div>
+        </div>
+
+        @* ── Table ── *@
+        <div class="mov-table-panel">
+            <div class="mov-table-wrap">
+                <table class="mov-table">
+                    <thead>
+                        <tr>
+                            <th>שם פרויקט</th>
+                            <th>צוות</th>
+                            <th>מנחים</th>
+                            <th>סוג פרויקט</th>
+                            <th>אבן דרך נוכחית</th>
+                            <th>תאריך יעד</th>
+                            <th class="mov-cell-num">הושלמו / סה״כ</th>
+                            <th class="mov-cell-num">הגשות חסרות</th>
+                            <th>סטטוס</th>
+                            <th class="mov-cell-action"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!Filtered.Any())
+                        {
+                            <tr><td colspan="10" class="mov-empty-row">
+                                <span class="oi oi-inbox" aria-hidden="true"></span>
+                                לא נמצאו פרויקטים התואמים את הסינון
+                            </td></tr>
+                        }
+                        else
+                        {
+                            foreach (var r in Filtered)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="mov-project-cell">
+                                            <span class="mov-project-num">צוות @r.ProjectNumber</span>
+                                            <span class="mov-project-title">@r.ProjectTitle</span>
+                                        </div>
+                                    </td>
+                                    <td>@(r.TeamName ?? "—")</td>
+                                    <td>@(r.MentorNames ?? "—")</td>
+                                    <td>
+                                        <span class="mov-type-chip mov-type-@TypeKey(r.ProjectType)">@TypeLabel(r.ProjectType)</span>
+                                    </td>
+                                    <td>
+                                        @if (string.IsNullOrWhiteSpace(r.CurrentMilestoneTitle))
+                                        { <span class="mov-dash">—</span> }
+                                        else
+                                        { <span>@r.CurrentMilestoneTitle</span> }
+                                    </td>
+                                    <td class="mov-date-cell">
+                                        @if (r.CurrentMilestoneDueDate is not null)
+                                        { @r.CurrentMilestoneDueDate.Value.ToString("dd/MM/yyyy") }
+                                        else
+                                        { <span class="mov-dash">—</span> }
+                                    </td>
+                                    <td class="mov-cell-num">
+                                        @if (r.MilestoneTasksTotal == 0)
+                                        { <span class="mov-dash">—</span> }
+                                        else
+                                        {
+                                            <span class="mov-progress-pill @(r.MilestoneTasksCompleted == r.MilestoneTasksTotal ? "mov-progress-pill-done" : "")">
+                                                @r.MilestoneTasksCompleted / @r.MilestoneTasksTotal
+                                            </span>
+                                        }
+                                    </td>
+                                    <td class="mov-cell-num">
+                                        <span class="mov-num-pill @(r.MissingSubmissionCount > 0 ? "mov-num-pill-warn" : "")">
+                                            @r.MissingSubmissionCount
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <span class="mov-status-badge mov-status-@r.Status.ToLower()">
+                                            @MilestoneOverviewStatuses.Label(r.Status)
+                                        </span>
+                                    </td>
+                                    <td class="mov-cell-action">
+                                        <button class="mov-open-btn" @onclick="@(() => Nav.NavigateTo(ProjectViewLink(r.ProjectId)))">
+                                            <span class="oi oi-eye" aria-hidden="true"></span>
+                                            צפייה בפרויקט
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private MilestonesOverviewDto? _data;
+    private bool _loading = true;
+    private bool _loadError;
+
+    // Filters
+    private string _searchQuery       = "";
+    private string _filterProjectType = "";
+    private string _filterMilestone   = "";
+    private string _filterStatus      = "";
+    private string _filterMentor      = "";
+    private bool   _onlyOverdue;
+
+    /// <summary>Scope is decided server-side — pages just send the suggested value.</summary>
+    private string Scope { get; set; } = "lecturer";
+
+    [CascadingParameter] private User? _user { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Mentor users send "mentor"; admin/staff send "lecturer". Server
+        // re-enforces, so the client value is only a hint.
+        Scope = RoleService.IsMentor(_user) && !RoleService.IsAdminOrStaff(_user)
+            ? "mentor" : "lecturer";
+
+        var result = await OverviewService.GetAsync(Scope);
+        _loadError = result is null;
+        _data      = result;
+        _loading   = false;
+    }
+
+    private IEnumerable<MilestonesOverviewRowDto> Filtered =>
+        (_data?.Rows ?? new())
+            .Where(r => string.IsNullOrEmpty(_filterProjectType) || r.ProjectType == _filterProjectType)
+            .Where(r => string.IsNullOrEmpty(_filterMilestone)   || r.CurrentMilestoneTitle == _filterMilestone)
+            .Where(r => string.IsNullOrEmpty(_filterStatus)      || r.Status == _filterStatus)
+            .Where(r => string.IsNullOrEmpty(_filterMentor)
+                     || (r.MentorNames is not null && r.MentorNames.Contains(_filterMentor)))
+            .Where(r => !_onlyOverdue || r.Status == MilestoneOverviewStatuses.Overdue)
+            .Where(r => string.IsNullOrEmpty(_searchQuery)
+                     || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                     || (r.TeamName is not null && r.TeamName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+                     || r.ProjectNumber.ToString().Contains(_searchQuery))
+            .OrderBy(r => r.Status == MilestoneOverviewStatuses.Overdue ? 0
+                         : r.Status == MilestoneOverviewStatuses.NeedsAttention ? 1 : 2)
+            .ThenBy(r => r.ProjectNumber);
+
+    // Both lecturer and mentor scopes route to the unified mini-dashboard.
+    // Server-side scope enforcement on the endpoint blocks mentors from
+    // seeing projects they don't supervise.
+    private string ProjectViewLink(int projectId) => $"/projects/{projectId}/overview";
+
+    private static string TypeLabel(string t) => t switch
+    {
+        "Technological" => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => t,
+    };
+    private static string TypeKey(string t) => t switch
+    {
+        "Technological"  => "tech",
+        "Methodological" => "meth",
+        _                => "other",
+    };
+}

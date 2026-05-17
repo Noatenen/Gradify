@@ -1,0 +1,394 @@
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorPreferencesService MentorPrefs
+
+@*
+    Shared read-only mentor profile modal.
+    Opens from anywhere a mentor name is clicked (ProjectDetailsCard summary,
+    ProjectDetailsCard modal-body, TeamQuickInfoPopover). Replaces the prior
+    navigation to /mentor-profile/{id}. Re-uses the same look as the project
+    details modal (overlay + centred card + section list).
+
+    Data: fetched lazily via /api/mentor-profile/{id} the first time the modal
+    is opened for a given UserId, then cached. Phone is not on the public
+    profile DTO, so callers can pass it in when they already have it in context
+    (e.g. the dashboard ContactDto carries a phone number).
+*@
+
+@if (IsOpen)
+{
+    <div class="mpm-overlay" @onclick="Close" @onkeydown="OnKeyDown" tabindex="-1" @ref="_overlayRef">
+        <div class="mpm-modal" @onclick:stopPropagation="true" dir="rtl" role="dialog" aria-modal="true">
+
+            <!-- Header -->
+            <div class="mpm-header">
+                <div class="mpm-header-start">
+                    <div class="mpm-icon">
+                        <span class="oi oi-person" aria-hidden="true"></span>
+                    </div>
+                    <div class="mpm-header-text">
+                        <div class="mpm-eyebrow">פרופיל מנחה</div>
+                        <h2 class="mpm-title">@DisplayName</h2>
+                    </div>
+                </div>
+                <button class="mpm-close" @onclick="Close" title="סגירה" aria-label="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <!-- Body -->
+            <div class="mpm-body">
+
+                @if (_loading)
+                {
+                    <div class="mpm-loading">
+                        <div class="mpm-spinner"></div>
+                        <span>טוען פרטי מנחה…</span>
+                    </div>
+                }
+                else if (_loadError)
+                {
+                    <div class="mpm-error">
+                        <span class="oi oi-warning" aria-hidden="true"></span>
+                        <p>לא ניתן לטעון את פרופיל המנחה. נסי שוב מאוחר יותר.</p>
+                    </div>
+                }
+                else
+                {
+                    <!-- Personal details -->
+                    <div class="mpm-section">
+                        <h3 class="mpm-section-title">
+                            <span class="oi oi-envelope-closed" aria-hidden="true"></span>
+                            פרטי קשר
+                        </h3>
+                        <div class="mpm-detail-grid">
+                            <div class="mpm-detail-row">
+                                <span class="mpm-detail-label">שם מלא</span>
+                                <span class="mpm-detail-value">@DisplayName</span>
+                            </div>
+                            @if (Has(Email))
+                            {
+                                <div class="mpm-detail-row">
+                                    <span class="mpm-detail-label">אימייל</span>
+                                    <span class="mpm-detail-value" dir="ltr">@Email</span>
+                                </div>
+                            }
+                            @if (Has(Phone))
+                            {
+                                <div class="mpm-detail-row">
+                                    <span class="mpm-detail-label">טלפון</span>
+                                    <span class="mpm-detail-value" dir="ltr">@Phone</span>
+                                </div>
+                            }
+                            @if (!Has(Email) && !Has(Phone))
+                            {
+                                <div class="mpm-detail-row">
+                                    <span class="mpm-detail-value mpm-muted">לא נמסרו פרטי קשר.</span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    @if (_prefsEmpty)
+                    {
+                        <div class="mpm-section">
+                            <p class="mpm-empty">המנחה טרם הגדיר העדפות.</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <!-- סגנון הנחיה -->
+                        @if (Has(_model?.RoleDescription) || Has(MentorInvolvementLine()) || Has(FeedbackLine()))
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-compass" aria-hidden="true"></span>
+                                    סגנון הנחיה
+                                </h3>
+                                <div class="mpm-detail-grid">
+                                    @if (Has(_model?.RoleDescription))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">תיאור התפקיד</span>
+                                            <span class="mpm-detail-value">@_model!.RoleDescription</span>
+                                        </div>
+                                    }
+                                    @if (Has(FeedbackLine()))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">סוג משוב</span>
+                                            <span class="mpm-detail-value">@FeedbackLine()</span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        <!-- רמת מעורבות -->
+                        @if (Has(MentorInvolvementLine()))
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-people" aria-hidden="true"></span>
+                                    רמת מעורבות
+                                </h3>
+                                <p class="mpm-section-text">@MentorInvolvementLine()</p>
+                            </div>
+                        }
+
+                        <!-- זמינות -->
+                        @if (Has(_model?.AvailableTimes) || Has(MeetingFormatLine()) || Has(SchedulingLine()))
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-calendar" aria-hidden="true"></span>
+                                    זמינות
+                                </h3>
+                                <div class="mpm-detail-grid">
+                                    @if (Has(_model?.AvailableTimes))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">שעות זמינות</span>
+                                            <span class="mpm-detail-value">@_model!.AvailableTimes</span>
+                                        </div>
+                                    }
+                                    @if (Has(MeetingFormatLine()))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">פורמט פגישה</span>
+                                            <span class="mpm-detail-value">@MeetingFormatLine()</span>
+                                        </div>
+                                    }
+                                    @if (Has(SchedulingLine()))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">תיאום פגישות</span>
+                                            <span class="mpm-detail-value">@SchedulingLine()</span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        <!-- העדפות תקשורת -->
+                        @if (Has(ChannelLine()) || Has(CommunicationFrequencyLine()))
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-chat" aria-hidden="true"></span>
+                                    העדפות תקשורת
+                                </h3>
+                                <div class="mpm-detail-grid">
+                                    @if (Has(ChannelLine()))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">ערוץ מועדף</span>
+                                            <span class="mpm-detail-value">@ChannelLine()</span>
+                                        </div>
+                                    }
+                                    @if (Has(CommunicationFrequencyLine()))
+                                    {
+                                        <div class="mpm-detail-row">
+                                            <span class="mpm-detail-label">תדירות תקשורת</span>
+                                            <span class="mpm-detail-value">@CommunicationFrequencyLine()</span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        <!-- זמן מענה צפוי -->
+                        @if (Has(ResponseTimeLine()))
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-timer" aria-hidden="true"></span>
+                                    זמן מענה צפוי
+                                </h3>
+                                <p class="mpm-section-text">@ResponseTimeLine()</p>
+                            </div>
+                        }
+
+                        <!-- תחומי מיקוד -->
+                        @if (_model is not null && _model.QualityFocusAreas.Count > 0)
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-target" aria-hidden="true"></span>
+                                    תחומי מיקוד
+                                </h3>
+                                <div class="mpm-chips">
+                                    @foreach (var token in _model.QualityFocusAreas)
+                                    {
+                                        <span class="mpm-chip">@MentorQualityFocusTokens.Label(token)</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        <!-- דגשים / ציפיות -->
+                        @if (Has(_model?.QualityDescription) || Has(_model?.RedLines))
+                        {
+                            <div class="mpm-section">
+                                <h3 class="mpm-section-title">
+                                    <span class="oi oi-flag" aria-hidden="true"></span>
+                                    דגשים וציפיות מהסטודנטים
+                                </h3>
+                                @if (Has(_model?.QualityDescription))
+                                {
+                                    <div class="mpm-block">
+                                        <div class="mpm-block-label">ציפיות איכות</div>
+                                        <p class="mpm-section-text">@_model!.QualityDescription</p>
+                                    </div>
+                                }
+                                @if (Has(_model?.RedLines))
+                                {
+                                    <div class="mpm-block">
+                                        <div class="mpm-block-label">קווים אדומים</div>
+                                        <p class="mpm-section-text">@_model!.RedLines</p>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                }
+            </div>
+
+            <!-- Footer -->
+            <div class="mpm-footer">
+                <button class="mpm-btn-ghost" @onclick="Close">סגירה</button>
+            </div>
+
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool   IsOpen        { get; set; }
+    [Parameter] public int    MentorUserId  { get; set; }
+    [Parameter] public string MentorName    { get; set; } = "";
+    [Parameter] public string Email         { get; set; } = "";
+    [Parameter] public string Phone         { get; set; } = "";
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private MentorProfileViewDto? _model;
+    private bool _loading;
+    private bool _loadError;
+    private int  _lastFetchedId;
+    private ElementReference _overlayRef;
+
+    /// <summary>Modal name source: prefer the freshly-fetched DTO once
+    /// available, otherwise fall back to whatever the caller passed in.</summary>
+    private string DisplayName =>
+        _model is not null && (!string.IsNullOrWhiteSpace(_model.FirstName) || !string.IsNullOrWhiteSpace(_model.LastName))
+            ? ($"{_model.FirstName} {_model.LastName}").Trim()
+            : MentorName;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Lazy-fetch on open. Re-fetch only when MentorUserId actually changes.
+        if (!IsOpen) return;
+        if (MentorUserId <= 0) { _loadError = true; _loading = false; return; }
+        if (MentorUserId == _lastFetchedId && _model is not null) return;
+
+        _lastFetchedId = MentorUserId;
+        _loading       = true;
+        _loadError     = false;
+        _model         = null;
+        StateHasChanged();
+
+        try
+        {
+            var result = await MentorPrefs.GetProfileAsync(MentorUserId);
+            _loadError = result is null;
+            _model     = result;
+        }
+        catch
+        {
+            _loadError = true;
+            _model     = null;
+        }
+        finally
+        {
+            _loading = false;
+        }
+
+        // Auto-focus the overlay so ESC works without an extra click.
+        try { await _overlayRef.FocusAsync(); } catch { /* ignore */ }
+    }
+
+    private async Task Close()
+    {
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await Close();
+    }
+
+    private static bool Has(string? s) => !string.IsNullOrWhiteSpace(s);
+
+    /// <summary>True when the mentor has no expectation-setting fields filled
+    /// in at all. Personal-details section still renders.</summary>
+    private bool _prefsEmpty
+    {
+        get
+        {
+            if (_model is null) return true;
+            return !Has(_model.RoleDescription)
+                && !Has(_model.InvolvementLevel)
+                && !Has(_model.PreferredChannel)
+                && !Has(_model.ExpectedResponseTime)
+                && !Has(_model.CommunicationFrequency)
+                && !Has(_model.FeedbackType)
+                && !Has(_model.QualityDescription)
+                && _model.QualityFocusAreas.Count == 0
+                && !Has(_model.RedLines)
+                && !Has(_model.AvailableTimes)
+                && !Has(_model.MeetingFormat)
+                && !Has(_model.SchedulingMethod);
+        }
+    }
+
+    // ── Label helpers (re-using shared token classes) ────────────────────────
+
+    private string MentorInvolvementLine()
+        => _model is null || !Has(_model.InvolvementLevel)
+            ? ""
+            : MentorInvolvementLevels.Label(_model.InvolvementLevel!);
+
+    private string FeedbackLine()
+        => _model is null || !Has(_model.FeedbackType)
+            ? ""
+            : MentorFeedbackTypes.Label(_model.FeedbackType!);
+
+    private string MeetingFormatLine()
+        => _model is null || !Has(_model.MeetingFormat)
+            ? ""
+            : MentorMeetingFormats.Label(_model.MeetingFormat!);
+
+    private string SchedulingLine()
+        => _model is null || !Has(_model.SchedulingMethod)
+            ? ""
+            : MentorSchedulingMethods.Label(_model.SchedulingMethod!);
+
+    private string ChannelLine()
+    {
+        if (_model is null || !Has(_model.PreferredChannel)) return "";
+        var label = MentorChannels.Label(_model.PreferredChannel!);
+        return _model.PreferredChannel == MentorChannels.Other && Has(_model.PreferredChannelOther)
+            ? $"{label} ({_model.PreferredChannelOther})"
+            : label;
+    }
+
+    private string CommunicationFrequencyLine()
+        => _model is null || !Has(_model.CommunicationFrequency)
+            ? ""
+            : MentorCommunicationFrequencies.Label(_model.CommunicationFrequency!);
+
+    private string ResponseTimeLine()
+        => _model is null || !Has(_model.ExpectedResponseTime)
+            ? ""
+            : MentorResponseTimes.Label(_model.ExpectedResponseTime!);
+}

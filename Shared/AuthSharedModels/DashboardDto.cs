@@ -39,6 +39,9 @@ public class ProjectInfoDto
     /// <summary>"OnTrack", "NeedsAttention", "AtRisk" — optional.</summary>
     public string? HealthStatus { get; set; }
     public string  ProjectType  { get; set; } = "";
+    /// <summary>Academic year display name ("תשפ"ה" / "2025-2026"); empty
+    /// when not assigned. Surfaced on the dashboard project card.</summary>
+    public string  AcademicYear { get; set; } = "";
 }
 
 // ── People ───────────────────────────────────────────────────────────────────

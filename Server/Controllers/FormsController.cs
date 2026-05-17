@@ -401,6 +401,165 @@ public class FormsController : ControllerBase
         return Ok(new { id, isOpen = newOpen, status = newStatus });
     }
 
+    // ── POST /api/forms/{id}/duplicate ──────────────────────────────────────
+    //
+    // Creates a new Form for the target academic year, copying:
+    //   - Forms row (Instructions, AllowEditAfterSubmit) — Name / FormType /
+    //     AcademicYearId / Status / IsOpen come from the request body.
+    //   - All FormBlocks rows (Title, HelperText, IsRequired, SortOrder, etc.)
+    //   - All FormBlockOptions rows for those blocks.
+    //
+    // Submissions and uploaded files are NEVER copied — duplication is
+    // structure-only.
+    //
+    // Future-friendly: the underlying logic (read source + insert blocks /
+    // options) is the same primitive a "form builder" page will need when it
+    // creates a form from a blank template, so the standalone page can reuse
+    // SeedAssignmentBlocks-style helpers + the per-block insert path.
+    [HttpPost("{id:int}/duplicate")]
+    public async Task<IActionResult> DuplicateForm(
+        int id, int authUserId, [FromBody] DuplicateFormRequest req)
+    {
+        if (req is null) return BadRequest("גוף בקשה ריק");
+        if (string.IsNullOrWhiteSpace(req.NewName))
+            return BadRequest("שם הטופס החדש הוא שדה חובה");
+        if (req.AcademicYearId <= 0)
+            return BadRequest("יש לבחור מחזור / שנה אקדמית");
+        if (req.InitialStatus != FormStatuses.Draft
+            && req.InitialStatus != FormStatuses.Open
+            && req.InitialStatus != FormStatuses.Closed)
+            return BadRequest("סטטוס התחלתי לא תקין");
+
+        // ── Load the source form (used as the structure template) ─────────
+        var source = (await _db.GetRecordsAsync<SourceFormRow>(
+                @"SELECT Id, AcademicYearId, FormType, Instructions, AllowEditAfterSubmit
+                  FROM   Forms WHERE Id = @Id LIMIT 1",
+                new { Id = id }))?.FirstOrDefault();
+        if (source is null) return NotFound("הטופס המקור לא נמצא");
+
+        // ── Validate target year exists ───────────────────────────────────
+        if (!await ExistsAsync(
+                "SELECT 1 FROM AcademicYears WHERE Id = @Id",
+                new { Id = req.AcademicYearId }))
+            return BadRequest("המחזור האקדמי לא נמצא");
+
+        // ── Reject duplicates on the (AcademicYearId, FormType) UNIQUE ────
+        // The Hebrew message gives the lecturer enough context to either edit
+        // the existing form or pick a different year.
+        bool dup = await ExistsAsync(
+            "SELECT 1 FROM Forms WHERE AcademicYearId = @YearId AND FormType = @Type",
+            new { YearId = req.AcademicYearId, Type = source.FormType });
+        if (dup) return Conflict("כבר קיים טופס מסוג זה למחזור הנבחר. ערוך אותו או בחר מחזור אחר.");
+
+        // ── Compute the new form's IsOpen and effective Status ────────────
+        // - InitialStatus = Open  → IsOpen=1, Status=Open
+        // - InitialStatus = Draft → IsOpen=0, Status=Draft
+        // - InitialStatus = Closed→ IsOpen=0, Status=Closed
+        bool newIsOpen   = req.InitialStatus == FormStatuses.Open;
+        string newStatus = NormalizeStatus(req.InitialStatus, newIsOpen);
+
+        // ── Insert the cloned Forms row ───────────────────────────────────
+        int newFormId = await _db.InsertReturnIdAsync(@"
+            INSERT INTO Forms
+                (AcademicYearId, Name, FormType, Instructions, IsOpen, OpensAt, ClosesAt,
+                 AllowEditAfterSubmit, Status)
+            VALUES
+                (@AcademicYearId, @Name, @FormType, @Instructions, @IsOpenInt, NULL, NULL,
+                 @AllowEditInt, @Status)",
+            new
+            {
+                AcademicYearId = req.AcademicYearId,
+                Name           = req.NewName.Trim(),
+                source.FormType,
+                Instructions   = source.Instructions ?? "",
+                IsOpenInt      = newIsOpen ? 1 : 0,
+                AllowEditInt   = source.AllowEditAfterSubmit,
+                Status         = newStatus,
+            });
+        if (newFormId == 0) return StatusCode(500, "שגיאה בשכפול הטופס");
+
+        // ── Copy blocks ───────────────────────────────────────────────────
+        // We re-key per-block (old → new) so block options can attach to the
+        // new block id below. SortOrder is preserved verbatim.
+        var sourceBlocks = (await _db.GetRecordsAsync<SourceBlockRow>(
+                @"SELECT Id, BlockType, BlockKey, Title, HelperText, IsRequired, SortOrder
+                  FROM   FormBlocks WHERE FormId = @FormId ORDER BY SortOrder, Id",
+                new { FormId = source.Id }))?.ToList() ?? new();
+
+        var idMap = new Dictionary<int, int>();
+        foreach (var b in sourceBlocks)
+        {
+            int newBlockId = await _db.InsertReturnIdAsync(@"
+                INSERT INTO FormBlocks
+                    (FormId, BlockType, BlockKey, Title, HelperText, IsRequired, SortOrder)
+                VALUES
+                    (@FormId, @BlockType, @BlockKey, @Title, @HelperText, @IsRequiredInt, @SortOrder)",
+                new
+                {
+                    FormId        = newFormId,
+                    b.BlockType, b.BlockKey, b.Title,
+                    HelperText    = b.HelperText ?? "",
+                    IsRequiredInt = b.IsRequired,
+                    b.SortOrder,
+                });
+            if (newBlockId > 0) idMap[b.Id] = newBlockId;
+        }
+
+        // ── Copy options for the blocks we copied ─────────────────────────
+        if (idMap.Count > 0)
+        {
+            string idsCsv = string.Join(",", idMap.Keys);
+            var sourceOptions = (await _db.GetRecordsAsync<SourceOptionRow>(
+                    $@"SELECT FormBlockId, OptionValue, OptionLabel, SortOrder
+                       FROM   FormBlockOptions
+                       WHERE  FormBlockId IN ({idsCsv})
+                       ORDER  BY FormBlockId, SortOrder, Id"))?.ToList() ?? new();
+
+            foreach (var o in sourceOptions)
+            {
+                if (!idMap.TryGetValue(o.FormBlockId, out int newBlockId)) continue;
+                await _db.SaveDataAsync(@"
+                    INSERT INTO FormBlockOptions (FormBlockId, OptionValue, OptionLabel, SortOrder)
+                    VALUES (@FormBlockId, @OptionValue, @OptionLabel, @SortOrder)",
+                    new
+                    {
+                        FormBlockId = newBlockId,
+                        o.OptionValue, o.OptionLabel, o.SortOrder,
+                    });
+            }
+        }
+
+        return Ok(new DuplicateFormResponse { NewFormId = newFormId });
+    }
+
+    private sealed class SourceFormRow
+    {
+        public int    Id                   { get; set; }
+        public int    AcademicYearId       { get; set; }
+        public string FormType             { get; set; } = "";
+        public string? Instructions        { get; set; }
+        public int    AllowEditAfterSubmit { get; set; }
+    }
+
+    private sealed class SourceBlockRow
+    {
+        public int     Id          { get; set; }
+        public string  BlockType   { get; set; } = "";
+        public string? BlockKey    { get; set; }
+        public string  Title       { get; set; } = "";
+        public string? HelperText  { get; set; }
+        public int     IsRequired  { get; set; }
+        public int     SortOrder   { get; set; }
+    }
+
+    private sealed class SourceOptionRow
+    {
+        public int    FormBlockId { get; set; }
+        public string OptionValue { get; set; } = "";
+        public string OptionLabel { get; set; } = "";
+        public int    SortOrder   { get; set; }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Internal helpers
     // ─────────────────────────────────────────────────────────────────────────

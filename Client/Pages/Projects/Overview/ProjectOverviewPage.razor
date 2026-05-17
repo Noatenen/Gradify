@@ -1,0 +1,481 @@
+@page "/projects/{ProjectId:int}/overview"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff + "," + Roles.Mentor)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject NavigationManager Nav
+@inject IProjectOverviewService ProjectOverview
+@inject HttpClient Http
+
+<div class="pov-page" dir="rtl">
+
+    <!-- ── Header ── -->
+    <div class="pov-header-card">
+        <div class="pov-header-start">
+            <div class="pov-page-icon">
+                <span class="oi oi-folder" aria-hidden="true"></span>
+            </div>
+            <div>
+                @if (_data is null)
+                {
+                    <h1 class="pov-page-title">סקירת פרויקט</h1>
+                }
+                else
+                {
+                    <h1 class="pov-page-title">סקירת פרויקט</h1>
+                    <div class="pov-header-meta">
+                        <span class="pov-team-num">צוות @_data.Header.ProjectNumber</span>
+                        <span class="pov-project-title">@_data.Header.ProjectTitle</span>
+                    </div>
+                    <div class="pov-header-sub">
+                        @if (!string.IsNullOrWhiteSpace(_data.Header.TeamName))
+                        {
+                            <span class="pov-meta-chip"><span class="oi oi-people" aria-hidden="true"></span> @_data.Header.TeamName</span>
+                        }
+                        <span class="pov-meta-chip pov-type-@TypeKey(_data.Header.ProjectType)">@TypeLabel(_data.Header.ProjectType)</span>
+                        @if (!string.IsNullOrWhiteSpace(_data.Header.MentorNames))
+                        {
+                            <span class="pov-meta-chip"><span class="oi oi-person" aria-hidden="true"></span> @_data.Header.MentorNames</span>
+                        }
+                        @if (CanManageMentors)
+                        {
+                            <button type="button"
+                                    class="pov-meta-chip pov-add-mentor-chip"
+                                    title="הוסף מנחה נוסף לפרויקט"
+                                    @onclick="OpenAddMentor">
+                                <span class="oi oi-plus" aria-hidden="true"></span>
+                                @(string.IsNullOrWhiteSpace(_data.Header.MentorNames) ? "הוסף מנחה" : "הוסף מנחה נוסף")
+                            </button>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(_data.Header.HealthStatus))
+                        {
+                            <span class="pov-meta-chip pov-health-@_data.Header.HealthStatus.ToLower()">בריאות: @_data.Header.HealthStatus</span>
+                        }
+
+                        @* Manual Moodle status pill (2026-05-17). Read-only for
+                           mentors; inline-editable for Admin/Staff via dropdown. *@
+                        @if (CanManageMentors)
+                        {
+                            <span class="pov-meta-chip pov-moodle-chip pov-moodle-@MoodleSubmissionStatuses.Bucket(_moodleStatus)">
+                                <span class="oi oi-book" aria-hidden="true"></span>
+                                <span class="pov-moodle-label">מודל: @MoodleSubmissionStatuses.Label(_moodleStatus)</span>
+                                <select class="pov-moodle-select"
+                                        value="@(_moodleStatus ?? "")"
+                                        @onchange="OnMoodleStatusChanged"
+                                        disabled="@_moodleBusy"
+                                        title="עדכון סטטוס מודל">
+                                    <option value="">— לא נמדד —</option>
+                                    @foreach (var s in MoodleSubmissionStatuses.All)
+                                    {
+                                        <option value="@s">@MoodleSubmissionStatuses.Label(s)</option>
+                                    }
+                                </select>
+                            </span>
+                        }
+                        else if (!string.IsNullOrEmpty(_moodleStatus))
+                        {
+                            <span class="pov-meta-chip pov-moodle-chip pov-moodle-@MoodleSubmissionStatuses.Bucket(_moodleStatus)">
+                                <span class="oi oi-book" aria-hidden="true"></span>
+                                מודל: @MoodleSubmissionStatuses.Label(_moodleStatus)
+                            </span>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+        <button class="pov-back-btn" @onclick="@(() => Nav.NavigateTo("/dashboard/lecturer"))">
+            <span class="oi oi-chevron-left" aria-hidden="true"></span>
+            חזרה לדשבורד
+        </button>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="pov-empty"><span class="pov-spinner-inline"></span>טוען נתונים…</div>
+    }
+    else if (_loadError || _data is null)
+    {
+        <div class="pov-empty pov-empty--error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            פרויקט לא נמצא או אינו פעיל.
+        </div>
+    }
+    else
+    {
+        @* ── Summary cards ── *@
+        <div class="pov-kpi-row">
+            <div class="pov-kpi-card pov-kpi--info">
+                <div class="pov-kpi-value">@_data.Summary.OverallProgressPercent%</div>
+                <div class="pov-kpi-label">התקדמות כללית</div>
+                <div class="pov-progress-track">
+                    <div class="pov-progress-fill" style="width:@(_data.Summary.OverallProgressPercent)%;"></div>
+                </div>
+            </div>
+            <div class="pov-kpi-card">
+                <div class="pov-kpi-value">@_data.Summary.MilestonesCompleted / @_data.Summary.MilestonesTotal</div>
+                <div class="pov-kpi-label">אבני דרך</div>
+            </div>
+            <div class="pov-kpi-card">
+                <div class="pov-kpi-value">@_data.Summary.TasksCompleted / @_data.Summary.TasksTotal</div>
+                <div class="pov-kpi-label">משימות</div>
+            </div>
+            <div class="pov-kpi-card pov-kpi--warn">
+                <div class="pov-kpi-value">@_data.Summary.MissingSubmissions</div>
+                <div class="pov-kpi-label">הגשות חסרות</div>
+            </div>
+            <div class="pov-kpi-card pov-kpi--info">
+                <div class="pov-kpi-value">@_data.Summary.OpenRequestCount</div>
+                <div class="pov-kpi-label">בקשות פתוחות</div>
+            </div>
+            <div class="pov-kpi-card pov-kpi--danger">
+                <div class="pov-kpi-value">@_data.Summary.OverdueTaskCount</div>
+                <div class="pov-kpi-label">משימות באיחור</div>
+            </div>
+        </div>
+
+        @* ── Milestones ── *@
+        <div class="pov-section">
+            <div class="pov-section-title">אבני דרך</div>
+            @if (_data.Milestones.Count == 0)
+            {
+                <div class="pov-section-empty">לא הוגדרו אבני דרך לפרויקט זה.</div>
+            }
+            else
+            {
+                <div class="pov-milestones">
+                    @foreach (var ms in _data.Milestones)
+                    {
+                        bool expanded = _expandedMilestones.Contains(ms.ProjectMilestoneId);
+                        <div class="pov-milestone @(ms.IsOverdue ? "pov-milestone-overdue" : "")">
+                            <button class="pov-milestone-header" @onclick="() => ToggleMilestone(ms.ProjectMilestoneId)">
+                                <div class="pov-milestone-start">
+                                    <span class="pov-ms-dot pov-ms-@MsClass(ms.Status, ms.IsOverdue)"></span>
+                                    <span class="pov-ms-title">@ms.Title</span>
+                                    <span class="pov-ms-status">@MsLabel(ms.Status)</span>
+                                </div>
+                                <div class="pov-milestone-end">
+                                    @if (ms.DueDate is not null)
+                                    {
+                                        <span class="pov-ms-due @(ms.IsOverdue ? "pov-ms-due-overdue" : "")">
+                                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                                            @ms.DueDate.Value.ToString("dd/MM/yy")
+                                            @if (ms.IsOverdue) { <span>(באיחור)</span> }
+                                        </span>
+                                    }
+                                    <span class="pov-ms-tasks">@ms.TasksCompleted / @ms.TasksTotal</span>
+                                    @if (ms.MissingSubmissionCount > 0)
+                                    {
+                                        <span class="pov-ms-missing">@ms.MissingSubmissionCount הגשות חסרות</span>
+                                    }
+                                    <span class="oi @(expanded ? "oi-chevron-top" : "oi-chevron-bottom") pov-chevron" aria-hidden="true"></span>
+                                </div>
+                            </button>
+                            @if (expanded)
+                            {
+                                @if (ms.Tasks.Count == 0)
+                                {
+                                    <div class="pov-milestone-tasks-empty">אין משימות באבן דרך זו.</div>
+                                }
+                                else
+                                {
+                                    <ul class="pov-milestone-tasks">
+                                        @foreach (var t in ms.Tasks)
+                                        {
+                                            <li class="pov-task-mini @(t.IsOverdue ? "pov-task-mini-overdue" : "")">
+                                                <span class="pov-task-mini-title">@t.Title</span>
+                                                @if (t.IsSubmission)
+                                                {
+                                                    <span class="pov-task-mini-tag">הגשה</span>
+                                                }
+                                                @if (t.DueDate is not null)
+                                                {
+                                                    <span class="pov-task-mini-due">@t.DueDate.Value.ToString("dd/MM/yy")</span>
+                                                }
+                                                <span class="pov-task-mini-status">@TaskStatusLabel(t)</span>
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* ── Tasks (flat table) ── *@
+        <div class="pov-section">
+            <div class="pov-section-title">משימות</div>
+            @if (_data.Tasks.Count == 0)
+            {
+                <div class="pov-section-empty">לא נמצאו משימות</div>
+            }
+            else
+            {
+                <div class="pov-table-wrap">
+                    <table class="pov-table">
+                        <thead>
+                            <tr>
+                                <th>שם משימה</th>
+                                <th>אבן דרך</th>
+                                <th>סוג</th>
+                                <th>תאריך יעד</th>
+                                <th>סטטוס</th>
+                                <th>הגשה</th>
+                                <th>עמידה</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var t in _data.Tasks)
+                            {
+                                <tr>
+                                    <td>@t.Title</td>
+                                    <td>@(string.IsNullOrWhiteSpace(t.MilestoneTitle) ? "—" : t.MilestoneTitle)</td>
+                                    <td>@(t.IsSubmission ? "הגשה" : "רגילה")</td>
+                                    <td class="pov-cell-date">@(t.DueDate?.ToString("dd/MM/yyyy") ?? "—")</td>
+                                    <td>@TaskStatusLabel(t)</td>
+                                    <td>
+                                        @if (t.IsSubmission)
+                                        {
+                                            <span class="pov-pill @(t.HasSubmission ? "pov-pill-ok" : "pov-pill-warn")">
+                                                @(t.HasSubmission ? "הוגשה" : "לא הוגשה")
+                                            </span>
+                                        }
+                                        else { <span class="pov-dash">—</span> }
+                                    </td>
+                                    <td>
+                                        <span class="pov-pill @(t.IsOverdue ? "pov-pill-danger" : "pov-pill-ok-soft")">
+                                            @(t.IsOverdue ? "באיחור" : "תקין")
+                                        </span>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+
+        @* ── Open requests ── *@
+        <div class="pov-section">
+            <div class="pov-section-title">בקשות פתוחות</div>
+            @if (_data.OpenRequests.Count == 0)
+            {
+                <div class="pov-section-empty">לא נמצאו בקשות פתוחות</div>
+            }
+            else
+            {
+                <div class="pov-table-wrap">
+                    <table class="pov-table">
+                        <thead>
+                            <tr>
+                                <th>סוג בקשה</th>
+                                <th>כותרת</th>
+                                <th>סטטוס</th>
+                                <th>תאריך פתיחה</th>
+                                <th>פותח הבקשה</th>
+                                <th class="pov-cell-action"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var r in _data.OpenRequests)
+                            {
+                                <tr>
+                                    <td>@RequestTypes.Label(r.RequestType)</td>
+                                    <td>@r.Title</td>
+                                    <td><span class="pov-pill">@RequestStatuses.Label(r.Status)</span></td>
+                                    <td class="pov-cell-date">@r.CreatedAt.ToString("dd/MM/yyyy")</td>
+                                    <td>@r.CreatedByName</td>
+                                    <td class="pov-cell-action">
+                                        <button class="pov-mini-btn"
+                                                @onclick="@(() => Nav.NavigateTo($"/management/requests"))">
+                                            <span class="oi oi-external-link" aria-hidden="true"></span>
+                                            פתח
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+
+        @* ── Recent submissions ── *@
+        <div class="pov-section">
+            <div class="pov-section-title">הגשות אחרונות</div>
+            @if (_data.RecentSubmissions.Count == 0)
+            {
+                <div class="pov-section-empty">לא נמצאו הגשות</div>
+            }
+            else
+            {
+                <div class="pov-table-wrap">
+                    <table class="pov-table">
+                        <thead>
+                            <tr>
+                                <th>שם משימה</th>
+                                <th>סטודנט / צוות</th>
+                                <th>סטטוס הגשה</th>
+                                <th>תאריך הגשה</th>
+                                <th>משוב אחרון</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var s in _data.RecentSubmissions)
+                            {
+                                <tr>
+                                    <td>@s.TaskTitle</td>
+                                    <td>@s.SubmittedByName</td>
+                                    <td><span class="pov-pill">@s.Status</span></td>
+                                    <td class="pov-cell-date">@s.SubmittedAt.ToString("dd/MM/yyyy HH:mm")</td>
+                                    <td>
+                                        @if (string.IsNullOrWhiteSpace(s.LatestFeedback)) { <span class="pov-dash">—</span> }
+                                        else { <span class="pov-feedback">@Truncate(s.LatestFeedback, 80)</span> }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+<!-- Add-mentor modal (lecturer/admin only) -->
+<AddMentorModal IsOpen="@_showAddMentor"
+                ProjectId="@ProjectId"
+                OnClose="CloseAddMentor"
+                OnAdded="OnMentorAdded" />
+
+@code {
+    [Parameter] public int ProjectId { get; set; }
+    [CascadingParameter] private User? _user { get; set; }
+
+    private ProjectOverviewDto? _data;
+    private bool _loading = true;
+    private bool _loadError;
+    private bool _showAddMentor;
+    private readonly HashSet<int> _expandedMilestones = new();
+
+    // Manual Moodle-submission tracking (2026-05-17). Loaded alongside the
+    // overview; admins/staff can flip the value via the inline dropdown.
+    private string? _moodleStatus;
+    private bool    _moodleBusy;
+
+    /// <summary>Mentor-management actions are lecturer/admin only. Plain
+    /// mentors view the same page (their own assigned project) but don't
+    /// get the add-mentor button — server-side authorization is the actual
+    /// gate; this just keeps the UI tidy.</summary>
+    private bool CanManageMentors => RoleService.IsAdminOrStaff(_user);
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        var result = await ProjectOverview.GetAsync(ProjectId);
+        _loadError = result is null;
+        _data      = result;
+
+        // Best-effort fetch of the Moodle status — failure shouldn't break
+        // the overview page; we just don't show the pill.
+        try
+        {
+            var moodle = await Http.GetFromJsonAsync<ProjectMoodleStatusDto>(
+                $"api/projects/{ProjectId}/moodle-status");
+            _moodleStatus = moodle?.Status;
+        }
+        catch { _moodleStatus = null; }
+
+        _loading   = false;
+    }
+
+    private async Task OnMoodleStatusChanged(ChangeEventArgs e)
+    {
+        if (_moodleBusy) return;
+        var raw = e.Value?.ToString() ?? "";
+        string? next = string.IsNullOrWhiteSpace(raw) ? null : raw;
+
+        _moodleBusy = true;
+        try
+        {
+            var resp = await Http.PatchAsJsonAsync(
+                $"api/projects/{ProjectId}/moodle-status",
+                new SaveProjectMoodleStatusRequest { Status = next });
+
+            if (resp.IsSuccessStatusCode)
+            {
+                _moodleStatus = next;
+            }
+            // Silent failure — pill keeps its old value; admin retries on click.
+        }
+        catch { /* network issue — ignore, pill state unchanged */ }
+        finally
+        {
+            _moodleBusy = false;
+        }
+    }
+
+    private void OpenAddMentor()  => _showAddMentor = true;
+    private void CloseAddMentor() => _showAddMentor = false;
+    private async Task OnMentorAdded() => await ReloadAsync();
+
+    private void ToggleMilestone(int id)
+    {
+        if (!_expandedMilestones.Add(id)) _expandedMilestones.Remove(id);
+    }
+
+    // ── Display helpers ────────────────────────────────────────────────────
+    private static string TypeLabel(string t) => t switch
+    {
+        "Technological"  => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => t,
+    };
+    private static string TypeKey(string t) => t switch
+    {
+        "Technological"  => "tech",
+        "Methodological" => "meth",
+        _                => "other",
+    };
+    private static string MsClass(string status, bool isOverdue)
+    {
+        if (status == "Completed") return "completed";
+        if (isOverdue)             return "overdue";
+        return status switch
+        {
+            "InProgress" => "inprogress",
+            "Delayed"    => "delayed",
+            _            => "notstarted",
+        };
+    }
+    private static string MsLabel(string status) => status switch
+    {
+        "Completed"  => "הושלם",
+        "InProgress" => "פעיל",
+        "Delayed"    => "באיחור",
+        "NotStarted" => "טרם נפתח",
+        _            => status,
+    };
+    private static string TaskStatusLabel(ProjectOverviewTaskDto t)
+    {
+        if (t.HasSubmission && !string.IsNullOrEmpty(t.Status) && t.Status != "Done" && t.Status != "Completed")
+            return "הוגש לבדיקה";
+        return t.Status switch
+        {
+            "Done"              => "הושלם",
+            "Completed"         => "הושלם",
+            "SubmittedToMentor" => "הוגש לבדיקה",
+            "InProgress"        => "בעבודה",
+            "Open"              => "פתוח",
+            ""                  => "—",
+            null                => "—",
+            _                   => t.Status,
+        };
+    }
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s.Substring(0, max) + "…";
+}

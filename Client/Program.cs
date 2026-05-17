@@ -33,6 +33,18 @@ builder.Services.AddScoped<IProjectRequestsService, ProjectRequestsService>();
 // Student profile & settings
 builder.Services.AddScoped<IStudentProfileService, StudentProfileService>();
 
+// Universal user profile (shared /settings page for all roles)
+builder.Services.AddScoped<IUserProfileService, UserProfileService>();
+
+// Lecturer/admin "משימות ממתינות לאישור מנחה" inbox + reminder/override actions
+builder.Services.AddScoped<IPendingMentorApprovalsService, PendingMentorApprovalsService>();
+
+// Internal Project Health (traffic-light) — Admin/Staff/Mentor only
+builder.Services.AddScoped<IProjectHealthService, ProjectHealthService>();
+
+// Mentor preferences card on /settings (mentor-only)
+builder.Services.AddScoped<IMentorPreferencesService, MentorPreferencesService>();
+
 // Integration settings (admin-configurable OAuth credentials)
 builder.Services.AddScoped<IIntegrationSettingsService, IntegrationSettingsService>();
 
@@ -64,6 +76,15 @@ builder.Services.AddScoped<IRoleSettingsManagementService, RoleSettingsManagemen
 
 // Lecturer / Mentor dashboard
 builder.Services.AddScoped<IDashboardOverviewService, DashboardOverviewService>();
+
+// Lecturer / Mentor milestones overview
+builder.Services.AddScoped<IMilestonesOverviewService, MilestonesOverviewService>();
+
+// Lecturer / Mentor project-detail mini dashboard
+builder.Services.AddScoped<IProjectOverviewService, ProjectOverviewService>();
+
+// User-level notification preferences (settings → העדפות התראות)
+builder.Services.AddScoped<INotificationPreferencesService, NotificationPreferencesService>();
 
 //User management
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();

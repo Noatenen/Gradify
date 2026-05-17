@@ -151,30 +151,39 @@
                             </div>
                         }
 
-                        @* ── Mentor decision actions (only when MentorDecision = Pending) ── *@
-                        @if (_detail.Extension.MentorDecision == ExtensionDecisionStatuses.Pending)
+                        @* ── Mentor recommendation form ─────────────────
+                           Mentors no longer approve/reject extensions directly.
+                           They pick "ממליץ" / "לא ממליץ" with an internal note
+                           and the request always escalates to the lecturer. *@
+                        @if (_detail.Status == RequestStatuses.PendingMentorRecommendation)
                         {
                             <div class="mreq-decision-form">
-                                <div class="mreq-decision-form-title">החלטת מנחה</div>
+                                <div class="mreq-decision-form-title">המלצת מנחה</div>
+                                <div class="mreq-decision-hint">
+                                    ההמלצה וההערה יועברו למרצה ולא יוצגו לסטודנט.
+                                </div>
 
-                                @{
-                                    bool hasTarget = _detail.Extension.TaskId.HasValue
-                                                  || _detail.Extension.ProjectMilestoneId.HasValue;
-                                }
-                                @if (hasTarget)
-                                {
-                                    <label class="mreq-decision-label">תאריך מאושר חדש</label>
-                                    <input class="mreq-decision-date"
-                                           type="date"
-                                           @bind="_decisionApprovedDate" />
-                                    <div class="mreq-decision-hint">חובה בעת אישור משימה ספציפית.</div>
-                                }
+                                <label class="mreq-decision-label">המלצה</label>
+                                <div class="mreq-recommend-toggle">
+                                    <button type="button"
+                                            class="mreq-recommend-btn @(_recommendation == ExtensionDecisionStatuses.Recommended ? "mreq-recommend-on" : "")"
+                                            disabled="@_submitting"
+                                            @onclick="@(() => _recommendation = ExtensionDecisionStatuses.Recommended)">
+                                        <span class="oi oi-check" aria-hidden="true"></span> ממליץ
+                                    </button>
+                                    <button type="button"
+                                            class="mreq-recommend-btn @(_recommendation == ExtensionDecisionStatuses.NotRecommended ? "mreq-recommend-off" : "")"
+                                            disabled="@_submitting"
+                                            @onclick="@(() => _recommendation = ExtensionDecisionStatuses.NotRecommended)">
+                                        <span class="oi oi-x" aria-hidden="true"></span> לא ממליץ
+                                    </button>
+                                </div>
 
-                                <label class="mreq-decision-label">הערות (אופציונלי)</label>
+                                <label class="mreq-decision-label">הערת מנחה פנימית</label>
                                 <textarea class="mreq-decision-notes"
                                           rows="3"
                                           maxlength="2000"
-                                          placeholder="כתוב כאן הסבר קצר…"
+                                          placeholder="הסבר קצר עבור המרצה (לא מוצג לסטודנט)…"
                                           @bind="_decisionNotes"></textarea>
 
                                 @if (!string.IsNullOrEmpty(_decisionError))
@@ -187,21 +196,32 @@
 
                                 <div class="mreq-decision-actions">
                                     <button class="mreq-btn mreq-btn-approve"
-                                            disabled="@_submitting"
-                                            @onclick="@(() => SubmitDecision(ExtensionDecisionStatuses.Approved))">
-                                        <span class="oi oi-check" aria-hidden="true"></span> אישור
-                                    </button>
-                                    <button class="mreq-btn mreq-btn-reject"
-                                            disabled="@_submitting"
-                                            @onclick="@(() => SubmitDecision(ExtensionDecisionStatuses.Rejected))">
-                                        <span class="oi oi-x" aria-hidden="true"></span> דחייה
-                                    </button>
-                                    <button class="mreq-btn mreq-btn-escalate"
-                                            disabled="@_submitting"
-                                            @onclick="@(() => SubmitDecision(ExtensionDecisionStatuses.Escalated))">
-                                        <span class="oi oi-share" aria-hidden="true"></span> העבר למרצה
+                                            disabled="@(_submitting || string.IsNullOrEmpty(_recommendation))"
+                                            @onclick="SubmitRecommendation">
+                                        <span class="oi oi-share" aria-hidden="true"></span> שליחת המלצה
                                     </button>
                                 </div>
+                            </div>
+                        }
+                        else if (_detail.Extension.MentorDecision == ExtensionDecisionStatuses.Recommended
+                              || _detail.Extension.MentorDecision == ExtensionDecisionStatuses.NotRecommended)
+                        {
+                            @* Read-only summary after the mentor submitted — visible only to mentor/staff. *@
+                            <div class="mreq-decision-form">
+                                <div class="mreq-decision-form-title">המלצת מנחה</div>
+                                <div class="mreq-ext-row">
+                                    <div class="mreq-ext-label">המלצה</div>
+                                    <div class="mreq-ext-value">
+                                        <span class="mreq-ext-decision mreq-ext-dec-@_detail.Extension.MentorDecision.ToLower()">
+                                            @ExtensionDecisionStatuses.Label(_detail.Extension.MentorDecision)
+                                        </span>
+                                    </div>
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(_detail.Extension.MentorNotes))
+                                {
+                                    <label class="mreq-decision-label">הערת מנחה פנימית</label>
+                                    <div class="mreq-drawer-text">@_detail.Extension.MentorNotes</div>
+                                }
                             </div>
                         }
                     </div>
@@ -448,12 +468,32 @@
     private bool _detailLoading;
 
     // ── Decision form state ──────────────────────────────────────────────────
+    // _decisionApprovedDate is kept in state because the legacy
+    // SubmitExtensionDecision UI may still surface for old data, even though
+    // the new mentor-recommendation flow does not use it. _recommendation
+    // tracks the toggle ("Recommended" / "NotRecommended").
     private DateTime? _decisionApprovedDate;
     private string    _decisionNotes = "";
     private string    _decisionError = "";
+    private string    _recommendation = "";
     private bool      _submitting;
 
-    protected override async Task OnInitializedAsync() => await LoadList();
+    // Notification deep-link target. Clicking a request notification lands
+    // here with `?requestId={id}`; after the list loads we auto-open that
+    // row's drawer.
+    [SupplyParameterFromQuery(Name = "requestId")]
+    public int? DeepLinkRequestId { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadList();
+
+        if (DeepLinkRequestId is int reqId)
+        {
+            var row = _all.FirstOrDefault(r => r.Id == reqId);
+            if (row is not null) await OpenDrawer(row);
+        }
+    }
 
     private async Task LoadList()
     {
@@ -483,6 +523,7 @@
         _decisionError        = "";
         _decisionNotes        = "";
         _decisionApprovedDate = null;
+        _recommendation       = "";
         StateHasChanged();
 
         _detail = await RequestsService.GetByIdAsync(row.Id);
@@ -506,31 +547,25 @@
         _decisionApprovedDate = null;
     }
 
-    // ── Mentor decision submit ───────────────────────────────────────────────
-    private async Task SubmitDecision(string decision)
+    // ── Mentor recommendation submit ─────────────────────────────────────────
+    private async Task SubmitRecommendation()
     {
         if (_drawerRow is null || _detail?.Extension is null) return;
 
-        _decisionError = "";
-        bool hasTarget = _detail.Extension.TaskId.HasValue
-                      || _detail.Extension.ProjectMilestoneId.HasValue;
-
-        if (decision == ExtensionDecisionStatuses.Approved && hasTarget && _decisionApprovedDate is null)
+        if (_recommendation != ExtensionDecisionStatuses.Recommended
+         && _recommendation != ExtensionDecisionStatuses.NotRecommended)
         {
-            _decisionError = "יש לבחור תאריך מאושר.";
+            _decisionError = "יש לבחור 'ממליץ' או 'לא ממליץ'.";
             return;
         }
 
-        _submitting = true;
-        var err = await RequestsService.SubmitExtensionDecisionAsync(_drawerRow.Id,
-            new ExtensionDecisionRequest
+        _decisionError = "";
+        _submitting    = true;
+        var err = await RequestsService.SubmitMentorRecommendationAsync(_drawerRow.Id,
+            new MentorRecommendationRequest
             {
-                Stage           = "Mentor",
-                Decision        = decision,
-                ApprovedDueDate = (decision == ExtensionDecisionStatuses.Approved && hasTarget)
-                                      ? _decisionApprovedDate
-                                      : null,
-                Notes           = string.IsNullOrWhiteSpace(_decisionNotes) ? null : _decisionNotes.Trim(),
+                Recommendation = _recommendation,
+                Notes          = string.IsNullOrWhiteSpace(_decisionNotes) ? null : _decisionNotes.Trim(),
             });
         _submitting = false;
 
@@ -544,7 +579,6 @@
         await LoadList();
         var refreshed = await RequestsService.GetByIdAsync(_drawerRow.Id);
         if (refreshed is not null) _detail = refreshed;
-        // Update the drawer row's status badge to match the parent row in the new list
         var updatedRow = _all.FirstOrDefault(r => r.Id == _drawerRow.Id);
         if (updatedRow is not null) _drawerRow = updatedRow;
     }

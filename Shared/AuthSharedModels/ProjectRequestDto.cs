@@ -55,19 +55,31 @@ public static class RequestStatuses
     public const string Resolved         = "Resolved";
     public const string Closed           = "Closed";
 
+    // Extension-only intermediate statuses. The flow is enforced by the
+    // extension decision endpoints and is invisible to non-extension types.
+    /// <summary>Extension-only — student created the request, awaiting the
+    /// mentor's recommendation before it can reach a lecturer.</summary>
+    public const string PendingMentorRecommendation = "PendingMentorRecommendation";
+    /// <summary>Extension-only — mentor submitted a recommendation, awaiting
+    /// the lecturer/admin's final decision.</summary>
+    public const string PendingLecturerDecision    = "PendingLecturerDecision";
+
     /// <summary>All statuses a staff member can set.</summary>
     public static readonly IReadOnlyList<string> All =
-        new[] { New, InProgress, NeedsInfo, WaitingForStaff, Resolved, Closed };
+        new[] { New, InProgress, NeedsInfo, WaitingForStaff, Resolved, Closed,
+                PendingMentorRecommendation, PendingLecturerDecision };
 
     public static string Label(string status) => status switch
     {
-        New             => "חדש",
-        InProgress      => "בטיפול",
-        NeedsInfo       => "הוחזרה לסטודנט",
-        WaitingForStaff => "ממתין למענה אקדמי",
-        Resolved        => "טופל",
-        Closed          => "סגור",
-        _               => status,
+        New                          => "חדש",
+        InProgress                   => "בטיפול",
+        NeedsInfo                    => "הוחזרה לסטודנט",
+        WaitingForStaff              => "ממתין למענה אקדמי",
+        Resolved                     => "טופל",
+        Closed                       => "סגור",
+        PendingMentorRecommendation  => "ממתינה להמלצת מנחה",
+        PendingLecturerDecision      => "ממתינה להחלטת מרצה",
+        _                            => status,
     };
 }
 
@@ -169,17 +181,26 @@ public static class ExtensionDecisionStatuses
     public const string Rejected    = "Rejected";
     public const string Escalated   = "Escalated";
 
+    // New flow (recommendation-only mentor stage). The mentor never makes a
+    // terminal decision — they advise and the lecturer/admin always decides.
+    /// <summary>Mentor recommends approving the extension.</summary>
+    public const string Recommended    = "Recommended";
+    /// <summary>Mentor recommends rejecting the extension.</summary>
+    public const string NotRecommended = "NotRecommended";
+
     // Lecturer-stage states
     public const string NotRequired = "NotRequired";
 
     public static string Label(string s) => s switch
     {
-        Pending     => "ממתין להחלטה",
-        Approved    => "אושר",
-        Rejected    => "נדחה",
-        Escalated   => "הועבר למרצה",
-        NotRequired => "לא נדרש",
-        _           => s,
+        Pending        => "ממתין להחלטה",
+        Approved       => "אושר",
+        Rejected       => "נדחה",
+        Escalated      => "הועבר למרצה",
+        Recommended    => "ממליץ",
+        NotRecommended => "לא ממליץ",
+        NotRequired    => "לא נדרש",
+        _              => s,
     };
 }
 
@@ -237,6 +258,20 @@ public class ExtensionDecisionRequest
     /// <summary>Required when Decision = Approved AND the request targets a specific Task or Milestone.</summary>
     public DateTime? ApprovedDueDate { get; set; }
     public string?   Notes           { get; set; }
+}
+
+/// <summary>
+/// Payload for POST /api/project-requests/{id}/mentor-recommendation.
+/// The mentor never makes a terminal decision — they recommend, and the
+/// request always escalates to the lecturer/admin for the final call.
+/// Notes are an INTERNAL note, visible to mentors and academic staff only —
+/// never to the student that owns the request.
+/// </summary>
+public class MentorRecommendationRequest
+{
+    /// <summary>"Recommended" or "NotRecommended".</summary>
+    public string  Recommendation { get; set; } = "";
+    public string? Notes          { get; set; }
 }
 
 /// <summary>Image attachment metadata for a project request.</summary>

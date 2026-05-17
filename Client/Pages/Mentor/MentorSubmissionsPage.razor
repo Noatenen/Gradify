@@ -5,6 +5,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IMentorProjectsService MentorService
 @inject NavigationManager Nav
+@inject HttpClient Http
 
 <!-- ── Review drawer backdrop ── -->
 @if (_reviewCtx is not null)
@@ -255,6 +256,63 @@
                         </div>
                     </div>
                 }
+
+                @* Escalation — flag this submission as "needs lecturer attention".
+                   Minimal-by-design: a single boolean on the server, one
+                   notification to admin/staff, no review queue. *@
+                <div class="msu-drawer-section msu-escalate-section">
+                    <div class="msu-drawer-section-title">העברה לטיפול מרצה</div>
+                    <p class="msu-escalate-help">
+                        השתמש/י באפשרות זו רק במקרים חריגים שדורשים תשומת לב של המרצה.
+                    </p>
+                    @if (!_escalateOpen && !_escalateDone)
+                    {
+                        <button class="msu-btn-escalate"
+                                @onclick="@(() => _escalateOpen = true)"
+                                disabled="@_escalateBusy">
+                            <span class="oi oi-flag" aria-hidden="true"></span>
+                            סמן כמקרה חריג למרצה
+                        </button>
+                    }
+                    else if (_escalateOpen && !_escalateDone)
+                    {
+                        <textarea class="msu-escalate-reason"
+                                  rows="2"
+                                  placeholder="סיבה (אופציונלי) — תוצג למרצים/אדמינים בלבד"
+                                  @bind="_escalateReason"
+                                  disabled="@_escalateBusy"></textarea>
+                        <div class="msu-escalate-actions">
+                            <button class="msu-btn-escalate"
+                                    @onclick="EscalateAsync"
+                                    disabled="@_escalateBusy">
+                                @if (_escalateBusy)
+                                { <span class="msu-btn-spinner"></span> }
+                                else
+                                { <span class="oi oi-check" aria-hidden="true"></span> }
+                                <span>שלח</span>
+                            </button>
+                            <button class="msu-btn-escalate-cancel"
+                                    @onclick="@(() => { _escalateOpen = false; _escalateReason = string.Empty; })"
+                                    disabled="@_escalateBusy">
+                                ביטול
+                            </button>
+                        </div>
+                        @if (_escalateError)
+                        {
+                            <div class="msu-review-error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                לא הצלחנו לשמור את הסימון. נסה שנית.
+                            </div>
+                        }
+                    }
+                    else if (_escalateDone)
+                    {
+                        <div class="msu-escalate-done">
+                            <span class="oi oi-circle-check" aria-hidden="true"></span>
+                            ההגשה סומנה למרצים/אדמינים. תישלח להם התראה.
+                        </div>
+                    }
+                </div>
             }
         </div>
     </div>
@@ -338,6 +396,13 @@
     private string                      _pendingAction  = "";
     private readonly HashSet<int>       _expandedRounds = new();
 
+    // Escalation state (mentor → lecturer attention flag). Resets every drawer open.
+    private bool   _escalateOpen   = false;
+    private bool   _escalateBusy   = false;
+    private bool   _escalateDone   = false;
+    private bool   _escalateError  = false;
+    private string _escalateReason = "";
+
     protected override async Task OnInitializedAsync()
     {
         _submissions = await MentorService.GetPendingSubmissionsAsync();
@@ -350,6 +415,10 @@
         _reviewFeedback = "";
         _reviewError    = false;
         _reviewLoading  = true;
+        // Reset escalation block for the new submission.
+        _escalateOpen = false; _escalateBusy = false;
+        _escalateDone = false; _escalateError = false;
+        _escalateReason = "";
         StateHasChanged();
 
         _reviewCtx = await MentorService.GetSubmissionContextAsync(submissionId);
@@ -367,6 +436,37 @@
         _reviewCtx      = null;
         _reviewFeedback = "";
         _reviewError    = false;
+    }
+
+    private async Task EscalateAsync()
+    {
+        if (_reviewCtx is null || _escalateBusy) return;
+        _escalateBusy = true;
+        _escalateError = false;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(
+                $"api/task-submissions/{_reviewCtx.SubmissionId}/escalate",
+                new EscalateSubmissionRequest { Reason = _escalateReason });
+
+            if (resp.IsSuccessStatusCode)
+            {
+                _escalateDone = true;
+                _escalateOpen = false;
+            }
+            else
+            {
+                _escalateError = true;
+            }
+        }
+        catch
+        {
+            _escalateError = true;
+        }
+        finally
+        {
+            _escalateBusy = false;
+        }
     }
 
     private async Task SubmitReviewAsync(string action)

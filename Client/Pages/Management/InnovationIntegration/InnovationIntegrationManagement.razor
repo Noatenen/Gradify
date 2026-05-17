@@ -1,0 +1,705 @@
+@page "/management/innovation-integration"
+@layout AppLayout
+@attribute [Authorize(Roles = $"{Roles.Admin},{Roles.Staff}")]
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+@*
+    Innovation-Team integration settings.
+
+    Purpose: let Admin/Staff configure how incoming Airtable webhook updates
+    are mapped into our internal request shape. The Airtable forms themselves
+    are NOT managed here — see /management/external-forms for those.
+
+    Sections (all on one page):
+      1. Endpoint details + API-key status (read-only, with copy buttons)
+      2. Field mappings  (CRUD)
+      3. Status mappings (CRUD)
+      4. Payload preview (auto-built from current mappings)
+      5. Test endpoint   (paste JSON, run dry-run, see the mapped result)
+*@
+
+<div class="iim-page" dir="rtl">
+
+    <!-- Top bar -->
+    <div class="iim-topbar">
+        <div class="iim-topbar-start">
+            <button class="iim-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))" title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="iim-breadcrumb">ניהול</div>
+                <h1 class="iim-title">אינטגרציית צוות החדשנות</h1>
+            </div>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="iim-state">טוען נתונים…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="iim-state iim-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת ההגדרות. נסו לרענן את הדף.
+            @if (!string.IsNullOrWhiteSpace(_loadDetail))
+            {
+                <div class="iim-debug">@_loadDetail</div>
+            }
+        </div>
+    }
+    else
+    {
+        @if (!string.IsNullOrEmpty(_toast))
+        {
+            <div class="iim-toast @(_toastError ? "iim-toast-error" : "")">@_toast</div>
+        }
+
+        <!-- ─────────── 1. Endpoint details ─────────── -->
+        <section class="iim-section">
+            <h2 class="iim-section-title">
+                <span class="oi oi-link-intact" aria-hidden="true"></span>
+                כתובת ה-Endpoint
+            </h2>
+            <p class="iim-section-desc">
+                כתובת זו צריכה להישלח לצוות החדשנות (Airtable) — כל עדכון סטטוס נשלח אליה.
+            </p>
+
+            <div class="iim-kv">
+                <div class="iim-kv-row">
+                    <span class="iim-kv-label">URL מלא</span>
+                    <span class="iim-kv-value iim-kv-url" dir="ltr">@FullEndpointUrl</span>
+                    <button class="iim-copy-btn" @onclick="@(() => CopyAsync(FullEndpointUrl, "url"))">
+                        @(_copied == "url" ? "הועתק" : "העתק")
+                    </button>
+                </div>
+                <div class="iim-kv-row">
+                    <span class="iim-kv-label">Header נדרש</span>
+                    <span class="iim-kv-value" dir="ltr">@_settings?.ApiKeyHeader</span>
+                    <button class="iim-copy-btn" @onclick="@(() => CopyAsync(_settings?.ApiKeyHeader ?? "", "hdr"))">
+                        @(_copied == "hdr" ? "הועתק" : "העתק")
+                    </button>
+                </div>
+                <div class="iim-kv-row">
+                    <span class="iim-kv-label">Method</span>
+                    <span class="iim-kv-value" dir="ltr">POST · application/json</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ─────────── 2. API key status ─────────── -->
+        <section class="iim-section">
+            <h2 class="iim-section-title">
+                <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                מפתח API
+            </h2>
+            <p class="iim-section-desc">
+                המפתח אינו מוצג מטעמי אבטחה. אם המפתח אינו מוגדר — הוסיפו אותו
+                בקובץ <code>appsettings.Development.json</code> או בכל סביבה ב-<code>ExternalApi:ApiKey</code>
+                (או באמצעות משתנה הסביבה <code>ExternalApi__ApiKey</code>) ולאחר מכן הפעילו מחדש את השרת.
+            </p>
+
+            <div class="iim-key-status @(_settings?.ApiKeyConfigured == true ? "iim-key-ok" : "iim-key-missing")">
+                <span class="oi @(_settings?.ApiKeyConfigured == true ? "oi-check" : "oi-circle-x")" aria-hidden="true"></span>
+                <span>
+                    @if (_settings?.ApiKeyConfigured == true)
+                    {
+                        <strong>מוגדר</strong>
+                        <span class="iim-key-len">(@_settings.ApiKeyLength תווים)</span>
+                    }
+                    else
+                    {
+                        <strong>לא מוגדר</strong>
+                        <span class="iim-key-len">— הקריאות יחזירו 503 עד שהמפתח יוגדר</span>
+                    }
+                </span>
+            </div>
+        </section>
+
+        <!-- ─────────── 3. Field mappings ─────────── -->
+        <section class="iim-section">
+            <div class="iim-section-head">
+                <h2 class="iim-section-title">
+                    <span class="oi oi-transfer" aria-hidden="true"></span>
+                    מיפוי שדות (Airtable → Gradify)
+                </h2>
+                <button class="iim-btn iim-btn-primary" @onclick="OpenNewFieldMapping">
+                    <span class="oi oi-plus" aria-hidden="true"></span>
+                    מיפוי חדש
+                </button>
+            </div>
+            <p class="iim-section-desc">
+                ממפה את שמות העמודות באיירטייבל לשמות השדות הקנוניים במערכת.
+                שדה ש"חובה" יחזיר אזהרה כאשר הוא חסר במטען הנכנס; שדה עם "ערך ברירת מחדל" יקבל אותו אם הוא חסר.
+            </p>
+
+            @if (_fieldMappings.Count == 0)
+            {
+                <div class="iim-empty">לא הוגדרו עדיין מיפויי שדות. ללא מיפויים, המערכת מצפה שהמטען יישלח בשמות ה-camelCase הקנוניים.</div>
+            }
+            else
+            {
+                <table class="iim-table">
+                    <thead>
+                        <tr>
+                            <th>שדה מקור (Airtable)</th>
+                            <th>שדה יעד</th>
+                            <th>חובה?</th>
+                            <th>ברירת מחדל</th>
+                            <th>פעיל?</th>
+                            <th>הערות</th>
+                            <th class="iim-th-actions">פעולות</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in _fieldMappings)
+                        {
+                            <tr class="@(m.IsActive ? "" : "iim-row-inactive")">
+                                <td dir="auto">@m.SourceFieldName</td>
+                                <td>@ExternalIntegrationTargetFields.Label(m.TargetFieldName)<div class="iim-th-sub" dir="ltr">@m.TargetFieldName</div></td>
+                                <td>@(m.IsRequired ? "כן" : "—")</td>
+                                <td dir="auto">@(string.IsNullOrEmpty(m.DefaultValue) ? "—" : m.DefaultValue)</td>
+                                <td>@(m.IsActive ? "פעיל" : "מושבת")</td>
+                                <td class="iim-td-notes">@m.Notes</td>
+                                <td class="iim-td-actions">
+                                    <button class="iim-btn iim-btn-secondary" @onclick="@(() => EditFieldMapping(m))">עריכה</button>
+                                    <button class="iim-btn iim-btn-danger" @onclick="@(() => DeleteFieldMapping(m))">מחיקה</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <!-- ─────────── 4. Status mappings ─────────── -->
+        <section class="iim-section">
+            <div class="iim-section-head">
+                <h2 class="iim-section-title">
+                    <span class="oi oi-tag" aria-hidden="true"></span>
+                    מיפוי סטטוסים
+                </h2>
+                <button class="iim-btn iim-btn-primary" @onclick="OpenNewStatusMapping">
+                    <span class="oi oi-plus" aria-hidden="true"></span>
+                    מיפוי סטטוס חדש
+                </button>
+            </div>
+            <p class="iim-section-desc">
+                ממפה את ערכי הסטטוס של Airtable (לעיתים בעברית) לקודי הסטטוס הפנימיים שלנו ולתווית התצוגה.
+            </p>
+
+            @if (_statusMappings.Count == 0)
+            {
+                <div class="iim-empty">לא הוגדרו עדיין מיפויי סטטוסים. ערכי ה-Status יישמרו כפי שמתקבלים.</div>
+            }
+            else
+            {
+                <table class="iim-table">
+                    <thead>
+                        <tr>
+                            <th>ערך מקור</th>
+                            <th>סטטוס פנימי</th>
+                            <th>תווית תצוגה</th>
+                            <th>סופי?</th>
+                            <th>פעיל?</th>
+                            <th class="iim-th-actions">פעולות</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in _statusMappings)
+                        {
+                            <tr class="@(m.IsActive ? "" : "iim-row-inactive")">
+                                <td dir="auto">@m.SourceStatusValue</td>
+                                <td dir="ltr">@m.InternalStatus</td>
+                                <td dir="auto">@(string.IsNullOrEmpty(m.DisplayLabel) ? "—" : m.DisplayLabel)</td>
+                                <td>@(m.IsTerminal ? "כן" : "—")</td>
+                                <td>@(m.IsActive ? "פעיל" : "מושבת")</td>
+                                <td class="iim-td-actions">
+                                    <button class="iim-btn iim-btn-secondary" @onclick="@(() => EditStatusMapping(m))">עריכה</button>
+                                    <button class="iim-btn iim-btn-danger" @onclick="@(() => DeleteStatusMapping(m))">מחיקה</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <!-- ─────────── 5. Payload preview ─────────── -->
+        <section class="iim-section">
+            <h2 class="iim-section-title">
+                <span class="oi oi-document" aria-hidden="true"></span>
+                דוגמת מטען (אחרי מיפוי)
+            </h2>
+            <p class="iim-section-desc">
+                כך אמור להיראות ה-JSON שמגיע לעדכון <code dir="ltr">POST /api/external-requests/update</code>
+                לאחר שהמיפויים שמעלה הופעלו על הנתון של Airtable.
+            </p>
+            <pre class="iim-code" dir="ltr">@CanonicalPayloadExample</pre>
+        </section>
+
+        <!-- ─────────── 6. Test endpoint ─────────── -->
+        <section class="iim-section">
+            <h2 class="iim-section-title">
+                <span class="oi oi-pulse" aria-hidden="true"></span>
+                בדיקת מיפוי
+            </h2>
+            <p class="iim-section-desc">
+                הדביקו JSON גולמי כפי שהיה נשלח מ-Airtable. הפעולה <strong>לא משנה</strong> את הנתונים במערכת —
+                היא רק מציגה כיצד המטען ייראה לאחר המיפוי, ומאתרת חוסרים/אזהרות.
+            </p>
+
+            <textarea class="iim-test-input" rows="10" dir="ltr"
+                      placeholder='{ "Airtable Record ID": "recAAAAAAAAAAAAAA", "Status Airtable": "חדש" }'
+                      @bind="_testPayload"></textarea>
+
+            <div class="iim-test-actions">
+                <button class="iim-btn iim-btn-primary" disabled="@_testRunning" @onclick="RunTest">
+                    <span class="oi oi-arrow-thick-right" aria-hidden="true"></span>
+                    @(_testRunning ? "מריץ…" : "שליחת בדיקת עדכון")
+                </button>
+            </div>
+
+            @if (_testResult is not null)
+            {
+                <div class="iim-test-result @(_testResult.Success ? "iim-test-ok" : "iim-test-fail")">
+                    @if (_testResult.Success)
+                    {
+                        <strong>הצלחה — הצגת תוצאה (לא נשמר במערכת):</strong>
+                    }
+                    else
+                    {
+                        <strong>שגיאה: @_testResult.Error</strong>
+                    }
+
+                    @if (_testResult.Warnings.Count > 0)
+                    {
+                        <ul class="iim-test-warnings">
+                            @foreach (var w in _testResult.Warnings)
+                            {
+                                <li dir="ltr">@w</li>
+                            }
+                        </ul>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_testResult.TransformedJson))
+                    {
+                        <pre class="iim-code" dir="ltr">@_testResult.TransformedJson</pre>
+                    }
+                </div>
+            }
+        </section>
+    }
+</div>
+
+<!-- ═════════════════════ Field-mapping editor modal ═════════════════════ -->
+@if (_fieldEditor is not null)
+{
+    <div class="iim-overlay" @onclick="CloseFieldEditor">
+        <div class="iim-modal" dir="rtl" @onclick:stopPropagation="true">
+            <div class="iim-modal-head">
+                <h2>@(_fieldEditorId is null ? "מיפוי שדות חדש" : "עריכת מיפוי שדות")</h2>
+                <button class="iim-modal-close" @onclick="CloseFieldEditor"><span class="oi oi-x"></span></button>
+            </div>
+            <div class="iim-modal-body">
+                @if (!string.IsNullOrEmpty(_editorError))
+                {
+                    <div class="iim-form-error">@_editorError</div>
+                }
+
+                <div class="iim-field">
+                    <label>שם השדה במקור (Airtable) *</label>
+                    <input @bind="_fieldEditor.SourceFieldName" placeholder='לדוגמה: "שם הסטודנט" / "Student Email"' dir="auto" />
+                </div>
+                <div class="iim-field">
+                    <label>שדה היעד במערכת *</label>
+                    <select @bind="_fieldEditor.TargetFieldName">
+                        <option value="">— בחר/י שדה יעד —</option>
+                        @foreach (var t in ExternalIntegrationTargetFields.All)
+                        {
+                            <option value="@t">@ExternalIntegrationTargetFields.Label(t) (@t)</option>
+                        }
+                    </select>
+                </div>
+                <div class="iim-field-row">
+                    <label class="iim-checkbox">
+                        <input type="checkbox" @bind="_fieldEditor.IsRequired" />
+                        <span>שדה חובה</span>
+                    </label>
+                    <label class="iim-checkbox">
+                        <input type="checkbox" @bind="_fieldEditor.IsActive" />
+                        <span>פעיל</span>
+                    </label>
+                </div>
+                <div class="iim-field">
+                    <label>ערך ברירת מחדל</label>
+                    <input @bind="_fieldEditor.DefaultValue" placeholder="ערך שיוצב כאשר השדה חסר במטען" />
+                </div>
+                <div class="iim-field">
+                    <label>הערות</label>
+                    <textarea rows="2" @bind="_fieldEditor.Notes"></textarea>
+                </div>
+            </div>
+            <div class="iim-modal-foot">
+                <button class="iim-btn iim-btn-secondary" @onclick="CloseFieldEditor">ביטול</button>
+                <button class="iim-btn iim-btn-primary" disabled="@_saving" @onclick="SaveFieldEditor">
+                    @(_saving ? "שומר…" : "שמירה")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ═════════════════════ Status-mapping editor modal ════════════════════ -->
+@if (_statusEditor is not null)
+{
+    <div class="iim-overlay" @onclick="CloseStatusEditor">
+        <div class="iim-modal" dir="rtl" @onclick:stopPropagation="true">
+            <div class="iim-modal-head">
+                <h2>@(_statusEditorId is null ? "מיפוי סטטוס חדש" : "עריכת מיפוי סטטוס")</h2>
+                <button class="iim-modal-close" @onclick="CloseStatusEditor"><span class="oi oi-x"></span></button>
+            </div>
+            <div class="iim-modal-body">
+                @if (!string.IsNullOrEmpty(_editorError))
+                {
+                    <div class="iim-form-error">@_editorError</div>
+                }
+
+                <div class="iim-field">
+                    <label>ערך הסטטוס במקור *</label>
+                    <input @bind="_statusEditor.SourceStatusValue" placeholder='לדוגמה: "חדש" / "Approved"' dir="auto" />
+                </div>
+                <div class="iim-field">
+                    <label>סטטוס פנימי *</label>
+                    <select @bind="_statusEditor.InternalStatus">
+                        <option value="">— בחר/י —</option>
+                        @foreach (var s in ExternalRequestStatuses.All)
+                        {
+                            <option value="@s">@s — @ExternalRequestStatuses.Label(s)</option>
+                        }
+                    </select>
+                </div>
+                <div class="iim-field">
+                    <label>תווית תצוגה (עברית)</label>
+                    <input @bind="_statusEditor.DisplayLabel" placeholder="לדוגמה: בבדיקה" />
+                </div>
+                <div class="iim-field-row">
+                    <label class="iim-checkbox">
+                        <input type="checkbox" @bind="_statusEditor.IsTerminal" />
+                        <span>סטטוס סופי (סוגר בקשה)</span>
+                    </label>
+                    <label class="iim-checkbox">
+                        <input type="checkbox" @bind="_statusEditor.IsActive" />
+                        <span>פעיל</span>
+                    </label>
+                </div>
+            </div>
+            <div class="iim-modal-foot">
+                <button class="iim-btn iim-btn-secondary" @onclick="CloseStatusEditor">ביטול</button>
+                <button class="iim-btn iim-btn-primary" disabled="@_saving" @onclick="SaveStatusEditor">
+                    @(_saving ? "שומר…" : "שמירה")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private const string SourceSystem = ExternalIntegrationSourceSystems.Airtable;
+
+    private ExternalIntegrationSettingsDto?               _settings;
+    private List<ExternalIntegrationFieldMappingDto>      _fieldMappings  = new();
+    private List<ExternalIntegrationStatusMappingDto>     _statusMappings = new();
+
+    private bool   _loading    = true;
+    private bool   _loadError  = false;
+    private string _loadDetail = "";
+
+    private string _toast      = "";
+    private bool   _toastError = false;
+    private string _copied     = "";
+
+    private string _testPayload = "";
+    private bool   _testRunning = false;
+    private ExternalIntegrationTestResponse? _testResult;
+
+    // Editor state
+    private ExternalIntegrationFieldMappingSaveRequest?   _fieldEditor;
+    private int?    _fieldEditorId;
+    private ExternalIntegrationStatusMappingSaveRequest?  _statusEditor;
+    private int?    _statusEditorId;
+    private string  _editorError = "";
+    private bool    _saving      = false;
+
+    private string FullEndpointUrl =>
+        (Nav.BaseUri ?? "").TrimEnd('/') + (_settings?.EndpointPath ?? "/api/external-requests/update");
+
+    /// <summary>Hard-coded canonical example. We don't try to generate it
+    /// from the live mappings because the source values are admin-supplied
+    /// strings — keeping the example static here is easier to read.</summary>
+    private const string CanonicalPayloadExample = @"{
+  ""externalRequestId"": ""recXXXXXXXXXXXXXX"",
+  ""studentEmail"":      ""student@example.com"",
+  ""requestType"":       ""innovation_request"",
+  ""status"":            ""in_review"",
+  ""statusLabel"":       ""בבדיקה"",
+  ""updatedAt"":         ""2026-05-14T10:00:00Z"",
+  ""notes"":             ""תיאור / הערות מצוות החדשנות""
+}";
+
+    protected override async Task OnInitializedAsync() => await ReloadAllAsync();
+
+    private async Task ReloadAllAsync()
+    {
+        _loading = true;
+        _loadError = false;
+        _loadDetail = "";
+        try
+        {
+            var sTask = Http.GetFromJsonAsync<ExternalIntegrationSettingsDto>("api/external-integration/settings");
+            var fTask = Http.GetFromJsonAsync<List<ExternalIntegrationFieldMappingDto>>("api/external-integration/field-mappings");
+            var mTask = Http.GetFromJsonAsync<List<ExternalIntegrationStatusMappingDto>>("api/external-integration/status-mappings");
+            await Task.WhenAll(sTask, fTask, mTask);
+            _settings       = sTask.Result;
+            _fieldMappings  = fTask.Result  ?? new();
+            _statusMappings = mTask.Result  ?? new();
+        }
+        catch (Exception ex)
+        {
+            _loadError = true;
+            _loadDetail = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task CopyAsync(string value, string key)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", value);
+            _copied = key;
+            StateHasChanged();
+            await Task.Delay(1800);
+            if (_copied == key) _copied = "";
+            StateHasChanged();
+        }
+        catch { /* clipboard denied — silently ignore */ }
+    }
+
+    // ── Field mapping handlers ──────────────────────────────────────────────
+
+    private void OpenNewFieldMapping()
+    {
+        _fieldEditorId = null;
+        _fieldEditor   = new ExternalIntegrationFieldMappingSaveRequest
+        {
+            SourceSystem = SourceSystem,
+            IsActive     = true,
+        };
+        _editorError = "";
+    }
+
+    private void EditFieldMapping(ExternalIntegrationFieldMappingDto m)
+    {
+        _fieldEditorId = m.Id;
+        _fieldEditor   = new ExternalIntegrationFieldMappingSaveRequest
+        {
+            SourceSystem    = m.SourceSystem,
+            SourceFieldName = m.SourceFieldName,
+            TargetFieldName = m.TargetFieldName,
+            IsRequired      = m.IsRequired,
+            DefaultValue    = m.DefaultValue,
+            IsActive        = m.IsActive,
+            Notes           = m.Notes,
+        };
+        _editorError = "";
+    }
+
+    private void CloseFieldEditor()
+    {
+        _fieldEditor = null;
+        _fieldEditorId = null;
+        _saving = false;
+    }
+
+    private async Task SaveFieldEditor()
+    {
+        if (_fieldEditor is null) return;
+        if (string.IsNullOrWhiteSpace(_fieldEditor.SourceFieldName)) { _editorError = "שם השדה במקור חובה"; return; }
+        if (string.IsNullOrWhiteSpace(_fieldEditor.TargetFieldName)) { _editorError = "יש לבחור שדה יעד";   return; }
+
+        _saving = true;
+        _editorError = "";
+        try
+        {
+            HttpResponseMessage resp;
+            if (_fieldEditorId is null)
+                resp = await Http.PostAsJsonAsync("api/external-integration/field-mappings", _fieldEditor);
+            else
+                resp = await Http.PutAsJsonAsync($"api/external-integration/field-mappings/{_fieldEditorId}", _fieldEditor);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                _editorError = (await resp.Content.ReadAsStringAsync()).Trim('"');
+                if (string.IsNullOrWhiteSpace(_editorError)) _editorError = "שגיאה בשמירת המיפוי";
+                _saving = false;
+                return;
+            }
+            await ReloadAllAsync();
+            ShowToast(_fieldEditorId is null ? "המיפוי נוצר" : "המיפוי עודכן", false);
+            CloseFieldEditor();
+        }
+        catch (Exception ex)
+        {
+            _editorError = ex.Message;
+            _saving = false;
+        }
+    }
+
+    private async Task DeleteFieldMapping(ExternalIntegrationFieldMappingDto m)
+    {
+        try
+        {
+            var resp = await Http.DeleteAsync($"api/external-integration/field-mappings/{m.Id}");
+            if (resp.IsSuccessStatusCode) { _fieldMappings.Remove(m); ShowToast("המיפוי נמחק", false); }
+            else                          { ShowToast("המחיקה נכשלה", true); }
+        }
+        catch (Exception ex) { ShowToast(ex.Message, true); }
+    }
+
+    // ── Status mapping handlers ─────────────────────────────────────────────
+
+    private void OpenNewStatusMapping()
+    {
+        _statusEditorId = null;
+        _statusEditor   = new ExternalIntegrationStatusMappingSaveRequest
+        {
+            SourceSystem = SourceSystem,
+            IsActive     = true,
+        };
+        _editorError = "";
+    }
+
+    private void EditStatusMapping(ExternalIntegrationStatusMappingDto m)
+    {
+        _statusEditorId = m.Id;
+        _statusEditor   = new ExternalIntegrationStatusMappingSaveRequest
+        {
+            SourceSystem      = m.SourceSystem,
+            SourceStatusValue = m.SourceStatusValue,
+            InternalStatus    = m.InternalStatus,
+            DisplayLabel      = m.DisplayLabel,
+            IsTerminal        = m.IsTerminal,
+            IsActive          = m.IsActive,
+        };
+        _editorError = "";
+    }
+
+    private void CloseStatusEditor()
+    {
+        _statusEditor = null;
+        _statusEditorId = null;
+        _saving = false;
+    }
+
+    private async Task SaveStatusEditor()
+    {
+        if (_statusEditor is null) return;
+        if (string.IsNullOrWhiteSpace(_statusEditor.SourceStatusValue)) { _editorError = "ערך הסטטוס במקור חובה"; return; }
+        if (string.IsNullOrWhiteSpace(_statusEditor.InternalStatus))    { _editorError = "יש לבחור סטטוס פנימי";   return; }
+
+        _saving = true;
+        _editorError = "";
+        try
+        {
+            HttpResponseMessage resp;
+            if (_statusEditorId is null)
+                resp = await Http.PostAsJsonAsync("api/external-integration/status-mappings", _statusEditor);
+            else
+                resp = await Http.PutAsJsonAsync($"api/external-integration/status-mappings/{_statusEditorId}", _statusEditor);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                _editorError = (await resp.Content.ReadAsStringAsync()).Trim('"');
+                if (string.IsNullOrWhiteSpace(_editorError)) _editorError = "שגיאה בשמירת המיפוי";
+                _saving = false;
+                return;
+            }
+            await ReloadAllAsync();
+            ShowToast(_statusEditorId is null ? "המיפוי נוצר" : "המיפוי עודכן", false);
+            CloseStatusEditor();
+        }
+        catch (Exception ex)
+        {
+            _editorError = ex.Message;
+            _saving = false;
+        }
+    }
+
+    private async Task DeleteStatusMapping(ExternalIntegrationStatusMappingDto m)
+    {
+        try
+        {
+            var resp = await Http.DeleteAsync($"api/external-integration/status-mappings/{m.Id}");
+            if (resp.IsSuccessStatusCode) { _statusMappings.Remove(m); ShowToast("המיפוי נמחק", false); }
+            else                          { ShowToast("המחיקה נכשלה", true); }
+        }
+        catch (Exception ex) { ShowToast(ex.Message, true); }
+    }
+
+    // ── Test endpoint ───────────────────────────────────────────────────────
+
+    private async Task RunTest()
+    {
+        if (string.IsNullOrWhiteSpace(_testPayload))
+        {
+            _testResult = new ExternalIntegrationTestResponse
+            {
+                Success = false,
+                Error   = "אנא הדבק/י JSON לבדיקה",
+            };
+            return;
+        }
+        _testRunning = true;
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(
+                "api/external-integration/test-payload",
+                new ExternalIntegrationTestRequest { Payload = _testPayload, DryRun = true });
+            _testResult = await resp.Content.ReadFromJsonAsync<ExternalIntegrationTestResponse>();
+        }
+        catch (Exception ex)
+        {
+            _testResult = new ExternalIntegrationTestResponse
+            {
+                Success = false,
+                Error   = ex.Message,
+            };
+        }
+        finally
+        {
+            _testRunning = false;
+        }
+    }
+
+    private void ShowToast(string msg, bool isError)
+    {
+        _toast = msg;
+        _toastError = isError;
+        _ = HideToastSoon();
+    }
+
+    private async Task HideToastSoon()
+    {
+        await Task.Delay(2500);
+        _toast = "";
+        StateHasChanged();
+    }
+}

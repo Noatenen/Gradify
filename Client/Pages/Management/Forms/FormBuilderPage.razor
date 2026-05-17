@@ -1,0 +1,488 @@
+@page "/management/forms/new"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IFormsManagementService FormsService
+@inject IManagementService     ManagementService
+
+@*
+    Form builder — creates a new form from scratch.
+
+    Save flow (uses ONLY existing endpoints):
+        1. POST /api/forms                 — creates the Forms row.
+        2. POST /api/forms/{id}/blocks     — one call per block, in order.
+        3. POST /api/forms/blocks/{id}/options — one call per option for choice
+                                                  / ranking blocks.
+
+    The page edits a local list of blocks; nothing is persisted until the
+    lecturer clicks "שמירה כטיוטה" or "פרסום טופס".
+*@
+
+<div class="fb-page" dir="rtl">
+
+    <!-- Top bar -->
+    <div class="fb-topbar">
+        <div class="fb-topbar-start">
+            <button class="fb-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management/forms"))"
+                    title="חזרה לרשימת הטפסים">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="fb-breadcrumb">ניהול → טפסים</div>
+                <h1 class="fb-page-title">יצירת טופס</h1>
+            </div>
+        </div>
+        <div class="fb-topbar-end">
+            <button class="fm-btn fm-btn-secondary"
+                    disabled="@_saving"
+                    @onclick="@(() => Save(FormStatuses.Draft))">
+                @if (_saving && _saveAsStatus == FormStatuses.Draft) { <span class="fb-spinner-sm"></span> }
+                else { <span class="oi oi-document" aria-hidden="true"></span> }
+                שמירה כטיוטה
+            </button>
+            <button class="fm-btn fm-btn-primary"
+                    disabled="@_saving"
+                    @onclick="@(() => Save(FormStatuses.Open))">
+                @if (_saving && _saveAsStatus == FormStatuses.Open) { <span class="fb-spinner-sm"></span> }
+                else { <span class="oi oi-share-boxed" aria-hidden="true"></span> }
+                פרסום טופס
+            </button>
+        </div>
+    </div>
+
+    <div class="fb-grid">
+
+        @* ── Left column: form metadata ── *@
+        <section class="fb-card">
+            <h2 class="fb-card-title">פרטי הטופס</h2>
+
+            <div class="fb-field">
+                <label class="fb-label">שם הטופס <span class="fb-required">*</span></label>
+                <input class="fb-input @(_touched && string.IsNullOrWhiteSpace(_name) ? "fb-input-error" : "")"
+                       type="text" maxlength="200"
+                       @bind="_name" @bind:event="oninput"
+                       disabled="@_saving" />
+            </div>
+
+            <div class="fb-field">
+                <label class="fb-label">מחזור / שנה אקדמית <span class="fb-required">*</span></label>
+                <select class="fb-input @(_touched && _yearId == 0 ? "fb-input-error" : "")"
+                        @bind="_yearIdRaw"
+                        disabled="@_saving">
+                    <option value="0">— בחר מחזור —</option>
+                    @foreach (var y in _years)
+                    {
+                        <option value="@y.Id">@y.Name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="fb-field">
+                <label class="fb-label">סטטוס התחלתי</label>
+                <select class="fb-input" @bind="_initialStatus" disabled="@_saving">
+                    <option value="@FormStatuses.Draft">טיוטה</option>
+                    <option value="@FormStatuses.Open">פתוח</option>
+                    <option value="@FormStatuses.Closed">סגור</option>
+                </select>
+            </div>
+
+            <div class="fb-field">
+                <label class="fb-label">תיאור קצר <span class="fb-optional">(אופציונלי)</span></label>
+                <textarea class="fb-input fb-textarea"
+                          rows="3" maxlength="1000"
+                          placeholder="יוצג בראש הטופס לסטודנטים…"
+                          @bind="_instructions"
+                          disabled="@_saving"></textarea>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_saveError))
+            {
+                <div class="fb-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_saveError
+                </div>
+            }
+            @if (!string.IsNullOrEmpty(_saveOk))
+            {
+                <div class="fb-success">
+                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                    @_saveOk
+                </div>
+            }
+        </section>
+
+        @* ── Right column: blocks ── *@
+        <section class="fb-card fb-blocks-card">
+            <div class="fb-blocks-header">
+                <h2 class="fb-card-title">שדות בטופס</h2>
+                <div class="fb-add-row">
+                    <select class="fb-input fb-add-select" @bind="_addBlockType" disabled="@_saving">
+                        @foreach (var t in FormBlockTypes.All)
+                        {
+                            <option value="@t">@FormBlockTypes.Label(t)</option>
+                        }
+                    </select>
+                    <button class="fm-btn fm-btn-primary"
+                            disabled="@_saving"
+                            @onclick="AddBlock">
+                        <span class="oi oi-plus" aria-hidden="true"></span>
+                        הוסף בלוק
+                    </button>
+                </div>
+            </div>
+
+            @if (_blocks.Count == 0)
+            {
+                <div class="fb-empty">
+                    <span class="oi oi-info" aria-hidden="true"></span>
+                    עדיין לא נוספו שדות לטופס
+                </div>
+            }
+            else
+            {
+                <div class="fb-blocks-list">
+                    @foreach (var (b, idx) in _blocks.Select((b, i) => (b, i)))
+                    {
+                        <article class="fb-block">
+                            <header class="fb-block-head">
+                                <div class="fb-block-head-start">
+                                    <span class="fb-block-num">#@(idx + 1)</span>
+                                    <span class="fb-block-kind">@FormBlockTypes.Label(b.BlockType)</span>
+                                </div>
+                                <div class="fb-block-head-end">
+                                    <button class="fb-icon-btn" title="הזז למעלה"
+                                            disabled="@(_saving || idx == 0)"
+                                            @onclick="() => Move(idx, -1)">
+                                        <span class="oi oi-arrow-thick-top" aria-hidden="true"></span>
+                                    </button>
+                                    <button class="fb-icon-btn" title="הזז למטה"
+                                            disabled="@(_saving || idx == _blocks.Count - 1)"
+                                            @onclick="() => Move(idx, 1)">
+                                        <span class="oi oi-arrow-thick-bottom" aria-hidden="true"></span>
+                                    </button>
+                                    <button class="fb-icon-btn" title="שכפל בלוק"
+                                            disabled="@_saving"
+                                            @onclick="() => Duplicate(idx)">
+                                        <span class="oi oi-layers" aria-hidden="true"></span>
+                                    </button>
+                                    <button class="fb-icon-btn fb-icon-danger" title="מחק בלוק"
+                                            disabled="@_saving"
+                                            @onclick="() => Remove(idx)">
+                                        <span class="oi oi-trash" aria-hidden="true"></span>
+                                    </button>
+                                </div>
+                            </header>
+
+                            <div class="fb-block-body">
+                                @if (b.BlockType == FormBlockTypes.Heading)
+                                {
+                                    <div class="fb-field">
+                                        <label class="fb-label">כותרת / טקסט הסבר <span class="fb-required">*</span></label>
+                                        <input class="fb-input"
+                                               type="text" maxlength="200"
+                                               @bind="b.Title" @bind:event="oninput"
+                                               disabled="@_saving" />
+                                    </div>
+                                    <div class="fb-field">
+                                        <label class="fb-label">טקסט עזר <span class="fb-optional">(אופציונלי)</span></label>
+                                        <textarea class="fb-input fb-textarea-sm"
+                                                  rows="2" maxlength="500"
+                                                  @bind="b.HelperText"
+                                                  disabled="@_saving"></textarea>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="fb-field">
+                                        <label class="fb-label">כותרת השדה <span class="fb-required">*</span></label>
+                                        <input class="fb-input"
+                                               type="text" maxlength="200"
+                                               @bind="b.Title" @bind:event="oninput"
+                                               disabled="@_saving" />
+                                    </div>
+                                    <div class="fb-field">
+                                        <label class="fb-label">תיאור / עזרה <span class="fb-optional">(אופציונלי)</span></label>
+                                        <input class="fb-input"
+                                               type="text" maxlength="300"
+                                               @bind="b.HelperText" @bind:event="oninput"
+                                               disabled="@_saving" />
+                                    </div>
+                                    <div class="fb-field-inline">
+                                        <label class="fb-check-row">
+                                            <input type="checkbox" class="fb-check" @bind="b.IsRequired" disabled="@_saving" />
+                                            <span>שדה חובה</span>
+                                        </label>
+                                    </div>
+                                }
+
+                                @if (FormBlockTypes.HasOptions(b.BlockType))
+                                {
+                                    <div class="fb-options">
+                                        <div class="fb-options-head">
+                                            <span class="fb-label">אפשרויות בחירה</span>
+                                            <button class="fm-btn fm-btn-secondary fb-btn-sm"
+                                                    disabled="@_saving"
+                                                    @onclick="() => AddOption(b)">
+                                                <span class="oi oi-plus" aria-hidden="true"></span>
+                                                הוסף אפשרות
+                                            </button>
+                                        </div>
+                                        @if (b.Options.Count == 0)
+                                        {
+                                            <div class="fb-empty fb-empty-sm">לא נוספו אפשרויות לשדה זה</div>
+                                        }
+                                        else
+                                        {
+                                            <ul class="fb-options-list">
+                                                @foreach (var (o, oi) in b.Options.Select((o, i) => (o, i)))
+                                                {
+                                                    <li class="fb-option-row">
+                                                        <input class="fb-input"
+                                                               type="text" maxlength="200"
+                                                               placeholder="תווית האפשרות"
+                                                               @bind="o.OptionLabel" @bind:event="oninput"
+                                                               disabled="@_saving" />
+                                                        <input class="fb-input fb-option-value"
+                                                               type="text" maxlength="100"
+                                                               placeholder="ערך (אופציונלי)"
+                                                               @bind="o.OptionValue" @bind:event="oninput"
+                                                               disabled="@_saving" />
+                                                        <button class="fb-icon-btn fb-icon-danger"
+                                                                title="מחק אפשרות"
+                                                                disabled="@_saving"
+                                                                @onclick="() => RemoveOption(b, oi)">
+                                                            <span class="oi oi-trash" aria-hidden="true"></span>
+                                                        </button>
+                                                    </li>
+                                                }
+                                            </ul>
+                                        }
+                                    </div>
+                                }
+
+                                @if (b.BlockType == FormBlockTypes.Ranking)
+                                {
+                                    <div class="fb-rank-row">
+                                        <div class="fb-field">
+                                            <label class="fb-label">מינימום בחירות</label>
+                                            <input class="fb-input fb-num"
+                                                   type="number" min="0" max="50"
+                                                   @bind="b.RankingMin"
+                                                   disabled="@_saving" />
+                                        </div>
+                                        <div class="fb-field">
+                                            <label class="fb-label">מקסימום בחירות</label>
+                                            <input class="fb-input fb-num"
+                                                   type="number" min="0" max="50"
+                                                   @bind="b.RankingMax"
+                                                   disabled="@_saving" />
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+</div>
+
+@code {
+    // ── Form metadata ─────────────────────────────────────────────────────
+    private string _name          = "";
+    private string _yearIdRaw     = "0";
+    private string _initialStatus = FormStatuses.Draft;
+    private string _instructions  = "";
+    private List<AcademicYearDto> _years = new();
+    private int _yearId => int.TryParse(_yearIdRaw, out var v) ? v : 0;
+
+    // ── Local block model (UI only — not the wire DTO) ───────────────────
+    /// <summary>Holds builder state for a block during composition. Persisted
+    /// to the server via the existing per-block / per-option endpoints.</summary>
+    private sealed class BuilderBlock
+    {
+        public string BlockType  { get; set; } = FormBlockTypes.Text;
+        public string Title      { get; set; } = "";
+        public string HelperText { get; set; } = "";
+        public bool   IsRequired { get; set; }
+        public List<BuilderOption> Options { get; set; } = new();
+        public int?   RankingMin { get; set; }
+        public int?   RankingMax { get; set; }
+    }
+    private sealed class BuilderOption
+    {
+        public string OptionValue { get; set; } = "";
+        public string OptionLabel { get; set; } = "";
+    }
+
+    private readonly List<BuilderBlock> _blocks = new();
+    private string _addBlockType = FormBlockTypes.Text;
+
+    // ── UI state ──────────────────────────────────────────────────────────
+    private bool   _touched;
+    private bool   _saving;
+    private string _saveAsStatus = "";
+    private string _saveError    = "";
+    private string _saveOk       = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _years = (await ManagementService.GetAcademicYearsAsync()) ?? new();
+    }
+
+    // ── Block edit operations ─────────────────────────────────────────────
+    private void AddBlock()
+    {
+        var fresh = new BuilderBlock
+        {
+            BlockType  = _addBlockType,
+            Title      = DefaultTitle(_addBlockType),
+            IsRequired = false,
+        };
+        _blocks.Add(fresh);
+    }
+
+    private void Remove(int idx)
+    {
+        if (idx >= 0 && idx < _blocks.Count) _blocks.RemoveAt(idx);
+    }
+
+    private void Duplicate(int idx)
+    {
+        if (idx < 0 || idx >= _blocks.Count) return;
+        var src = _blocks[idx];
+        var clone = new BuilderBlock
+        {
+            BlockType  = src.BlockType,
+            Title      = src.Title + " (עותק)",
+            HelperText = src.HelperText,
+            IsRequired = src.IsRequired,
+            RankingMin = src.RankingMin,
+            RankingMax = src.RankingMax,
+            Options    = src.Options
+                            .Select(o => new BuilderOption { OptionValue = o.OptionValue, OptionLabel = o.OptionLabel })
+                            .ToList(),
+        };
+        _blocks.Insert(idx + 1, clone);
+    }
+
+    private void Move(int idx, int delta)
+    {
+        int target = idx + delta;
+        if (idx < 0 || idx >= _blocks.Count || target < 0 || target >= _blocks.Count) return;
+        (_blocks[idx], _blocks[target]) = (_blocks[target], _blocks[idx]);
+    }
+
+    private void AddOption(BuilderBlock b) => b.Options.Add(new BuilderOption());
+
+    private void RemoveOption(BuilderBlock b, int idx)
+    {
+        if (idx >= 0 && idx < b.Options.Count) b.Options.RemoveAt(idx);
+    }
+
+    // ── Save flow ─────────────────────────────────────────────────────────
+    //
+    // Persist order:
+    //   1. Create Forms row (POST /api/forms).
+    //   2. For each block in current order: POST /api/forms/{id}/blocks
+    //      → returns the new block id.
+    //   3. For each option of choice/ranking blocks: POST /api/forms/blocks/{id}/options.
+    //
+    // If anything after step 1 fails, the form exists but is incomplete —
+    // the lecturer can re-open the existing FormEditor and continue editing.
+    private async Task Save(string targetStatus)
+    {
+        _touched   = true;
+        _saveError = "";
+        _saveOk    = "";
+
+        if (string.IsNullOrWhiteSpace(_name)) { _saveError = "שם הטופס הוא שדה חובה"; return; }
+        if (_yearId <= 0)                     { _saveError = "יש לבחור מחזור / שנה אקדמית"; return; }
+
+        // Validate every block has a title.
+        for (int i = 0; i < _blocks.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(_blocks[i].Title))
+            {
+                _saveError = $"כותרת השדה חסרה בבלוק #{i + 1}";
+                return;
+            }
+        }
+
+        _saving       = true;
+        _saveAsStatus = targetStatus;
+
+        // 1. Create the form.
+        // FormType="Custom" so the server's auto-seed of AssignmentForm blocks
+        // does not fire — the builder owns the block list.
+        bool isOpen = targetStatus == FormStatuses.Open;
+        int? newFormId = await FormsService.CreateFormAsync(new SaveFormRequest
+        {
+            AcademicYearId       = _yearId,
+            Name                 = _name.Trim(),
+            FormType             = "Custom",
+            Instructions         = _instructions?.Trim() ?? "",
+            IsOpen               = isOpen,
+            AllowEditAfterSubmit = true,
+            Status               = targetStatus,
+        });
+
+        if (newFormId is null)
+        {
+            _saving    = false;
+            _saveError = "שגיאה ביצירת הטופס. ייתכן שכבר קיים טופס מסוג זה למחזור הנבחר.";
+            return;
+        }
+
+        // 2. Add blocks in order.
+        for (int i = 0; i < _blocks.Count; i++)
+        {
+            var b = _blocks[i];
+            int? newBlockId = await FormsService.AddBlockAsync(newFormId.Value, new SaveBlockRequest
+            {
+                BlockType  = b.BlockType,
+                Title      = b.Title.Trim(),
+                HelperText = b.HelperText?.Trim() ?? "",
+                IsRequired = b.IsRequired,
+                SortOrder  = i,
+            });
+
+            // 3. Add options for choice / ranking blocks.
+            if (newBlockId is not null && FormBlockTypes.HasOptions(b.BlockType))
+            {
+                for (int oi = 0; oi < b.Options.Count; oi++)
+                {
+                    var o = b.Options[oi];
+                    if (string.IsNullOrWhiteSpace(o.OptionLabel)) continue;
+                    await FormsService.AddOptionAsync(newBlockId.Value, new SaveOptionRequest
+                    {
+                        OptionLabel = o.OptionLabel.Trim(),
+                        OptionValue = string.IsNullOrWhiteSpace(o.OptionValue)
+                                          ? o.OptionLabel.Trim()
+                                          : o.OptionValue.Trim(),
+                        SortOrder   = oi,
+                    });
+                }
+            }
+        }
+
+        _saving = false;
+        _saveOk = "הטופס נשמר בהצלחה";
+
+        // Navigate the user to the existing form editor for the new form so
+        // they can keep iterating immediately after creation.
+        Nav.NavigateTo($"/management/forms/{newFormId.Value}");
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+    private static string DefaultTitle(string blockType) => blockType switch
+    {
+        FormBlockTypes.Heading => "כותרת",
+        FormBlockTypes.Date    => "תאריך",
+        _                      => "",
+    };
+}

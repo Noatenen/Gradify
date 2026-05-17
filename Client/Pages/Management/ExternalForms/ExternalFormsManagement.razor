@@ -1,0 +1,433 @@
+@page "/management/external-forms"
+@layout AppLayout
+@attribute [Authorize(Roles = $"{Roles.Admin},{Roles.Staff}")]
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject NavigationManager Nav
+
+@*
+    External Forms management — admin/lecturer screen for managing the
+    Innovation-Team external form links (URL + label metadata only).
+    The forms themselves live in the Innovation Team's systems; this page
+    only stores pointers + lifecycle flags.
+*@
+
+<div class="exf-page" dir="rtl">
+
+    <!-- Top bar -->
+    <div class="exf-topbar">
+        <div class="exf-topbar-start">
+            <button class="exf-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management"))"
+                    title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="exf-breadcrumb">ניהול</div>
+                <h1 class="exf-title">טפסים חיצוניים (צוות חדשנות)</h1>
+            </div>
+        </div>
+        <div class="exf-topbar-end">
+            <button class="exf-btn exf-btn-primary" @onclick="OpenNew">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                טופס חדש
+            </button>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="exf-state">טוען טפסים…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="exf-state exf-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת הטפסים. נסו לרענן את הדף.
+            @if (!string.IsNullOrWhiteSpace(_loadWarning))
+            {
+                <div class="exf-debug">@_loadWarning</div>
+            }
+        </div>
+    }
+    else
+    {
+        <!-- Non-fatal warning (e.g. academic years failed to load) -->
+        @if (!string.IsNullOrEmpty(_loadWarning))
+        {
+            <div class="exf-toast exf-toast-error">@_loadWarning</div>
+        }
+
+        <!-- Filter -->
+        <div class="exf-filters">
+            <label class="exf-filter-label">סינון לפי מחזור:</label>
+            <select class="exf-filter-select" @bind="_yearFilter">
+                <option value="">כל המחזורים</option>
+                <option value="0">ללא מחזור (גלובלי)</option>
+                @foreach (var y in _years)
+                {
+                    <option value="@y.Id">@y.Name</option>
+                }
+            </select>
+        </div>
+
+        @if (!string.IsNullOrEmpty(_toast))
+        {
+            <div class="exf-toast @(_toastError ? "exf-toast-error" : "")">@_toast</div>
+        }
+
+        @if (_forms.Count == 0)
+        {
+            <div class="exf-state">לא הוגדרו טפסים חיצוניים. לחצו "טופס חדש" כדי להתחיל.</div>
+        }
+        else if (Filtered.Count == 0)
+        {
+            <div class="exf-state">לא נמצאו טפסים תואמים לסינון הנוכחי.</div>
+        }
+        else
+        {
+            <div class="exf-list">
+                @foreach (var f in Filtered)
+                {
+                    <article class="exf-card @(f.IsActive ? "" : "exf-card-inactive")">
+                        <div class="exf-card-head">
+                            <div class="exf-card-head-main">
+                                <h2 class="exf-card-title">@f.Name</h2>
+                                @if (!string.IsNullOrWhiteSpace(f.FormType))
+                                {
+                                    <span class="exf-type-pill">@f.FormType</span>
+                                }
+                                @if (f.AcademicYearId is not null && !string.IsNullOrWhiteSpace(f.AcademicYearName))
+                                {
+                                    <span class="exf-year-pill">מחזור @f.AcademicYearName</span>
+                                }
+                                else
+                                {
+                                    <span class="exf-year-pill exf-year-pill-global">גלובלי</span>
+                                }
+                            </div>
+                            <span class="exf-status @(f.IsActive ? "exf-status-active" : "exf-status-inactive")">
+                                @(f.IsActive ? "פעיל" : "מושבת")
+                            </span>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(f.Description))
+                        {
+                            <p class="exf-card-desc">@f.Description</p>
+                        }
+
+                        <div class="exf-card-url">
+                            <span class="oi oi-link-intact" aria-hidden="true"></span>
+                            <a href="@f.IframeUrl" target="_blank" rel="noopener" dir="ltr">@f.IframeUrl</a>
+                        </div>
+
+                        <div class="exf-card-actions">
+                            <button class="exf-btn exf-btn-secondary" @onclick="@(() => OpenEdit(f))">
+                                <span class="oi oi-pencil" aria-hidden="true"></span>
+                                עריכה
+                            </button>
+                            <button class="exf-btn exf-btn-secondary"
+                                    disabled="@_busyIds.Contains(f.Id)"
+                                    @onclick="@(() => ToggleActive(f))">
+                                <span class="oi @(f.IsActive ? "oi-circle-x" : "oi-circle-check")" aria-hidden="true"></span>
+                                @(f.IsActive ? "השבת" : "הפעל")
+                            </button>
+                            <button class="exf-btn exf-btn-danger"
+                                    disabled="@_busyIds.Contains(f.Id)"
+                                    @onclick="@(() => Delete(f))">
+                                <span class="oi oi-trash" aria-hidden="true"></span>
+                                מחיקה
+                            </button>
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    }
+</div>
+
+<!-- ── Editor modal ─────────────────────────────────────────────────────── -->
+@if (_editor is not null)
+{
+    <div class="exf-overlay" @onclick="CloseEditor">
+        <div class="exf-modal" dir="rtl" @onclick:stopPropagation="true">
+            <div class="exf-modal-head">
+                <h2 class="exf-modal-title">@(_editorId is null ? "טופס חדש" : "עריכת טופס")</h2>
+                <button class="exf-modal-close" @onclick="CloseEditor" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="exf-modal-body">
+                @if (!string.IsNullOrWhiteSpace(_editorError))
+                {
+                    <div class="exf-form-error">@_editorError</div>
+                }
+
+                <div class="exf-field">
+                    <label>שם הטופס *</label>
+                    <input @bind="_editor.Name" placeholder="לדוגמה: בקשה לצוות חדשנות" />
+                </div>
+
+                <div class="exf-field">
+                    <label>תיאור קצר</label>
+                    <textarea rows="2" @bind="_editor.Description"
+                              placeholder="תיאור שיוצג לסטודנטים"></textarea>
+                </div>
+
+                <div class="exf-field">
+                    <label>קטגוריה / סוג</label>
+                    <input @bind="_editor.FormType" placeholder="לדוגמה: InnovationRequest" />
+                </div>
+
+                <div class="exf-field">
+                    <label>קישור לטופס חיצוני *</label>
+                    <input @bind="_editor.IframeUrl" placeholder="https://…" dir="ltr" />
+                    <small class="exf-field-hint">הטופס נפתח לסטודנטים בלשונית חדשה במערכת של צוות החדשנות</small>
+                </div>
+
+                <div class="exf-field">
+                    <label>מחזור אקדמי</label>
+                    <select @bind="_editorYearStr">
+                        <option value="">ללא מחזור (גלובלי)</option>
+                        @foreach (var y in _years)
+                        {
+                            <option value="@y.Id">@y.Name @(y.IsCurrent ? "(נוכחי)" : "")</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="exf-field exf-field-row">
+                    <label class="exf-checkbox">
+                        <input type="checkbox" @bind="_editor.IsActive" />
+                        <span>טופס פעיל (מוצג לסטודנטים)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="exf-modal-foot">
+                <button class="exf-btn exf-btn-secondary" @onclick="CloseEditor">ביטול</button>
+                <button class="exf-btn exf-btn-primary" disabled="@_saving" @onclick="SaveEditor">
+                    @(_saving ? "שומר…" : "שמירה")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<ExternalFormDto> _forms = new();
+    private List<AcademicYearDto> _years = new();
+    private bool _loading = true;
+    private bool _loadError = false;
+    /// <summary>Optional secondary message — set when the years list failed
+    /// but the main forms list succeeded, so we still render the page.</summary>
+    private string _loadWarning = "";
+
+    private string _yearFilter = "";
+
+    private string _toast = "";
+    private bool   _toastError = false;
+    private readonly HashSet<int> _busyIds = new();
+
+    // Editor state
+    private ExternalFormSaveRequest? _editor;
+    private int? _editorId;
+    private string _editorYearStr = "";
+    private string _editorError = "";
+    private bool _saving = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load the two lists independently — a failure on the years list
+        // (different controller / different auth) must not break the page.
+        // Only a failure on the primary forms list is a real error.
+        try
+        {
+            var forms = await Http.GetFromJsonAsync<List<ExternalFormDto>>("api/external-forms");
+            _forms = forms ?? new();
+        }
+        catch (Exception ex)
+        {
+            _loadError = true;
+            _loadWarning = ex.Message;
+            _loading = false;
+            return;
+        }
+
+        try
+        {
+            var years = await Http.GetFromJsonAsync<List<AcademicYearDto>>("api/management/academic-years");
+            _years = years ?? new();
+        }
+        catch (Exception ex)
+        {
+            // Forms list still renders; the year filter and the year picker
+            // in the editor just won't be populated.
+            _years = new();
+            _loadWarning = "טעינת רשימת המחזורים נכשלה: " + ex.Message;
+        }
+
+        _loading = false;
+    }
+
+    private List<ExternalFormDto> Filtered
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_yearFilter)) return _forms;
+            if (_yearFilter == "0") return _forms.Where(f => f.AcademicYearId is null).ToList();
+            if (int.TryParse(_yearFilter, out var yid))
+                return _forms.Where(f => f.AcademicYearId == yid).ToList();
+            return _forms;
+        }
+    }
+
+    private void OpenNew()
+    {
+        _editorId = null;
+        _editor = new ExternalFormSaveRequest { IsActive = true };
+        _editorYearStr = "";
+        _editorError = "";
+    }
+
+    private void OpenEdit(ExternalFormDto f)
+    {
+        _editorId = f.Id;
+        _editor = new ExternalFormSaveRequest
+        {
+            Name           = f.Name,
+            Description    = f.Description,
+            FormType       = f.FormType,
+            IframeUrl      = f.IframeUrl,
+            IsActive       = f.IsActive,
+            AcademicYearId = f.AcademicYearId,
+        };
+        _editorYearStr = f.AcademicYearId?.ToString() ?? "";
+        _editorError = "";
+    }
+
+    private void CloseEditor()
+    {
+        _editor = null;
+        _editorId = null;
+        _saving = false;
+    }
+
+    private async Task SaveEditor()
+    {
+        if (_editor is null) return;
+        if (string.IsNullOrWhiteSpace(_editor.Name))      { _editorError = "שם הטופס חובה";    return; }
+        if (string.IsNullOrWhiteSpace(_editor.IframeUrl)) { _editorError = "קישור לטופס חיצוני הוא שדה חובה"; return; }
+
+        _editor.AcademicYearId = int.TryParse(_editorYearStr, out var yid) && yid > 0 ? yid : null;
+
+        _saving = true;
+        _editorError = "";
+        try
+        {
+            HttpResponseMessage resp;
+            if (_editorId is null)
+                resp = await Http.PostAsJsonAsync("api/external-forms", _editor);
+            else
+                resp = await Http.PutAsJsonAsync($"api/external-forms/{_editorId}", _editor);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                _editorError = await resp.Content.ReadAsStringAsync() is { } body && !string.IsNullOrWhiteSpace(body)
+                    ? body.Trim('"')
+                    : "שגיאה בשמירת הטופס";
+                _saving = false;
+                return;
+            }
+
+            await ReloadAsync();
+            ShowToast(_editorId is null ? "הטופס נוצר" : "הטופס עודכן", false);
+            CloseEditor();
+        }
+        catch
+        {
+            _editorError = "שגיאת תקשורת";
+            _saving = false;
+        }
+    }
+
+    private async Task ToggleActive(ExternalFormDto f)
+    {
+        if (_busyIds.Contains(f.Id)) return;
+        _busyIds.Add(f.Id);
+        try
+        {
+            var resp = await Http.PostAsync($"api/external-forms/{f.Id}/toggle", null);
+            if (resp.IsSuccessStatusCode)
+            {
+                f.IsActive = !f.IsActive;
+                ShowToast(f.IsActive ? "הטופס הופעל" : "הטופס הושבת", false);
+            }
+            else
+            {
+                ShowToast("פעולה נכשלה", true);
+            }
+        }
+        catch
+        {
+            ShowToast("שגיאת תקשורת", true);
+        }
+        finally
+        {
+            _busyIds.Remove(f.Id);
+        }
+    }
+
+    private async Task Delete(ExternalFormDto f)
+    {
+        if (_busyIds.Contains(f.Id)) return;
+        _busyIds.Add(f.Id);
+        try
+        {
+            var resp = await Http.DeleteAsync($"api/external-forms/{f.Id}");
+            if (resp.IsSuccessStatusCode)
+            {
+                _forms.Remove(f);
+                ShowToast("הטופס נמחק", false);
+            }
+            else
+            {
+                ShowToast("המחיקה נכשלה", true);
+            }
+        }
+        catch
+        {
+            ShowToast("שגיאת תקשורת", true);
+        }
+        finally
+        {
+            _busyIds.Remove(f.Id);
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            var list = await Http.GetFromJsonAsync<List<ExternalFormDto>>("api/external-forms");
+            _forms = list ?? new();
+        }
+        catch { /* leave existing list intact */ }
+    }
+
+    private void ShowToast(string msg, bool isError)
+    {
+        _toast = msg;
+        _toastError = isError;
+        _ = HideToastSoon();
+    }
+
+    private async Task HideToastSoon()
+    {
+        await Task.Delay(2500);
+        _toast = "";
+        StateHasChanged();
+    }
+}

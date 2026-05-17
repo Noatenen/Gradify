@@ -81,6 +81,8 @@
 </div>
 
 @code {
+    [CascadingParameter] private User? _user { get; set; }
+
     private bool                    _isOpen      = false;
     private int                     _unreadCount = 0;
     private List<NotificationDto>   _notifications = new();
@@ -127,31 +129,56 @@
     }
 
     /// <summary>
-    /// Maps a notification's Type and RelatedEntity fields to a client-side route.
-    /// Add new cases here as new notification types are introduced.
+    /// Maps a notification to a client-side route. Routing is role-aware so a
+    /// staff member's "request created" notification opens the management
+    /// review page for that request, not the student's "my requests" list.
+    /// When the request id is known we append it as a query parameter so the
+    /// destination page can auto-open the drawer; pages that don't recognise
+    /// the parameter just ignore it.
     /// </summary>
-    private static string? GetTargetUrl(NotificationDto n) => n.Type switch
+    private string? GetTargetUrl(NotificationDto n)
     {
-        // Mentor receives: student submitted for review → global mentor submissions page
-        "SubmissionReceived" => "/mentor/submissions",
+        // Submission notifications keep the existing routing — unaffected by this fix.
+        if (n.Type == "SubmissionReceived") return "/mentor/submissions";
+        if (n.Type == "SubmissionReturned")
+            return n.RelatedEntityId.HasValue
+                ? $"/submissions?taskId={n.RelatedEntityId}"
+                : "/submissions";
 
-        // Student receives: mentor returned submission → submissions page, pre-opens the task modal
-        // RelatedEntityId == TaskId (corrected at notification-creation time)
-        "SubmissionReturned" => n.RelatedEntityId.HasValue
-                               ? $"/submissions?taskId={n.RelatedEntityId}"
-                               : "/submissions",
+        // Request notifications — pick the page that matches the viewer's role.
+        bool isProjectRequest =
+            n.RelatedEntityType == "ProjectRequest"
+            || n.Type == "RequestReturned"
+            || n.Type == NotificationTypes.RequestCreated
+            || n.Type == NotificationTypes.RequestStatusChanged
+            || n.Type == NotificationTypes.RequestCommentAdded;
 
-        // Student receives: request returned with notes → requests page
-        "RequestReturned"    => "/requests",
+        if (isProjectRequest)
+            return BuildRequestUrl(n.RelatedEntityId);
 
-        // Fallback: route by entity type when Type is not recognised
-        _ => n.RelatedEntityType switch
+        // Fallback: a few legacy types still rely on RelatedEntityType.
+        return n.RelatedEntityType switch
         {
             "TaskSubmission" => "/submissions",
-            "ProjectRequest" => "/requests",
+            "ProjectRequest" => BuildRequestUrl(n.RelatedEntityId),
             _                => null,
-        },
-    };
+        };
+    }
+
+    private string BuildRequestUrl(int? requestId)
+    {
+        // Choose the right list page per role. Admin/Staff and Mentor get the
+        // review surfaces; Student keeps "הבקשות שלי". When the id is missing
+        // we still take the user to the right list (per spec).
+        string basePath;
+        if (RoleService.IsAdminOrStaff(_user))      basePath = "/management/requests";
+        else if (RoleService.IsMentor(_user))       basePath = "/mentor-requests";
+        else                                        basePath = "/requests";
+
+        return requestId.HasValue
+            ? $"{basePath}?requestId={requestId.Value}"
+            : basePath;
+    }
 
     private async Task MarkAllRead()
     {

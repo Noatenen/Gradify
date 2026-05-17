@@ -96,9 +96,10 @@
                     <ul class="tqp-people">
                         @for (int i = 0; i < MentorNames.Count; i++)
                         {
-                            var name  = MentorNames[i];
-                            var email = i < (MentorEmails?.Count ?? 0) ? MentorEmails![i] : "";
-                            @PersonRow(name, email)
+                            var name   = MentorNames[i];
+                            var email  = i < (MentorEmails?.Count  ?? 0) ? MentorEmails![i]  : "";
+                            var userId = i < (MentorUserIds?.Count ?? 0) ? MentorUserIds![i] : 0;
+                            @MentorPersonRow(name, email, userId)
                         }
                     </ul>
                 }
@@ -127,6 +128,14 @@
     </div>
 }
 
+<!-- Read-only mentor profile popup (shared component). Lives at the
+     popover scope so it stays open even after the popover closes. -->
+<MentorProfileModal IsOpen="@_mentorModalOpen"
+                    MentorUserId="@_mentorModalId"
+                    MentorName="@_mentorModalName"
+                    Email="@_mentorModalEmail"
+                    OnClose="CloseMentorModal" />
+
 @code {
     [Parameter] public string?       TeamName       { get; set; }
     [Parameter] public string?       ProjectTitle   { get; set; }
@@ -135,6 +144,10 @@
     [Parameter] public List<string>? StudentEmails  { get; set; }
     [Parameter] public List<string>? MentorNames    { get; set; }
     [Parameter] public List<string>? MentorEmails   { get; set; }
+    /// <summary>Optional. When provided (and the i-th id is non-zero), the
+    /// mentor row becomes a button that opens the read-only profile modal.
+    /// Order must match MentorNames / MentorEmails.</summary>
+    [Parameter] public List<int>?    MentorUserIds  { get; set; }
     /// <summary>
     /// Show the bulk "copy all emails" footer button. Default: true (matches
     /// the requests-management list behaviour). The sidebar usage sets this
@@ -223,6 +236,73 @@
         _copiedKey = "";
         _allCopied = false;
     }
+
+    /// <summary>Closes the popover and opens the read-only mentor profile
+    /// modal (renders on top of the popover host). The modal uses the same
+    /// /api/mentor-profile/{id} endpoint that the legacy page used.</summary>
+    private void OpenMentorProfile(int userId, string name, string email)
+    {
+        if (userId <= 0) return;
+        _mentorModalId    = userId;
+        _mentorModalName  = name ?? "";
+        _mentorModalEmail = email ?? "";
+        _mentorModalOpen  = true;
+        Close();
+    }
+
+    private void CloseMentorModal() => _mentorModalOpen = false;
+
+    // ── Mentor profile modal state ─────────────────────────────────────────
+    private bool   _mentorModalOpen  = false;
+    private int    _mentorModalId    = 0;
+    private string _mentorModalName  = "";
+    private string _mentorModalEmail = "";
+
+    /// <summary>Mentor row: when a UserId is available, the name becomes a
+    /// button that opens the read-only profile modal. Otherwise it falls
+    /// back to the same plain display as students.</summary>
+    private RenderFragment MentorPersonRow(string name, string email, int userId) => __builder =>
+    {
+        bool   hasEmail   = !string.IsNullOrWhiteSpace(email);
+        bool   isCopied   = hasEmail && _copiedKey == email;
+        string copyTitle  = isCopied ? "הועתק!" : "העתק כתובת מייל";
+        string display    = string.IsNullOrWhiteSpace(name) ? FallbackText : name;
+        bool   isClickable = userId > 0;
+
+        <li class="tqp-person">
+            <div class="tqp-person-name">
+                @if (isClickable)
+                {
+                    <button type="button"
+                            class="tqp-person-link"
+                            title="צפייה בפרופיל המנחה"
+                            @onclick="@(() => OpenMentorProfile(userId, display, email))">
+                        @display
+                    </button>
+                }
+                else
+                {
+                    @display
+                }
+            </div>
+            <div class="tqp-person-email-row">
+                @if (hasEmail)
+                {
+                    <span class="tqp-person-email" title="@email">@email</span>
+                    <button type="button"
+                            class="tqp-copy-btn @(isCopied ? "tqp-copy-btn--done" : "")"
+                            title="@copyTitle"
+                            @onclick="@(() => CopyEmailAsync(email))">
+                        <span class="oi @(isCopied ? "oi-check" : "oi-clipboard")" aria-hidden="true"></span>
+                    </button>
+                }
+                else
+                {
+                    <span class="tqp-person-email tqp-person-email--muted">@FallbackText</span>
+                }
+            </div>
+        </li>
+    };
 
     private RenderFragment PersonRow(string name, string email) => __builder =>
     {

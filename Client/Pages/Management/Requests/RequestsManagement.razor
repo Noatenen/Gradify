@@ -137,7 +137,7 @@
                             </div>
                         </div>
                         <div class="req-ext-cell">
-                            <div class="req-ext-label">החלטת מנחה</div>
+                            <div class="req-ext-label">המלצת מנחה</div>
                             <div class="req-ext-value">
                                 <span class="req-ext-decision req-ext-dec-@_drawer.Extension.MentorDecision.ToLower()">
                                     @ExtensionDecisionStatuses.Label(_drawer.Extension.MentorDecision)
@@ -174,7 +174,26 @@
                         </div>
                     }
 
-                    @if (ExtensionPendingStage is not null)
+                    @* Internal mentor note — visible to lecturer/admin on this
+                       page; never returned to the student. The page itself is
+                       gated to Admin/Staff so this block is private by route. *@
+                    @if (!string.IsNullOrWhiteSpace(_drawer.Extension.MentorNotes))
+                    {
+                        <div class="req-ext-reason">
+                            <div class="req-ext-label">הערת מנחה פנימית</div>
+                            <div class="req-drawer-text-block">@_drawer.Extension.MentorNotes</div>
+                        </div>
+                    }
+
+                    @if (_drawer.Status == RequestStatuses.PendingMentorRecommendation)
+                    {
+                        <div class="req-ext-decision-form">
+                            <div class="req-ext-decision-hint">
+                                הבקשה ממתינה להמלצת מנחה. ההחלטה תיפתח לאחר קבלת ההמלצה.
+                            </div>
+                        </div>
+                    }
+                    else if (ExtensionPendingStage is not null)
                     {
                         bool hasTarget = _drawer.Extension.TaskId.HasValue
                                       || _drawer.Extension.ProjectMilestoneId.HasValue;
@@ -190,10 +209,6 @@
                                         disabled="@_handling">
                                     <option value="@ExtensionDecisionStatuses.Approved">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Approved)</option>
                                     <option value="@ExtensionDecisionStatuses.Rejected">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Rejected)</option>
-                                    @if (ExtensionPendingStage == "Mentor")
-                                    {
-                                        <option value="@ExtensionDecisionStatuses.Escalated">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Escalated)</option>
-                                    }
                                 </select>
                             </div>
 
@@ -811,9 +826,10 @@
     private string    _extDecision         = ExtensionDecisionStatuses.Approved;
     private DateTime? _extApprovedDate;
 
-    // Determines which stage applies to the currently-open extension request,
-    // or null when the drawer is not on a pending extension. Drives the
-    // decision form visibility and the Stage value sent to the server.
+    // The management page is for Admin/Staff only — it surfaces the
+    // lecturer-stage decision form once a mentor has submitted a
+    // recommendation. The legacy "Mentor" branch is gone; mentors now use
+    // /mentor-recommendation through the Mentor requests page.
     private string? ExtensionPendingStage
     {
         get
@@ -822,9 +838,12 @@
                 || _drawer.RequestType != RequestTypes.Extension
                 || _drawer.Extension is null)
                 return null;
-            if (_drawer.Extension.MentorDecision == ExtensionDecisionStatuses.Pending)
-                return "Mentor";
-            if (_drawer.Extension.LecturerDecision == ExtensionDecisionStatuses.Pending)
+            bool hasRecommendation =
+                _drawer.Extension.MentorDecision == ExtensionDecisionStatuses.Recommended    ||
+                _drawer.Extension.MentorDecision == ExtensionDecisionStatuses.NotRecommended ||
+                _drawer.Extension.MentorDecision == ExtensionDecisionStatuses.Escalated;
+            if (hasRecommendation
+                && _drawer.Extension.LecturerDecision == ExtensionDecisionStatuses.Pending)
                 return "Lecturer";
             return null;
         }
@@ -852,6 +871,12 @@
         set => _handleAssigneeIdRaw = value?.ToString() ?? "";
     }
 
+    // Notification deep-link target. When the user clicks a request notification
+    // we land here with `?requestId={id}`; after the list loads we open that
+    // request's drawer automatically. Unknown ids are silently ignored.
+    [SupplyParameterFromQuery(Name = "requestId")]
+    public int? DeepLinkRequestId { get; set; }
+
     // ── Lifecycle ────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
@@ -863,6 +888,12 @@
         _all             = reqTask.Result   ?? new();
         _assignableUsers = usersTask.Result ?? new();
         _loading         = false;
+
+        if (DeepLinkRequestId is int reqId)
+        {
+            var row = _all.FirstOrDefault(r => r.Id == reqId);
+            if (row is not null) await OpenDrawer(row);
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -1126,13 +1157,12 @@
             _handling = false;
             if (decErr is not null) { _handleError = decErr.Trim('"', ' '); return; }
 
-            // Reflect the new state in the list row before closing
+            // Reflect the new state in the list row before closing — lecturer
+            // decisions are always terminal under the mentor-first flow.
             var listRowExt = _all.FirstOrDefault(r => r.Id == _drawer.Id);
             if (listRowExt is not null)
             {
-                listRowExt.Status    = _extDecision == ExtensionDecisionStatuses.Escalated
-                                          ? RequestStatuses.InProgress
-                                          : RequestStatuses.Resolved;
+                listRowExt.Status    = RequestStatuses.Resolved;
                 listRowExt.UpdatedAt = DateTime.Now;
             }
             CloseDrawer();

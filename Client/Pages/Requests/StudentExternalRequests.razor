@@ -1,0 +1,233 @@
+@page "/external-requests"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Student)]
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject NavigationManager Nav
+
+@*
+    Student-facing "בקשות לצוות החדשנות" surface.
+
+    Two panels:
+      1. Active external forms — one card per form with an "open in new tab"
+         CTA. We do NOT embed the form in an iframe — some Airtable forms
+         don't render correctly inside iframes, and conceptually these are
+         external Innovation-Team systems, so we link out.
+      2. Status of past requests — pushed to us via the Innovation Team
+         webhook. Read-only list with type, status, last update, and notes.
+*@
+
+<div class="ser-page" dir="rtl">
+
+    <!-- Header -->
+    <div class="ser-header">
+        <div class="ser-header-icon">
+            <span class="oi oi-lightbulb" aria-hidden="true"></span>
+        </div>
+        <div>
+            <h1 class="ser-title">בקשות לצוות החדשנות</h1>
+            <p class="ser-subtitle">פתיחת בקשה חדשה ומעקב אחר סטטוס בקשות קיימות</p>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="ser-state">טוען נתונים…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="ser-state ser-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            אירעה שגיאה בטעינת הדף. נסה לרענן.
+        </div>
+    }
+    else
+    {
+        <!-- ── Active external forms (link out — no iframe) ───────────── -->
+        @*
+            Forms are external to Gradify (hosted by the Innovation Team).
+            Some Airtable forms don't render correctly inside an iframe, so
+            we link out to them in a new tab instead. The URL is still
+            sanitised before binding — see SanitiseHttpsUrl.
+        *@
+        <section class="ser-section">
+            <h2 class="ser-section-title">
+                <span class="oi oi-clipboard" aria-hidden="true"></span>
+                פתיחת בקשה חדשה
+            </h2>
+
+            @if (_forms.Count == 0)
+            {
+                <div class="ser-empty">לא מוגדר טופס פעיל כרגע. פני למרצה.</div>
+            }
+            else
+            {
+                <div class="ser-form-grid">
+                    @foreach (var f in _forms)
+                    {
+                        var safeUrl = SanitiseHttpsUrl(f.IframeUrl);
+
+                        <article class="ser-form-card">
+                            <div class="ser-form-card-head">
+                                <div class="ser-form-card-icon" aria-hidden="true">
+                                    <span class="oi oi-clipboard"></span>
+                                </div>
+                                <div class="ser-form-card-headtext">
+                                    <h3 class="ser-form-name">@f.Name</h3>
+                                    <div class="ser-form-pills">
+                                        @if (!string.IsNullOrWhiteSpace(f.FormType))
+                                        {
+                                            <span class="ser-form-pill">@ExternalFormCategories.Label(f.FormType)</span>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(f.AcademicYearName))
+                                        {
+                                            <span class="ser-form-pill ser-form-pill--year">מחזור @f.AcademicYearName</span>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(f.Description))
+                            {
+                                <p class="ser-form-desc">@f.Description</p>
+                            }
+
+                            @if (safeUrl is null)
+                            {
+                                <div class="ser-empty ser-form-card-error">
+                                    כתובת הטופס לא תקינה. פני למרצה.
+                                </div>
+                            }
+                            else
+                            {
+                                <a class="ser-form-cta"
+                                   href="@safeUrl"
+                                   target="_blank"
+                                   rel="noopener noreferrer">
+                                    <span>פתח טופס</span>
+                                    <span class="oi oi-external-link" aria-hidden="true"></span>
+                                </a>
+                                <p class="ser-form-note">
+                                    <span class="oi oi-info" aria-hidden="true"></span>
+                                    הטופס נפתח במערכת חיצונית של צוות החדשנות
+                                </p>
+                            }
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+
+        <!-- ── Status list ───────────────────────────────────────────── -->
+        <section class="ser-section">
+            <h2 class="ser-section-title">
+                <span class="oi oi-list" aria-hidden="true"></span>
+                סטטוס בקשות
+            </h2>
+
+            @if (_requests.Count == 0)
+            {
+                <div class="ser-empty">אין בקשות פתוחות. ברגע שתפתחי בקשה ויתקבל עדכון, היא תופיע כאן.</div>
+            }
+            else
+            {
+                <div class="ser-req-list">
+                    @foreach (var r in _requests)
+                    {
+                        <article class="ser-req-card">
+                            <div class="ser-req-head">
+                                <div class="ser-req-head-main">
+                                    <span class="ser-req-type">@DisplayType(r.RequestType)</span>
+                                    <span class="ser-req-ref">#@r.ExternalRequestId</span>
+                                </div>
+                                <span class="ser-req-status @StatusClass(r.Status)">
+                                    @(string.IsNullOrWhiteSpace(r.StatusLabel) ? DisplayStatus(r.Status) : r.StatusLabel)
+                                </span>
+                            </div>
+
+                            <div class="ser-req-meta">
+                                <span class="ser-req-meta-item">
+                                    <span class="ser-req-meta-label">עודכן:</span>
+                                    <span>@FormatDate(r.UpdatedAt)</span>
+                                </span>
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(r.Notes))
+                            {
+                                <p class="ser-req-notes">@r.Notes</p>
+                            }
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    }
+</div>
+
+@code {
+    private List<ExternalFormDto>           _forms    = new();
+    private List<ExternalRequestStatusDto>  _requests = new();
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Forms list and status list are independent — load them separately
+        // so a failure on one doesn't black out the other.
+        try
+        {
+            var forms = await Http.GetFromJsonAsync<List<ExternalFormDto>>("api/external-forms/active");
+            _forms = forms ?? new();
+        }
+        catch { _forms = new(); _loadError = true; }
+
+        try
+        {
+            var reqs = await Http.GetFromJsonAsync<List<ExternalRequestStatusDto>>("api/external-requests/me");
+            _requests = reqs ?? new();
+        }
+        catch { _requests = new(); /* requests-list failure is not fatal */ }
+
+        _loading = false;
+    }
+
+    private static string DisplayType(string? t)    => ExternalRequestTypes.Label(t);
+    private static string DisplayStatus(string? s)  => ExternalRequestStatuses.Label(s);
+
+    /// <summary>Maps the machine status to a visual class via the shared
+    /// Bucket() helper, so UI styling stays consistent with the contract.</summary>
+    private static string StatusClass(string? s) =>
+        "ser-status-" + ExternalRequestStatuses.Bucket(s);
+
+    private static string FormatDate(DateTime? d)
+    {
+        if (d is null) return "—";
+        return d.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+    }
+
+    /// <summary>Returns the URL only when it is a well-formed absolute
+    /// HTTPS URL with no embedded credentials. Otherwise null — the page
+    /// surfaces an error rather than rendering an unsafe iframe.</summary>
+    private static string? SanitiseHttpsUrl(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var trimmed = raw.Trim();
+        if (trimmed.Length > 2048) return null;
+
+        var lower = trimmed.ToLowerInvariant();
+        if (lower.StartsWith("javascript:") || lower.StartsWith("data:") ||
+            lower.StartsWith("vbscript:")   || lower.StartsWith("file:") ||
+            lower.StartsWith("blob:")       || lower.StartsWith("about:"))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)) return null;
+        if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!string.IsNullOrEmpty(uri.UserInfo)) return null;
+        if (string.IsNullOrWhiteSpace(uri.Host)) return null;
+
+        return uri.AbsoluteUri;
+    }
+}

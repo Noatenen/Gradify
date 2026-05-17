@@ -36,6 +36,7 @@ public class ProjectRequestsController : ControllerBase
 {
     private readonly DbRepository _db;
     private readonly FilesManage  _filesManage;
+    private readonly EmailHelper  _email;
 
     private const string Container = "request-attachments";
 
@@ -64,10 +65,11 @@ public class ProjectRequestsController : ControllerBase
     private const int  MaxEventAttachments     = 3;
     private const long MaxEventAttachmentBytes = 5 * 1_048_576;
 
-    public ProjectRequestsController(DbRepository db, FilesManage filesManage)
+    public ProjectRequestsController(DbRepository db, FilesManage filesManage, EmailHelper email)
     {
         _db          = db;
         _filesManage = filesManage;
+        _email       = email;
     }
 
     // ── GET /api/project-requests/assignable-users ────────────────────────
@@ -689,11 +691,19 @@ public class ProjectRequestsController : ControllerBase
                 return BadRequest("התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי");
         }
 
+        // Extension requests follow a mentor-first flow: the request is born
+        // awaiting a mentor recommendation, then escalates to lecturer/admin.
+        // Every other request type keeps the legacy "New" entry status so the
+        // existing handle/reply pipeline is untouched.
+        string initialStatus = req.RequestType == RequestTypes.Extension
+            ? RequestStatuses.PendingMentorRecommendation
+            : RequestStatuses.New;
+
         const string insertSql = @"
             INSERT INTO ProjectRequests
                 (ProjectId, CreatedByUserId, RequestType, Title, Description, Status, Priority)
             VALUES
-                (@ProjectId, @UserId, @RequestType, @Title, @Description, 'New', 'Normal')";
+                (@ProjectId, @UserId, @RequestType, @Title, @Description, @Status, 'Normal')";
 
         int newId = await _db.InsertReturnIdAsync(insertSql, new
         {
@@ -702,6 +712,7 @@ public class ProjectRequestsController : ControllerBase
             RequestType = req.RequestType,
             Title       = req.Title.Trim(),
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
+            Status      = initialStatus,
         });
 
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת הבקשה");
@@ -762,6 +773,47 @@ public class ProjectRequestsController : ControllerBase
                 SizeBytes        = att.SizeBytes,
             });
         }
+
+        // Notify the audience that actually needs to act first. Extension
+        // requests start at the mentor stage — only mentors of the project
+        // can move them forward. Other request types still go straight to
+        // Admin/Staff as before.
+        try
+        {
+            List<int> recipientIds;
+            if (req.RequestType == RequestTypes.Extension)
+            {
+                const string mentorsSql = @"
+                    SELECT pm.UserId
+                    FROM   ProjectMentors pm
+                    JOIN   users          u  ON u.Id = pm.UserId
+                    WHERE  pm.ProjectId = @ProjectId
+                      AND  u.IsActive    = 1";
+                recipientIds = (await _db.GetRecordsAsync<int>(
+                    mentorsSql, new { ProjectId = req.ProjectId }))?.ToList() ?? new();
+            }
+            else
+            {
+                const string staffSql = @"
+                    SELECT u.Id FROM users u
+                    JOIN   UserRoles ur ON ur.UserId = u.Id
+                    WHERE  ur.Role IN ('Admin','Staff')
+                      AND  u.IsActive = 1";
+                recipientIds = (await _db.GetRecordsAsync<int>(staffSql))?.ToList() ?? new();
+            }
+
+            if (recipientIds.Count > 0)
+            {
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, recipientIds,
+                    title:             "בקשה חדשה התקבלה",
+                    message:           $"נפתחה בקשה חדשה: \"{req.Title.Trim()}\" ({RequestTypes.Label(req.RequestType)}).",
+                    type:              NotificationTypes.RequestCreated,
+                    relatedEntityType: "ProjectRequest",
+                    relatedEntityId:   newId);
+            }
+        }
+        catch { /* notifications are best-effort */ }
 
         return Ok(new { id = newId });
     }
@@ -929,11 +981,13 @@ public class ProjectRequestsController : ControllerBase
                 var studentIds = (await _db.GetRecordsAsync<int>(
                     membersSql, new { RequestId = id }))?.ToList() ?? new();
 
-                await NotificationHelper.CreateForUsersAsync(
-                    _db, studentIds,
+                // Status change → "RequestStatusChanged" goes through the
+                // dispatcher so per-user email preferences apply.
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, studentIds,
                     title:             "הבקשה שלך הוחזרה עם הערות",
                     message:           $"הבקשה \"{curr.Title}\" הוחזרה אליך עם הערות. נא לעיין ולהשיב.",
-                    type:              "RequestReturned",
+                    type:              NotificationTypes.RequestStatusChanged,
                     relatedEntityType: "ProjectRequest",
                     relatedEntityId:   id);
             }
@@ -1123,16 +1177,142 @@ public class ProjectRequestsController : ControllerBase
         }
     }
 
+    // ── POST /api/project-requests/{id}/mentor-recommendation ────────────────
+    //
+    // Mentor-only entry point in the new mentor-first extension flow.
+    // The mentor never makes a terminal decision: they pick "Recommended" or
+    // "NotRecommended" with an internal note, and the request always escalates
+    // to the lecturer/admin for the final call. The internal note and the
+    // recommendation itself are private to the mentor + academic staff —
+    // they never appear in any student-facing endpoint.
+    //
+    // Auth: Mentor role only, AND the caller must be assigned to this
+    // project's ProjectMentors row. Admin/Staff cannot submit a mentor
+    // recommendation on a mentor's behalf — they make the lecturer-stage
+    // decision through the existing /extension/decision endpoint.
+    [HttpPost("{id:int}/mentor-recommendation")]
+    [Authorize(Roles = Roles.Mentor)]
+    public async Task<IActionResult> SubmitMentorRecommendation(
+        int id, [FromBody] MentorRecommendationRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest("גוף בקשה ריק");
+
+        var recommendation = (req.Recommendation ?? "").Trim();
+        if (recommendation != ExtensionDecisionStatuses.Recommended
+            && recommendation != ExtensionDecisionStatuses.NotRecommended)
+            return BadRequest("המלצה לא תקינה");
+
+        // Load the request + extension row so we can validate the flow gate
+        // and capture the previous status for the audit event.
+        const string loadSql = @"
+            SELECT  r.Id, r.ProjectId, r.RequestType, r.Status,
+                    e.Id              AS ExtId,
+                    e.MentorDecision, e.LecturerDecision, e.FinalDecision
+            FROM    ProjectRequests r
+            LEFT JOIN ProjectRequestExtensions e ON e.RequestId = r.Id
+            WHERE   r.Id = @Id
+            LIMIT   1";
+        var ctx = (await _db.GetRecordsAsync<ExtensionDecisionLoadRow>(
+                       loadSql, new { Id = id }))?.FirstOrDefault();
+        if (ctx is null) return NotFound("הבקשה לא נמצאה");
+        if (ctx.RequestType != RequestTypes.Extension)
+            return BadRequest("המלצת מנחה תקפה רק לבקשות דחייה");
+        if (ctx.ExtId is null)
+            return StatusCode(500, "נתוני הבקשה אינם תקינים");
+        if (ctx.Status != RequestStatuses.PendingMentorRecommendation)
+            return BadRequest("הבקשה כבר אינה בשלב המלצת מנחה");
+
+        // Caller must mentor this project — never trust the role alone.
+        const string mentorOfSql = @"
+            SELECT 1 FROM ProjectMentors
+            WHERE  ProjectId = @ProjectId AND UserId = @UserId
+            LIMIT  1";
+        var ok = (await _db.GetRecordsAsync<int>(
+            mentorOfSql, new { ProjectId = ctx.ProjectId, UserId = authUserId }))
+            ?.FirstOrDefault();
+        if (ok != 1) return Forbid();
+
+        // Persist the recommendation and open the lecturer stage. The mentor
+        // fields and notes stay in ProjectRequestExtensions — student-facing
+        // queries never project them.
+        const string updExt = @"
+            UPDATE ProjectRequestExtensions
+            SET    MentorDecision        = @MentorDecision,
+                   MentorDecidedByUserId = @MentorBy,
+                   MentorDecidedAt       = datetime('now'),
+                   MentorNotes           = @Notes,
+                   LecturerDecision      = 'Pending',
+                   FinalDecision         = 'Pending'
+            WHERE  RequestId = @Id";
+        await _db.SaveDataAsync(updExt, new
+        {
+            MentorDecision = recommendation,
+            MentorBy       = authUserId,
+            Notes          = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes!.Trim(),
+            Id             = id,
+        });
+
+        const string updParent = @"
+            UPDATE ProjectRequests
+            SET    Status    = @Status,
+                   UpdatedAt = datetime('now')
+            WHERE  Id = @Id";
+        await _db.SaveDataAsync(updParent, new
+        {
+            Status = RequestStatuses.PendingLecturerDecision,
+            Id     = id,
+        });
+
+        // Audit event — only the status name change, never the recommendation
+        // value or the internal note. Students MAY see this row in their
+        // thread, so we deliberately log nothing private here.
+        const string evtSql = @"
+            INSERT INTO ProjectRequestEvents (RequestId, UserId, EventType, Content, OldValue, NewValue, CreatedAt)
+            VALUES (@RequestId, @UserId, @EventType, @Content, @OldValue, @NewValue, datetime('now'))";
+        await _db.SaveDataAsync(evtSql, new
+        {
+            RequestId = id,
+            UserId    = authUserId,
+            EventType = RequestEventTypes.StatusChange,
+            Content   = (string?)null,
+            OldValue  = RequestStatuses.Label(RequestStatuses.PendingMentorRecommendation),
+            NewValue  = RequestStatuses.Label(RequestStatuses.PendingLecturerDecision),
+        });
+
+        // Notify Admin/Staff that the request is now waiting on them.
+        try
+        {
+            const string staffSql = @"
+                SELECT u.Id FROM users u
+                JOIN   UserRoles ur ON ur.UserId = u.Id
+                WHERE  ur.Role IN ('Admin','Staff')
+                  AND  u.IsActive = 1";
+            var staffIds = (await _db.GetRecordsAsync<int>(staffSql))?.ToList() ?? new();
+            if (staffIds.Count > 0)
+            {
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, staffIds,
+                    title:             "בקשת דחייה ממתינה להחלטת מרצה",
+                    message:           "המנחה השלים את ההמלצה — הבקשה ממתינה להחלטה אקדמית.",
+                    type:              NotificationTypes.RequestStatusChanged,
+                    relatedEntityType: "ProjectRequest",
+                    relatedEntityId:   id);
+            }
+        }
+        catch { /* notifications are best-effort */ }
+
+        return Ok();
+    }
+
     // ── POST /api/project-requests/{id}/extension/decision ───────────────────
     //
-    // Two-stage extension-request decision flow:
-    //   Stage = Mentor   (caller must mentor this project, OR be Admin/Staff)
-    //     Decision = Approved   → write team-specific override + close request
-    //     Decision = Rejected   → close request, no override
-    //     Decision = Escalated  → status becomes InProgress; Lecturer stage opens
+    // Lecturer-stage final decision in the mentor-first extension flow.
+    // The mentor stage is no longer reachable through this endpoint —
+    // mentors recommend through /mentor-recommendation, which always
+    // escalates to the lecturer/admin. Calls with Stage="Mentor" return 400.
     //
-    //   Stage = Lecturer (caller must be Admin/Staff; MentorDecision must be
-    //                     Escalated)
+    //   Stage = Lecturer (caller must be Admin/Staff; mentor must have
+    //                     submitted a recommendation already)
     //     Decision = Approved   → write team-specific override + close request
     //     Decision = Rejected   → close request, no override
     //
@@ -1145,17 +1325,18 @@ public class ProjectRequestsController : ControllerBase
     {
         if (req is null) return BadRequest("גוף בקשה ריק");
 
-        // Validate Stage / Decision
+        // Validate Stage / Decision. The mentor stage was retired in favor of
+        // the recommendation flow — calls that still pass Stage="Mentor" are
+        // pointed at the right endpoint instead of silently doing nothing.
         var stage    = (req.Stage    ?? "").Trim();
         var decision = (req.Decision ?? "").Trim();
-        if (stage != "Mentor" && stage != "Lecturer")
+        if (stage == "Mentor")
+            return BadRequest("שלב המנחה הוסר — יש להשתמש ב-/mentor-recommendation");
+        if (stage != "Lecturer")
             return BadRequest("שלב החלטה לא תקין");
         if (decision != ExtensionDecisionStatuses.Approved
-            && decision != ExtensionDecisionStatuses.Rejected
-            && decision != ExtensionDecisionStatuses.Escalated)
+            && decision != ExtensionDecisionStatuses.Rejected)
             return BadRequest("החלטה לא תקינה");
-        if (stage == "Lecturer" && decision == ExtensionDecisionStatuses.Escalated)
-            return BadRequest("לא ניתן להעביר בקשה הלאה משלב המרצה");
 
         // Load the request + extension row
         const string loadSql = @"
@@ -1181,32 +1362,22 @@ public class ProjectRequestsController : ControllerBase
         if (ctx.FinalDecision != ExtensionDecisionStatuses.Pending)
             return BadRequest("ההחלטה כבר נסגרה");
 
-        // ── Authorization for the chosen stage ───────────────────────────
+        // ── Lecturer-stage authorization + flow gate ─────────────────────
+        // Only Admin/Staff can finalize a request, and only after a mentor
+        // has submitted a recommendation. Legacy "Escalated" rows are still
+        // accepted so requests created before the mentor-recommendation
+        // rollout can still close.
         bool isAdminOrStaff = User.IsInRole(Roles.Admin) || User.IsInRole(Roles.Staff);
+        if (!isAdminOrStaff) return Forbid();
 
-        if (stage == "Mentor")
-        {
-            if (!isAdminOrStaff)
-            {
-                const string mentorOfSql = @"
-                    SELECT 1 FROM ProjectMentors
-                    WHERE  ProjectId = @ProjectId AND UserId = @UserId LIMIT 1";
-                var ok = (await _db.GetRecordsAsync<int>(
-                    mentorOfSql, new { ProjectId = ctx.ProjectId, UserId = authUserId }))
-                    ?.FirstOrDefault();
-                if (ok != 1) return Forbid();
-            }
-            if (ctx.MentorDecision != ExtensionDecisionStatuses.Pending)
-                return BadRequest("המנחה כבר החליט בבקשה זו");
-        }
-        else // Lecturer stage
-        {
-            if (!isAdminOrStaff) return Forbid();
-            if (ctx.MentorDecision != ExtensionDecisionStatuses.Escalated)
-                return BadRequest("הבקשה לא הועברה לבדיקת מרצה");
-            if (ctx.LecturerDecision != ExtensionDecisionStatuses.Pending)
-                return BadRequest("המרצה כבר החליט בבקשה זו");
-        }
+        bool hasRecommendation =
+            ctx.MentorDecision == ExtensionDecisionStatuses.Recommended    ||
+            ctx.MentorDecision == ExtensionDecisionStatuses.NotRecommended ||
+            ctx.MentorDecision == ExtensionDecisionStatuses.Escalated;
+        if (!hasRecommendation)
+            return BadRequest("הבקשה ממתינה להמלצת מנחה");
+        if (ctx.LecturerDecision != ExtensionDecisionStatuses.Pending)
+            return BadRequest("המרצה כבר החליט בבקשה זו");
 
         // ── Date validation when approving with a target ─────────────────
         bool hasTaskTarget      = ctx.TaskId.HasValue;
@@ -1225,61 +1396,27 @@ public class ProjectRequestsController : ControllerBase
         DateTime? approvedDate = (decision == ExtensionDecisionStatuses.Approved && hasAnyTarget)
             ? req.ApprovedDueDate : null;
 
-        if (stage == "Mentor")
+        // Lecturer stage is now the only path through this endpoint.
+        // FinalDecision tracks Approved or Rejected — both are terminal.
+        string finalDecision = decision;
+        const string updExt = @"
+            UPDATE ProjectRequestExtensions
+            SET    LecturerDecision        = @LecturerDecision,
+                   LecturerDecidedByUserId = @LecturerBy,
+                   LecturerDecidedAt       = datetime('now'),
+                   LecturerNotes           = @Notes,
+                   FinalDecision           = @FinalDecision,
+                   ApprovedDueDate         = COALESCE(@ApprovedDueDate, ApprovedDueDate)
+            WHERE  RequestId = @Id";
+        await _db.SaveDataAsync(updExt, new
         {
-            string finalDecision = decision switch
-            {
-                ExtensionDecisionStatuses.Approved  => ExtensionDecisionStatuses.Approved,
-                ExtensionDecisionStatuses.Rejected  => ExtensionDecisionStatuses.Rejected,
-                _                                    => ExtensionDecisionStatuses.Pending, // Escalated
-            };
-            string lecturerDecision = decision == ExtensionDecisionStatuses.Escalated
-                ? ExtensionDecisionStatuses.Pending
-                : ExtensionDecisionStatuses.NotRequired;
-
-            const string updExt = @"
-                UPDATE ProjectRequestExtensions
-                SET    MentorDecision        = @MentorDecision,
-                       MentorDecidedByUserId = @MentorBy,
-                       MentorDecidedAt       = datetime('now'),
-                       MentorNotes           = @Notes,
-                       LecturerDecision      = @LecturerDecision,
-                       FinalDecision         = @FinalDecision,
-                       ApprovedDueDate       = COALESCE(@ApprovedDueDate, ApprovedDueDate)
-                WHERE  RequestId = @Id";
-            await _db.SaveDataAsync(updExt, new
-            {
-                MentorDecision   = decision,
-                MentorBy         = authUserId,
-                Notes            = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes!.Trim(),
-                LecturerDecision = lecturerDecision,
-                FinalDecision    = finalDecision,
-                ApprovedDueDate  = approvedDate?.ToString("yyyy-MM-dd"),
-                Id               = id,
-            });
-        }
-        else // Lecturer
-        {
-            string finalDecision = decision; // Approved or Rejected — both terminal at this stage
-            const string updExt = @"
-                UPDATE ProjectRequestExtensions
-                SET    LecturerDecision        = @LecturerDecision,
-                       LecturerDecidedByUserId = @LecturerBy,
-                       LecturerDecidedAt       = datetime('now'),
-                       LecturerNotes           = @Notes,
-                       FinalDecision           = @FinalDecision,
-                       ApprovedDueDate         = COALESCE(@ApprovedDueDate, ApprovedDueDate)
-                WHERE  RequestId = @Id";
-            await _db.SaveDataAsync(updExt, new
-            {
-                LecturerDecision = decision,
-                LecturerBy       = authUserId,
-                Notes            = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes!.Trim(),
-                FinalDecision    = finalDecision,
-                ApprovedDueDate  = approvedDate?.ToString("yyyy-MM-dd"),
-                Id               = id,
-            });
-        }
+            LecturerDecision = decision,
+            LecturerBy       = authUserId,
+            Notes            = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes!.Trim(),
+            FinalDecision    = finalDecision,
+            ApprovedDueDate  = approvedDate?.ToString("yyyy-MM-dd"),
+            Id               = id,
+        });
 
         // ── Override write on Approved + has target + has team ───────────
         if (decision == ExtensionDecisionStatuses.Approved
@@ -1340,18 +1477,19 @@ public class ProjectRequestsController : ControllerBase
         }
 
         // ── ProjectRequests parent row + thread events ───────────────────
-        string newStatus = decision == ExtensionDecisionStatuses.Escalated
-            ? RequestStatuses.InProgress
-            : RequestStatuses.Resolved;
-
+        // Lecturer-stage decisions are always terminal — Resolved either way.
         const string updParent = @"
             UPDATE ProjectRequests
             SET    Status    = @Status,
                    UpdatedAt = datetime('now')
             WHERE  Id = @Id";
-        await _db.SaveDataAsync(updParent, new { Status = newStatus, Id = id });
+        await _db.SaveDataAsync(updParent, new { Status = RequestStatuses.Resolved, Id = id });
 
-        // Audit-log event (StatusChange) + optional Comment
+        // Audit-log event (StatusChange). The lecturer's decision label is
+        // public — students can see whether their request was approved or
+        // rejected. Lecturer notes, when present, are recorded as a Comment
+        // event in the same thread; that is also visible to the student
+        // (the student-facing note is the lecturer note, NOT the mentor's).
         const string evtSql = @"
             INSERT INTO ProjectRequestEvents (RequestId, UserId, EventType, Content, OldValue, NewValue, CreatedAt)
             VALUES (@RequestId, @UserId, @EventType, @Content, @OldValue, @NewValue, datetime('now'))";
@@ -1362,8 +1500,8 @@ public class ProjectRequestsController : ControllerBase
             UserId    = authUserId,
             EventType = RequestEventTypes.StatusChange,
             Content   = (string?)null,
-            OldValue  = ctx.Status,
-            NewValue  = $"{stage}:{ExtensionDecisionStatuses.Label(decision)}",
+            OldValue  = RequestStatuses.Label(ctx.Status),
+            NewValue  = ExtensionDecisionStatuses.Label(decision),
         });
         if (!string.IsNullOrWhiteSpace(req.Notes))
         {
@@ -1408,10 +1546,6 @@ public class ProjectRequestsController : ControllerBase
                     ("בקשת הדחייה נדחתה",
                      "בקשת הדחייה נדחתה. ראו את התגובה בפרטי הבקשה.",
                      "ExtensionRejected"),
-                ExtensionDecisionStatuses.Escalated =>
-                    ("בקשת הדחייה הועברה לבדיקת מרצה",
-                     "המנחה העביר את בקשת הדחייה לבדיקת מרצה.",
-                     "ExtensionEscalated"),
                 _ => ("עדכון בבקשת הדחייה", "מצב בקשת הדחייה התעדכן.", "ExtensionUpdated"),
             };
 

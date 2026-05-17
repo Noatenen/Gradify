@@ -20,7 +20,6 @@
         <div class="pdc-header-text">
             <div class="pdc-number-row">
                 <span class="pdc-number">פרויקט @Project.ProjectNumber</span>
-                <span class="pdc-type-badge">@Project.ProjectType</span>
             </div>
             <h1 class="pdc-title">@Project.Title</h1>
         </div>
@@ -28,16 +27,63 @@
 
     <div class="pdc-divider"></div>
 
-    <!-- ── Call-to-action section ── -->
-    <div class="pdc-cta-section">
-        <div class="pdc-cta-text-block">
-            <span class="pdc-section-label">פרטי הפרויקט</span>
-            <p class="pdc-cta-subtitle">כאן ניתן לצפות בפרטים המלאים של הפרויקט</p>
+    <!-- ── Inline summary (replaces the old placeholder text) ── -->
+    <div class="pdc-summary">
+
+        @if (!string.IsNullOrWhiteSpace(Project.Description))
+        {
+            <p class="pdc-summary-desc">@Project.Description</p>
+        }
+
+        @* Team + mentor + "view more" CTA on a single inline row.
+           The button is pushed to the visual end (left in RTL) via
+           margin-inline-start:auto, so team/mentor stay on the right
+           and the action stays on the left without extra wrappers. *@
+        <div class="pdc-people-row">
+            @if (TeamMembers.Count > 0)
+            {
+                <div class="pdc-people-group">
+                    <span class="pdc-people-label">חברי צוות:</span>
+                    <span class="pdc-people-value">@string.Join(", ", TeamMembers.Select(m => m.FullName))</span>
+                </div>
+            }
+
+            @if (TeamMembers.Count > 0 && Mentors.Count > 0)
+            {
+                <span class="pdc-people-sep" aria-hidden="true">|</span>
+            }
+
+            @if (Mentors.Count > 0)
+            {
+                <div class="pdc-people-group">
+                    <span class="pdc-people-label">@(Mentors.Count == 1 ? "מנחה:" : "מנחים:")</span>
+                    <span class="pdc-people-value">
+                        @for (int i = 0; i < Mentors.Count; i++)
+                        {
+                            var m = Mentors[i];
+                            @if (i > 0) { <span class="pdc-mentor-sep">, </span> }
+                            @if (m.UserId > 0)
+                            {
+                                <button type="button"
+                                        class="pdc-mentor-link"
+                                        title="צפייה בפרופיל המנחה"
+                                        @onclick="@(() => OpenMentorProfile(m))">@m.FullName</button>
+                            }
+                            else
+                            {
+                                <span>@m.FullName</span>
+                            }
+                        }
+                    </span>
+                </div>
+            }
+
+            <button class="pdc-btn-primary pdc-btn-primary--compact pdc-people-action"
+                    @onclick="OpenModal">
+                לצפייה בפרטים נוספים
+                <span class="oi oi-chevron-left pdc-btn-arrow" aria-hidden="true"></span>
+            </button>
         </div>
-        <button class="pdc-btn-primary" @onclick="OpenModal">
-            לצפייה בפרטי הפרויקט
-            <span class="oi oi-chevron-left pdc-btn-arrow" aria-hidden="true"></span>
-        </button>
     </div>
 
 </div>
@@ -236,7 +282,19 @@
                                 @foreach (var mentor in Mentors)
                                 {
                                     <div class="pdc-mentor-card">
-                                        <div class="pdc-mentor-name">@mentor.FullName</div>
+                                        <div class="pdc-mentor-name">
+                                            @if (mentor.UserId > 0)
+                                            {
+                                                <button type="button"
+                                                        class="pdc-mentor-link"
+                                                        title="צפייה בפרופיל המנחה"
+                                                        @onclick="@(() => OpenMentorProfile(mentor))">@mentor.FullName</button>
+                                            }
+                                            else
+                                            {
+                                                @mentor.FullName
+                                            }
+                                        </div>
                                         <div class="pdc-mentor-contacts">
                                             @if (!string.IsNullOrWhiteSpace(mentor.Email))
                                             {
@@ -270,6 +328,14 @@
     </div>
 }
 
+<!-- Read-only mentor profile popup (shared component) -->
+<MentorProfileModal IsOpen="@_mentorModalOpen"
+                    MentorUserId="@_mentorModalId"
+                    MentorName="@_mentorModalName"
+                    Email="@_mentorModalEmail"
+                    Phone="@_mentorModalPhone"
+                    OnClose="CloseMentorModal" />
+
 @code {
     [Parameter, EditorRequired] public ProjectInfoDto       Project     { get; set; } = default!;
     [Parameter, EditorRequired] public List<TeamMemberDto>  TeamMembers { get; set; } = default!;
@@ -282,6 +348,13 @@
 
     // Cached after first fetch — no re-fetch on subsequent modal opens.
     private StudentProjectDetailsDto? _details;
+
+    // ── Mentor profile modal state ──────────────────────────────────────────
+    private bool    _mentorModalOpen  = false;
+    private int     _mentorModalId    = 0;
+    private string  _mentorModalName  = "";
+    private string  _mentorModalEmail = "";
+    private string  _mentorModalPhone = "";
 
     // ── Handlers ─────────────────────────────────────────────────────────────
     private async Task OpenModal()
@@ -301,4 +374,19 @@
     }
 
     private void CloseModal() => _modalOpen = false;
+
+    /// <summary>Opens the read-only mentor profile popup. Personal contact
+    /// fields (name/email/phone) come from the ContactDto we already have
+    /// in context; the modal lazily fetches preferences from the server.</summary>
+    private void OpenMentorProfile(ContactDto m)
+    {
+        if (m.UserId <= 0) return;
+        _mentorModalId    = m.UserId;
+        _mentorModalName  = m.FullName ?? "";
+        _mentorModalEmail = m.Email    ?? "";
+        _mentorModalPhone = m.Phone    ?? "";
+        _mentorModalOpen  = true;
+    }
+
+    private void CloseMentorModal() => _mentorModalOpen = false;
 }

@@ -1,0 +1,123 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject ILocalStorageService LocalStorage
+@inject NavigationManager Nav
+@implements IDisposable
+
+@*
+    UserModeToggle
+    ──────────────
+    Global pill toggle that lets users with BOTH Staff/Lecturer and Mentor
+    roles flip the navigation/dashboards between the two views. Single-role
+    users see nothing (the component renders no markup).
+
+    Lives in AppSideNav so it's always visible. State sits in the static
+    UserModeService so any subscriber (e.g. AppSideNav itself) can react to
+    a change.
+*@
+
+@if (_available.Count >= 2)
+{
+    <div class="umt-wrap" dir="rtl" role="group" aria-label="מצב תצוגה">
+        @foreach (var mode in _available)
+        {
+            var isActive = mode == _current;
+            <button type="button"
+                    class="umt-btn @(isActive ? "umt-btn-active" : "")"
+                    aria-pressed="@isActive.ToString().ToLowerInvariant()"
+                    title="@UserModes.Label(mode)"
+                    @onclick="@(() => SwitchAsync(mode))">
+                <span class="oi @IconFor(mode) umt-icon" aria-hidden="true"></span>
+                <span class="umt-label">@UserModes.Label(mode)</span>
+            </button>
+        }
+    </div>
+}
+
+@code {
+    [CascadingParameter] private User? _user { get; set; }
+    [Parameter] public bool NavigateOnSwitch { get; set; } = true;
+
+    private IReadOnlyList<string> _available = Array.Empty<string>();
+    private string _current = UserModes.Lecturer;
+    private bool   _initialized;
+
+    protected override void OnInitialized()
+    {
+        UserModeService.CurrentModeChanged += OnModeChanged;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _available = UserModeService.AvailableModes(_user);
+
+        // Hydrate from localStorage once we have a user. Idempotent — the
+        // service only fires its change event when the mode actually moves.
+        if (!_initialized && _user is not null)
+        {
+            _initialized = true;
+            string? persisted = null;
+            try { persisted = await LocalStorage.GetItemAsync(UserModes.StorageKey); }
+            catch { /* localStorage unavailable — fall through to default */ }
+
+            UserModeService.InitializeFor(_user, persisted);
+
+            // Post-login redirect lands dual-role users on the *default*
+            // dashboard (lecturer). If their persisted choice is the other
+            // mode, send them there now. Only fires when they're sitting on
+            // one of the two mode-specific dashboards — never hijacks an
+            // unrelated route.
+            if (UserModeService.IsDualRole(_user))
+            {
+                var effective = UserModeService.EffectiveMode(_user);
+                var target    = UserModeService.DashboardRouteFor(effective);
+                var current   = Nav.ToBaseRelativePath(Nav.Uri).TrimEnd('/');
+                if ((current.Equals("dashboard/lecturer", StringComparison.OrdinalIgnoreCase) ||
+                     current.Equals("dashboard/mentor",   StringComparison.OrdinalIgnoreCase))
+                    && !current.Equals(target.TrimStart('/'), StringComparison.OrdinalIgnoreCase))
+                {
+                    Nav.NavigateTo(target, replace: true);
+                    return;
+                }
+            }
+        }
+
+        _current = UserModeService.EffectiveMode(_user);
+    }
+
+    private async Task SwitchAsync(string mode)
+    {
+        if (_user is null) return;
+        var resolved = UserModeService.SetMode(_user, mode);
+        _current = resolved;
+
+        try { await LocalStorage.SetItemAsync(UserModes.StorageKey, resolved); }
+        catch { /* persistence failure is non-fatal */ }
+
+        if (NavigateOnSwitch)
+        {
+            // Land on the dashboard appropriate for the new mode so the
+            // user immediately sees the matching surface, not stale data.
+            Nav.NavigateTo(UserModeService.DashboardRouteFor(resolved));
+        }
+    }
+
+    private void OnModeChanged()
+    {
+        _current = UserModeService.EffectiveMode(_user);
+        InvokeAsync(StateHasChanged);
+    }
+
+    private static string IconFor(string mode) =>
+        mode switch
+        {
+            UserModes.Mentor   => "oi-people",
+            UserModes.Lecturer => "oi-pulse",
+            _                  => "oi-eye",
+        };
+
+    public void Dispose()
+    {
+        UserModeService.CurrentModeChanged -= OnModeChanged;
+    }
+}

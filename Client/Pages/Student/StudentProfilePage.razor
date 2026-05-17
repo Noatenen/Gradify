@@ -5,6 +5,8 @@
 @using AuthWithAdmin.Client.Services
 @using Microsoft.AspNetCore.Components.Forms
 @inject IStudentProfileService ProfileService
+@inject IUserProfileService UserProfile
+@inject INotificationPreferencesService NotificationPrefs
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @attribute [Authorize]
@@ -45,29 +47,32 @@ else if (_profile is not null)
                 {
                     <div class="spp-avatar-initials">@GetInitials()</div>
                 }
-                <label class="spp-avatar-overlay" for="avatar-file-input" title="החלפת תמונה">
-                    <span class="oi oi-camera" aria-hidden="true"></span>
-                </label>
-                <InputFile id="avatar-file-input"
-                           OnChange="HandleAvatarUpload"
-                           accept="image/jpeg,image/png,image/webp"
-                           class="spp-avatar-file-input"
-                           style="display:none" />
+                @if (_isStudent)
+                {
+                    <label class="spp-avatar-overlay" for="avatar-file-input" title="החלפת תמונה">
+                        <span class="oi oi-camera" aria-hidden="true"></span>
+                    </label>
+                    <InputFile id="avatar-file-input"
+                               OnChange="HandleAvatarUpload"
+                               accept="image/jpeg,image/png,image/webp"
+                               class="spp-avatar-file-input"
+                               style="display:none" />
+                }
             </div>
 
             <!-- Name + meta -->
             <div class="spp-profile-strip-info">
                 <div class="spp-strip-name">@_profile.FirstName @_profile.LastName</div>
                 <div class="spp-strip-badges">
-                    <span class="spp-role-badge">סטודנט</span>
-                    @if (!string.IsNullOrWhiteSpace(_profile.AcademicYear))
+                    <span class="spp-role-badge">@RoleService.GetRoleLabel(_user)</span>
+                    @if (_isStudent && !string.IsNullOrWhiteSpace(_profile.AcademicYear))
                     {
                         <span class="spp-strip-year">
                             <span class="oi oi-calendar" aria-hidden="true"></span>
                             @_profile.AcademicYear
                         </span>
                     }
-                    @if (_profile.ProjectTitle is not null)
+                    @if (_isStudent && _profile.ProjectTitle is not null)
                     {
                         <span class="spp-strip-project">
                             <span class="oi oi-layers" aria-hidden="true"></span>
@@ -88,7 +93,7 @@ else if (_profile is not null)
                         </span>
                     }
                 </div>
-                @if (!string.IsNullOrEmpty(_profile.ProfileImageUrl))
+                @if (_isStudent && !string.IsNullOrEmpty(_profile.ProfileImageUrl))
                 {
                     <button class="spp-remove-avatar-btn" @onclick="RemoveAvatarAsync" disabled="@_avatarBusy">
                         הסרת תמונה
@@ -111,9 +116,18 @@ else if (_profile is not null)
         </div>
 
         <!-- ══ Main grid ══ -->
-        <div class="spp-grid">
+        @{
+            // The grid uses two columns by default; when the role has nothing
+            // to show on the secondary side (admin / lecturer with no
+            // mentor / student-only sections), we collapse to a single
+            // column so the cards don't sit next to a half-page void.
+            bool _showSecondaryCol = _isStudent || RoleService.IsMentor(_user);
+            string _gridClass     = _showSecondaryCol ? "spp-grid" : "spp-grid spp-grid-single";
+        }
 
-            <!-- ─── Left column ─── -->
+        <div class="@_gridClass">
+
+            <!-- ─── Right column (RTL leading) ─── -->
             <div class="spp-col">
 
                 <!-- Personal details -->
@@ -131,17 +145,20 @@ else if (_profile is not null)
                             <span class="spp-field-label">אימייל</span>
                             <span class="spp-field-val">@_profile.Email</span>
                         </div>
-                        @if (!string.IsNullOrWhiteSpace(_profile.IdNumber))
+                        @if (_isStudent && !string.IsNullOrWhiteSpace(_profile.IdNumber))
                         {
                             <div class="spp-field">
                                 <span class="spp-field-label">ת"ז</span>
                                 <span class="spp-field-val">@_profile.IdNumber</span>
                             </div>
                         }
-                        <div class="spp-field">
-                            <span class="spp-field-label">שנה אקדמית</span>
-                            <span class="spp-field-val">@(_profile.AcademicYear is { Length: > 0 } y ? y : "—")</span>
-                        </div>
+                        @if (_isStudent)
+                        {
+                            <div class="spp-field">
+                                <span class="spp-field-label">שנה אקדמית</span>
+                                <span class="spp-field-val">@(_profile.AcademicYear is { Length: > 0 } y ? y : "—")</span>
+                            </div>
+                        }
 
                         <!-- Phone — editable -->
                         <div class="spp-field spp-field-edit">
@@ -188,70 +205,169 @@ else if (_profile is not null)
                     </div>
                 </div>
 
-                <!-- Appearance -->
-                <div class="spp-card">
-                    <div class="spp-card-title">
-                        <span class="oi oi-contrast" aria-hidden="true"></span>
-                        מראה
+                @* ── Notification preferences card — directly under Personal Details ──
+                   Visible to every authenticated role; the server filters the
+                   item list to types the role can actually receive. *@
+                <div class="spp-card spp-card-notifications">
+                    <div class="spp-card-header">
+                        <h3 class="spp-card-title">העדפות התראות</h3>
+                        <p class="spp-card-subtitle">קבלת מיילים עבור התראות חשובות</p>
                     </div>
-                    <div class="spp-theme-group">
-                        <button class="spp-theme-btn @(_prefs.ThemePreference == "light" ? "spp-theme-active" : "")"
-                                @onclick='() => SetTheme("light")'>
-                            <span class="oi oi-sun" aria-hidden="true"></span>
-                            בהיר
-                        </button>
-                        <button class="spp-theme-btn @(_prefs.ThemePreference == "dark" ? "spp-theme-active" : "")"
-                                @onclick='() => SetTheme("dark")'>
-                            <span class="oi oi-moon" aria-hidden="true"></span>
-                            כהה
-                        </button>
-                        <button class="spp-theme-btn @(_prefs.ThemePreference == "system" ? "spp-theme-active" : "")"
-                                @onclick='() => SetTheme("system")'>
-                            <span class="oi oi-monitor" aria-hidden="true"></span>
-                            מערכת
-                        </button>
-                    </div>
+
+                    @if (_notifsLoading)
+                    {
+                        <div class="spp-loading-row">
+                            <span class="spp-spinner-sm"></span> טוען העדפות…
+                        </div>
+                    }
+                    else if (_notifsLoadError || _notifs is null)
+                    {
+                        <div class="spp-inline-error">שגיאה בטעינת העדפות ההתראות.</div>
+                    }
+                    else
+                    {
+                        <table class="spp-notifs-table">
+                            <thead>
+                                <tr>
+                                    <th>סוג התראה</th>
+                                    <th class="spp-notifs-toggle-col">בתוך המערכת</th>
+                                    <th class="spp-notifs-toggle-col">במייל</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var grp in NotificationGroupsInOrder)
+                                {
+                                    var groupItems = _notifs.Items
+                                        .Where(i => (string.IsNullOrEmpty(i.Group)
+                                                        ? NotificationTypes.GroupOf(i.NotificationType)
+                                                        : i.Group) == grp)
+                                        .ToList();
+                                    if (groupItems.Count == 0) continue;
+
+                                    <tr class="spp-notifs-group-row">
+                                        <td colspan="3">@NotificationTypes.GroupLabel(grp)</td>
+                                    </tr>
+                                    @foreach (var item in groupItems)
+                                    {
+                                        <tr>
+                                            <td>@NotificationTypes.Label(item.NotificationType)</td>
+                                            <td class="spp-notifs-toggle-col">
+                                                <input type="checkbox" class="spp-check"
+                                                       checked="@item.InAppEnabled"
+                                                       @onchange="@(e => OnInAppChanged(item, e))" />
+                                            </td>
+                                            <td class="spp-notifs-toggle-col">
+                                                <input type="checkbox" class="spp-check"
+                                                       checked="@item.EmailEnabled"
+                                                       @onchange="@(e => OnEmailChanged(item, e))" />
+                                            </td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+
+                        <div class="spp-notifs-actions">
+                            @if (_notifsDirty)
+                            {
+                                <span class="spp-notifs-hint">יש שינויים שטרם נשמרו</span>
+                            }
+                            @if (!string.IsNullOrEmpty(_notifsSaveOk))
+                            {
+                                <span class="spp-inline-success">
+                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                    @_notifsSaveOk
+                                </span>
+                            }
+                            @if (!string.IsNullOrEmpty(_notifsSaveError))
+                            {
+                                <span class="spp-inline-error">@_notifsSaveError</span>
+                            }
+                            <button class="spp-btn-save"
+                                    disabled="@(_notifsSaving || !_notifsDirty)"
+                                    @onclick="SaveNotifications">
+                                @if (_notifsSaving) { <span class="spp-spinner-sm"></span> }
+                                else                { <span class="oi oi-check" aria-hidden="true"></span> }
+                                שמור העדפות
+                            </button>
+                        </div>
+                    }
                 </div>
 
-            </div><!-- /.spp-col -->
+                <!-- Appearance — student-only (uses StudentPreferences row) -->
+                @if (_isStudent)
+                {
+                    <div class="spp-card">
+                        <div class="spp-card-title">
+                            <span class="oi oi-contrast" aria-hidden="true"></span>
+                            מראה
+                        </div>
+                        <div class="spp-theme-group">
+                            <button class="spp-theme-btn @(_prefs.ThemePreference == "light" ? "spp-theme-active" : "")"
+                                    @onclick='() => SetTheme("light")'>
+                                <span class="oi oi-sun" aria-hidden="true"></span>
+                                בהיר
+                            </button>
+                            <button class="spp-theme-btn @(_prefs.ThemePreference == "dark" ? "spp-theme-active" : "")"
+                                    @onclick='() => SetTheme("dark")'>
+                                <span class="oi oi-moon" aria-hidden="true"></span>
+                                כהה
+                            </button>
+                            <button class="spp-theme-btn @(_prefs.ThemePreference == "system" ? "spp-theme-active" : "")"
+                                    @onclick='() => SetTheme("system")'>
+                                <span class="oi oi-monitor" aria-hidden="true"></span>
+                                מערכת
+                            </button>
+                        </div>
+                    </div>
+                }
 
-            <!-- ─── Right column ─── -->
+            </div><!-- /.spp-col (right) -->
+
+            @if (_showSecondaryCol)
+            {
+            <!-- ─── Left column (RTL trailing) ─── -->
             <div class="spp-col">
 
-                <!-- Notifications -->
-                <div class="spp-card">
-                    <div class="spp-card-header">
-                        <div class="spp-card-title">
-                            <span class="oi oi-bell" aria-hidden="true"></span>
-                            התראות
-                        </div>
-                        @if (_prefsSaving) { <div class="spp-spinner-sm"></div> }
-                        @if (_prefsSaved)
-                        {
-                            <span class="spp-saved-chip">
-                                <span class="oi oi-circle-check" aria-hidden="true"></span>
-                                נשמר
-                            </span>
-                        }
-                    </div>
-                    <div class="spp-toggles">
-                        @foreach (var t in _notifDefs)
-                        {
-                            <div class="spp-toggle-row">
-                                <div class="spp-toggle-text">
-                                    <span class="spp-toggle-title">@t.Title</span>
-                                    <span class="spp-toggle-sub">@t.Sub</span>
-                                </div>
-                                <button class="spp-toggle @(t.Get(_prefs) ? "spp-toggle-on" : "")"
-                                        @onclick="() => TogglePref(t.Mutate)">
-                                    <span class="spp-toggle-thumb"></span>
-                                </button>
+                <!-- Quick notification toggles — student-only (legacy UserPreferences) -->
+                @if (_isStudent)
+                {
+                    <div class="spp-card">
+                        <div class="spp-card-header">
+                            <div class="spp-card-title">
+                                <span class="oi oi-bell" aria-hidden="true"></span>
+                                התראות
                             </div>
-                        }
+                            @if (_prefsSaving) { <div class="spp-spinner-sm"></div> }
+                            @if (_prefsSaved)
+                            {
+                                <span class="spp-saved-chip">
+                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                    נשמר
+                                </span>
+                            }
+                        </div>
+                        <div class="spp-toggles">
+                            @foreach (var t in _notifDefs)
+                            {
+                                <div class="spp-toggle-row">
+                                    <div class="spp-toggle-text">
+                                        <span class="spp-toggle-title">@t.Title</span>
+                                        <span class="spp-toggle-sub">@t.Sub</span>
+                                    </div>
+                                    <button class="spp-toggle @(t.Get(_prefs) ? "spp-toggle-on" : "")"
+                                            @onclick="() => TogglePref(t.Mutate)">
+                                        <span class="spp-toggle-thumb"></span>
+                                    </button>
+                                </div>
+                            }
+                        </div>
                     </div>
-                </div>
+                }
 
-                <!-- Integrations -->
+                <!-- Integrations — student-only (Slack / Google Calendar) -->
+                @if (_isStudent)
+                {
                 <div class="spp-card">
                     <div class="spp-card-title">
                         <span class="oi oi-link-intact" aria-hidden="true"></span>
@@ -337,8 +453,18 @@ else if (_profile is not null)
                     </div>
 
                 </div>
+                }
 
-            </div><!-- /.spp-col -->
+                @* Mentor-only preferences card. RoleService.IsMentor gates
+                   the render; the controller backing it is also mentor-only,
+                   so non-mentor roles never even reach the API. *@
+                @if (RoleService.IsMentor(_user))
+                {
+                    <AuthWithAdmin.Client.Pages.Mentor.MentorPreferencesCard />
+                }
+
+            </div><!-- /.spp-col (left) -->
+            }
 
         </div><!-- /.spp-grid -->
 
@@ -352,6 +478,13 @@ else if (_profile is not null)
     private StudentPreferencesDto _prefs     = new();
     private bool _isLoading = true;
     private bool _loadError = false;
+
+    /// <summary>
+    /// Drives all student-only sections of this page. When false (Mentor /
+    /// Lecturer / Admin) the page renders only personal info + notification
+    /// preferences and loads via /api/users/me instead of /api/student/me.
+    /// </summary>
+    private bool _isStudent = false;
 
     // Phone edit
     private bool   _editingPhone = false;
@@ -374,30 +507,125 @@ else if (_profile is not null)
     private bool _slackConnectError  = false;
     private bool _slackJustConnected = false;
 
+    // Notification preferences (העדפות התראות)
+    private NotificationPreferencesDto? _notifs;
+    private bool   _notifsLoading   = true;
+    private bool   _notifsLoadError;
+    private bool   _notifsDirty;
+    private bool   _notifsSaving;
+    private string _notifsSaveOk    = "";
+    private string _notifsSaveError = "";
+
+    /// <summary>Stable display order for the groups in the settings UI.</summary>
+    private static readonly string[] NotificationGroupsInOrder = new[]
+    {
+        NotificationTypes.Groups.Requests,
+        NotificationTypes.Groups.Tasks,
+        NotificationTypes.Groups.Submissions,
+        NotificationTypes.Groups.Milestones,
+        NotificationTypes.Groups.Assignments,
+    };
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     protected override async Task OnInitializedAsync()
     {
-        // Check for OAuth callback query params
-        var uri = new Uri(Nav.Uri);
-        _slackJustConnected = uri.Query.Contains("slackConnected=true");
-        _slackConnectError  = uri.Query.Contains("slackError=true");
+        _isStudent = RoleService.IsStudent(_user);
 
-        var profileTask     = ProfileService.GetProfileAsync();
-        var slackStatusTask = ProfileService.GetSlackSystemStatusAsync();
-
-        await Task.WhenAll(profileTask, slackStatusTask);
-
-        _profile          = profileTask.Result;
-        _slackSystemStatus = slackStatusTask.Result;
-        _loadError        = _profile is null;
-        _isLoading        = false;
-
-        if (_profile is not null)
+        if (_isStudent)
         {
-            _prefs = _profile.Preferences;
-            try { await JS.InvokeVoidAsync("gradify.setTheme", _prefs.ThemePreference); }
-            catch { /* JS not yet ready — theme already applied by the inline script in index.html */ }
+            // Check for OAuth callback query params (Slack only — student flow)
+            var uri = new Uri(Nav.Uri);
+            _slackJustConnected = uri.Query.Contains("slackConnected=true");
+            _slackConnectError  = uri.Query.Contains("slackError=true");
+
+            var profileTask     = ProfileService.GetProfileAsync();
+            var slackStatusTask = ProfileService.GetSlackSystemStatusAsync();
+
+            await Task.WhenAll(profileTask, slackStatusTask);
+
+            _profile          = profileTask.Result;
+            _slackSystemStatus = slackStatusTask.Result;
+            _loadError        = _profile is null;
+
+            if (_profile is not null)
+            {
+                _prefs = _profile.Preferences;
+                try { await JS.InvokeVoidAsync("gradify.setTheme", _prefs.ThemePreference); }
+                catch { /* JS not yet ready — theme already applied by the inline script in index.html */ }
+            }
+        }
+        else
+        {
+            // Mentor / Lecturer / Admin path — load slim profile from /api/users/me.
+            var me = await UserProfile.GetMyAsync();
+            if (me is null)
+            {
+                _loadError = true;
+            }
+            else
+            {
+                _profile = new StudentProfileDto
+                {
+                    Id              = me.Id,
+                    FirstName       = me.FirstName,
+                    LastName        = me.LastName,
+                    Email           = me.Email,
+                    Phone           = me.Phone,
+                    ProfileImageUrl = me.ProfileImageUrl,
+                };
+            }
+        }
+
+        _isLoading = false;
+
+        // Notification preferences are role-independent — load for everyone.
+        _notifsLoading   = true;
+        _notifsLoadError = false;
+        var prefs = await NotificationPrefs.GetMineAsync();
+        if (prefs is null) _notifsLoadError = true;
+        else                _notifs = prefs;
+        _notifsLoading = false;
+    }
+
+    // ── Notification preferences ──────────────────────────────────────────────
+    private void OnInAppChanged(NotificationPreferenceItemDto item, ChangeEventArgs e)
+    {
+        item.InAppEnabled = e.Value is bool b && b;
+        _notifsDirty      = true;
+        _notifsSaveOk     = "";
+        _notifsSaveError  = "";
+    }
+
+    private void OnEmailChanged(NotificationPreferenceItemDto item, ChangeEventArgs e)
+    {
+        item.EmailEnabled = e.Value is bool b && b;
+        _notifsDirty      = true;
+        _notifsSaveOk     = "";
+        _notifsSaveError  = "";
+    }
+
+    private async Task SaveNotifications()
+    {
+        if (_notifs is null) return;
+        _notifsSaving    = true;
+        _notifsSaveOk    = "";
+        _notifsSaveError = "";
+
+        var ok = await NotificationPrefs.SaveMineAsync(new SaveNotificationPreferencesRequest
+        {
+            Items = _notifs.Items,
+        });
+
+        _notifsSaving = false;
+        if (ok)
+        {
+            _notifsDirty  = false;
+            _notifsSaveOk = "העדפות ההתראות נשמרו בהצלחה";
+        }
+        else
+        {
+            _notifsSaveError = "שמירת ההעדפות נכשלה. נסי שנית.";
         }
     }
 
@@ -461,10 +689,29 @@ else if (_profile is not null)
         if (_profile is null) return;
         _savingPhone = true;
         _phoneError  = false;
-        bool ok = await ProfileService.UpdatePhoneAsync(_phoneInput.Trim());
+
+        var phone = _phoneInput.Trim();
+        bool ok;
+        if (_isStudent)
+        {
+            ok = await ProfileService.UpdatePhoneAsync(phone);
+        }
+        else
+        {
+            // /api/users/me/profile requires the full editable triple — keep
+            // FirstName / LastName from the loaded profile so we never clear
+            // them by accident.
+            ok = await UserProfile.UpdateMyProfileAsync(new UpdateUserProfileRequest
+            {
+                FirstName = _profile.FirstName,
+                LastName  = _profile.LastName,
+                Phone     = phone,
+            });
+        }
+
         if (ok)
         {
-            _profile.Phone = _phoneInput.Trim();
+            _profile.Phone = phone;
             _editingPhone  = false;
             _phoneSaved    = true;
             _ = AutoClearAsync(() => _phoneSaved = false, 2500);

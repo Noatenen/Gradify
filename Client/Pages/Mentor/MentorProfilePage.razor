@@ -1,0 +1,277 @@
+@page "/mentor-profile/{UserId:int}"
+@layout AppLayout
+@attribute [Authorize]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorPreferencesService MentorPrefs
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+@*
+    Mentor Profile (read-only). Reachable from any place that shows a mentor:
+    the sidebar team-popover, the dashboard project card, the project-details
+    modal. Server returns the public-facing subset only — internal Project
+    Health monitoring fields (PreferenceEvents / PreferenceFrequency) are
+    excluded by /api/mentor-profile/{userId}, so students never see them.
+*@
+
+<div class="mpp-page">
+
+    <header class="mpp-topbar">
+        <button class="mpp-back-btn"
+                @onclick="GoBack"
+                title="חזרה">
+            <span class="oi oi-chevron-right" aria-hidden="true"></span>
+        </button>
+        <div>
+            <div class="mpp-breadcrumb">פרופיל מנחה</div>
+            <h1 class="mpp-page-title">
+                @if (_loading) { <span>טוען…</span> }
+                else if (_model is not null) { <span>@_model.FirstName @_model.LastName</span> }
+                else { <span>מנחה</span> }
+            </h1>
+        </div>
+    </header>
+
+    <div class="spp-card mpp-card">
+
+        <div class="spp-card-header">
+            <div class="spp-card-title">
+                <span class="oi oi-person" aria-hidden="true"></span>
+                פרטי מנחה
+            </div>
+        </div>
+        <p class="spp-card-subtitle">צפייה בלבד — מוגדר על ידי המנחה</p>
+
+        @if (_loading)
+        {
+            <div class="spp-loading-row">
+                <span class="spp-spinner-sm"></span> טוען…
+            </div>
+        }
+        else if (_loadError || _model is null)
+        {
+            <p class="spp-inline-error">לא ניתן לטעון את פרופיל המנחה.</p>
+        }
+        else if (IsEmpty)
+        {
+            <p class="spp-inline-error mpp-empty">המנחה טרם הגדיר העדפות.</p>
+        }
+        else
+        {
+            <div class="spp-fields">
+                @if (Has(_model.Email))
+                {
+                    <div class="spp-field"><span class="spp-field-label">אימייל</span>
+                        <span class="spp-field-val" dir="ltr">@_model.Email</span></div>
+                }
+                @if (Has(_model.RoleDescription))
+                {
+                    <div class="spp-field"><span class="spp-field-label">תיאור התפקיד</span>
+                        <span class="spp-field-val">@_model.RoleDescription</span></div>
+                }
+                @if (Has(_model.InvolvementLevel))
+                {
+                    <div class="spp-field"><span class="spp-field-label">רמת מעורבות</span>
+                        <span class="spp-field-val">@MentorInvolvementLevels.Label(_model.InvolvementLevel!)</span></div>
+                }
+                @if (Has(_model.PreferredChannel))
+                {
+                    <div class="spp-field"><span class="spp-field-label">ערוץ מועדף</span>
+                        <span class="spp-field-val">@ChannelLine()</span></div>
+                }
+                @if (Has(_model.ExpectedResponseTime))
+                {
+                    <div class="spp-field"><span class="spp-field-label">זמן מענה</span>
+                        <span class="spp-field-val">@MentorResponseTimes.Label(_model.ExpectedResponseTime!)</span></div>
+                }
+                @if (Has(_model.CommunicationFrequency))
+                {
+                    <div class="spp-field"><span class="spp-field-label">תדירות תקשורת</span>
+                        <span class="spp-field-val">@MentorCommunicationFrequencies.Label(_model.CommunicationFrequency!)</span></div>
+                }
+                <div class="spp-field"><span class="spp-field-label">עדכונים תקופתיים</span>
+                    <span class="spp-field-val">@(_model.RequirePeriodicUpdates ? "כן" : "לא")</span></div>
+                @if (_model.RequirePeriodicUpdates && Has(_model.UpdateFrequency))
+                {
+                    <div class="spp-field"><span class="spp-field-label">תדירות עדכון</span>
+                        <span class="spp-field-val">@(_model.UpdateFrequency == "weekly" ? "שבועית" : "דו־שבועית")</span></div>
+                }
+                @if (_model.RequirePeriodicUpdates && _model.UpdateContent.Count > 0)
+                {
+                    <div class="spp-field"><span class="spp-field-label">תוכן העדכון</span>
+                        <span class="spp-field-val">@JoinLabels(_model.UpdateContent, MentorUpdateContentTokens.Label)</span></div>
+                }
+                @if (Has(_model.ClientInteractionFrequency))
+                {
+                    <div class="spp-field"><span class="spp-field-label">תדירות מול לקוח</span>
+                        <span class="spp-field-val">@ClientFreqLine()</span></div>
+                }
+                @if (Has(_model.MentorInClientInteraction))
+                {
+                    <div class="spp-field"><span class="spp-field-label">מעורבות מנחה בלקוח</span>
+                        <span class="spp-field-val">@MentorClientInvolvementOptions.Label(_model.MentorInClientInteraction!)</span></div>
+                }
+                @if (Has(_model.SubmissionLeadTime))
+                {
+                    <div class="spp-field"><span class="spp-field-label">הקדמה לפני הגשה</span>
+                        <span class="spp-field-val">@LeadTimeLine()</span></div>
+                }
+                @if (_model.ReviewIterations is int ri)
+                {
+                    <div class="spp-field"><span class="spp-field-label">מספר איטרציות</span>
+                        <span class="spp-field-val">@(ri == 3 ? "3+" : ri.ToString())</span></div>
+                }
+                @if (Has(_model.FeedbackType))
+                {
+                    <div class="spp-field"><span class="spp-field-label">סוג משוב</span>
+                        <span class="spp-field-val">@MentorFeedbackTypes.Label(_model.FeedbackType!)</span></div>
+                }
+                @if (_model.DecisionInvolvement.Count > 0)
+                {
+                    <div class="spp-field"><span class="spp-field-label">מעורבות בהחלטות</span>
+                        <span class="spp-field-val">@JoinLabels(_model.DecisionInvolvement, MentorDecisionInvolvementTokens.Label)</span></div>
+                }
+                @if (Has(_model.QualityDescription))
+                {
+                    <div class="spp-field"><span class="spp-field-label">ציפיות איכות</span>
+                        <span class="spp-field-val">@_model.QualityDescription</span></div>
+                }
+                @if (_model.QualityFocusAreas.Count > 0)
+                {
+                    <div class="spp-field"><span class="spp-field-label">תחומי דגש</span>
+                        <span class="spp-field-val">@JoinLabels(_model.QualityFocusAreas, MentorQualityFocusTokens.Label)</span></div>
+                }
+                @if (Has(_model.RedLines))
+                {
+                    <div class="spp-field"><span class="spp-field-label">קווים אדומים</span>
+                        <span class="spp-field-val">@_model.RedLines</span></div>
+                }
+                @if (Has(_model.AvailableTimes))
+                {
+                    <div class="spp-field"><span class="spp-field-label">שעות זמינות</span>
+                        <span class="spp-field-val">@_model.AvailableTimes</span></div>
+                }
+                @if (Has(_model.MeetingFormat))
+                {
+                    <div class="spp-field"><span class="spp-field-label">פורמט פגישה</span>
+                        <span class="spp-field-val">@MentorMeetingFormats.Label(_model.MeetingFormat!)</span></div>
+                }
+                @if (Has(_model.SchedulingMethod))
+                {
+                    <div class="spp-field"><span class="spp-field-label">תיאום פגישות</span>
+                        <span class="spp-field-val">@MentorSchedulingMethods.Label(_model.SchedulingMethod!)</span></div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public int UserId { get; set; }
+
+    private MentorProfileViewDto? _model;
+    private bool _loading = true;
+    private bool _loadError;
+
+    /// <summary>Re-fetch when the route's UserId changes (e.g. user navigates
+    /// from one mentor profile to another).</summary>
+    private int _lastFetchedId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (UserId == _lastFetchedId) return;
+        _lastFetchedId = UserId;
+        _loading       = true;
+        _loadError     = false;
+        _model         = null;
+        StateHasChanged();
+
+        var result = await MentorPrefs.GetProfileAsync(UserId);
+        _loadError = result is null;
+        _model     = result;
+        _loading   = false;
+    }
+
+    /// <summary>Best-effort browser back. Falls back to the dashboard when
+    /// there is no history (e.g. deep-linked).</summary>
+    private async Task GoBack()
+    {
+        try
+        {
+            int len = await JS.InvokeAsync<int>("eval", "history.length");
+            if (len > 1) { await JS.InvokeVoidAsync("history.back"); return; }
+        }
+        catch { /* fall through to navigation fallback */ }
+        Nav.NavigateTo("/dashboard");
+    }
+
+    private bool IsEmpty
+    {
+        get
+        {
+            if (_model is null) return true;
+            return !Has(_model.RoleDescription)
+                && !Has(_model.InvolvementLevel)
+                && !Has(_model.PreferredChannel)
+                && !Has(_model.ExpectedResponseTime)
+                && !Has(_model.CommunicationFrequency)
+                && !_model.RequirePeriodicUpdates
+                && _model.UpdateContent.Count == 0
+                && !Has(_model.ClientInteractionFrequency)
+                && !Has(_model.MentorInClientInteraction)
+                && !Has(_model.SubmissionLeadTime)
+                && _model.ReviewIterations is null
+                && !Has(_model.FeedbackType)
+                && _model.DecisionInvolvement.Count == 0
+                && !Has(_model.QualityDescription)
+                && _model.QualityFocusAreas.Count == 0
+                && !Has(_model.RedLines)
+                && !Has(_model.AvailableTimes)
+                && !Has(_model.MeetingFormat)
+                && !Has(_model.SchedulingMethod);
+        }
+    }
+
+    private static bool Has(string? s) => !string.IsNullOrWhiteSpace(s);
+
+    private static string JoinLabels(List<string> tokens, Func<string, string> label)
+        => string.Join(", ", tokens.Select(label));
+
+    private string ChannelLine()
+    {
+        if (_model is null || !Has(_model.PreferredChannel)) return "";
+        var label = MentorChannels.Label(_model.PreferredChannel!);
+        return _model.PreferredChannel == MentorChannels.Other && Has(_model.PreferredChannelOther)
+            ? $"{label} ({_model.PreferredChannelOther})"
+            : label;
+    }
+
+    private string ClientFreqLine()
+    {
+        if (_model is null || !Has(_model.ClientInteractionFrequency)) return "";
+        return _model.ClientInteractionFrequency switch
+        {
+            "monthly"  => "חודשית",
+            "biweekly" => "דו־שבועית",
+            "custom"   => Has(_model.ClientInteractionFrequencyCustom)
+                          ? $"מותאם אישית ({_model.ClientInteractionFrequencyCustom})"
+                          : "מותאם אישית",
+            _          => _model.ClientInteractionFrequency!,
+        };
+    }
+
+    private string LeadTimeLine()
+    {
+        if (_model is null || !Has(_model.SubmissionLeadTime)) return "";
+        return _model.SubmissionLeadTime switch
+        {
+            "2d"     => "יומיים",
+            "3to5d"  => "3–5 ימים",
+            "custom" => Has(_model.SubmissionLeadTimeCustom)
+                        ? $"מותאם אישית ({_model.SubmissionLeadTimeCustom})"
+                        : "מותאם אישית",
+            _        => _model.SubmissionLeadTime!,
+        };
+    }
+}

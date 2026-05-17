@@ -34,6 +34,7 @@ public class TaskSubmissionsController : ControllerBase
 {
     private readonly DbRepository    _db;
     private readonly FilesManage     _filesManage;
+    private readonly EmailHelper     _email;
 
     private const string Container      = "submissions";
     private static readonly HashSet<string> ValidStatuses =
@@ -44,21 +45,28 @@ public class TaskSubmissionsController : ControllerBase
     private const int  MaxLecturerFileMb       = 10;
     private const long MaxLecturerFileBytes    = (long)MaxLecturerFileMb * 1_048_576;
 
-    public TaskSubmissionsController(DbRepository db, FilesManage filesManage)
+    public TaskSubmissionsController(DbRepository db, FilesManage filesManage, EmailHelper email)
     {
         _db          = db;
         _filesManage = filesManage;
+        _email       = email;
     }
 
     // ── GET /api/task-submissions/all ─────────────────────────────────────
-    //
-    // Returns submissions that have been formally forwarded to course staff
-    // (CourseSubmittedAt IS NOT NULL) or already actioned by course staff
-    // (Status != 'Submitted'), enriched with project / team / milestone context.
-    // Used by the lecturer "הגשות" monitoring page. Ordered newest-first.
+    // DEPRECATED 2026-05-17.
+    // Powered the retired lecturer-final-review queue. Returns 410 Gone so any
+    // lingering client never displays stale data.
     [HttpGet("all")]
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
-    public async Task<IActionResult> GetAll(int authUserId)
+    public IActionResult GetAll_Deprecated() =>
+        StatusCode(StatusCodes.Status410Gone, new
+        {
+            error = "lecturer_review_disabled",
+            message = "תהליך הבדיקה הסופית הוסר. ההגשה הרשמית מתבצעת במודל."
+        });
+
+    // ── Legacy implementation kept below as a private no-op for reference. ─
+    private async Task<IActionResult> GetAllLegacy(int authUserId)
     {
         // Visibility gate: a submission becomes visible to lecturers/admins
         // only after the mentor approves it. The legacy "course-submitted OR
@@ -115,11 +123,19 @@ public class TaskSubmissionsController : ControllerBase
     }
 
     // ── POST /api/task-submissions/{id}/submit-to-course ──────────────────
-    //
-    // Student action: formally forward a mentor-approved submission to course staff.
-    // Only allowed when MentorStatus = 'Approved' and CourseSubmittedAt is null.
+    // DEPRECATED 2026-05-17. The student no longer forwards submissions to
+    // course staff inside the system — they submit the final deliverable to
+    // Moodle. Returns 410 Gone so old clients fail loudly rather than silently.
     [HttpPost("{id:int}/submit-to-course")]
-    public async Task<IActionResult> SubmitToCourse(int id, int authUserId)
+    public IActionResult SubmitToCourse_Deprecated(int id) =>
+        StatusCode(StatusCodes.Status410Gone, new
+        {
+            error = "course_submission_disabled",
+            message = "ההגשה הרשמית מתבצעת במודל. אישור מנחה כבר התקבל."
+        });
+
+    // ── Legacy implementation kept below as a private no-op for reference. ─
+    private async Task<IActionResult> SubmitToCourseLegacy(int id, int authUserId)
     {
         // Verify the submission belongs to the student's project
         const string checkSql = @"
@@ -534,28 +550,10 @@ public class TaskSubmissionsController : ControllerBase
                     relatedEntityType: "TaskSubmission",
                     relatedEntityId:   subRow.TaskId);  // TaskId so student submissions page can deep-link
             }
-            else if (req.MentorStatus == "Approved" && !string.IsNullOrEmpty(taskTitle))
-            {
-                // Notify lecturers/admins — a final submission is now ready for review.
-                const string lecturersSql = @"
-                    SELECT u.Id
-                    FROM   users u
-                    JOIN   UserRoles ur ON ur.UserId = u.Id
-                    WHERE  ur.Role IN ('Admin','Staff')
-                      AND  u.IsActive = 1";
-                var lecturerIds = (await _db.GetRecordsAsync<int>(lecturersSql))?.ToList() ?? new();
-
-                if (lecturerIds.Count > 0)
-                {
-                    await NotificationHelper.CreateForUsersAsync(
-                        _db, lecturerIds,
-                        title:             "הגשה סופית חדשה לבדיקה",
-                        message:           $"התקבלה הגשה סופית חדשה לבדיקה — {taskTitle}",
-                        type:              "FinalSubmissionAvailable",
-                        relatedEntityType: "TaskSubmission",
-                        relatedEntityId:   id);
-                }
-            }
+            // The "new final submission to review" notification to admin/staff
+            // was retired on 2026-05-17 along with the lecturer-final-review
+            // flow. Mentor approval no longer escalates automatically; admins
+            // see status through the project dashboard / explicit escalation.
         }
         catch { /* notifications are best-effort */ }
 
@@ -688,13 +686,19 @@ public class TaskSubmissionsController : ControllerBase
     }
 
     // ── PATCH /api/task-submissions/{id}/lecturer-review ──────────────────
-    //
-    // Save-draft endpoint: stores the lecturer's review status + draft feedback.
-    // Does NOT publish the feedback to students (IsFeedbackPublished stays 0).
-    // Allowed only on submissions the mentor already approved.
+    // DEPRECATED 2026-05-17. The lecturer-final-review flow has been retired
+    // — final deliverables go through Moodle now. Returns 410 Gone.
     [HttpPatch("{id:int}/lecturer-review")]
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
-    public async Task<IActionResult> SaveLecturerReview(
+    public IActionResult SaveLecturerReview_Deprecated(int id) =>
+        StatusCode(StatusCodes.Status410Gone, new
+        {
+            error = "lecturer_review_disabled",
+            message = "תהליך הבדיקה הסופית הוסר."
+        });
+
+    // ── Legacy implementation kept below as a private no-op for reference. ─
+    private async Task<IActionResult> SaveLecturerReviewLegacy(
         int id, [FromBody] SaveLecturerReviewRequest req, int authUserId)
     {
         if (string.IsNullOrWhiteSpace(req.ReviewStatus) ||
@@ -731,14 +735,19 @@ public class TaskSubmissionsController : ControllerBase
     }
 
     // ── POST /api/task-submissions/{id}/publish-feedback ──────────────────
-    //
-    // Publishes the previously-saved review to the team. Sets
-    // IsFeedbackPublished = 1, FeedbackPublishedAt = now, stamps any pending
-    // lecturer files (FilePublishedAt IS NULL → now), and notifies all active
-    // team members. Refuses to publish empty feedback.
+    // DEPRECATED 2026-05-17. Lecturer feedback is no longer published inside
+    // our system; mentor feedback is the only review surface students see.
     [HttpPost("{id:int}/publish-feedback")]
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
-    public async Task<IActionResult> PublishFeedback(int id, int authUserId)
+    public IActionResult PublishFeedback_Deprecated(int id) =>
+        StatusCode(StatusCodes.Status410Gone, new
+        {
+            error = "lecturer_review_disabled",
+            message = "תהליך הבדיקה הסופית הוסר."
+        });
+
+    // ── Legacy implementation kept below as a private no-op for reference. ─
+    private async Task<IActionResult> PublishFeedbackLegacy(int id, int authUserId)
     {
         const string loadSql = @"
             SELECT s.Id, s.TaskId, s.MentorStatus,
@@ -798,11 +807,13 @@ public class TaskSubmissionsController : ControllerBase
 
             if (memberIds.Count > 0)
             {
-                await NotificationHelper.CreateForUsersAsync(
-                    _db, memberIds,
+                // Lecturer feedback published → SubmissionFeedbackReceived
+                // routed through the dispatcher so per-user email prefs apply.
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, memberIds,
                     title:             "התקבל משוב מרצה חדש",
                     message:           $"התקבל משוב מרצה חדש עבור {row.TaskTitle}",
-                    type:              "LecturerFeedbackPublished",
+                    type:              NotificationTypes.SubmissionFeedbackReceived,
                     relatedEntityType: "TaskSubmission",
                     relatedEntityId:   row.TaskId);
             }
@@ -996,7 +1007,231 @@ public class TaskSubmissionsController : ControllerBase
                ?.FirstOrDefault();
     }
 
+    // ── GET /api/task-submissions/pending-mentor-approvals ────────────────────
+    //
+    // Lecturer/admin supervision inbox — surfaces submissions waiting on a
+    // mentor approval. Joins project/team/mentor/milestone context so the
+    // table can render without N+1 round-trips. Days-waiting is computed
+    // server-side from SubmittedAt so the client doesn't have to.
+    //
+    // Older rows that were force-approved before this feature shipped are
+    // implicitly excluded — MentorStatus = 'Pending' is the gate.
+    [HttpGet("pending-mentor-approvals")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> GetPendingMentorApprovals(int authUserId)
+    {
+        const string sql = @"
+            SELECT
+                s.Id                                  AS SubmissionId,
+                s.TaskId,
+                t.Title                               AS TaskTitle,
+                p.Id                                  AS ProjectId,
+                p.ProjectNumber,
+                p.Title                               AS ProjectTitle,
+                tm.TeamName                           AS TeamName,
+                mt.Title                              AS MilestoneTitle,
+                s.SubmittedAt,
+                CAST((julianday('now') - julianday(s.SubmittedAt)) AS INTEGER) AS DaysWaiting,
+                s.MentorStatus,
+                s.LastMentorReminderAt,
+                (SELECT GROUP_CONCAT(mu.FirstName || ' ' || mu.LastName, ', ')
+                 FROM   ProjectMentors pmm
+                 JOIN   users          mu ON mu.Id = pmm.UserId
+                 WHERE  pmm.ProjectId = p.Id)         AS MentorName
+            FROM   TaskSubmissions        s
+            JOIN   Tasks                  t   ON t.Id   = s.TaskId
+            JOIN   ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
+            JOIN   Projects               p   ON p.Id   = pm.ProjectId
+            LEFT JOIN Teams               tm  ON tm.Id  = p.TeamId
+            JOIN   AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+            JOIN   MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            WHERE  s.MentorStatus = 'Pending'
+            ORDER  BY s.SubmittedAt ASC";
+
+        var rows = await _db.GetRecordsAsync<PendingMentorApprovalRowDto>(sql, new { });
+        return Ok(rows ?? Enumerable.Empty<PendingMentorApprovalRowDto>());
+    }
+
+    // ── POST /api/task-submissions/{id}/remind-mentor ─────────────────────────
+    //
+    // Sends an in-app + email reminder to the project's mentors that a
+    // submission is still pending review. Email respects per-user notification
+    // preferences via NotificationDispatcher. The student is intentionally
+    // never notified.
+    //
+    // 24h cooldown: refuses to fire again within 24 hours of LastMentorReminderAt.
+    [HttpPost("{id:int}/remind-mentor")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> RemindMentor(int id, int authUserId)
+    {
+        // Load enough context to validate and to build a useful message.
+        const string loadSql = @"
+            SELECT  s.Id, s.MentorStatus, s.LastMentorReminderAt,
+                    s.TaskId, t.Title AS TaskTitle,
+                    p.Id  AS ProjectId, p.Title AS ProjectTitle, p.ProjectNumber
+            FROM    TaskSubmissions s
+            JOIN    Tasks    t ON t.Id = s.TaskId
+            JOIN    ProjectMilestones pm ON pm.Id = t.ProjectMilestoneId
+            JOIN    Projects p ON p.Id = pm.ProjectId
+            WHERE   s.Id = @Id
+            LIMIT   1";
+        var ctx = (await _db.GetRecordsAsync<RemindMentorContext>(
+            loadSql, new { Id = id }))?.FirstOrDefault();
+        if (ctx is null) return NotFound("ההגשה לא נמצאה");
+        if (ctx.MentorStatus != "Pending")
+            return BadRequest("ההגשה כבר טופלה על ידי המנחה");
+
+        // Cooldown — block back-to-back reminders within 24h.
+        if (ctx.LastMentorReminderAt is DateTime last
+            && DateTime.UtcNow - last.ToUniversalTime() < TimeSpan.FromHours(24))
+            return BadRequest("נשלחה תזכורת לאחרונה. ניתן לשלוח שוב לאחר 24 שעות.");
+
+        // Resolve the mentors of this project — the audience for the reminder.
+        const string mentorsSql = @"
+            SELECT pm.UserId
+            FROM   ProjectMentors pm
+            JOIN   users          u  ON u.Id = pm.UserId
+            WHERE  pm.ProjectId = @ProjectId
+              AND  u.IsActive    = 1";
+        var mentorIds = (await _db.GetRecordsAsync<int>(
+            mentorsSql, new { ctx.ProjectId }))?.ToList() ?? new();
+        if (mentorIds.Count == 0)
+            return BadRequest("לא נמצאו מנחים לפרויקט זה");
+
+        // Stamp the reminder timestamp first so cooldown holds even if the
+        // notification dispatch is slow.
+        await _db.SaveDataAsync(@"
+            UPDATE TaskSubmissions
+            SET    LastMentorReminderAt        = datetime('now'),
+                   LastMentorReminderByUserId  = @UserId
+            WHERE  Id = @Id",
+            new { UserId = authUserId, Id = id });
+
+        try
+        {
+            await NotificationDispatcher.DispatchAsync(
+                _db, _email, mentorIds,
+                title:             "תזכורת: הגשה ממתינה לאישורך",
+                message:           $"ההגשה למשימה \"{ctx.TaskTitle}\" בפרויקט \"{ctx.ProjectTitle}\" עדיין ממתינה לאישור מנחה.",
+                type:              NotificationTypes.SubmissionSubmitted,
+                relatedEntityType: "TaskSubmission",
+                relatedEntityId:   id);
+        }
+        catch { /* notifications are best-effort */ }
+
+        return Ok();
+    }
+
+    // ── PUT /api/task-submissions/{id}/lecturer-override-approve ──────────────
+    //
+    // Lecturer/admin approves a submission without waiting for the mentor.
+    // The reason is REQUIRED and stays internal — students never see it.
+    // Mirrors the regular MentorReview="Approved" effect (sets MentorStatus,
+    // syncs Tasks.Status) and additionally records the override audit fields.
+    //
+    // Notifies the team that the task was approved; the message intentionally
+    // does NOT include OverrideReason. ApprovalSource is recorded so the
+    // mentor / admin staff can later see this was lecturer-driven.
+    [HttpPut("{id:int}/lecturer-override-approve")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> LecturerOverrideApprove(
+        int id, [FromBody] LecturerOverrideApproveRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest("גוף בקשה ריק");
+        var reason = (req.OverrideReason ?? "").Trim();
+        if (reason.Length == 0)        return BadRequest("חובה להזין סיבה לעקיפה");
+        if (reason.Length > 2000)      return BadRequest("הסיבה ארוכה מדי");
+
+        const string loadSql = @"
+            SELECT  s.Id, s.MentorStatus, s.TaskId,
+                    t.Title  AS TaskTitle
+            FROM    TaskSubmissions s
+            JOIN    Tasks t ON t.Id = s.TaskId
+            WHERE   s.Id = @Id
+            LIMIT   1";
+        var ctx = (await _db.GetRecordsAsync<OverrideContext>(
+            loadSql, new { Id = id }))?.FirstOrDefault();
+        if (ctx is null) return NotFound("ההגשה לא נמצאה");
+        if (ctx.MentorStatus == "Approved")
+            return BadRequest("ההגשה כבר אושרה");
+
+        // Persist override + mirror the mentor-approved effect so existing
+        // pipelines (course submission gate, lecturer review surface) keep
+        // treating the submission as approved.
+        await _db.SaveDataAsync(@"
+            UPDATE TaskSubmissions
+            SET    MentorStatus             = 'Approved',
+                   MentorReviewedAt         = datetime('now'),
+                   ApprovalSource           = @ApprovalSource,
+                   OverrideReason           = @Reason,
+                   OverrideApprovedByUserId = @UserId,
+                   OverrideApprovedAt       = datetime('now')
+            WHERE  Id = @Id",
+            new
+            {
+                ApprovalSource = ApprovalSources.LecturerOverride,
+                Reason         = reason,
+                UserId         = authUserId,
+                Id             = id,
+            });
+
+        // Sync Tasks.Status so the student task list reflects approval.
+        await _db.SaveDataAsync(
+            "UPDATE Tasks SET Status = 'ApprovedForSubmission' WHERE Id = @TaskId",
+            new { ctx.TaskId });
+
+        // Notify the student team — but never include the override reason.
+        try
+        {
+            const string membersSql = @"
+                SELECT m.UserId
+                FROM   TaskSubmissions ts
+                JOIN   Tasks           t  ON ts.TaskId   = t.Id
+                JOIN   Projects        p  ON t.ProjectId = p.Id
+                JOIN   Teams           tm ON p.TeamId    = tm.Id
+                JOIN   TeamMembers     m  ON tm.Id       = m.TeamId
+                WHERE  ts.Id      = @Id
+                  AND  m.IsActive = 1";
+            var studentIds = (await _db.GetRecordsAsync<int>(
+                membersSql, new { Id = id }))?.ToList() ?? new();
+
+            if (studentIds.Count > 0)
+            {
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, studentIds,
+                    title:             "ההגשה אושרה",
+                    message:           $"ההגשה למשימה \"{ctx.TaskTitle}\" אושרה.",
+                    type:              NotificationTypes.SubmissionFeedbackReceived,
+                    relatedEntityType: "TaskSubmission",
+                    relatedEntityId:   ctx.TaskId);
+            }
+        }
+        catch { /* notifications are best-effort */ }
+
+        return Ok();
+    }
+
     // ── Private Dapper row types ─────────────────────────────────────────────
+
+    private sealed class RemindMentorContext
+    {
+        public int       Id                   { get; set; }
+        public string    MentorStatus         { get; set; } = "";
+        public DateTime? LastMentorReminderAt { get; set; }
+        public int       TaskId               { get; set; }
+        public string    TaskTitle            { get; set; } = "";
+        public int       ProjectId            { get; set; }
+        public string    ProjectTitle         { get; set; } = "";
+        public int       ProjectNumber        { get; set; }
+    }
+
+    private sealed class OverrideContext
+    {
+        public int    Id           { get; set; }
+        public string MentorStatus { get; set; } = "";
+        public int    TaskId       { get; set; }
+        public string TaskTitle    { get; set; } = "";
+    }
 
     private sealed class SubmissionTaskRow { public int TaskId { get; set; } }
 

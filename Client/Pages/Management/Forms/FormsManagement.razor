@@ -2,8 +2,10 @@
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin)]
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
 @inject NavigationManager Nav
 @inject IFormsManagementService FormsService
+@inject IManagementService ManagementService
 
 <div class="fm-page">
 
@@ -17,6 +19,13 @@
                 <div class="fm-breadcrumb">ניהול</div>
                 <h1 class="fm-title">טפסים</h1>
             </div>
+        </div>
+        <div class="fm-topbar-end">
+            <button class="fm-btn fm-btn-primary"
+                    @onclick="@(() => Nav.NavigateTo("/management/forms/new"))">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                טופס חדש
+            </button>
         </div>
     </div>
 
@@ -91,12 +100,97 @@
                             <span class="oi oi-document" aria-hidden="true"></span>
                             צפייה בהגשות
                         </button>
+                        <button class="fm-btn fm-btn-secondary"
+                                @onclick="@(() => OpenDuplicateModal(f))">
+                            <span class="oi oi-layers" aria-hidden="true"></span>
+                            שכפול טופס
+                        </button>
                     </div>
                 </article>
             }
         </div>
     }
 </div>
+
+@* ── Duplicate-form modal ──────────────────────────────────────────────────── *@
+@if (_dupSource is not null)
+{
+    <div class="fm-dup-backdrop" @onclick="CloseDuplicateModal"></div>
+    <div class="fm-dup-modal" dir="rtl" @onclick:stopPropagation="true">
+        <div class="fm-dup-header">
+            <div class="fm-dup-title">שכפול טופס</div>
+            <button class="fm-dup-close" @onclick="CloseDuplicateModal" title="סגירה">
+                <span class="oi oi-x" aria-hidden="true"></span>
+            </button>
+        </div>
+
+        <div class="fm-dup-body">
+            <p class="fm-dup-source">
+                שכפול הטופס: <strong>@_dupSource.Name</strong> (מחזור @_dupSource.AcademicYear)
+            </p>
+
+            <div class="fm-dup-field">
+                <label class="fm-dup-label">שם הטופס החדש <span class="fm-dup-required">*</span></label>
+                <input class="fm-dup-input @(_dupTouched && string.IsNullOrWhiteSpace(_dupNewName) ? "fm-dup-input-error" : "")"
+                       maxlength="200"
+                       @bind="_dupNewName" @bind:event="oninput"
+                       disabled="@_dupSubmitting" />
+            </div>
+
+            <div class="fm-dup-field">
+                <label class="fm-dup-label">מחזור / שנה אקדמית <span class="fm-dup-required">*</span></label>
+                <select class="fm-dup-input @(_dupTouched && _dupYearId == 0 ? "fm-dup-input-error" : "")"
+                        @bind="_dupYearIdRaw"
+                        disabled="@_dupSubmitting">
+                    <option value="0">— בחר מחזור —</option>
+                    @foreach (var y in _years)
+                    {
+                        <option value="@y.Id">@y.Name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="fm-dup-field">
+                <label class="fm-dup-label">סטטוס התחלתי</label>
+                <select class="fm-dup-input"
+                        @bind="_dupInitialStatus"
+                        disabled="@_dupSubmitting">
+                    <option value="@FormStatuses.Draft">טיוטה</option>
+                    <option value="@FormStatuses.Open">פתוח</option>
+                    <option value="@FormStatuses.Closed">סגור</option>
+                </select>
+            </div>
+
+            <div class="fm-dup-hint">
+                <span class="oi oi-info" aria-hidden="true"></span>
+                השכפול יעתיק את מבנה הטופס בלבד, ללא הגשות קיימות.
+            </div>
+
+            @if (!string.IsNullOrEmpty(_dupError))
+            {
+                <div class="fm-dup-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_dupError
+                </div>
+            }
+        </div>
+
+        <div class="fm-dup-footer">
+            <button class="fm-btn fm-btn-secondary"
+                    @onclick="CloseDuplicateModal"
+                    disabled="@_dupSubmitting">
+                ביטול
+            </button>
+            <button class="fm-btn fm-btn-primary"
+                    @onclick="SubmitDuplicate"
+                    disabled="@_dupSubmitting">
+                @if (_dupSubmitting) { <span class="fm-dup-spinner"></span> }
+                else                  { <span class="oi oi-check" aria-hidden="true"></span> }
+                שכפל
+            </button>
+        </div>
+    </div>
+}
 
 @code {
     private List<FormListItemDto> _forms = new();
@@ -106,7 +200,26 @@
     private string? _actionMessage;
     private bool    _actionError;
 
-    protected override async Task OnInitializedAsync() => await Reload();
+    // ── Duplicate-modal state ─────────────────────────────────────────────
+    private List<AcademicYearDto> _years = new();
+    private FormListItemDto?      _dupSource;
+    private string                _dupNewName       = "";
+    private string                _dupYearIdRaw     = "0";  // bound to the <select>
+    private string                _dupInitialStatus = FormStatuses.Draft;
+    private bool                  _dupTouched;
+    private bool                  _dupSubmitting;
+    private string?               _dupError;
+
+    private int _dupYearId =>
+        int.TryParse(_dupYearIdRaw, out var v) ? v : 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Reload();
+        // Academic-year list is loaded once for the duplicate modal — cheap,
+        // and gives the lecturer a real dropdown without a roundtrip on click.
+        _years = (await ManagementService.GetAcademicYearsAsync()) ?? new();
+    }
 
     private async Task Reload()
     {
@@ -115,6 +228,66 @@
         if (data is null) _loadError = true;
         else _forms = data;
         _loading = false;
+    }
+
+    // ── Duplicate-form handlers ───────────────────────────────────────────
+    private void OpenDuplicateModal(FormListItemDto src)
+    {
+        _dupSource        = src;
+        _dupNewName       = src.Name + " (עותק)";
+        _dupYearIdRaw     = "0";
+        _dupInitialStatus = FormStatuses.Draft;
+        _dupTouched       = false;
+        _dupError         = null;
+    }
+
+    private void CloseDuplicateModal()
+    {
+        if (_dupSubmitting) return;
+        _dupSource    = null;
+        _dupError     = null;
+        _dupTouched   = false;
+    }
+
+    private async Task SubmitDuplicate()
+    {
+        if (_dupSource is null) return;
+        _dupTouched = true;
+        _dupError   = null;
+
+        if (string.IsNullOrWhiteSpace(_dupNewName))
+        {
+            _dupError = "שם הטופס החדש הוא שדה חובה";
+            return;
+        }
+        if (_dupYearId <= 0)
+        {
+            _dupError = "יש לבחור מחזור / שנה אקדמית";
+            return;
+        }
+
+        _dupSubmitting = true;
+        var (newId, err) = await FormsService.DuplicateFormAsync(_dupSource.Id,
+            new DuplicateFormRequest
+            {
+                NewName        = _dupNewName.Trim(),
+                AcademicYearId = _dupYearId,
+                InitialStatus  = _dupInitialStatus,
+            });
+        _dupSubmitting = false;
+
+        if (newId is null)
+        {
+            _dupError = err ?? "שגיאה בשכפול הטופס";
+            return;
+        }
+
+        // Success — close modal, refresh the list, surface a toast-style banner
+        var sourceName = _dupSource.Name;
+        _dupSource = null;
+        await Reload();
+        _actionError   = false;
+        _actionMessage = $"הטופס שוכפל בהצלחה ({sourceName} → \"{_dupNewName.Trim()}\").";
     }
 
     private async Task ToggleOpen(FormListItemDto f)

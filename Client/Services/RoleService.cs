@@ -38,10 +38,18 @@ public static class RoleService
     /// </summary>
     public static string GetDefaultLandingRoute(User? user)
     {
-        if (IsAdminOrStaff(user)) return "/dashboard/lecturer";
-        if (IsMentor(user))       return "/dashboard/mentor";
         // Students keep the legacy /dashboard route — that page already
         // handles the "team-without-project" → catalog redirect internally.
+        if (IsStudent(user)) return PageRoutes.Dashboard;
+
+        // Dual-role (Staff + Mentor): honour the currently-active view mode
+        // from UserModeService so the toggle's choice survives a hard reload
+        // / landing-page redirect.
+        if (UserModeService.IsDualRole(user))
+            return UserModeService.DashboardRouteFor(UserModeService.EffectiveMode(user));
+
+        if (IsAdminOrStaff(user)) return "/dashboard/lecturer";
+        if (IsMentor(user))       return "/dashboard/mentor";
         return PageRoutes.Dashboard;
     }
 }

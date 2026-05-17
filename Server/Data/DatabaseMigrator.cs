@@ -718,6 +718,82 @@ public static class DatabaseMigrator
             await connection.ExecuteNonQueryAsync(
                 "ALTER TABLE TaskSubmissions ADD COLUMN ReviewedByUserId INTEGER");
 
+        // ── Lecturer-supervision columns ─────────────────────────────────────
+        // Power the "אישורי מנחה ממתינים" inbox.
+        //
+        //  LastMentorReminderAt        : timestamp of the last lecturer-sent
+        //                                reminder. Used to enforce a 24h
+        //                                cool-off so reminders can't be spammed.
+        //  LastMentorReminderByUserId  : audit — who sent the last reminder.
+        //  ApprovalSource              : 'MentorApproved' | 'LecturerOverride'
+        //                                set when a final approval lands.
+        //  OverrideReason              : internal reason, lecturer/admin/mentor
+        //                                only — never returned to students.
+        //  OverrideApprovedByUserId / OverrideApprovedAt
+        //                              : the lecturer who exercised the
+        //                                override + when.
+        if (!submissionsColumns.Contains("LastMentorReminderAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN LastMentorReminderAt TEXT");
+
+        if (!submissionsColumns.Contains("LastMentorReminderByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN LastMentorReminderByUserId INTEGER");
+
+        if (!submissionsColumns.Contains("ApprovalSource"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN ApprovalSource TEXT");
+
+        if (!submissionsColumns.Contains("OverrideReason"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN OverrideReason TEXT");
+
+        if (!submissionsColumns.Contains("OverrideApprovedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN OverrideApprovedByUserId INTEGER");
+
+        if (!submissionsColumns.Contains("OverrideApprovedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN OverrideApprovedAt TEXT");
+
+        // ── TaskSubmissions: escalation flag ─────────────────────────────────
+        // Minimal "needs lecturer attention" toggle introduced 2026-05-17 when
+        // the lecturer-final-review flow was retired. Lets a mentor flag a
+        // single submission to the lecturer/admin without bringing back the
+        // full review queue. No state machine — just a boolean + audit.
+        if (!submissionsColumns.Contains("EscalatedToLecturer"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN EscalatedToLecturer INTEGER NOT NULL DEFAULT 0");
+        if (!submissionsColumns.Contains("EscalatedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN EscalatedAt TEXT");
+        if (!submissionsColumns.Contains("EscalatedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN EscalatedByUserId INTEGER");
+        if (!submissionsColumns.Contains("EscalationReason"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN EscalationReason TEXT");
+
+        // ── Projects: manual Moodle submission tracking ──────────────────────
+        // The Innovation Faculty's official deliverable submission happens in
+        // Moodle; we don't have Moodle API access, so we expose a manual flag
+        // for admins/lecturers to mark per-project status. One of:
+        //   "SubmittedToMoodle" | "NotSubmittedToMoodle" | "Unknown"
+        // NULL means "not tracked yet". No DB-side enum — string sentinel.
+        var projectMoodleColumns = await GetColumnsAsync(connection, "Projects");
+        if (!projectMoodleColumns.Contains("MoodleSubmissionStatus"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE Projects ADD COLUMN MoodleSubmissionStatus TEXT");
+        if (!projectMoodleColumns.Contains("MoodleSubmissionUpdatedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE Projects ADD COLUMN MoodleSubmissionUpdatedAt TEXT");
+        if (!projectMoodleColumns.Contains("MoodleSubmissionUpdatedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE Projects ADD COLUMN MoodleSubmissionUpdatedByUserId INTEGER");
+        if (!projectMoodleColumns.Contains("MoodleSubmissionNotes"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE Projects ADD COLUMN MoodleSubmissionNotes TEXT");
+
         // ── StudentSubTasks table ────────────────────────────────────────────
         // Lightweight internal checklist items created by a student team under
         // a parent system task. These are team-private: not visible to mentors
@@ -1210,6 +1286,183 @@ public static class DatabaseMigrator
                 SortOrder   INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (FormBlockId) REFERENCES FormBlocks(Id) ON DELETE CASCADE
             )");
+
+        // ── External Forms (Innovation Team iframe-embedded forms) ───────────
+        // These forms live OUTSIDE Gradify — they're hosted by the Innovation
+        // Team and embedded via iframe. We only store metadata + URL so
+        // admins/lecturers can swap the link per academic year without code
+        // changes. AcademicYearId is nullable so forms can be marked global
+        // (e.g. an evergreen feedback form not tied to a specific cycle).
+        //
+        // IsDeleted is a soft-delete flag — rows stay in the table for audit
+        // purposes and are filtered out of every read query.
+        // *ByUserId columns power the audit log on the controller side.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalForms (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                Name            TEXT    NOT NULL,
+                Description     TEXT    NOT NULL DEFAULT '',
+                FormType        TEXT    NOT NULL DEFAULT '',
+                IframeUrl       TEXT    NOT NULL DEFAULT '',
+                IsActive        INTEGER NOT NULL DEFAULT 1,
+                IsDeleted       INTEGER NOT NULL DEFAULT 0,
+                AcademicYearId  INTEGER,
+                CreatedByUserId INTEGER,
+                UpdatedByUserId INTEGER,
+                DeletedByUserId INTEGER,
+                DeletedAt       TEXT,
+                CreatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id) ON DELETE SET NULL
+            )");
+
+        // Idempotent ALTERs so databases created before the audit/soft-delete
+        // columns existed get them on the next start.
+        var efColumns = await GetColumnsAsync(connection, "ExternalForms");
+        if (!efColumns.Contains("IsDeleted"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ExternalForms ADD COLUMN IsDeleted INTEGER NOT NULL DEFAULT 0");
+        if (!efColumns.Contains("CreatedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ExternalForms ADD COLUMN CreatedByUserId INTEGER");
+        if (!efColumns.Contains("UpdatedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ExternalForms ADD COLUMN UpdatedByUserId INTEGER");
+        if (!efColumns.Contains("DeletedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ExternalForms ADD COLUMN DeletedByUserId INTEGER");
+        if (!efColumns.Contains("DeletedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ExternalForms ADD COLUMN DeletedAt TEXT");
+
+        // ── External Forms audit log ─────────────────────────────────────────
+        // One row per mutation (Create / Update / Delete / Toggle). Stores the
+        // old + new value snapshots as JSON; the controller is responsible for
+        // serialising them.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalFormAuditLog (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ExternalFormId  INTEGER NOT NULL,
+                Action          TEXT    NOT NULL,
+                ChangedByUserId INTEGER,
+                OldValuesJson   TEXT    NOT NULL DEFAULT '',
+                NewValuesJson   TEXT    NOT NULL DEFAULT '',
+                ChangedAt       TEXT    NOT NULL DEFAULT (datetime('now'))
+            )");
+
+        // ── External Requests (status updates pushed by Innovation Team) ─────
+        // The Innovation Team owns the source of truth; we receive status
+        // pushes via /api/external-requests/update (X-External-Api-Key auth).
+        // The shape is intentionally loose:
+        //  • ExternalRequestId is the upstream key — UNIQUE so re-pushes upsert.
+        //  • StudentId / ProjectId are nullable — we may only have an email.
+        //  • RawPayload stores the full JSON for forensics and lets us evolve
+        //    the parsed columns later without losing data.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalRequests (
+                Id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                ExternalRequestId TEXT    NOT NULL UNIQUE,
+                StudentEmail      TEXT    NOT NULL DEFAULT '',
+                StudentId         INTEGER,
+                ProjectId         INTEGER,
+                RequestType       TEXT    NOT NULL DEFAULT '',
+                Status            TEXT    NOT NULL DEFAULT '',
+                StatusLabel       TEXT    NOT NULL DEFAULT '',
+                Notes             TEXT    NOT NULL DEFAULT '',
+                RawPayload        TEXT    NOT NULL DEFAULT '',
+                CreatedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt         TEXT    NOT NULL DEFAULT (datetime('now'))
+            )");
+
+        // ── External Requests — status timeline ──────────────────────────────
+        // Captures every status transition so the UI can show a history later.
+        // One row per change; the most recent row matches ExternalRequests.Status.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalRequestStatusHistory (
+                Id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                ExternalRequestId TEXT    NOT NULL,
+                OldStatus         TEXT    NOT NULL DEFAULT '',
+                NewStatus         TEXT    NOT NULL DEFAULT '',
+                OldStatusLabel    TEXT    NOT NULL DEFAULT '',
+                NewStatusLabel    TEXT    NOT NULL DEFAULT '',
+                Notes             TEXT    NOT NULL DEFAULT '',
+                ChangedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                RawPayload        TEXT    NOT NULL DEFAULT ''
+            )");
+
+        // ── External Requests — failed inbound payloads ──────────────────────
+        // We persist every webhook body we couldn't process (bad JSON, missing
+        // ExternalRequestId, unexpected error) so the Innovation Team has
+        // something to investigate. Kept small on purpose; no PII parsing.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalRequestFailedPayloads (
+                Id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ReceivedAt    TEXT    NOT NULL DEFAULT (datetime('now')),
+                RemoteIp      TEXT    NOT NULL DEFAULT '',
+                ErrorMessage  TEXT    NOT NULL DEFAULT '',
+                RawPayload    TEXT    NOT NULL DEFAULT ''
+            )");
+
+        // ── Indexes ──────────────────────────────────────────────────────────
+        // Hot lookups: webhook upsert by ExternalRequestId, student "/me" list
+        // by StudentId/Email, admin list filtered by year/active.
+        // CREATE INDEX IF NOT EXISTS is idempotent.
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalRequests_StudentEmail ON ExternalRequests (StudentEmail)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalRequests_StudentId    ON ExternalRequests (StudentId)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalRequests_UpdatedAt    ON ExternalRequests (UpdatedAt)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalForms_AcademicYearId  ON ExternalForms (AcademicYearId)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalForms_IsActive        ON ExternalForms (IsActive)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalForms_IsDeleted       ON ExternalForms (IsDeleted)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalRequestStatusHistory_Eid ON ExternalRequestStatusHistory (ExternalRequestId)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExternalFormAuditLog_FormId   ON ExternalFormAuditLog (ExternalFormId)");
+
+        // ── Innovation-Team field & status mapping tables ────────────────────
+        // Admin-configurable mappings that translate the *external* payload
+        // (e.g. Airtable column names + Hebrew status values) into our
+        // internal canonical fields and ExternalRequestStatuses tokens.
+        // The webhook applies these transparently — when no rows exist, it
+        // behaves identically to the previous version.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalIntegrationFieldMappings (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                SourceSystem    TEXT    NOT NULL DEFAULT 'Airtable',
+                SourceFieldName TEXT    NOT NULL,
+                TargetFieldName TEXT    NOT NULL,
+                IsRequired      INTEGER NOT NULL DEFAULT 0,
+                DefaultValue    TEXT    NOT NULL DEFAULT '',
+                IsActive        INTEGER NOT NULL DEFAULT 1,
+                Notes           TEXT    NOT NULL DEFAULT '',
+                CreatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (SourceSystem, SourceFieldName, TargetFieldName)
+            )");
+
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ExternalIntegrationStatusMappings (
+                Id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                SourceSystem      TEXT    NOT NULL DEFAULT 'Airtable',
+                SourceStatusValue TEXT    NOT NULL,
+                InternalStatus    TEXT    NOT NULL,
+                DisplayLabel      TEXT    NOT NULL DEFAULT '',
+                IsTerminal        INTEGER NOT NULL DEFAULT 0,
+                IsActive          INTEGER NOT NULL DEFAULT 1,
+                CreatedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt         TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (SourceSystem, SourceStatusValue)
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExtIntField_System  ON ExternalIntegrationFieldMappings  (SourceSystem, IsActive)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_ExtIntStatus_System ON ExternalIntegrationStatusMappings (SourceSystem, IsActive)");
     }
 
     private static async Task<HashSet<string>> GetColumnsAsync(SqliteConnection connection, string tableName)
@@ -1480,6 +1733,86 @@ public static class DatabaseMigrator
                 CONSTRAINT fk_Requests_CreatedBy  FOREIGN KEY (CreatedByUserId)  REFERENCES users(Id),
                 CONSTRAINT fk_Requests_Type       FOREIGN KEY (RequestTypeId)    REFERENCES RequestTypes(Id),
                 CONSTRAINT fk_Requests_AssignedTo FOREIGN KEY (AssignedToUserId) REFERENCES users(Id)
+            )");
+
+        // ── UserNotificationPreferences — per-user toggle matrix ──────────
+        // One row per (UserId, NotificationType). Missing rows are treated as
+        // sensible defaults by the read endpoint (in-app on for everything,
+        // email on for high-priority types only — see controller for the
+        // canonical default list).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS UserNotificationPreferences (
+                Id               INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
+                UserId           INTEGER  NOT NULL,
+                NotificationType TEXT     NOT NULL,
+                InAppEnabled     INTEGER  NOT NULL DEFAULT 1,
+                EmailEnabled     INTEGER  NOT NULL DEFAULT 0,
+                CreatedAt        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (UserId, NotificationType),
+                CONSTRAINT fk_UNP_User FOREIGN KEY (UserId) REFERENCES users(Id)
+                    ON DELETE CASCADE ON UPDATE CASCADE
+            )");
+
+        // ── MentorPreferences ───────────────────────────────────────────────
+        // One row per mentor, keyed by UserId. Every field is nullable / has a
+        // safe default so a mentor who hasn't filled the form yet still has a
+        // valid row when the GET endpoint upserts on first access. Multi-select
+        // fields use comma-separated TEXT values to match patterns elsewhere
+        // in the codebase (Tasks.AllowedFileTypes, etc.).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS MentorPreferences (
+                UserId                            INTEGER  NOT NULL PRIMARY KEY,
+
+                -- 1. Mentorship style
+                RoleDescription                   TEXT,
+                InvolvementLevel                  TEXT,           -- low|medium|high
+
+                -- 2. Communication preferences
+                PreferredChannel                  TEXT,           -- email|whatsapp|slack|other
+                PreferredChannelOther             TEXT,
+                ExpectedResponseTime              TEXT,           -- 24h|1to3d|week
+                CommunicationFrequency            TEXT,           -- weekly|biweekly|asneeded
+
+                -- 3. Student updates
+                RequirePeriodicUpdates            INTEGER  NOT NULL DEFAULT 0,
+                UpdateFrequency                   TEXT,           -- weekly|biweekly
+                UpdateContent                     TEXT,           -- comma-separated: progress,plans,blockers
+
+                -- 4. Client interaction
+                ClientInteractionFrequency        TEXT,           -- monthly|biweekly|custom
+                ClientInteractionFrequencyCustom  TEXT,
+                MentorInClientInteraction         TEXT,           -- yes|no|key_milestones
+
+                -- 5. Submission & feedback
+                SubmissionLeadTime                TEXT,           -- 2d|3to5d|custom
+                SubmissionLeadTimeCustom          TEXT,
+                ReviewIterations                  INTEGER,        -- 1, 2, 3 (3+)
+                FeedbackType                      TEXT,           -- written|verbal|both
+
+                -- 6. Decision involvement
+                DecisionInvolvement               TEXT,           -- comma-separated: major,milestones,ongoing
+
+                -- 7. Quality expectations
+                QualityDescription                TEXT,
+                QualityFocusAreas                 TEXT,           -- comma-separated: ux,technical,pedagogical,research
+
+                -- 8. Red lines
+                RedLines                          TEXT,
+
+                -- 9. Availability
+                AvailableTimes                    TEXT,
+                MeetingFormat                     TEXT,           -- online|in_person|both
+                SchedulingMethod                  TEXT,           -- student|fixed
+
+                -- 10. Notification preferences (mentor-side digest controls)
+                PreferenceEvents                  TEXT,           -- comma-separated: new_submission,delays,no_response
+                PreferenceFrequency               TEXT,           -- immediate|daily|weekly
+
+                CreatedAt                         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt                         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT fk_MP_User FOREIGN KEY (UserId) REFERENCES users(Id)
+                    ON DELETE CASCADE ON UPDATE CASCADE
             )");
 
         // ── Canonical reference-data seeds ──────────────────────────────────

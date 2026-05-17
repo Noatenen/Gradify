@@ -1,0 +1,222 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+@*
+    AddMentorModal
+    ──────────────
+    Searchable picker for adding an additional mentor to a project.
+    Used by the lecturer/admin Project Overview page.
+
+    Candidate pool: active users holding at least one of Mentor / Admin / Staff
+    roles, excluding those already assigned to this project. Server enforces
+    the same rule — this is just convenience filtering for the UI.
+*@
+
+@if (IsOpen)
+{
+    <div class="amm-overlay" @onclick="HandleClose">
+        <div class="amm-modal" dir="rtl" @onclick:stopPropagation="true"
+             role="dialog" aria-modal="true" aria-labelledby="amm-title">
+
+            <div class="amm-head">
+                <h2 id="amm-title" class="amm-title">הוספת מנחה נוסף</h2>
+                <button type="button" class="amm-close" @onclick="HandleClose" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="amm-body">
+                <div class="amm-search">
+                    <span class="oi oi-magnifying-glass amm-search-icon" aria-hidden="true"></span>
+                    <input type="text"
+                           class="amm-search-input"
+                           placeholder="חיפוש לפי שם או אימייל…"
+                           dir="auto"
+                           @bind="_query"
+                           @bind:event="oninput"
+                           @onkeyup="@(async _ => await ScheduleSearch())" />
+                </div>
+
+                @if (!string.IsNullOrEmpty(_error))
+                {
+                    <div class="amm-error">@_error</div>
+                }
+
+                @if (_loading)
+                {
+                    <div class="amm-state">טוען מועמדים…</div>
+                }
+                else if (_candidates.Count == 0)
+                {
+                    <div class="amm-state">
+                        @(string.IsNullOrWhiteSpace(_query)
+                            ? "לא נמצאו משתמשים זמינים להוספה."
+                            : "לא נמצאו תוצאות לחיפוש.")
+                    </div>
+                }
+                else
+                {
+                    <ul class="amm-list">
+                        @foreach (var c in _candidates)
+                        {
+                            var isSel = _selectedUserId == c.UserId;
+                            <li>
+                                <button type="button"
+                                        class="amm-row @(isSel ? "amm-row-active" : "")"
+                                        @onclick="@(() => SelectUser(c.UserId))">
+                                    <div class="amm-row-main">
+                                        <span class="amm-row-name">@c.FullName</span>
+                                        <span class="amm-row-email" dir="ltr">@c.Email</span>
+                                    </div>
+                                    <span class="amm-row-roles">@RoleLabels(c.Roles)</span>
+                                </button>
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+
+            <div class="amm-foot">
+                <button class="amm-btn amm-btn-secondary"
+                        @onclick="HandleClose"
+                        disabled="@_busy">
+                    ביטול
+                </button>
+                <button class="amm-btn amm-btn-primary"
+                        @onclick="SubmitAsync"
+                        disabled="@(_busy || _selectedUserId is null)">
+                    @(_busy ? "מוסיף…" : "הוסף מנחה")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool   IsOpen     { get; set; }
+    [Parameter] public int    ProjectId  { get; set; }
+    [Parameter] public EventCallback OnClose   { get; set; }
+    /// <summary>Fires after a successful add — the parent re-fetches its data.</summary>
+    [Parameter] public EventCallback OnAdded   { get; set; }
+
+    private string _query = "";
+    private List<MentorCandidateDto> _candidates = new();
+    private int?  _selectedUserId;
+    private bool  _loading;
+    private bool  _busy;
+    private string _error = "";
+
+    private bool _wasOpen;
+    private int? _searchToken;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // When the modal transitions from closed → open, reset state and
+        // run an initial query (empty filter → top 30 candidates).
+        if (IsOpen && !_wasOpen)
+        {
+            _query = "";
+            _selectedUserId = null;
+            _candidates.Clear();
+            _error = "";
+            await RunSearchAsync(immediate: true);
+        }
+        _wasOpen = IsOpen;
+    }
+
+    /// <summary>Debounced search: a fresh keystroke replaces any in-flight
+    /// request via a monotonic token that the response check compares.</summary>
+    private async Task ScheduleSearch()
+    {
+        int token = (_searchToken ?? 0) + 1;
+        _searchToken = token;
+        await Task.Delay(220);
+        if (_searchToken != token) return; // a newer keystroke superseded us
+        await RunSearchAsync(immediate: false);
+    }
+
+    private async Task RunSearchAsync(bool immediate)
+    {
+        if (ProjectId <= 0) return;
+        _loading = true;
+        _error = "";
+        StateHasChanged();
+        try
+        {
+            var url = $"api/projects/{ProjectId}/mentors/candidates" +
+                      (string.IsNullOrWhiteSpace(_query) ? "" : $"?q={Uri.EscapeDataString(_query.Trim())}");
+            _candidates = await Http.GetFromJsonAsync<List<MentorCandidateDto>>(url) ?? new();
+        }
+        catch (Exception ex)
+        {
+            _candidates = new();
+            _error = "שגיאה בטעינת מועמדים: " + ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void SelectUser(int userId)
+    {
+        _selectedUserId = userId == _selectedUserId ? null : userId;
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_selectedUserId is null || _busy) return;
+        _busy = true;
+        _error = "";
+        try
+        {
+            var resp = await Http.PostAsJsonAsync(
+                $"api/projects/{ProjectId}/mentors",
+                new AddProjectMentorRequest { UserId = _selectedUserId.Value });
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                _error = string.IsNullOrWhiteSpace(body)
+                    ? "ההוספה נכשלה"
+                    : body.Trim('"');
+                return;
+            }
+
+            // Success → tell the parent to refresh and close.
+            if (OnAdded.HasDelegate) await OnAdded.InvokeAsync();
+            if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = "שגיאת תקשורת: " + ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task HandleClose()
+    {
+        if (_busy) return;
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+
+    /// <summary>Translate the raw GROUP_CONCAT role list to Hebrew labels.</summary>
+    private static string RoleLabels(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join(" · ", parts.Select(p => p switch
+        {
+            "Admin"   => "מנהל",
+            "Staff"   => "מרצה",
+            "Mentor"  => "מנחה",
+            "Student" => "סטודנט",
+            _         => p,
+        }));
+    }
+}
