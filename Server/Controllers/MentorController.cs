@@ -377,6 +377,7 @@ public class MentorController : ControllerBase
                     ts.Notes,
                     ts.MentorStatus,
                     ts.MentorFeedback,
+                    ts.DriveUrl,
                     t.ProjectId
             FROM    TaskSubmissions        ts
             JOIN    Tasks                  t   ON ts.TaskId                  = t.Id
@@ -426,6 +427,7 @@ public class MentorController : ControllerBase
                     ts.MentorFeedback,
                     ts.MentorReviewedAt,
                     ts.CourseSubmittedAt,
+                    ts.DriveUrl,
                     COUNT(f.Id)   AS FileCount
             FROM    TaskSubmissions      ts
             LEFT JOIN TaskSubmissionFiles f ON f.TaskSubmissionId = ts.Id
@@ -467,6 +469,7 @@ public class MentorController : ControllerBase
                 MentorFeedback    = r.MentorFeedback,
                 MentorReviewedAt  = r.MentorReviewedAt,
                 CourseSubmittedAt = r.CourseSubmittedAt,
+                DriveUrl          = r.DriveUrl,
                 FileCount         = r.FileCount,
                 Files             = filesByRound.GetValueOrDefault(r.SubmissionId) ?? new(),
             }).ToList();
@@ -483,6 +486,7 @@ public class MentorController : ControllerBase
             Notes           = subRow.Notes,
             MentorStatus    = subRow.MentorStatus,
             MentorFeedback  = subRow.MentorFeedback,
+            DriveUrl        = subRow.DriveUrl,
             Files           = files,
             History         = history,
         });
@@ -575,6 +579,7 @@ public class MentorController : ControllerBase
         public string?  Notes            { get; set; }
         public string   MentorStatus     { get; set; } = "Pending";
         public string?  MentorFeedback   { get; set; }
+        public string?  DriveUrl         { get; set; }
         public int      ProjectId        { get; set; }
     }
 
@@ -589,6 +594,7 @@ public class MentorController : ControllerBase
         public string?   MentorFeedback    { get; set; }
         public DateTime? MentorReviewedAt  { get; set; }
         public DateTime? CourseSubmittedAt { get; set; }
+        public string?   DriveUrl          { get; set; }
         public int       FileCount         { get; set; }
     }
 }

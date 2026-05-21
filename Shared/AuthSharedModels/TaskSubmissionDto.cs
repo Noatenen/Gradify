@@ -38,6 +38,18 @@ public class TaskSubmissionDto
 
     public DateTime CreatedAt         { get; set; }
 
+    /// <summary>
+    /// Public Google Drive link (drive.google.com / docs.google.com) that the
+    /// student submitted. Null on legacy rows submitted before 2026-05-19 —
+    /// those rows carry attachments in <see cref="Files"/> instead.
+    /// </summary>
+    public string?  DriveUrl          { get; set; }
+
+    /// <summary>
+    /// Historical uploaded files. New submissions never populate this list —
+    /// the student flow is Drive-link-only since 2026-05-19. Kept for read
+    /// access to pre-cutover submissions.
+    /// </summary>
     public List<TaskSubmissionFileDto> Files { get; set; } = new();
 }
 
@@ -56,6 +68,9 @@ public class TaskSubmissionSummaryDto
     public string?  Notes             { get; set; }
     /// <summary>"Submitted" | "Reviewed" | "NeedsRevision"</summary>
     public string   Status            { get; set; } = "Submitted";
+    /// <summary>Drive link on new (post-2026-05-19) submissions. Null on legacy rows.</summary>
+    public string?  DriveUrl          { get; set; }
+    /// <summary>Legacy: file count for pre-cutover submissions. Always 0 for Drive-link rows.</summary>
     public int      FileCount         { get; set; }
 }
 
@@ -84,24 +99,41 @@ public class TaskSubmissionFileDto
 
 /// <summary>
 /// Payload for POST /api/task-submissions.
-/// Contains the submission record and all files in one atomic request.
-/// Files are base64-encoded following the same pattern as ResourceFiles uploads.
+/// As of 2026-05-19 the student submission flow accepts a Google Drive link
+/// only — uploaded files are no longer stored on our server. The
+/// <see cref="Files"/> property is retained for wire-compatibility but is
+/// ignored server-side and must not be populated by new clients.
 /// </summary>
 public class CreateSubmissionRequest
 {
-    public int     TaskId { get; set; }
-    public string? Notes  { get; set; }
+    public int     TaskId    { get; set; }
+    public string? Notes     { get; set; }
 
     /// <summary>
-    /// Files to attach. Must satisfy the task's snapshot policy:
-    ///   Count ≤ Tasks.MaxFilesCount,
-    ///   each SizeBytes ≤ Tasks.MaxFileSizeMb × 1 048 576,
-    ///   extension in Tasks.AllowedFileTypes (when defined).
+    /// Public Google Drive link (drive.google.com / docs.google.com).
+    /// Required. The server validates format AND performs a lightweight
+    /// reachability probe before persisting the submission. If the link is
+    /// not shared the submission is rejected with a Hebrew error message.
     /// </summary>
+    public string? DriveUrl  { get; set; }
+
+    /// <summary>
+    /// DEPRECATED 2026-05-19. Ignored by the server. New clients must send
+    /// <see cref="DriveUrl"/> instead. The property remains on the wire so
+    /// older clients that still post an empty list don't break.
+    /// </summary>
+    [Obsolete("File uploads removed from student submissions; use DriveUrl.")]
     public List<SubmissionFileRequest> Files { get; set; } = new();
 }
 
-/// <summary>One file within a CreateSubmissionRequest.</summary>
+/// <summary>
+/// One file within a CreateSubmissionRequest.
+/// </summary>
+/// <remarks>
+/// Deprecated 2026-05-19. Student submissions no longer accept files; the
+/// DTO is kept only so deserialisation of legacy payloads doesn't fail.
+/// </remarks>
+[Obsolete("Student submissions no longer accept uploaded files. Use DriveUrl.")]
 public class SubmissionFileRequest
 {
     public string OriginalFileName { get; set; } = "";
@@ -119,6 +151,33 @@ public class UpdateSubmissionStatusRequest
     public string  Status          { get; set; } = "";
     /// <summary>Optional feedback text — stored when Status = "NeedsRevision".</summary>
     public string? ReviewerFeedback { get; set; }
+}
+
+/// <summary>
+/// Payload for PATCH /api/task-submissions/{id}. Students use this to edit
+/// their own *latest* submission before the mentor reviews it — replace the
+/// Drive link and/or update the notes. Server enforces ownership +
+/// MentorStatus='Pending' + latest-row gating.
+/// </summary>
+public class UpdateMySubmissionRequest
+{
+    public string?  DriveUrl { get; set; }
+    public string?  Notes    { get; set; }
+}
+
+/// <summary>Payload for POST /api/task-submissions/validate-drive-link.</summary>
+public class ValidateDriveLinkRequest
+{
+    public string?  DriveUrl { get; set; }
+}
+
+/// <summary>Response for the live Drive-link validator. <c>Ok=true</c> means
+/// the link passes both format and accessibility checks. <c>Error</c> is the
+/// server-supplied Hebrew message to render inline when <c>Ok=false</c>.</summary>
+public class ValidateDriveLinkResponse
+{
+    public bool     Ok     { get; set; }
+    public string?  Error  { get; set; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,8 +217,20 @@ public class StudentSubmissionTaskDto
     /// <summary>"Pending" | "Approved" | "Returned" — null if never submitted.</summary>
     public string?   LatestMentorStatus      { get; set; }
     /// <summary>When the student forwarded the latest submission to course staff. Null if not yet forwarded.</summary>
+    /// <remarks>
+    /// Since 2026-05-19 the semantics are "student confirmed the official
+    /// Moodle submission". The server fills this from
+    /// <c>COALESCE(MoodleSubmittedAt, CourseSubmittedAt)</c> so legacy rows
+    /// keep rendering as already-submitted.
+    /// </remarks>
     public DateTime? LatestCourseSubmittedAt { get; set; }
+    /// <summary>Display name of the student who clicked "הגשתי במודל". Empty
+    /// when not yet marked, or for legacy rows that pre-date the audit
+    /// column.</summary>
+    public string   LatestMoodleSubmittedByName { get; set; } = "";
     public DateTime? LatestSubmittedAt       { get; set; }
+    /// <summary>Drive link of the latest submission. Null on legacy file-based rows.</summary>
+    public string?  LatestDriveUrl          { get; set; }
 
     // ── Lecturer published feedback (read-only on the student side) ──────────
     // The server fills these only when IsFeedbackPublished = 1 — drafts are

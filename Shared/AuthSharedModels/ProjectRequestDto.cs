@@ -140,6 +140,10 @@ public class ProjectRequestRowDto
 
     public string?  AssignedToName   { get; set; }
     public int      AttachmentCount  { get; set; }
+    /// <summary>True when the request has activity newer than the caller's
+    /// last view (or has never been viewed). Drives the WhatsApp-style dot
+    /// in the inbox list.</summary>
+    public bool     HasUnread        { get; set; }
 
     // ── Team quick-info (rendered in the management list popover) ────────────
     // Populated server-side from Teams / TeamMembers / ProjectMentors /
@@ -418,11 +422,19 @@ public class StudentOwnRequestDto
     public int      Id              { get; set; }
     public string   RequestType     { get; set; } = "";
     public string   Title           { get; set; } = "";
+    /// <summary>Student-supplied body text. Was missing from the DTO until
+    /// 2026-05-19, which is why the student's detail view didn't show the
+    /// original text they submitted.</summary>
+    public string?  Description     { get; set; }
     public string   Status          { get; set; } = RequestStatuses.New;
     public string   Priority        { get; set; } = RequestPriorities.Normal;
     public DateTime CreatedAt       { get; set; }
     public DateTime UpdatedAt       { get; set; }
     public string?  ResolutionNotes { get; set; }
     public int      AttachmentCount { get; set; }
+    /// <summary>True when the request has activity newer than this student's
+    /// last view of it. Cleared by POST /api/project-requests/{id}/mark-read
+    /// (called automatically when the detail is opened).</summary>
+    public bool     HasUnread       { get; set; }
     public List<ProjectRequestEventDto> Events { get; set; } = new();
 }

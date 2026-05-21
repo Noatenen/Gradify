@@ -9,7 +9,28 @@ public interface ITaskSubmissionsService
     Task<List<StudentSubmissionTaskDto>?> GetMySubmissionTasksAsync();
     Task<StudentSubmissionTaskDto?>       GetSubmissionTaskAsync(int taskId);
     Task<List<TaskSubmissionSummaryDto>?> GetByTaskAsync(int taskId);
-    Task<int?>                            CreateSubmissionAsync(CreateSubmissionRequest req);
+    /// <summary>Creates a submission. Returns the new id on success or
+    /// (null, server-supplied Hebrew error) on failure. The server now runs
+    /// authoritative Drive-URL validation, so its error text is what the UI
+    /// should surface to the student.</summary>
+    Task<(int? Id, string? Error)>        CreateSubmissionAsync(CreateSubmissionRequest req);
+    /// <summary>Student edits their own latest pending submission. Returns
+    /// (true, null) on success or (false, Hebrew error) on rejection. Server
+    /// enforces ownership + MentorStatus='Pending' + latest-row gating.</summary>
+    Task<(bool Ok, string? Error)>        UpdateMySubmissionAsync(int submissionId, UpdateMySubmissionRequest req);
+    /// <summary>Student deletes their own latest pending submission. Same
+    /// server-side gating as UpdateMySubmissionAsync. On success the task
+    /// rolls back to "Open" / "ReturnedForRevision" automatically.</summary>
+    Task<(bool Ok, string? Error)>        DeleteMySubmissionAsync(int submissionId);
+    /// <summary>Pre-submit live check: format + accessibility. Same code path
+    /// the server runs on POST/PATCH, so a green result here is a strong
+    /// guarantee the actual submission will not be rejected by the validator.</summary>
+    Task<(bool Ok, string? Error)>        ValidateDriveLinkAsync(string url);
+    /// <summary>Manual student confirmation that the official submission was
+    /// completed in Moodle. Idempotent on the server. Returns the persisted
+    /// timestamp + acting student name on success.</summary>
+    Task<(bool Ok, DateTime? MoodleSubmittedAt, string? MoodleSubmittedBy, string? Error)>
+        MarkMoodleSubmittedAsync(int submissionId);
     Task<bool>                            SubmitToCourseAsync(int submissionId);
 
     // ── Lecturer / admin-facing ──────────────────────────────────────────────
@@ -59,16 +80,99 @@ public class TaskSubmissionsService : ITaskSubmissionsService
         catch { return null; }
     }
 
-    public async Task<int?> CreateSubmissionAsync(CreateSubmissionRequest req)
+    public async Task<(int? Id, string? Error)> CreateSubmissionAsync(CreateSubmissionRequest req)
     {
         try
         {
             var resp = await _http.PostAsJsonAsync("api/task-submissions", req);
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode)
+            {
+                // The server emits Hebrew error messages as a JSON string body
+                // (BadRequest("…")). Strip the surrounding quotes if present.
+                string body = await resp.Content.ReadAsStringAsync();
+                body = body?.Trim().Trim('"') ?? "";
+                return (null, string.IsNullOrEmpty(body) ? null : body);
+            }
             var result = await resp.Content.ReadFromJsonAsync<CreateResult>();
-            return result?.Id;
+            return (result?.Id, null);
         }
-        catch { return null; }
+        catch { return (null, null); }
+    }
+
+    public async Task<(bool Ok, string? Error)> UpdateMySubmissionAsync(
+        int submissionId, UpdateMySubmissionRequest req)
+    {
+        try
+        {
+            var resp = await _http.PatchAsJsonAsync(
+                $"api/task-submissions/{submissionId}", req);
+            if (resp.IsSuccessStatusCode) return (true, null);
+
+            string body = (await resp.Content.ReadAsStringAsync())?.Trim().Trim('"') ?? "";
+            return (false, string.IsNullOrEmpty(body) ? null : body);
+        }
+        catch { return (false, null); }
+    }
+
+    public async Task<(bool Ok, string? Error)> DeleteMySubmissionAsync(int submissionId)
+    {
+        try
+        {
+            var resp = await _http.DeleteAsync($"api/task-submissions/{submissionId}");
+            if (resp.IsSuccessStatusCode) return (true, null);
+
+            string body = (await resp.Content.ReadAsStringAsync())?.Trim().Trim('"') ?? "";
+            return (false, string.IsNullOrEmpty(body) ? null : body);
+        }
+        catch { return (false, null); }
+    }
+
+    private sealed class MoodleMarkResponse
+    {
+        public int       SubmissionId       { get; set; }
+        public bool      WasAlreadyMarked   { get; set; }
+        public DateTime? MoodleSubmittedAt  { get; set; }
+        public string?   MoodleSubmittedBy  { get; set; }
+    }
+
+    public async Task<(bool Ok, DateTime? MoodleSubmittedAt, string? MoodleSubmittedBy, string? Error)>
+        MarkMoodleSubmittedAsync(int submissionId)
+    {
+        try
+        {
+            var resp = await _http.PostAsync(
+                $"api/task-submissions/{submissionId}/mark-moodle-submitted", null);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                string body = (await resp.Content.ReadAsStringAsync())?.Trim().Trim('"') ?? "";
+                return (false, null, null, string.IsNullOrEmpty(body) ? null : body);
+            }
+
+            var payload = await resp.Content.ReadFromJsonAsync<MoodleMarkResponse>();
+            return (true, payload?.MoodleSubmittedAt, payload?.MoodleSubmittedBy, null);
+        }
+        catch { return (false, null, null, null); }
+    }
+
+    public async Task<(bool Ok, string? Error)> ValidateDriveLinkAsync(string url)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(
+                "api/task-submissions/validate-drive-link",
+                new ValidateDriveLinkRequest { DriveUrl = url });
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                string body = (await resp.Content.ReadAsStringAsync())?.Trim().Trim('"') ?? "";
+                return (false, string.IsNullOrEmpty(body) ? null : body);
+            }
+
+            var result = await resp.Content.ReadFromJsonAsync<ValidateDriveLinkResponse>();
+            return (result?.Ok ?? false, result?.Error);
+        }
+        catch { return (false, null); }
     }
 
     public async Task<bool> SubmitToCourseAsync(int submissionId)

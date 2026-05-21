@@ -29,10 +29,16 @@
                 <div class="smo-header">
                     <div class="smo-header-start">
                         <div class="smo-task-icon">
-                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                            <span class="oi @(IsEditMode ? "oi-pencil" : "oi-data-transfer-upload")" aria-hidden="true"></span>
                         </div>
                         <div>
-                            <p class="smo-milestone-label">@_task!.MilestoneTitle</p>
+                            <p class="smo-milestone-label">
+                                @_task!.MilestoneTitle
+                                @if (IsEditMode)
+                                {
+                                    <span class="smo-mode-tag">עריכת הגשה</span>
+                                }
+                            </p>
                             <h2 class="smo-title">@_task.TaskTitle</h2>
                         </div>
                     </div>
@@ -79,102 +85,81 @@
                     </div>
                 }
 
-                <!-- ── Upload policy ── -->
-                <div class="smo-policy-row">
-                    @if (_task.MaxFilesCount.HasValue)
-                    {
-                        <span class="smo-policy-item">
-                            <span class="oi oi-file" aria-hidden="true"></span>
-                            עד @_task.MaxFilesCount קבצים
-                        </span>
-                    }
-                    @if (_task.MaxFileSizeMb.HasValue)
-                    {
-                        <span class="smo-policy-item">
-                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
-                            עד @_task.MaxFileSizeMb MB לקובץ
-                        </span>
-                    }
-                    @if (!string.IsNullOrWhiteSpace(_task.AllowedFileTypes))
-                    {
-                        <span class="smo-policy-item">
-                            <span class="oi oi-check" aria-hidden="true"></span>
-                            סוגים: @_task.AllowedFileTypes
-                        </span>
-                    }
-                </div>
-
                 <!-- ── Existing submission banner ── -->
                 @if (_task.LatestSubmissionId.HasValue)
                 {
                     <div class="smo-prev-submission">
                         <span class="oi oi-circle-check" aria-hidden="true"></span>
                         <span>
-                            הגשה אחרונה: @(_task.LatestSubmittedAt?.ToString("dd/MM/yyyy HH:mm") ?? "")
+                            הגשה אחרונה: @_task.LatestSubmittedAt.IsraelFormat()
                             (@_task.SubmissionCount הגשות בסה"כ)
                         </span>
                     </div>
                 }
 
-                <!-- ── Upload form (hidden while submitting or after success) ── -->
+                @* Drive-link-only submission form (uploads removed 2026-05-19). *@
                 @if (_phase != Phase.Success)
                 {
+                    <!-- Drive URL -->
+                    <div class="smo-field">
+                        <label class="smo-label">
+                            קישור Google Drive <span class="smo-required">*</span>
+                        </label>
+                        <input class="smo-input smo-drive-input smo-drive-input--@LinkStateClass"
+                               type="url"
+                               dir="ltr"
+                               placeholder="https://drive.google.com/..."
+                               value="@_driveUrl"
+                               @oninput="OnDriveUrlInput"
+                               disabled="@(_phase == Phase.Submitting)" />
+
+                        @* Live validation status badge — gates the submit button. *@
+                        <div class="smo-drive-status smo-drive-status--@LinkStateClass">
+                            @switch (_linkState)
+                            {
+                                case LinkState.Idle:
+                                    <span class="oi oi-link-intact" aria-hidden="true"></span>
+                                    <span>הדבק/י קישור כדי לבדוק שהוא נגיש לכולם.</span>
+                                    break;
+                                case LinkState.Checking:
+                                    <span class="smo-spinner-sm"></span>
+                                    <span>בודק נגישות לקישור…</span>
+                                    break;
+                                case LinkState.Accessible:
+                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                    <span>הקישור נגיש — ניתן לשלוח את ההגשה.</span>
+                                    break;
+                                case LinkState.Inaccessible:
+                                    <span class="oi oi-warning" aria-hidden="true"></span>
+                                    <span>@(_linkError ?? "הקישור אינו פתוח לצפייה.")</span>
+                                    break;
+                            }
+                        </div>
+
+                        <div class="smo-drive-help">
+                            <span class="oi oi-info smo-drive-help-icon" aria-hidden="true"></span>
+                            <div class="smo-drive-help-body">
+                                <strong>איך לשתף נכון בדרייב:</strong>
+                                <ol class="smo-drive-help-list">
+                                    <li>היכנס/י לקובץ או לתיקייה ב-Google Drive.</li>
+                                    <li>בחר/י באפשרות <em>שיתוף</em> (Share).</li>
+                                    <li>תחת <em>גישה כללית</em>, החליפ/י ל-<em>"כל מי שיש את הקישור"</em>.</li>
+                                    <li>העתק/י את הקישור והדבק/י אותו כאן.</li>
+                                </ol>
+                                <p class="smo-drive-help-note">
+                                    מותר רק קישור מ-<code>drive.google.com</code> או <code>docs.google.com</code>.
+                                    אנחנו לא מורידים את הקובץ — המנחה יפתח אותו ישירות מהדרייב.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Notes -->
                     <div class="smo-field">
                         <label class="smo-label">הערות (אופציונלי)</label>
                         <textarea class="smo-textarea" @bind="_notes" rows="2"
                                   placeholder="הוסף/י הערות להגשה…" disabled="@(_phase == Phase.Submitting)"></textarea>
                     </div>
-
-                    <!-- File picker -->
-                    <div class="smo-field">
-                        <label class="smo-label">
-                            קבצים להגשה <span class="smo-required">*</span>
-                            @if (_task.MaxFilesCount.HasValue)
-                            {
-                                <span class="smo-label-hint">(עד @_task.MaxFilesCount)</span>
-                            }
-                        </label>
-                        <div class="smo-file-drop @(_selectedFiles.Count > 0 ? "smo-file-drop-filled" : "")">
-                            <InputFile OnChange="HandleFilesSelected"
-                                       multiple
-                                       accept="@BuildAcceptAttr()"
-                                       disabled="@(_phase == Phase.Submitting)"
-                                       class="smo-file-input" />
-                            <div class="smo-file-drop-inner">
-                                <span class="oi oi-cloud-upload smo-upload-icon" aria-hidden="true"></span>
-                                <span class="smo-drop-label">לחץ/י לבחירת קבצים</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Selected files list -->
-                    @if (_selectedFiles.Count > 0)
-                    {
-                        <div class="smo-files-list">
-                            @foreach (var f in _selectedFiles)
-                            {
-                                <div class="smo-file-row @(f.ValidationError is not null ? "smo-file-invalid" : "")">
-                                    <span class="oi oi-file smo-file-icon" aria-hidden="true"></span>
-                                    <div class="smo-file-info">
-                                        <span class="smo-file-name">@f.OriginalFileName</span>
-                                        <span class="smo-file-size">@FormatSize(f.SizeBytes)</span>
-                                        @if (f.ValidationError is not null)
-                                        {
-                                            <span class="smo-file-error">@f.ValidationError</span>
-                                        }
-                                    </div>
-                                    @if (_phase != Phase.Submitting)
-                                    {
-                                        <button class="smo-file-remove" @onclick="@(() => RemoveFile(f))"
-                                                title="הסרה">
-                                            <span class="oi oi-x" aria-hidden="true"></span>
-                                        </button>
-                                    }
-                                </div>
-                            }
-                        </div>
-                    }
 
                     <!-- Validation / submit error -->
                     @if (!string.IsNullOrEmpty(_submitError))
@@ -192,16 +177,22 @@
                         </button>
                         <button class="smo-submit-btn"
                                 @onclick="Submit"
-                                disabled="@(_phase == Phase.Submitting || _selectedFiles.Count == 0 || HasValidationErrors)">
+                                disabled="@(!CanSubmit)"
+                                title="@(CanSubmit ? "" : "יש להזין קישור נגיש לדרייב")">
                             @if (_phase == Phase.Submitting)
                             {
                                 <span class="smo-spinner-sm"></span>
-                                <span>שולח…</span>
+                                <span>@(IsEditMode ? "שומר…" : "שולח…")</span>
+                            }
+                            else if (IsEditMode)
+                            {
+                                <span class="oi oi-check" aria-hidden="true"></span>
+                                <span>שמירת שינויים</span>
                             }
                             else
                             {
-                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
-                                <span>הגשה</span>
+                                <span class="oi oi-share-boxed" aria-hidden="true"></span>
+                                <span>שלח קישור</span>
                             }
                         </button>
                     </div>
@@ -213,8 +204,12 @@
                         <div class="smo-success-icon">
                             <span class="oi oi-circle-check" aria-hidden="true"></span>
                         </div>
-                        <h3 class="smo-success-title">ההגשה נשלחה בהצלחה!</h3>
-                        <p class="smo-success-body">הגשתך נקלטה במערכת.</p>
+                        <h3 class="smo-success-title">
+                            @(IsEditMode ? "ההגשה עודכנה בהצלחה!" : "ההגשה נשלחה בהצלחה!")
+                        </h3>
+                        <p class="smo-success-body">
+                            @(IsEditMode ? "השינויים נשמרו." : "הגשתך נקלטה במערכת.")
+                        </p>
                         <button class="smo-submit-btn" @onclick="Close">סגירה</button>
                     </div>
                 }
@@ -228,16 +223,47 @@
     [Parameter] public int             TaskId   { get; set; }
     [Parameter] public EventCallback   OnClose  { get; set; }
 
-    private enum Phase { Loading, LoadError, View, Submitting, Success }
+    /// <summary>When > 0 the modal is in *edit-existing* mode: it pre-fills
+    /// the fields and submits a PATCH instead of a POST. The student can
+    /// only edit their own latest submission while MentorStatus='Pending' —
+    /// the server is authoritative.</summary>
+    [Parameter] public int      EditSubmissionId    { get; set; }
+    [Parameter] public string?  InitialDriveUrl     { get; set; }
+    [Parameter] public string?  InitialNotes        { get; set; }
 
-    private Phase                      _phase         = Phase.Loading;
+    private bool IsEditMode => EditSubmissionId > 0;
+
+    private enum Phase     { Loading, LoadError, View, Submitting, Success }
+    private enum LinkState { Idle, Checking, Accessible, Inaccessible }
+
+    private Phase                      _phase       = Phase.Loading;
     private StudentSubmissionTaskDto?  _task;
-    private string                     _notes         = "";
-    private List<SelectedFile>         _selectedFiles = new();
-    private string                     _submitError   = "";
+    private string                     _notes       = "";
+    private string                     _driveUrl    = "";
+    private string                     _submitError = "";
 
-    private bool HasValidationErrors =>
-        _selectedFiles.Any(f => f.ValidationError is not null);
+    // ── Live Drive-link validation state ───────────────────────────────────
+    private LinkState _linkState   = LinkState.Idle;
+    private string?   _linkError;
+    /// <summary>Monotonic token so a stale in-flight request can't overwrite
+    /// the result of a fresher one when the user keeps typing.</summary>
+    private int       _linkToken;
+
+    /// <summary>The submit button is enabled only when the live probe says
+    /// the link is accessible. The server runs the same check on submit, so
+    /// gating here is purely a UX guard against avoidable round-trips.</summary>
+    private bool CanSubmit =>
+        _phase != Phase.Submitting
+        && !string.IsNullOrWhiteSpace(_driveUrl)
+        && _linkState == LinkState.Accessible;
+
+    private string LinkStateClass => _linkState switch
+    {
+        LinkState.Checking     => "checking",
+        LinkState.Accessible   => "ok",
+        LinkState.Inaccessible => "bad",
+        _                      => "idle",
+    };
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -245,78 +271,69 @@
     {
         if (TaskId <= 0) return;
 
-        _phase         = Phase.Loading;
-        _notes         = "";
-        _selectedFiles = new();
-        _submitError   = "";
+        _phase       = Phase.Loading;
+        _notes       = InitialNotes    ?? "";
+        _driveUrl    = InitialDriveUrl ?? "";
+        _submitError = "";
+        _linkState   = LinkState.Idle;
+        _linkError   = null;
 
         _task = await SubmissionsService.GetSubmissionTaskAsync(TaskId);
         _phase = _task is null ? Phase.LoadError : Phase.View;
+
+        // Edit mode pre-fills the URL — kick off the live probe so the
+        // button isn't permanently disabled for an already-valid link.
+        if (!string.IsNullOrWhiteSpace(_driveUrl))
+            _ = ScheduleLinkCheck();
     }
 
-    // ── File selection ─────────────────────────────────────────────────────────
-
-    private async Task HandleFilesSelected(InputFileChangeEventArgs e)
+    private async Task OnDriveUrlInput(ChangeEventArgs e)
     {
-        _submitError   = "";
-        _selectedFiles = new();
+        _driveUrl = (e.Value as string) ?? "";
+        await ScheduleLinkCheck();
+    }
 
-        int maxCount = _task?.MaxFilesCount ?? 20;
-        var files    = e.GetMultipleFiles(maxCount + 5); // read a few extra to detect over-limit
+    /// <summary>Debounced live check. Each call increments a token; only
+    /// the response that still matches the latest token is applied to UI
+    /// state, so quick typing can't cause an older "bad" answer to overwrite
+    /// a newer "good" one.</summary>
+    private async Task ScheduleLinkCheck()
+    {
+        int my = ++_linkToken;
+        var raw = _driveUrl?.Trim() ?? "";
 
-        foreach (var file in files)
+        if (string.IsNullOrEmpty(raw))
         {
-            string? validationError = null;
-
-            // Size check
-            long maxBytes = _task?.MaxFileSizeMb is int mb ? (long)mb * 1_048_576 : long.MaxValue;
-            if (file.Size > maxBytes)
-                validationError = $"גדול מ-{_task!.MaxFileSizeMb} MB";
-
-            // Extension check
-            if (validationError is null && !string.IsNullOrWhiteSpace(_task?.AllowedFileTypes))
-            {
-                var allowed = _task.AllowedFileTypes
-                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(x => x.Trim().TrimStart('.').ToLowerInvariant())
-                    .ToHashSet();
-                string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
-                if (!allowed.Contains(ext))
-                    validationError = $"סוג קובץ לא מורשה (.{ext})";
-            }
-
-            // Read to base64 only when valid (skip huge invalid files)
-            string base64 = "";
-            if (validationError is null)
-            {
-                try
-                {
-                    using var ms = new MemoryStream();
-                    await file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024).CopyToAsync(ms);
-                    base64 = Convert.ToBase64String(ms.ToArray());
-                }
-                catch
-                {
-                    validationError = "שגיאה בקריאת הקובץ";
-                }
-            }
-
-            _selectedFiles.Add(new SelectedFile
-            {
-                OriginalFileName = file.Name,
-                ContentType      = file.ContentType,
-                SizeBytes        = file.Size,
-                Base64           = base64,
-                ValidationError  = validationError,
-            });
+            _linkState = LinkState.Idle;
+            _linkError = null;
+            StateHasChanged();
+            return;
         }
 
-        // File count check
-        if (_task?.MaxFilesCount is int max && _selectedFiles.Count > max)
-            _submitError = $"ניתן לצרף עד {max} קבצים בלבד";
-    }
+        _linkState = LinkState.Checking;
+        _linkError = null;
+        StateHasChanged();
 
-    private void RemoveFile(SelectedFile file) => _selectedFiles.Remove(file);
+        await Task.Delay(600);                  // typing debounce
+        if (my != _linkToken) return;           // user kept typing
+
+        var (ok, error) = await SubmissionsService.ValidateDriveLinkAsync(raw);
+        if (my != _linkToken) return;           // a newer check superseded us
+
+        if (ok)
+        {
+            _linkState = LinkState.Accessible;
+            _linkError = null;
+        }
+        else
+        {
+            _linkState = LinkState.Inaccessible;
+            _linkError = string.IsNullOrWhiteSpace(error)
+                ? "הקישור אינו פתוח לצפייה. יש לשתף את הקובץ/התיקייה בדרייב כך שלכל מי שיש את הקישור תהיה גישה."
+                : error;
+        }
+        StateHasChanged();
+    }
 
     // ── Submit ─────────────────────────────────────────────────────────────────
 
@@ -324,42 +341,49 @@
     {
         _submitError = "";
 
-        if (_selectedFiles.Count == 0)
+        // The submit button is disabled unless the live probe already
+        // returned Accessible — but a defensive re-check protects against
+        // a user enabling the button via dev-tools or stale state.
+        var trimmed = (_driveUrl ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed) || _linkState != LinkState.Accessible)
         {
-            _submitError = "יש לבחור לפחות קובץ אחד";
-            return;
-        }
-        if (HasValidationErrors)
-        {
-            _submitError = "תקן/י שגיאות בקבצים לפני ההגשה";
-            return;
-        }
-        if (_task?.MaxFilesCount is int max && _selectedFiles.Count > max)
-        {
-            _submitError = $"ניתן לצרף עד {max} קבצים בלבד";
+            _submitError = _linkError
+                ?? "יש להזין קישור Google Drive נגיש לפני שליחת ההגשה";
             return;
         }
 
         _phase = Phase.Submitting;
 
-        var req = new CreateSubmissionRequest
+        bool ok;
+        string? error;
+        if (IsEditMode)
         {
-            TaskId = TaskId,
-            Notes  = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
-            Files  = _selectedFiles.Select(f => new SubmissionFileRequest
+            (ok, error) = await SubmissionsService.UpdateMySubmissionAsync(
+                EditSubmissionId,
+                new UpdateMySubmissionRequest
+                {
+                    DriveUrl = trimmed,
+                    Notes    = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
+                });
+        }
+        else
+        {
+            var (newId, createErr) = await SubmissionsService.CreateSubmissionAsync(new CreateSubmissionRequest
             {
-                OriginalFileName = f.OriginalFileName,
-                FileBase64       = f.Base64,
-                ContentType      = f.ContentType,
-                SizeBytes        = f.SizeBytes,
-            }).ToList(),
-        };
+                TaskId   = TaskId,
+                Notes    = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
+                DriveUrl = trimmed,
+            });
+            ok    = newId.HasValue;
+            error = createErr;
+        }
 
-        int? newId = await SubmissionsService.CreateSubmissionAsync(req);
-
-        if (newId is null)
+        if (!ok)
         {
-            _submitError = "שגיאה בשליחת ההגשה. נסה/י שנית.";
+            // Server-supplied Hebrew message takes priority (e.g. "הקישור אינו פתוח לצפייה…")
+            _submitError = string.IsNullOrWhiteSpace(error)
+                ? (IsEditMode ? "שגיאה בשמירת השינויים. נסה/י שנית." : "שגיאה בשליחת ההגשה. נסה/י שנית.")
+                : error;
             _phase       = Phase.View;
         }
         else
@@ -378,23 +402,6 @@
             await Close();
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
-
-    private string BuildAcceptAttr()
-    {
-        if (string.IsNullOrWhiteSpace(_task?.AllowedFileTypes)) return "";
-        return string.Join(",", _task.AllowedFileTypes
-            .Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(e => $".{e.Trim().TrimStart('.')}"));
-    }
-
-    private static string FormatSize(long bytes)
-    {
-        if (bytes < 1024)         return $"{bytes} B";
-        if (bytes < 1_048_576)    return $"{bytes / 1024} KB";
-        return $"{bytes / 1_048_576.0:F1} MB";
-    }
-
     private static string SubmissionStatusLabel(string status) => status switch
     {
         "Submitted"      => "הוגש",
@@ -402,15 +409,4 @@
         "NeedsRevision"  => "דורש תיקון",
         _                => status,
     };
-
-    // ── Private models ─────────────────────────────────────────────────────────
-
-    private sealed class SelectedFile
-    {
-        public string  OriginalFileName { get; set; } = "";
-        public string  ContentType      { get; set; } = "";
-        public long    SizeBytes        { get; set; }
-        public string  Base64           { get; set; } = "";
-        public string? ValidationError  { get; set; }
-    }
 }

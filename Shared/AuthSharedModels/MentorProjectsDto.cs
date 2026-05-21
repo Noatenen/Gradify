@@ -141,6 +141,11 @@ public class MentorSubmissionContextDto
     public string   MentorStatus   { get; set; } = "Pending";
     public string?  MentorFeedback { get; set; }
 
+    /// <summary>Drive link of this submission. Null on legacy file-based rows.</summary>
+    public string?  DriveUrl       { get; set; }
+
+    /// <summary>Historical uploaded files. Empty for Drive-link submissions
+    /// (post-2026-05-19). Kept so legacy submissions still render.</summary>
     public List<TaskSubmissionFileDto> Files { get; set; } = new();
 
     // Full submission history for this task (all rounds, newest first)
@@ -163,6 +168,8 @@ public class MentorSubmissionRoundDto
     public int       FileCount          { get; set; }
     /// <summary>When the student forwarded this round to course staff.</summary>
     public DateTime? CourseSubmittedAt  { get; set; }
+    /// <summary>Drive link of this round. Null on legacy file-based rows.</summary>
+    public string?   DriveUrl           { get; set; }
     /// <summary>Files attached to this specific submission round.</summary>
     public List<TaskSubmissionFileDto> Files { get; set; } = new();
 }

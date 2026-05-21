@@ -41,7 +41,7 @@
                 </div>
                 <div class="mreq-drawer-meta-item">
                     <span class="oi oi-calendar" aria-hidden="true"></span>
-                    @_drawerRow.CreatedAt.ToString("dd/MM/yyyy HH:mm")
+                    @_drawerRow.CreatedAt.IsraelFormat()
                 </div>
             </div>
             <div class="mreq-drawer-status-row">
@@ -271,7 +271,7 @@
                                     <div class="mreq-event-head">
                                         <span class="mreq-event-author">@evt.UserName</span>
                                         <span class="mreq-event-type">@EventTypeLabel(evt.EventType)</span>
-                                        <span class="mreq-event-date">@evt.CreatedAt.ToString("dd/MM/yy HH:mm")</span>
+                                        <span class="mreq-event-date">@evt.CreatedAt.IsraelFormat("dd/MM/yy HH:mm")</span>
                                     </div>
                                     @if (evt.EventType == RequestEventTypes.Comment && !string.IsNullOrWhiteSpace(evt.Content))
                                     {
@@ -327,6 +327,11 @@
                    @bind="_searchQuery" @bind:event="oninput" />
         </div>
         <div class="mreq-filter-group">
+            <select class="mreq-filter-select" @bind="_scopeFilter">
+                <option value="active">בקשות פעילות</option>
+                <option value="handled">טופלו / סגורות</option>
+                <option value="all">הכול</option>
+            </select>
             <select class="mreq-filter-select" @bind="_filterType">
                 <option value="">כל הסוגים</option>
                 @foreach (var t in RequestTypes.All)
@@ -393,7 +398,7 @@
                         foreach (var r in Filtered)
                         {
                             bool isSelected = _drawerRow?.Id == r.Id;
-                            <tr class="mreq-row @(isSelected ? "mreq-row-selected" : "")"
+                            <tr class="mreq-row @(isSelected ? "mreq-row-selected" : "") @(r.HasUnread ? "mreq-row-unread" : "")"
                                 @onclick="@(async () => await OpenDrawer(r))">
                                 <td>
                                     <span class="mreq-type-badge mreq-type-@TypeClass(r.RequestType)">
@@ -402,6 +407,10 @@
                                 </td>
                                 <td>
                                     <div class="mreq-title-cell">
+                                        @if (r.HasUnread)
+                                        {
+                                            <span class="mreq-unread-dot" title="עדכון חדש"></span>
+                                        }
                                         <span>@r.Title</span>
                                         @if (r.AttachmentCount > 0)
                                         {
@@ -422,7 +431,7 @@
                                 </td>
                                 <td class="mreq-date-cell">
                                     <div>@r.CreatedAt.ToString("dd/MM/yyyy")</div>
-                                    <div class="mreq-time">@r.CreatedAt.ToString("HH:mm")</div>
+                                    <div class="mreq-time">@r.CreatedAt.IsraelFormat("HH:mm")</div>
                                 </td>
                                 <td>
                                     <span class="mreq-priority-badge mreq-priority-@r.Priority.ToLower()">
@@ -461,6 +470,9 @@
     private string _searchQuery  = "";
     private string _filterType   = "";
     private string _filterStatus = "";
+    /// <summary>"active" | "handled" | "all" — default hides resolved/closed
+    /// requests so the inbox is focused on what still needs work.</summary>
+    private string _scopeFilter  = "active";
 
     // ── Drawer state ─────────────────────────────────────────────────────────
     private ProjectRequestRowDto?    _drawerRow;
@@ -505,6 +517,14 @@
     }
 
     private IEnumerable<ProjectRequestRowDto> Filtered => _all
+        // Active vs handled scope. Default = active so resolved/closed
+        // requests don't clutter the inbox.
+        .Where(r => _scopeFilter switch
+        {
+            "handled" => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed,
+            "all"     => true,
+            _         => r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed),
+        })
         .Where(r => string.IsNullOrEmpty(_filterType)   || r.RequestType == _filterType)
         .Where(r => string.IsNullOrEmpty(_filterStatus) || r.Status      == _filterStatus)
         .Where(r => string.IsNullOrEmpty(_searchQuery)
@@ -512,7 +532,8 @@
                  || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                  || r.ProjectNumber.ToString().Contains(_searchQuery)
                  || r.CreatedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
-        .OrderByDescending(r => r.CreatedAt);
+        // WhatsApp-style: newest activity first.
+        .OrderByDescending(r => r.UpdatedAt);
 
     // ── Drawer ───────────────────────────────────────────────────────────────
     private async Task OpenDrawer(ProjectRequestRowDto row)
@@ -525,6 +546,13 @@
         _decisionApprovedDate = null;
         _recommendation       = "";
         StateHasChanged();
+
+        // Clear the WhatsApp dot — optimistic local + best-effort server call.
+        if (row.HasUnread)
+        {
+            row.HasUnread = false;
+            _ = RequestsService.MarkReadAsync(row.Id);
+        }
 
         _detail = await RequestsService.GetByIdAsync(row.Id);
 

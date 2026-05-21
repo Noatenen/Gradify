@@ -145,6 +145,19 @@ public class ProjectRequestsController : ControllerBase
                         SELECT 1 FROM TaskSubmissions s
                         WHERE  s.TaskId = t.Id
                     )
+              -- A task with an already-active extension request is hidden
+              -- from the picker so the student can't even pick it. The
+              -- authoritative duplicate guard lives in POST /. Mirroring it
+              -- here is purely a UX gate.
+              AND   NOT EXISTS (
+                        SELECT 1
+                        FROM   ProjectRequests          r2
+                        JOIN   ProjectRequestExtensions e2 ON e2.RequestId = r2.Id
+                        WHERE  r2.ProjectId   = t.ProjectId
+                          AND  r2.RequestType = 'Extension'
+                          AND  e2.TaskId      = t.Id
+                          AND  r2.Status NOT IN ('Resolved','Closed')
+                    )
             ORDER   BY t.DueDate, t.Id";
 
         var tasks = (await _db.GetRecordsAsync<ExtensionTargetDto>(
@@ -167,6 +180,16 @@ public class ProjectRequestsController : ControllerBase
               AND   pm.DueDate     IS NOT NULL
               AND   pm.CompletedAt IS NULL
               AND   pm.Status      <> 'Completed'
+              -- Mirrors the duplicate-active guard in POST /.
+              AND   NOT EXISTS (
+                        SELECT 1
+                        FROM   ProjectRequests          r2
+                        JOIN   ProjectRequestExtensions e2 ON e2.RequestId = r2.Id
+                        WHERE  r2.ProjectId          = pm.ProjectId
+                          AND  r2.RequestType        = 'Extension'
+                          AND  e2.ProjectMilestoneId = pm.Id
+                          AND  r2.Status NOT IN ('Resolved','Closed')
+                    )
             ORDER   BY pm.DueDate, pm.Id";
 
         var milestones = (await _db.GetRecordsAsync<ExtensionTargetDto>(
@@ -183,25 +206,35 @@ public class ProjectRequestsController : ControllerBase
     [HttpGet("my")]
     public async Task<IActionResult> GetMy(int authUserId)
     {
+        // Newest activity first. UpdatedAt is bumped on every reply / status
+        // change / recommendation / decision, so it's the authoritative
+        // "last activity" column.
+        // HasUnread = activity newer than this user's last view (or never viewed).
         const string sql = @"
             SELECT  r.Id,
                     r.RequestType,
                     r.Title,
+                    r.Description,
                     r.Status,
                     r.Priority,
                     r.CreatedAt,
                     r.UpdatedAt,
                     r.ResolutionNotes,
-                    COUNT(a.Id) AS AttachmentCount
+                    COUNT(a.Id) AS AttachmentCount,
+                    CASE
+                        WHEN s.LastSeenAt IS NULL OR r.UpdatedAt > s.LastSeenAt THEN 1
+                        ELSE 0
+                    END                                              AS HasUnread
             FROM    ProjectRequests r
             JOIN    Projects    p  ON p.Id      = r.ProjectId
             JOIN    Teams       t  ON t.Id      = p.TeamId
             JOIN    TeamMembers tm ON tm.TeamId  = t.Id
             LEFT JOIN ProjectRequestAttachments a ON a.RequestId = r.Id
+            LEFT JOIN ProjectRequestSeenStates  s ON s.RequestId = r.Id AND s.UserId = @UserId
             WHERE   tm.UserId   = @UserId
               AND   tm.IsActive = 1
             GROUP   BY r.Id
-            ORDER   BY r.CreatedAt DESC";
+            ORDER   BY r.UpdatedAt DESC";
 
         var rows = (await _db.GetRecordsAsync<StudentOwnRequestDto>(sql, new { UserId = authUserId }))
                    ?.ToList() ?? new();
@@ -288,6 +321,10 @@ public class ProjectRequestsController : ControllerBase
                 r.Priority,
                 a.FirstName || ' ' || a.LastName AS AssignedToName,
                 COUNT(att.Id)                    AS AttachmentCount,
+                CASE
+                    WHEN seen.LastSeenAt IS NULL OR r.UpdatedAt > seen.LastSeenAt THEN 1
+                    ELSE 0
+                END                              AS HasUnread,
 
                 t.TeamName                       AS TeamName,
                 pt.Name                          AS TrackName,
@@ -316,9 +353,10 @@ public class ProjectRequestsController : ControllerBase
             JOIN   users     u ON u.Id = r.CreatedByUserId
             LEFT JOIN users  a ON a.Id = r.AssignedToUserId
             LEFT JOIN ProjectRequestAttachments att ON att.RequestId = r.Id
+            LEFT JOIN ProjectRequestSeenStates  seen ON seen.RequestId = r.Id AND seen.UserId = @UserId
             {whereClause}
             GROUP  BY r.Id
-            ORDER  BY r.CreatedAt DESC";
+            ORDER  BY r.UpdatedAt DESC";
 
         var rows = (await _db.GetRecordsAsync<ProjectRequestRowWithTeam>(
                         sql, new { UserId = authUserId }))?.ToList()
@@ -352,6 +390,7 @@ public class ProjectRequestsController : ControllerBase
             Priority        = r.Priority,
             AssignedToName  = r.AssignedToName,
             AttachmentCount = r.AttachmentCount,
+            HasUnread       = r.HasUnread,
             TeamName        = string.IsNullOrWhiteSpace(r.TeamName)  ? null : r.TeamName,
             TrackName       = string.IsNullOrWhiteSpace(r.TrackName) ? null : r.TrackName,
             StudentNames    = studentNames,
@@ -689,6 +728,62 @@ public class ProjectRequestsController : ControllerBase
             if (hasTarget && extCurrentDueDate.HasValue && req.RequestedDueDate is not null
                 && req.RequestedDueDate.Value.Date <= extCurrentDueDate.Value.Date)
                 return BadRequest("התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי");
+
+            // ── Duplicate-active guard (2026-05-19) ───────────────────────────
+            // At most one ACTIVE extension request per (project, target) at a
+            // time. "Active" = anything that isn't already finalised.
+            // Resolved / Closed mean the request is done; everything else
+            // (New, InProgress, NeedsInfo, WaitingForStaff,
+            // PendingMentorRecommendation, PendingLecturerDecision) is still
+            // in flight and blocks a new one.
+            //
+            // The same check is mirrored in extension-targets (the picker
+            // filters conflicting items out) — this is the authoritative
+            // gate that catches direct API calls and multi-tab races.
+            if (hasTarget)
+            {
+                const string activeNotIn = "'Resolved','Closed'";
+                string conflictSql;
+                object conflictParams;
+
+                if (req.TargetTaskId.HasValue)
+                {
+                    conflictSql = $@"
+                        SELECT 1
+                        FROM   ProjectRequests          r
+                        JOIN   ProjectRequestExtensions e ON e.RequestId = r.Id
+                        WHERE  r.ProjectId   = @ProjectId
+                          AND  r.RequestType = 'Extension'
+                          AND  e.TaskId      = @TaskId
+                          AND  r.Status NOT IN ({activeNotIn})
+                        LIMIT 1";
+                    conflictParams = new { ProjectId = req.ProjectId, TaskId = req.TargetTaskId };
+                }
+                else
+                {
+                    conflictSql = $@"
+                        SELECT 1
+                        FROM   ProjectRequests          r
+                        JOIN   ProjectRequestExtensions e ON e.RequestId = r.Id
+                        WHERE  r.ProjectId          = @ProjectId
+                          AND  r.RequestType        = 'Extension'
+                          AND  e.ProjectMilestoneId = @MsId
+                          AND  r.Status NOT IN ({activeNotIn})
+                        LIMIT 1";
+                    conflictParams = new { ProjectId = req.ProjectId, MsId = req.TargetMilestoneId };
+                }
+
+                bool hasConflict =
+                    (await _db.GetRecordsAsync<int>(conflictSql, conflictParams))?.Any() ?? false;
+
+                if (hasConflict)
+                {
+                    string msg = req.TargetTaskId.HasValue
+                        ? "כבר קיימת בקשת דחייה פתוחה עבור משימה זו."
+                        : "כבר קיימת בקשת דחייה פתוחה עבור אבן דרך זו.";
+                    return StatusCode(StatusCodes.Status409Conflict, msg);
+                }
+            }
         }
 
         // Extension requests follow a mentor-first flow: the request is born
@@ -815,7 +910,54 @@ public class ProjectRequestsController : ControllerBase
         }
         catch { /* notifications are best-effort */ }
 
+        // Creator has "seen" their own new request — don't surface it back
+        // as unread on next list refresh.
+        await BumpSeenAsync(newId, authUserId);
+
         return Ok(new { id = newId });
+    }
+
+    // ── POST /api/project-requests/{id}/mark-read ─────────────────────────
+    // Records the caller as having viewed this request as of now. Used by
+    // every detail surface (student / mentor / admin / staff drawers) so the
+    // WhatsApp-style unread indicator clears.
+    //
+    // Access gate: the user must either own the project's team (student),
+    // mentor the project (Mentor), or be Admin/Staff. We don't 403 on
+    // unauthorized — we 404, so the existence of the request isn't leaked.
+    [HttpPost("{id:int}/mark-read")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff + "," + Roles.Mentor + "," + Roles.Student)]
+    public async Task<IActionResult> MarkRead(int id, int authUserId)
+    {
+        // Existence + access check in one round-trip. Returns 1 row when:
+        //  - Admin or Staff → unconditional access
+        //  - Mentor         → assigned to the request's project
+        //  - Student        → active team member of the project
+        const string accessSql = @"
+            SELECT 1
+            FROM   ProjectRequests r
+            WHERE  r.Id = @Id
+              AND (
+                EXISTS (SELECT 1 FROM UserRoles ur WHERE ur.UserId = @UserId AND ur.Role IN ('Admin','Staff'))
+                OR EXISTS (SELECT 1 FROM ProjectMentors pm
+                           WHERE pm.ProjectId = r.ProjectId AND pm.UserId = @UserId)
+                OR EXISTS (SELECT 1
+                           FROM   Projects p
+                           JOIN   Teams       t  ON t.Id      = p.TeamId
+                           JOIN   TeamMembers tm ON tm.TeamId = t.Id
+                           WHERE  p.Id = r.ProjectId
+                             AND  tm.UserId   = @UserId
+                             AND  tm.IsActive = 1)
+              )
+            LIMIT 1";
+
+        bool allowed =
+            (await _db.GetRecordsAsync<int>(accessSql, new { Id = id, UserId = authUserId }))
+                ?.Any() ?? false;
+        if (!allowed) return NotFound();
+
+        await BumpSeenAsync(id, authUserId);
+        return Ok();
     }
 
     // ── POST /api/project-requests/{id}/handle ────────────────────────────
@@ -894,6 +1036,9 @@ public class ProjectRequestsController : ControllerBase
             AssignedToUserId = req.AssignedToUserId,
             Id               = id,
         });
+
+        // Acting user has now "seen" the request as of this write.
+        await BumpSeenAsync(id, authUserId);
 
         // ── Record events ─────────────────────────────────────────────────
         const string insertEvtSql = @"
@@ -1099,6 +1244,10 @@ public class ProjectRequestsController : ControllerBase
                 new { Id = id });
         }
 
+        // The replier has just "seen" their own message → don't surface
+        // the thread to them as unread on next refresh.
+        await BumpSeenAsync(id, authUserId);
+
         return Ok(new { transitionedToWaitingForStaff = wasNeedsInfo });
     }
 
@@ -1138,10 +1287,29 @@ public class ProjectRequestsController : ControllerBase
         });
 
         if (affected == 0) return NotFound("הבקשה לא נמצאה");
+
+        // Acting user has now "seen" the request as of this write.
+        await BumpSeenAsync(id, authUserId);
+
         return Ok();
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Records the calling user's "I have seen this request as of now"
+    /// state. Used both by the public mark-read endpoint and by every write
+    /// endpoint so the actor never sees their own message as unread on the
+    /// next list refresh. Idempotent via the UNIQUE(UserId, RequestId)
+    /// constraint and ON CONFLICT.
+    /// </summary>
+    private Task<int> BumpSeenAsync(int requestId, int userId) =>
+        _db.SaveDataAsync(@"
+            INSERT INTO ProjectRequestSeenStates (UserId, RequestId, LastSeenAt)
+            VALUES (@UserId, @RequestId, datetime('now'))
+            ON CONFLICT(UserId, RequestId) DO UPDATE
+              SET LastSeenAt = datetime('now')",
+            new { UserId = userId, RequestId = requestId });
 
     private async Task SaveEventAttachmentsAsync(
         List<RequestAttachmentUploadRequest> attachments, int eventId, int requestId)
@@ -1300,6 +1468,9 @@ public class ProjectRequestsController : ControllerBase
             }
         }
         catch { /* notifications are best-effort */ }
+
+        // Acting mentor has now "seen" the request.
+        await BumpSeenAsync(id, authUserId);
 
         return Ok();
     }
@@ -1562,6 +1733,9 @@ public class ProjectRequestsController : ControllerBase
         }
         catch { /* notifications are best-effort */ }
 
+        // Acting lecturer has now "seen" the request.
+        await BumpSeenAsync(id, authUserId);
+
         return Ok();
     }
 
@@ -1621,6 +1795,7 @@ public class ProjectRequestsController : ControllerBase
         public string   Priority         { get; set; } = RequestPriorities.Normal;
         public string?  AssignedToName   { get; set; }
         public int      AttachmentCount  { get; set; }
+        public bool     HasUnread        { get; set; }
 
         public string?  TeamName          { get; set; }
         public string?  TrackName         { get; set; }

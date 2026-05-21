@@ -12,31 +12,33 @@ namespace AuthWithAdmin.Client.Services;
 public static class NavDefinitions
 {
     // ── Admin / Staff (Lecturer) ─────────────────────────────────────
-    // The legacy generic "דשבורד" item (route /dashboard) was removed from
-    // the sidebar in favor of the dedicated "דשבורד מרצה" page. The /dashboard
-    // route still resolves so any deep link / external bookmark keeps working.
+    // Restructured 2026-05-21: side nav holds *operational, daily-work*
+    // items only. System configuration lives in the "ניהול" area below.
+    // The /dashboard legacy route still resolves so old bookmarks survive.
     private static readonly IReadOnlyList<NavItem> _adminMain = new[]
     {
-        new NavItem("דשבורד מרצה",        "dashboard/lecturer",    "oi-pulse",                 NavLinkMatch.Prefix),
-        new NavItem("פרויקטים",          "projects",              "oi-folder",                NavLinkMatch.Prefix),
-        new NavItem("בריאות פרויקטים",   "project-health",        "oi-heart",                 NavLinkMatch.Prefix),
-        new NavItem("שיבוצים",           "assignments",           "oi-target",                NavLinkMatch.Prefix),
-        // Lecturer/Admin "אבני דרך" — cross-project overview, NOT the
-        // student-style /milestones page. Template editing lives at
-        // /management/milestones (kept under the "ניהול" area).
-        new NavItem("אבני דרך",          "milestones-overview",   "oi-flag",                  NavLinkMatch.Prefix),
-        // "הגשות" (/lecturer-submissions) was removed on 2026-05-17 when the
-        // lecturer-final-review flow was retired. Mentor review remains the
-        // only review surface; the route itself still resolves to a
-        // deprecation card so old bookmarks don't 404.
-        new NavItem("בקשות",             "management/requests",   "oi-envelope-closed",       NavLinkMatch.Prefix),
+        new NavItem("דשבורד מרצה",       "dashboard/lecturer",            "oi-pulse",           NavLinkMatch.Prefix),
+        new NavItem("פרויקטים",         "projects",                       "oi-folder",          NavLinkMatch.Prefix),
+        new NavItem("בריאות פרויקטים",   "project-health",                 "oi-heart",           NavLinkMatch.Prefix),
+        new NavItem("שיבוצים",           "assignments",                    "oi-target",          NavLinkMatch.Prefix),
+        // Cross-project milestones overview (not the student-style /milestones page).
+        // Milestone TEMPLATE editing lives under /management/milestones.
+        new NavItem("אבני דרך",          "milestones-overview",            "oi-flag",            NavLinkMatch.Prefix),
+        // Operational request inbox. The /management/requests URL is the
+        // existing page — kept so deep links keep working — but it now
+        // surfaces as a primary side-nav item, not a management card.
+        new NavItem("בקשות",             "management/requests",            "oi-envelope-closed", NavLinkMatch.Prefix),
+        // Pending mentor approvals as a daily work-queue surface.
+        new NavItem("אישורי מנחה",       "management/pending-mentor-approvals", "oi-shield",     NavLinkMatch.Prefix),
+        // Learning Materials — promoted from the management area so lecturers
+        // can upload / categorize without an extra click through "ניהול".
+        new NavItem("חומרי עזר",         "resource-files",                 "oi-book",            NavLinkMatch.Prefix),
     };
 
     private static readonly IReadOnlyList<NavItem> _adminBottom = new[]
     {
-        new NavItem("ניהול",   "management",    "oi-list-rich", NavLinkMatch.All),
-        new NavItem("חומרי עזר","resource-files","oi-folder",    NavLinkMatch.Prefix),
-        new NavItem("הגדרות",  "settings",      "oi-cog",       NavLinkMatch.Prefix),
+        new NavItem("ניהול",   "management", "oi-list-rich", NavLinkMatch.All),
+        new NavItem("הגדרות",  "settings",   "oi-cog",       NavLinkMatch.Prefix),
     };
 
     // ── Student ──────────────────────────────────────────────────────

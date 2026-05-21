@@ -1,0 +1,612 @@
+@page "/management/pending-approval-settings"
+@layout AppLayout
+@attribute [Authorize(Roles = $"{Roles.Admin},{Roles.Staff}")]
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using System.Net.Http.Json
+@inject NavigationManager Nav
+@inject HttpClient Http
+
+@*
+    Pending Approval Settings — operational configuration for the pending
+    mentor-approvals queue. Drives reminders, escalation, override
+    capabilities, and automations. Persisted via a singleton row at
+    /api/management/pending-approval-settings.
+
+    The OPERATIONAL queue lives at /management/pending-mentor-approvals
+    (side-nav "אישורי מנחה"). This page is config-only.
+*@
+
+<div class="pas-page" dir="rtl">
+
+    <!-- ── Top bar ── -->
+    <div class="pas-topbar">
+        <div class="pas-topbar-start">
+            <button class="pas-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management"))"
+                    title="חזרה לניהול">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="pas-breadcrumb">ניהול</div>
+                <h1 class="pas-title">הגדרות אישורי מנחה</h1>
+                <p class="pas-subtitle">
+                    כללי תזכורת, אסקלציה ואוטומציות לתור אישורי המנחה.
+                </p>
+            </div>
+        </div>
+        <button class="pas-open-queue"
+                @onclick="@(() => Nav.NavigateTo("/management/pending-mentor-approvals"))"
+                title="מעבר לתור המבצעי">
+            <span class="oi oi-list-rich" aria-hidden="true"></span>
+            פתיחת תור האישורים
+        </button>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="pas-state">טוען הגדרות…</div>
+    }
+    else if (_loadError || _dto is null)
+    {
+        <div class="pas-state pas-state-error">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            שגיאה בטעינת ההגדרות. נסו לרענן את הדף.
+        </div>
+    }
+    else
+    {
+        @if (!string.IsNullOrEmpty(_toast))
+        {
+            <div class="pas-toast @(_toastError ? "pas-toast-error" : "")">@_toast</div>
+        }
+
+        <div class="pas-grid">
+
+            <!-- 1 ── Response-time rules ─────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-clock pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">סף תגובה</h2>
+                        <p class="pas-section-desc">
+                            לאחר כמה ימים ללא תגובה מהמנחה המערכת תגיב, בכל אחת משלוש רמות החומרה.
+                        </p>
+                    </div>
+                </header>
+                <div class="pas-row pas-row-3">
+                    <label class="pas-field">
+                        <span class="pas-field-label">תזכורת</span>
+                        <span class="pas-input-wrap pas-input-wrap-warn">
+                            <input type="number" min="1" max="120"
+                                   class="pas-input"
+                                   @bind="_dto.WarningAfterDays" />
+                            <span class="pas-field-suffix">ימים</span>
+                        </span>
+                        <span class="pas-field-hint">תזכורת ראשונה למנחה.</span>
+                    </label>
+                    <label class="pas-field">
+                        <span class="pas-field-label">אסקלציה</span>
+                        <span class="pas-input-wrap pas-input-wrap-escalate">
+                            <input type="number" min="1" max="120"
+                                   class="pas-input"
+                                   @bind="_dto.EscalationAfterDays" />
+                            <span class="pas-field-suffix">ימים</span>
+                        </span>
+                        <span class="pas-field-hint">הסלמה אוטומטית למרצה / רכז.</span>
+                    </label>
+                    <label class="pas-field">
+                        <span class="pas-field-label">קריטי</span>
+                        <span class="pas-input-wrap pas-input-wrap-critical">
+                            <input type="number" min="1" max="120"
+                                   class="pas-input"
+                                   @bind="_dto.CriticalAfterDays" />
+                            <span class="pas-field-suffix">ימים</span>
+                        </span>
+                        <span class="pas-field-hint">סימון הפרויקט בסיכון.</span>
+                    </label>
+                </div>
+                @if (!ThresholdsAreOrdered)
+                {
+                    <div class="pas-field-error">
+                        הספים חייבים להיות בסדר עולה: תזכורת &lt; אסקלציה &lt; קריטי.
+                    </div>
+                }
+            </section>
+
+            <!-- 2 ── Reminder channels ──────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-envelope-closed pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">ערוצי תזכורת</h2>
+                        <p class="pas-section-desc">בחר/י באילו ערוצים תישלחנה התזכורות.</p>
+                    </div>
+                </header>
+                <div class="pas-toggles">
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">אימייל</span>
+                            <span class="pas-toggle-hint">שליחה לכתובות המייל הרשומות במערכת.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.ChannelEmail" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">התראה בתוך המערכת</span>
+                            <span class="pas-toggle-hint">פעמון ההתראות בכל ממשק.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.ChannelInSystem" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">Slack
+                                <span class="pas-badge-soon">בקרוב</span>
+                            </span>
+                            <span class="pas-toggle-hint">פעיל לפי אינטגרציה כללית (נשמר אך טרם נשלח).</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.ChannelSlack" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 3 ── Reminder frequency ─────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-loop-circular pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">תדירות תזכורת</h2>
+                        <p class="pas-section-desc">קצב חזרת התזכורת אם עדיין לא טופלה.</p>
+                    </div>
+                </header>
+                <div class="pas-radios">
+                    @foreach (var f in ReminderFrequencies.All)
+                    {
+                        <label class="pas-radio @(IsFrequency(f) ? "pas-radio--active" : "")">
+                            <input type="radio"
+                                   name="freq"
+                                   value="@f"
+                                   checked="@IsFrequency(f)"
+                                   @onchange="@(() => _dto.ReminderFrequency = f)" />
+                            <span>@ReminderFrequencies.Label(f)</span>
+                        </label>
+                    }
+                </div>
+                @if (_dto.ReminderFrequency == ReminderFrequencies.EveryNDays)
+                {
+                    <label class="pas-field pas-field-inline">
+                        <span class="pas-field-label">כל</span>
+                        <span class="pas-input-wrap">
+                            <input type="number" min="1" max="30"
+                                   class="pas-input pas-input-narrow"
+                                   @bind="_dto.ReminderIntervalDays" />
+                            <span class="pas-field-suffix">ימים</span>
+                        </span>
+                    </label>
+                }
+            </section>
+
+            <!-- 4 ── Recipients ─────────────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-people pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">מקבלי התזכורת</h2>
+                        <p class="pas-section-desc">בחר/י את הנמענים — ניתן לבחור יותר מאחד.</p>
+                    </div>
+                </header>
+                <div class="pas-chips">
+                    <label class="pas-chip @(_dto.RecipientMentor ? "pas-chip--on" : "")">
+                        <input type="checkbox" @bind="_dto.RecipientMentor" />
+                        <span class="oi oi-person" aria-hidden="true"></span><span>מנחה</span>
+                    </label>
+                    <label class="pas-chip @(_dto.RecipientLecturer ? "pas-chip--on" : "")">
+                        <input type="checkbox" @bind="_dto.RecipientLecturer" />
+                        <span class="oi oi-pulse" aria-hidden="true"></span><span>מרצה</span>
+                    </label>
+                    <label class="pas-chip @(_dto.RecipientCoordinator ? "pas-chip--on" : "")">
+                        <input type="checkbox" @bind="_dto.RecipientCoordinator" />
+                        <span class="oi oi-clipboard" aria-hidden="true"></span><span>רכז קורס</span>
+                    </label>
+                    <label class="pas-chip @(_dto.RecipientTeam ? "pas-chip--on" : "")">
+                        <input type="checkbox" @bind="_dto.RecipientTeam" />
+                        <span class="oi oi-people" aria-hidden="true"></span><span>כל הצוות (סטודנטים)</span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 5 ── Escalation rules ───────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-shield pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">כללי אסקלציה</h2>
+                        <p class="pas-section-desc">
+                            פעולות שיופעלו כשעוברים את סף האסקלציה (@_dto.EscalationAfterDays ימים).
+                        </p>
+                    </div>
+                </header>
+                <div class="pas-toggles">
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">הודעה אוטומטית למרצה</span>
+                            <span class="pas-toggle-hint">שליחת התראה למרצים/אדמינים בעת חריגה.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.EscalateNotifyLecturer" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">הודעה אוטומטית לרכז הקורס</span>
+                            <span class="pas-toggle-hint">שליחת התראה לרכזים אם מוגדרים.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.EscalateNotifyCoordinator" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">סימון הפרויקט כבסיכון</span>
+                            <span class="pas-toggle-hint">מעדכן את "בריאות הפרויקט" אוטומטית.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.MarkProjectAtRisk" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">הצגה בדשבורד הניהולי</span>
+                            <span class="pas-toggle-hint">הצגת הבקשה התקועה ברשימה הניהולית.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.ShowInManagementDashboard" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 6 ── Lecturer overrides ─────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-key pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">הרשאות עקיפה למרצה</h2>
+                        <p class="pas-section-desc">
+                            מתי המרצה רשאי לפעול בעצמו, ללא תגובת מנחה.
+                        </p>
+                    </div>
+                </header>
+                <div class="pas-toggles">
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">אישור הגשה ללא תגובת מנחה</span>
+                            <span class="pas-toggle-hint">המרצה רשאי לאשר הגשה גם אם המנחה לא הגיב.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.LecturerCanApproveWithoutMentor" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">דחיית הגשה ללא תגובת מנחה</span>
+                            <span class="pas-toggle-hint">המרצה רשאי לדחות הגשה גם אם המנחה לא הגיב.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.LecturerCanRejectWithoutMentor" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">פתיחה מחדש של הגשות</span>
+                            <span class="pas-toggle-hint">אפשרות להחזיר הגשה שכבר אושרה לסטטוס פעיל.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.LecturerCanReopenSubmissions" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">קידום אבן דרך באכיפה</span>
+                            <span class="pas-toggle-hint">העברת אבן דרך לסטטוס הבא גם אם משימות נותרו פתוחות.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.LecturerCanForceMilestone" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 7 ── Automation rules ───────────────────────────────── -->
+            <section class="pas-section">
+                <header class="pas-section-head">
+                    <span class="oi oi-cog pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">אוטומציות</h2>
+                        <p class="pas-section-desc">כיבוי / הפעלה של פעולות אוטומטיות במערכת.</p>
+                    </div>
+                </header>
+                <div class="pas-toggles">
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">אסקלציה אוטומטית</span>
+                            <span class="pas-toggle-hint">הפעלת ההסלמה אוטומטית בחציית הסף.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.AutoEscalation" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">עדכון אוטומטי של בריאות הפרויקט</span>
+                            <span class="pas-toggle-hint">מעדכן את סטטוס הפרויקט (תקין / סיכון) אוטומטית.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.AutoProjectHealthUpdates" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">תזמון אוטומטי של תזכורות</span>
+                            <span class="pas-toggle-hint">מנוע הרקע מתזמן תזכורות לפי ההגדרות.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.AutoReminderScheduling" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                    <label class="pas-toggle-row">
+                        <div class="pas-toggle-text">
+                            <span class="pas-toggle-label">ניקוי אוטומטי של התראות ישנות</span>
+                            <span class="pas-toggle-hint">התראות שטופלו יוסרו אוטומטית לאחר זמן.</span>
+                        </div>
+                        <span class="pas-switch">
+                            <input type="checkbox" @bind="_dto.AutoNotificationCleanup" />
+                            <span class="pas-switch-track"><span class="pas-switch-thumb"></span></span>
+                        </span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 8 ── Preview / simulation timeline ──────────────────── -->
+            <section class="pas-section pas-section-wide">
+                <header class="pas-section-head">
+                    <span class="oi oi-eye pas-section-icon" aria-hidden="true"></span>
+                    <div>
+                        <h2 class="pas-section-title">תרחיש לדוגמה</h2>
+                        <p class="pas-section-desc">
+                            מה יקרה אם המנחה יתעלם מהגשה — לפי ההגדרות הנוכחיות.
+                        </p>
+                    </div>
+                </header>
+
+                <ol class="pas-timeline">
+                    <li class="pas-tl-step pas-tl-day0">
+                        <span class="pas-tl-tag">יום 0</span>
+                        <span class="pas-tl-text">הסטודנט שולח הגשה — ההגשה ממתינה לאישור מנחה.</span>
+                    </li>
+                    <li class="pas-tl-step pas-tl-warn">
+                        <span class="pas-tl-tag">יום @_dto.WarningAfterDays</span>
+                        <span class="pas-tl-text">
+                            תזכורת נשלחת אל @RecipientSummary דרך @ChannelSummary
+                            (@ReminderFrequencies.Label(_dto.ReminderFrequency)@FrequencyExtra).
+                        </span>
+                    </li>
+                    <li class="pas-tl-step pas-tl-esc">
+                        <span class="pas-tl-tag">יום @_dto.EscalationAfterDays</span>
+                        <span class="pas-tl-text">הסלמה אוטומטית: @EscalationSummary.</span>
+                    </li>
+                    <li class="pas-tl-step pas-tl-crit">
+                        <span class="pas-tl-tag">יום @_dto.CriticalAfterDays</span>
+                        <span class="pas-tl-text">@CriticalSummary</span>
+                    </li>
+                </ol>
+            </section>
+        </div>
+
+        <!-- ── Save bar ── -->
+        <div class="pas-savebar">
+            <div class="pas-savebar-meta">
+                @if (_dto.UpdatedAt.HasValue)
+                {
+                    <span>
+                        עודכן לאחרונה: @_dto.UpdatedAt.IsraelFormat()
+                        @if (!string.IsNullOrWhiteSpace(_dto.UpdatedByName))
+                        {
+                            <span class="pas-savebar-by">· ע״י @_dto.UpdatedByName</span>
+                        }
+                    </span>
+                }
+                else
+                {
+                    <span class="pas-savebar-by">טרם נשמר</span>
+                }
+            </div>
+            <div class="pas-savebar-actions">
+                <button class="pas-btn pas-btn-secondary"
+                        @onclick="ReloadAsync"
+                        disabled="@_saving">
+                    ביטול שינויים
+                </button>
+                <button class="pas-btn pas-btn-primary"
+                        @onclick="SaveAsync"
+                        disabled="@(_saving || !ThresholdsAreOrdered)">
+                    @if (_saving)
+                    {
+                        <span class="pas-spinner-sm"></span><span>שומר…</span>
+                    }
+                    else
+                    {
+                        <span class="oi oi-check" aria-hidden="true"></span><span>שמירה</span>
+                    }
+                </button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private PendingApprovalSettingsDto? _dto;
+    private bool   _loading    = true;
+    private bool   _loadError;
+    private bool   _saving;
+    private string _toast      = "";
+    private bool   _toastError;
+
+    private bool ThresholdsAreOrdered =>
+        _dto is not null
+        && _dto.WarningAfterDays > 0
+        && _dto.EscalationAfterDays > _dto.WarningAfterDays
+        && _dto.CriticalAfterDays   > _dto.EscalationAfterDays;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _loadError = false;
+        try
+        {
+            _dto = await Http.GetFromJsonAsync<PendingApprovalSettingsDto>(
+                "api/management/pending-approval-settings");
+        }
+        catch
+        {
+            _loadError = true;
+            _dto = null;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_dto is null) return;
+        _saving = true;
+        try
+        {
+            var resp = await Http.PutAsJsonAsync(
+                "api/management/pending-approval-settings", _dto);
+
+            if (resp.IsSuccessStatusCode)
+            {
+                _dto = await resp.Content.ReadFromJsonAsync<PendingApprovalSettingsDto>()
+                       ?? _dto;
+                ShowToast("ההגדרות נשמרו", false);
+            }
+            else
+            {
+                string body = (await resp.Content.ReadAsStringAsync()).Trim().Trim('"');
+                ShowToast(string.IsNullOrEmpty(body) ? "שגיאת שמירה" : body, true);
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowToast("שגיאת תקשורת: " + ex.Message, true);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private bool IsFrequency(string s) => _dto?.ReminderFrequency == s;
+
+    private string FrequencyExtra =>
+        _dto?.ReminderFrequency == ReminderFrequencies.EveryNDays
+            ? $" · כל {_dto.ReminderIntervalDays} ימים"
+            : "";
+
+    private string RecipientSummary
+    {
+        get
+        {
+            if (_dto is null) return "—";
+            var parts = new List<string>();
+            if (_dto.RecipientMentor)      parts.Add("מנחה");
+            if (_dto.RecipientLecturer)    parts.Add("מרצה");
+            if (_dto.RecipientCoordinator) parts.Add("רכז קורס");
+            if (_dto.RecipientTeam)        parts.Add("צוות הסטודנטים");
+            return parts.Count == 0 ? "ללא נמענים" : string.Join(" + ", parts);
+        }
+    }
+
+    private string ChannelSummary
+    {
+        get
+        {
+            if (_dto is null) return "—";
+            var parts = new List<string>();
+            if (_dto.ChannelEmail)    parts.Add("אימייל");
+            if (_dto.ChannelInSystem) parts.Add("התראה במערכת");
+            if (_dto.ChannelSlack)    parts.Add("Slack");
+            return parts.Count == 0 ? "ללא ערוץ פעיל" : string.Join(" / ", parts);
+        }
+    }
+
+    private string EscalationSummary
+    {
+        get
+        {
+            if (_dto is null) return "";
+            var parts = new List<string>();
+            if (_dto.EscalateNotifyLecturer)    parts.Add("התראה למרצה");
+            if (_dto.EscalateNotifyCoordinator) parts.Add("התראה לרכז");
+            if (_dto.MarkProjectAtRisk)         parts.Add("סימון הפרויקט כבסיכון");
+            if (_dto.ShowInManagementDashboard) parts.Add("הצגה בדשבורד הניהולי");
+            return parts.Count == 0 ? "לא מוגדרת פעולה" : string.Join(", ", parts);
+        }
+    }
+
+    private string CriticalSummary
+    {
+        get
+        {
+            if (_dto is null) return "";
+            var risk = _dto.MarkProjectAtRisk
+                ? "הפרויקט מסומן כקריטי בבריאות הפרויקטים"
+                : "הפרויקט נשאר במצב הנוכחי בבריאות הפרויקטים";
+            var dash = _dto.ShowInManagementDashboard
+                ? " ומופיע בדשבורד הניהולי"
+                : "";
+            var ov = _dto.LecturerCanApproveWithoutMentor
+                ? "; המרצה רשאי לאשר את ההגשה ללא תגובת מנחה"
+                : "; המרצה אינו רשאי לאשר ללא תגובת מנחה (לפי ההגדרות)";
+            return risk + dash + ov + ".";
+        }
+    }
+
+    private void ShowToast(string msg, bool isError)
+    {
+        _toast = msg;
+        _toastError = isError;
+        _ = HideToastSoon();
+    }
+
+    private async Task HideToastSoon()
+    {
+        await Task.Delay(2500);
+        _toast = "";
+        StateHasChanged();
+    }
+}

@@ -9,13 +9,21 @@ public interface IProjectRequestsService
     Task<ProjectRequestDetailDto?>       GetByIdAsync(int id);
     Task<List<StudentOwnRequestDto>?>    GetMyRequestsAsync();
     Task<List<AssignableUserDto>?>       GetAssignableUsersAsync();
-    Task<int?>                           CreateAsync(CreateProjectRequestRequest req);
+    /// <summary>Creates a new request. On failure returns (null, server
+    /// Hebrew error) so the modal can surface the message inline — in
+    /// particular the "כבר קיימת בקשת דחייה פתוחה…" duplicate-active
+    /// guard returns 409 with the canonical Hebrew text.</summary>
+    Task<(int? Id, string? Error)>       CreateAsync(CreateProjectRequestRequest req);
     Task<string?>                        HandleAsync(int id, HandleProjectRequestRequest req);
     Task<string?>                        ReplyAsync(int id, string comment, List<RequestAttachmentUploadRequest>? attachments = null);
     Task<string?>                        UpdateAsync(int id, UpdateProjectRequestRequest req);
     Task<string?>                        SubmitExtensionDecisionAsync(int id, ExtensionDecisionRequest req);
     Task<string?>                        SubmitMentorRecommendationAsync(int id, MentorRecommendationRequest req);
     Task<List<ExtensionTargetDto>?>      GetExtensionTargetsAsync();
+    /// <summary>Records the caller as having viewed the request now —
+    /// clears the WhatsApp-style unread indicator. Best-effort: failures
+    /// don't surface in the UI.</summary>
+    Task                                 MarkReadAsync(int id);
 }
 
 public class ProjectRequestsService : IProjectRequestsService
@@ -48,16 +56,20 @@ public class ProjectRequestsService : IProjectRequestsService
         catch { return null; }
     }
 
-    public async Task<int?> CreateAsync(CreateProjectRequestRequest req)
+    public async Task<(int? Id, string? Error)> CreateAsync(CreateProjectRequestRequest req)
     {
         try
         {
             var resp = await _http.PostAsJsonAsync("api/project-requests", req);
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode)
+            {
+                string body = (await resp.Content.ReadAsStringAsync())?.Trim().Trim('"') ?? "";
+                return (null, string.IsNullOrEmpty(body) ? null : body);
+            }
             var result = await resp.Content.ReadFromJsonAsync<CreateResult>();
-            return result?.Id;
+            return (result?.Id, null);
         }
-        catch { return null; }
+        catch { return (null, null); }
     }
 
     /// <summary>
@@ -132,6 +144,12 @@ public class ProjectRequestsService : IProjectRequestsService
                 "api/project-requests/extension-targets");
         }
         catch { return null; }
+    }
+
+    public async Task MarkReadAsync(int id)
+    {
+        try { await _http.PostAsync($"api/project-requests/{id}/mark-read", null); }
+        catch { /* best-effort */ }
     }
 
     private sealed class CreateResult { public int Id { get; set; } }

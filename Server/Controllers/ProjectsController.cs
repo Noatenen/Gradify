@@ -1058,14 +1058,26 @@ public class ProjectsController : ControllerBase
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1)          AS LatestMentorStatus,
-                    (SELECT s.CourseSubmittedAt
+                    (SELECT COALESCE(s.MoodleSubmittedAt, s.CourseSubmittedAt)
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1)          AS LatestCourseSubmittedAt,
+                    (SELECT CASE
+                              WHEN u.Id IS NULL THEN ''
+                              ELSE TRIM(COALESCE(u.FirstName,'') || ' ' || COALESCE(u.LastName,''))
+                            END
+                     FROM   TaskSubmissions s
+                     LEFT JOIN users u ON u.Id = s.MoodleSubmittedByUserId
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestMoodleSubmittedByName,
                     (SELECT s.SubmittedAt
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
-                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmittedAt
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmittedAt,
+                    (SELECT s.DriveUrl
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestDriveUrl
             FROM    Tasks                    t
             LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
@@ -1143,14 +1155,26 @@ public class ProjectsController : ControllerBase
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1)          AS LatestMentorStatus,
-                    (SELECT s.CourseSubmittedAt
+                    (SELECT COALESCE(s.MoodleSubmittedAt, s.CourseSubmittedAt)
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1)          AS LatestCourseSubmittedAt,
+                    (SELECT CASE
+                              WHEN u.Id IS NULL THEN ''
+                              ELSE TRIM(COALESCE(u.FirstName,'') || ' ' || COALESCE(u.LastName,''))
+                            END
+                     FROM   TaskSubmissions s
+                     LEFT JOIN users u ON u.Id = s.MoodleSubmittedByUserId
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestMoodleSubmittedByName,
                     (SELECT s.SubmittedAt
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
-                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmittedAt
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestSubmittedAt,
+                    (SELECT s.DriveUrl
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1)          AS LatestDriveUrl
             FROM    Tasks                    t
             LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
@@ -1265,6 +1289,7 @@ public class ProjectsController : ControllerBase
                         s.MentorFeedback,
                         s.MentorReviewedAt,
                         s.CourseSubmittedAt,
+                        s.DriveUrl,
                         COALESCE(s.ReviewStatus, 'PendingReview')   AS ReviewStatus,
                         COALESCE(s.IsFeedbackPublished, 0)          AS IsFeedbackPublished,
                         s.FeedbackPublishedAt

@@ -455,7 +455,7 @@
                                             </div>
                                             <div class="tdm-history-header-end">
                                                 <span class="tdm-history-date">
-                                                    @sub.SubmittedAt.ToString("dd/MM/yy HH:mm")
+                                                    @sub.SubmittedAt.IsraelFormat("dd/MM/yy HH:mm")
                                                 </span>
                                                 <span class="oi @(isExpanded ? "oi-chevron-top" : "oi-chevron-bottom") tdm-chevron"
                                                       aria-hidden="true"></span>
@@ -508,6 +508,62 @@
                                                     </div>
                                                 }
 
+                                                @* Drive link (new flow, post-2026-05-19). *@
+                                                @if (!string.IsNullOrWhiteSpace(sub.DriveUrl))
+                                                {
+                                                    bool isLatestPending =
+                                                        _task.LatestSubmissionId == sub.Id
+                                                        && sub.MentorStatus == "Pending";
+                                                    bool isLatestApprovedUnmarked =
+                                                        _task.LatestSubmissionId == sub.Id
+                                                        && sub.MentorStatus == "Approved"
+                                                        && !sub.CourseSubmittedAt.HasValue;
+                                                    <div class="tdm-files">
+                                                        <span class="tdm-files-label">קישור Google Drive</span>
+                                                        <div class="tdm-drive-row">
+                                                            <a class="tdm-drive-btn"
+                                                               href="@sub.DriveUrl"
+                                                               target="_blank" rel="noopener noreferrer">
+                                                                <span class="oi oi-external-link" aria-hidden="true"></span>
+                                                                פתיחת הקישור בדרייב
+                                                            </a>
+                                                            @if (isLatestPending)
+                                                            {
+                                                                <button type="button"
+                                                                        class="tdm-edit-btn"
+                                                                        @onclick="@(() => OpenEditOwnSubmission(sub))">
+                                                                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                                                                    עריכת הגשה
+                                                                </button>
+                                                                <button type="button"
+                                                                        class="tdm-delete-btn"
+                                                                        @onclick="@(() => RequestDeleteOwn(sub))">
+                                                                    <span class="oi oi-trash" aria-hidden="true"></span>
+                                                                    מחיקת הגשה
+                                                                </button>
+                                                            }
+                                                            else if (isLatestApprovedUnmarked)
+                                                            {
+                                                                <button type="button"
+                                                                        class="tdm-moodle-btn"
+                                                                        @onclick="@(() => RequestMarkMoodle(sub))">
+                                                                    <span class="oi oi-check" aria-hidden="true"></span>
+                                                                    הגשתי במודל
+                                                                </button>
+                                                            }
+                                                        </div>
+
+                                                        @if (sub.CourseSubmittedAt.HasValue)
+                                                        {
+                                                            <div class="tdm-moodle-done">
+                                                                <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                                                <span>הוגש במודל · @sub.CourseSubmittedAt.IsraelFormat()</span>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                }
+
+                                                @* Legacy uploaded files (pre-cutover). *@
                                                 @if (sub.Files.Count > 0)
                                                 {
                                                     <div class="tdm-files">
@@ -563,6 +619,20 @@
     [Parameter] public int                TaskId           { get; set; }
     [Parameter] public EventCallback      OnClose          { get; set; }
     [Parameter] public EventCallback<int> OnOpenSubmission { get; set; }
+
+    /// <summary>Bubbles a "the student wants to edit submission X for task T"
+    /// signal up to the page that hosts SubmissionModal, so the modal opens
+    /// at that level with pre-filled fields.</summary>
+    [Parameter] public EventCallback<(int TaskId, int SubmissionId, string? DriveUrl, string? Notes)>
+        OnEditMySubmission { get; set; }
+
+    /// <summary>Bubbles a delete request up to the parent page (the parent
+    /// hosts the confirm-modal and refresh logic).</summary>
+    [Parameter] public EventCallback<int> OnDeleteMySubmission { get; set; }
+
+    /// <summary>Bubbles a "I submitted in Moodle" click up to the parent
+    /// page so the same confirm modal handles both entry points.</summary>
+    [Parameter] public EventCallback<int> OnMarkMoodleSubmitted { get; set; }
 
     // ── Task detail state ──────────────────────────────────────────────────────
     private TaskDetailDto?   _task;
@@ -703,6 +773,33 @@
     // ── Event handlers ─────────────────────────────────────────────────────────
 
     private async Task Close() => await OnClose.InvokeAsync();
+
+    /// <summary>Bubble the edit click to the host page (SubmissionsPage),
+    /// which already mounts SubmissionModal with edit-mode parameters.</summary>
+    private async Task OpenEditOwnSubmission(SubmissionHistoryItemDto sub)
+    {
+        await OnClose.InvokeAsync();
+        if (OnEditMySubmission.HasDelegate)
+            await OnEditMySubmission.InvokeAsync((TaskId, sub.Id, sub.DriveUrl, sub.Notes));
+    }
+
+    /// <summary>Bubble the delete click — the host page renders the
+    /// confirmation modal so a single confirm UI services both entry points.</summary>
+    private async Task RequestDeleteOwn(SubmissionHistoryItemDto sub)
+    {
+        await OnClose.InvokeAsync();
+        if (OnDeleteMySubmission.HasDelegate)
+            await OnDeleteMySubmission.InvokeAsync(sub.Id);
+    }
+
+    /// <summary>Bubble the "I submitted in Moodle" click — same routing
+    /// pattern as edit/delete. Parent page owns the confirm dialog.</summary>
+    private async Task RequestMarkMoodle(SubmissionHistoryItemDto sub)
+    {
+        await OnClose.InvokeAsync();
+        if (OnMarkMoodleSubmitted.HasDelegate)
+            await OnMarkMoodleSubmitted.InvokeAsync(sub.Id);
+    }
 
     private async Task OpenSubmission()
     {

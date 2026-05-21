@@ -32,9 +32,10 @@ namespace AuthWithAdmin.Server.Controllers;
 [Authorize]
 public class TaskSubmissionsController : ControllerBase
 {
-    private readonly DbRepository    _db;
-    private readonly FilesManage     _filesManage;
-    private readonly EmailHelper     _email;
+    private readonly DbRepository       _db;
+    private readonly FilesManage        _filesManage;
+    private readonly EmailHelper        _email;
+    private readonly IHttpClientFactory _httpFactory;
 
     private const string Container      = "submissions";
     private static readonly HashSet<string> ValidStatuses =
@@ -45,11 +46,16 @@ public class TaskSubmissionsController : ControllerBase
     private const int  MaxLecturerFileMb       = 10;
     private const long MaxLecturerFileBytes    = (long)MaxLecturerFileMb * 1_048_576;
 
-    public TaskSubmissionsController(DbRepository db, FilesManage filesManage, EmailHelper email)
+    public TaskSubmissionsController(
+        DbRepository db,
+        FilesManage filesManage,
+        EmailHelper email,
+        IHttpClientFactory httpFactory)
     {
         _db          = db;
         _filesManage = filesManage;
         _email       = email;
+        _httpFactory = httpFactory;
     }
 
     // ── GET /api/task-submissions/all ─────────────────────────────────────
@@ -196,6 +202,7 @@ public class TaskSubmissionsController : ControllerBase
                     s.SubmittedAt,
                     s.Notes,
                     s.Status,
+                    s.DriveUrl,
                     COUNT(f.Id)                          AS FileCount
             FROM    TaskSubmissions      s
             JOIN    Tasks                t ON t.Id = s.TaskId
@@ -225,7 +232,8 @@ public class TaskSubmissionsController : ControllerBase
                     s.SubmittedAt,
                     s.Notes,
                     s.Status,
-                    s.CreatedAt
+                    s.CreatedAt,
+                    s.DriveUrl
             FROM    TaskSubmissions s
             JOIN    Tasks           t ON t.Id = s.TaskId
             JOIN    users           u ON u.Id = s.SubmittedByUserId
@@ -257,24 +265,27 @@ public class TaskSubmissionsController : ControllerBase
 
     // ── POST /api/task-submissions ─────────────────────────────────────────
     //
-    // Creates a submission record + stores all attached files.
-    //
-    // Validates against the snapshot policy on the Tasks row:
-    //   • task must exist and have IsSubmission = 1
-    //   • file count  ≤ Tasks.MaxFilesCount
-    //   • file size   ≤ Tasks.MaxFileSizeMb × 1 048 576 bytes
-    //   • extension   ∈ Tasks.AllowedFileTypes (when defined)
+    // Drive-link-only submission flow (since 2026-05-19). The student sends
+    // a public Google Drive URL + optional notes; the server validates the
+    // URL shape (host whitelist + HTTPS) and runs a lightweight reachability
+    // probe (no body download) before persisting. Files are never uploaded
+    // here — the historical TaskSubmissionFiles rows remain readable but
+    // are not appended to.
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody] CreateSubmissionRequest req, int authUserId)
+    public async Task<IActionResult> Create([FromBody] CreateSubmissionRequest req, int authUserId,
+        CancellationToken cancellationToken)
     {
         // ── 1. Validate request structure ────────────────────────────────────
         if (req.TaskId <= 0)
             return BadRequest("יש לספק מזהה משימה תקין");
 
-        if (req.Files.Count == 0)
-            return BadRequest("יש לצרף לפחות קובץ אחד להגשה");
+        // ── 2. Validate Drive URL format ─────────────────────────────────────
+        var formatErr = GoogleDriveLinkValidator.ValidateFormat(req.DriveUrl);
+        if (formatErr is not null) return BadRequest(formatErr);
 
-        // ── 2. Load task + snapshot policy ──────────────────────────────────
+        var driveUrl = req.DriveUrl!.Trim();
+
+        // ── 3. Load task to confirm it's a submission task ───────────────────
         var task = await GetTaskPolicyAsync(req.TaskId);
         if (task is null)
             return NotFound("המשימה לא נמצאה");
@@ -282,99 +293,32 @@ public class TaskSubmissionsController : ControllerBase
         if (!task.IsSubmission)
             return BadRequest("משימה זו אינה מוגדרת כמשימת הגשה");
 
-        // ── 3. Validate file count ────────────────────────────────────────
-        if (task.MaxFilesCount.HasValue && req.Files.Count > task.MaxFilesCount.Value)
-            return BadRequest(
-                $"ניתן לצרף עד {task.MaxFilesCount.Value} קבצים. נשלחו {req.Files.Count}.");
+        // ── 4. Reachability probe — verifies the link is publicly shared ─────
+        var reachErr = await GoogleDriveLinkValidator.IsReachableAsync(
+            driveUrl, _httpFactory, cancellationToken);
+        if (reachErr is not null) return BadRequest(reachErr);
 
-        // ── 4. Validate each file (size + extension) ─────────────────────
-        long maxBytes = task.MaxFileSizeMb.HasValue
-            ? (long)task.MaxFileSizeMb.Value * 1_048_576
-            : long.MaxValue;
-
-        HashSet<string>? allowedExtensions = null;
-        if (!string.IsNullOrWhiteSpace(task.AllowedFileTypes))
-        {
-            allowedExtensions = new HashSet<string>(
-                task.AllowedFileTypes.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(e => e.Trim().TrimStart('.').ToLowerInvariant()),
-                StringComparer.OrdinalIgnoreCase);
-        }
-
-        for (int i = 0; i < req.Files.Count; i++)
-        {
-            var f = req.Files[i];
-
-            if (string.IsNullOrWhiteSpace(f.OriginalFileName))
-                return BadRequest($"קובץ {i + 1}: חסר שם קובץ");
-
-            if (string.IsNullOrWhiteSpace(f.FileBase64))
-                return BadRequest($"קובץ {i + 1}: חסר תוכן קובץ");
-
-            if (f.SizeBytes > maxBytes)
-                return BadRequest(
-                    $"קובץ \"{f.OriginalFileName}\" חורג מגודל הקובץ המקסימלי ({task.MaxFileSizeMb} MB).");
-
-            if (allowedExtensions is not null)
-            {
-                string ext = Path.GetExtension(f.OriginalFileName)
-                                 .TrimStart('.')
-                                 .ToLowerInvariant();
-                if (!allowedExtensions.Contains(ext))
-                    return BadRequest(
-                        $"סוג הקובץ \"{ext}\" אינו מורשה. סוגים מותרים: {task.AllowedFileTypes}.");
-            }
-        }
-
-        // ── 5. Create the submission record ──────────────────────────────
+        // ── 5. Create the submission record ──────────────────────────────────
         const string insertSubSql = @"
             INSERT INTO TaskSubmissions
-                (TaskId, SubmittedByUserId, SubmittedAt, Notes, Status)
+                (TaskId, SubmittedByUserId, SubmittedAt, Notes, Status, DriveUrl)
             VALUES
-                (@TaskId, @UserId, datetime('now'), @Notes, 'Submitted')";
+                (@TaskId, @UserId, datetime('now'), @Notes, 'Submitted', @DriveUrl)";
 
         int submissionId = await _db.InsertReturnIdAsync(insertSubSql, new
         {
-            TaskId = req.TaskId,
-            UserId = authUserId,
-            Notes  = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes.Trim(),
+            TaskId   = req.TaskId,
+            UserId   = authUserId,
+            Notes    = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes.Trim(),
+            DriveUrl = driveUrl,
         });
 
         if (submissionId == 0)
             return StatusCode(500, "שגיאה ביצירת רשומת ההגשה");
 
-        // ── 6. Save files ─────────────────────────────────────────────────
-        const string insertFileSql = @"
-            INSERT INTO TaskSubmissionFiles
-                (TaskSubmissionId, OriginalFileName, StoredFileName, ContentType, SizeBytes, UploadedAt)
-            VALUES
-                (@SubId, @OriginalFileName, @StoredFileName, @ContentType, @SizeBytes, datetime('now'))";
-
-        foreach (var f in req.Files)
-        {
-            string storedFileName;
-            try
-            {
-                storedFileName = await _filesManage.SaveRawFile(f.FileBase64, f.OriginalFileName, Container);
-            }
-            catch
-            {
-                // Best-effort: skip files that fail to save; submission record still created.
-                // Callers can check FileCount vs expected.
-                continue;
-            }
-
-            await _db.SaveDataAsync(insertFileSql, new
-            {
-                SubId            = submissionId,
-                OriginalFileName = f.OriginalFileName,
-                StoredFileName   = storedFileName,
-                ContentType      = string.IsNullOrWhiteSpace(f.ContentType)
-                                       ? "application/octet-stream"
-                                       : f.ContentType,
-                SizeBytes        = f.SizeBytes,
-            });
-        }
+        // ── 6. Files are no longer stored. Any incoming Files[] payload is
+        //       silently ignored — DTO field is marked [Obsolete] and the
+        //       legacy file-save loop has been removed.
 
         // ── 7. Sync Tasks.Status to reflect the new submission ───────────────
         // A resubmission after a return moves the task to RevisionSubmitted;
@@ -442,6 +386,262 @@ public class TaskSubmissionsController : ControllerBase
         }
 
         return Ok(new { id = submissionId });
+    }
+
+    // ── POST /api/task-submissions/{id}/mark-moodle-submitted ─────────────
+    // Manual student confirmation that the official submission was made in
+    // Moodle. Gated server-side on:
+    //   • caller is on the team that owns the parent project,
+    //   • MentorStatus = 'Approved' on this row (CTA only shows then).
+    // Idempotent — re-clicks are a no-op and preserve the original
+    // timestamp/user. Bumps Tasks.Status to 'Done' so the task drops off
+    // the "pending submission" list.
+    [HttpPost("{id:int}/mark-moodle-submitted")]
+    public async Task<IActionResult> MarkMoodleSubmitted(int id, int authUserId)
+    {
+        var row = (await _db.GetRecordsAsync<MoodleMarkGateRow>(@"
+            SELECT  s.Id, s.TaskId, s.MentorStatus,
+                    s.MoodleSubmittedAt, s.MoodleSubmittedByUserId, s.CourseSubmittedAt
+            FROM    TaskSubmissions s
+            JOIN    Tasks       t  ON t.Id   = s.TaskId
+            JOIN    Projects    p  ON p.Id   = t.ProjectId
+            JOIN    Teams       tm ON tm.Id  = p.TeamId
+            JOIN    TeamMembers m  ON m.TeamId = tm.Id
+            WHERE   s.Id        = @SubmissionId
+              AND   m.UserId    = @UserId
+              AND   m.IsActive  = 1
+            LIMIT 1",
+            new { SubmissionId = id, UserId = authUserId }))?.FirstOrDefault();
+
+        if (row is null)
+            return NotFound("ההגשה לא נמצאה או שאין לך הרשאה");
+
+        if (!string.Equals(row.MentorStatus, "Approved", StringComparison.OrdinalIgnoreCase))
+            return StatusCode(StatusCodes.Status409Conflict,
+                "ניתן לסמן הגשה במודל רק לאחר אישור מנחה");
+
+        // Idempotent: if already marked (new column or legacy CourseSubmittedAt),
+        // we don't overwrite the original audit trail.
+        bool alreadyMarked = !string.IsNullOrWhiteSpace(row.MoodleSubmittedAt)
+                          || !string.IsNullOrWhiteSpace(row.CourseSubmittedAt);
+
+        if (!alreadyMarked)
+        {
+            await _db.SaveDataAsync(@"
+                UPDATE TaskSubmissions
+                SET    MoodleSubmittedAt       = datetime('now'),
+                       MoodleSubmittedByUserId = @UserId
+                WHERE  Id = @Id
+                  AND  MoodleSubmittedAt IS NULL", // second-tier idempotency guard via WHERE
+                new { Id = id, UserId = authUserId });
+
+            // The task is done as far as the student flow is concerned —
+            // mentor approval has happened AND the student has confirmed the
+            // external submission. Stop counting it as pending.
+            await _db.SaveDataAsync(
+                "UPDATE Tasks SET Status = 'Done' WHERE Id = @TaskId",
+                new { TaskId = row.TaskId });
+        }
+
+        // Re-read so the response carries the canonical persisted values.
+        var fresh = (await _db.GetRecordsAsync<MoodleMarkResultRow>(@"
+            SELECT  COALESCE(s.MoodleSubmittedAt, s.CourseSubmittedAt) AS MoodleSubmittedAt,
+                    CASE
+                        WHEN u.Id IS NULL THEN ''
+                        ELSE TRIM(COALESCE(u.FirstName,'') || ' ' || COALESCE(u.LastName,''))
+                    END                                               AS MoodleSubmittedByName
+            FROM    TaskSubmissions s
+            LEFT JOIN users u ON u.Id = s.MoodleSubmittedByUserId
+            WHERE   s.Id = @Id LIMIT 1",
+            new { Id = id }))?.FirstOrDefault();
+
+        return Ok(new
+        {
+            submissionId        = id,
+            wasAlreadyMarked    = alreadyMarked,
+            moodleSubmittedAt   = fresh?.MoodleSubmittedAt,
+            moodleSubmittedBy   = fresh?.MoodleSubmittedByName ?? "",
+        });
+    }
+
+    private sealed class MoodleMarkGateRow
+    {
+        public int     Id                       { get; set; }
+        public int     TaskId                   { get; set; }
+        public string  MentorStatus             { get; set; } = "";
+        public string? MoodleSubmittedAt        { get; set; }
+        public int?    MoodleSubmittedByUserId  { get; set; }
+        public string? CourseSubmittedAt        { get; set; }
+    }
+
+    private sealed class MoodleMarkResultRow
+    {
+        public string? MoodleSubmittedAt     { get; set; }
+        public string  MoodleSubmittedByName { get; set; } = "";
+    }
+
+    // ── POST /api/task-submissions/validate-drive-link ────────────────────
+    // Dry-run validator used by the student submission modal to live-check
+    // a Drive URL *before* submission. No DB mutation. Mirrors the same
+    // ValidateFormat + IsReachableAsync the Create / Update endpoints run,
+    // so the submit button can be reliably gated on "Ok = true".
+    [HttpPost("validate-drive-link")]
+    public async Task<IActionResult> ValidateDriveLink(
+        [FromBody] ValidateDriveLinkRequest req, int authUserId,
+        CancellationToken cancellationToken)
+    {
+        if (req is null) return BadRequest("גוף בקשה ריק");
+
+        var formatErr = GoogleDriveLinkValidator.ValidateFormat(req.DriveUrl);
+        if (formatErr is not null)
+            return Ok(new ValidateDriveLinkResponse { Ok = false, Error = formatErr });
+
+        var reachErr = await GoogleDriveLinkValidator.IsReachableAsync(
+            req.DriveUrl!.Trim(), _httpFactory, cancellationToken);
+        if (reachErr is not null)
+            return Ok(new ValidateDriveLinkResponse { Ok = false, Error = reachErr });
+
+        return Ok(new ValidateDriveLinkResponse { Ok = true });
+    }
+
+    // ── PATCH /api/task-submissions/{id} ──────────────────────────────────
+    // Student-side edit of *own* pending submission. Allowed only when:
+    //   • the caller is on the team that owns the parent project,
+    //   • MentorStatus = 'Pending' on this row,
+    //   • this row is the LATEST submission for its task (no newer rows).
+    // Once a mentor reviews (Approved / Returned), the row is frozen here
+    // and revisions must go through the standard resubmit flow.
+    [HttpPatch("{id:int}")]
+    public async Task<IActionResult> UpdateMine(
+        int id, [FromBody] UpdateMySubmissionRequest req, int authUserId,
+        CancellationToken cancellationToken)
+    {
+        if (req is null) return BadRequest("גוף בקשה ריק");
+
+        var formatErr = GoogleDriveLinkValidator.ValidateFormat(req.DriveUrl);
+        if (formatErr is not null) return BadRequest(formatErr);
+
+        var gate = await LoadOwnPendingLatestAsync(id, authUserId);
+        if (gate.Result is not null) return gate.Result;
+
+        var driveUrl = req.DriveUrl!.Trim();
+        var reachErr = await GoogleDriveLinkValidator.IsReachableAsync(
+            driveUrl, _httpFactory, cancellationToken);
+        if (reachErr is not null) return BadRequest(reachErr);
+
+        await _db.SaveDataAsync(@"
+            UPDATE TaskSubmissions
+            SET    DriveUrl = @DriveUrl,
+                   Notes    = @Notes
+            WHERE  Id = @Id",
+            new
+            {
+                Id       = id,
+                DriveUrl = driveUrl,
+                Notes    = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes.Trim(),
+            });
+
+        return Ok();
+    }
+
+    // ── DELETE /api/task-submissions/{id} ──────────────────────────────────
+    // Student-side delete of *own* pending submission. Same gate as PATCH.
+    // After removing the row we recompute Tasks.Status from surviving
+    // submissions so the task UI reflects the rollback:
+    //   • 0 surviving rows                 → Status = 'Open'
+    //   • newest survivor.MentorStatus='Returned' → Status = 'ReturnedForRevision'
+    //   • else (defensive)                 → Status = 'SubmittedToMentor'
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> DeleteMine(int id, int authUserId)
+    {
+        var gate = await LoadOwnPendingLatestAsync(id, authUserId);
+        if (gate.Result is not null) return gate.Result;
+        int taskId = gate.TaskId;
+
+        // Hard delete — the row is the latest *and* unreviewed, so there's
+        // no history value in keeping it. Associated TaskSubmissionFiles
+        // (none for Drive-link rows; legacy uploads can't end up here
+        // because legacy rows were created pre-cutover) cascade via the
+        // existing FK ON DELETE CASCADE.
+        int affected = await _db.SaveDataAsync(
+            "DELETE FROM TaskSubmissions WHERE Id = @Id",
+            new { Id = id });
+        if (affected == 0) return NotFound("ההגשה לא נמצאה");
+
+        // Recompute Task.Status from surviving submissions.
+        var survivor = (await _db.GetRecordsAsync<SurvivorRow>(@"
+            SELECT  Id, MentorStatus
+            FROM    TaskSubmissions
+            WHERE   TaskId = @TaskId
+            ORDER   BY Id DESC
+            LIMIT   1", new { TaskId = taskId }))?.FirstOrDefault();
+
+        string newStatus = survivor is null
+            ? "Open"
+            : survivor.MentorStatus == "Returned"
+                ? "ReturnedForRevision"
+                : "SubmittedToMentor";
+
+        await _db.SaveDataAsync(
+            "UPDATE Tasks SET Status = @S WHERE Id = @Id",
+            new { Id = taskId, S = newStatus });
+
+        return Ok(new { taskId, taskStatus = newStatus });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Helpers for student-side edit / delete
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Validates that the calling student owns the submission (via team
+    /// membership), that the submission is still Pending, and that it is the
+    /// latest row for its task. Returns the task id on success; otherwise an
+    /// already-formed error response in <c>Result</c>.
+    /// </summary>
+    private async Task<(IActionResult? Result, int TaskId)> LoadOwnPendingLatestAsync(
+        int submissionId, int authUserId)
+    {
+        var row = (await _db.GetRecordsAsync<OwnSubmissionGateRow>(@"
+            SELECT  s.Id, s.TaskId, s.MentorStatus,
+                    (SELECT MAX(s2.Id) FROM TaskSubmissions s2 WHERE s2.TaskId = s.TaskId) AS LatestId
+            FROM    TaskSubmissions s
+            JOIN    Tasks       t  ON t.Id   = s.TaskId
+            JOIN    Projects    p  ON p.Id   = t.ProjectId
+            JOIN    Teams       tm ON tm.Id  = p.TeamId
+            JOIN    TeamMembers m  ON m.TeamId = tm.Id
+            WHERE   s.Id        = @SubmissionId
+              AND   m.UserId    = @UserId
+              AND   m.IsActive  = 1
+            LIMIT 1",
+            new { SubmissionId = submissionId, UserId = authUserId }))?.FirstOrDefault();
+
+        if (row is null)
+            return (NotFound("ההגשה לא נמצאה או שאין לך הרשאה"), 0);
+
+        if (!string.Equals(row.MentorStatus, "Pending", StringComparison.OrdinalIgnoreCase))
+            return (StatusCode(StatusCodes.Status409Conflict,
+                "ההגשה כבר נבדקה ע״י המנחה ולא ניתנת לעריכה או מחיקה"), 0);
+
+        if (row.LatestId != submissionId)
+            return (StatusCode(StatusCodes.Status409Conflict,
+                "ניתן לערוך/למחוק רק את ההגשה האחרונה"), 0);
+
+        return (null, row.TaskId);
+    }
+
+    private sealed class OwnSubmissionGateRow
+    {
+        public int    Id           { get; set; }
+        public int    TaskId       { get; set; }
+        public string MentorStatus { get; set; } = "";
+        public int    LatestId     { get; set; }
+    }
+
+    private sealed class SurvivorRow
+    {
+        public int    Id           { get; set; }
+        public string MentorStatus { get; set; } = "";
     }
 
     // ── PATCH /api/task-submissions/{id}/status ────────────────────────────

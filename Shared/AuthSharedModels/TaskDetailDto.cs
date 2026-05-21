@@ -81,6 +81,8 @@ public class SubmissionHistoryItemDto
     public DateTime? MentorReviewedAt   { get; set; }
     /// <summary>When the student formally forwarded this submission to course staff. Null if not yet forwarded.</summary>
     public DateTime? CourseSubmittedAt  { get; set; }
+    /// <summary>Drive link of this submission (post-2026-05-19). Null on legacy file-based rows.</summary>
+    public string?   DriveUrl           { get; set; }
     public List<TaskSubmissionFileDto> Files { get; set; } = new();
 }
 

@@ -192,19 +192,50 @@
                     <!-- Image attachments -->
                     <div class="nrm-field">
                         <label class="nrm-label">צירוף תמונות (אופציונלי)</label>
-                        <p class="nrm-hint">jpg, png, webp — עד 5 תמונות, עד 5MB כל אחת</p>
 
-                        @if (_attachments.Count < MaxAttachments && _phase != Phase.Submitting)
-                        {
-                            <label class="nrm-file-zone">
-                                <span class="oi oi-image" aria-hidden="true"></span>
-                                <span>לחץ לבחירת תמונה</span>
-                                <InputFile OnChange="OnFilesSelected"
-                                           accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
-                                           multiple
-                                           class="nrm-file-hidden" />
-                            </label>
+                        @{
+                            bool canAddMore = _attachments.Count < MaxAttachments && _phase != Phase.Submitting;
                         }
+
+                        <div class="nrm-uploader @(canAddMore ? "" : "nrm-uploader--full")">
+                            @* The wrapping <label> turns the entire block into
+                               a click target for the hidden <input type="file">.
+                               Disabled when at-limit / submitting. *@
+                            <label class="nrm-uploader-row @(canAddMore ? "" : "nrm-uploader-row--disabled")">
+                                <span class="nrm-uploader-icon" aria-hidden="true">
+                                    <span class="oi oi-cloud-upload"></span>
+                                </span>
+                                <span class="nrm-uploader-text">
+                                    <span class="nrm-uploader-title">
+                                        @(canAddMore ? "בחירת תמונות" : "הגעת/ ה למספר המקסימלי")
+                                    </span>
+                                    @if (_attachments.Count == 0)
+                                    {
+                                        <span class="nrm-uploader-empty">לא נבחרו תמונות</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="nrm-uploader-count">
+                                            נבחרו @_attachments.Count מתוך @MaxAttachments
+                                        </span>
+                                    }
+                                </span>
+                                <span class="nrm-uploader-action">
+                                    <span class="oi oi-plus" aria-hidden="true"></span>
+                                    <span>הוסף</span>
+                                </span>
+                                @if (canAddMore)
+                                {
+                                    <InputFile OnChange="OnFilesSelected"
+                                               accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                                               multiple
+                                               class="nrm-file-hidden" />
+                                }
+                            </label>
+                            <p class="nrm-uploader-hint">
+                                jpg, png, webp · עד @MaxAttachments תמונות · עד 5MB לכל תמונה
+                            </p>
+                        </div>
 
                         @if (!string.IsNullOrEmpty(_fileError))
                         {
@@ -217,12 +248,23 @@
                                 @foreach (var att in _attachments)
                                 {
                                     <li class="nrm-file-item">
-                                        <span class="oi oi-image nrm-file-icon" aria-hidden="true"></span>
+                                        @if (!string.IsNullOrWhiteSpace(att.Base64) && IsImageContentType(att.ContentType))
+                                        {
+                                            <img class="nrm-file-thumb"
+                                                 src="data:@att.ContentType;base64,@att.Base64"
+                                                 alt="@att.Name" />
+                                        }
+                                        else
+                                        {
+                                            <span class="nrm-file-thumb-fallback" aria-hidden="true">
+                                                <span class="oi oi-image"></span>
+                                            </span>
+                                        }
                                         <span class="nrm-file-name">@att.Name</span>
                                         <span class="nrm-file-size">@FormatBytes(att.Size)</span>
                                         <button type="button"
                                                 class="nrm-file-remove"
-                                                title="הסר קובץ"
+                                                title="הסר תמונה"
                                                 disabled="@(_phase == Phase.Submitting)"
                                                 @onclick="@(() => RemoveAttachment(att))">
                                             <span class="oi oi-x" aria-hidden="true"></span>
@@ -455,12 +497,14 @@
             RequestedDueDate   = _requestType == RequestTypes.Extension ? _extRequestedDate : null,
         };
 
-        var newId = await RequestsService.CreateAsync(req);
+        var (newId, error) = await RequestsService.CreateAsync(req);
 
         if (newId is null)
         {
             _phase       = Phase.Form;
-            _submitError = "אירעה שגיאה בשליחת הבקשה. נסה שנית.";
+            _submitError = string.IsNullOrWhiteSpace(error)
+                ? "אירעה שגיאה בשליחת הבקשה. נסה שנית."
+                : error;
             return;
         }
 
@@ -502,5 +546,14 @@
         if (bytes < 1024)       return $"{bytes} B";
         if (bytes < 1_048_576)  return $"{bytes / 1024.0:F1} KB";
         return $"{bytes / 1_048_576.0:F1} MB";
+    }
+
+    /// <summary>True for image MIME types we render as inline thumbnails.
+    /// Mirrors the accept list on the InputFile element.</summary>
+    private static bool IsImageContentType(string? ct)
+    {
+        if (string.IsNullOrWhiteSpace(ct)) return false;
+        var c = ct.Trim().ToLowerInvariant();
+        return c is "image/jpeg" or "image/jpg" or "image/png" or "image/webp";
     }
 }

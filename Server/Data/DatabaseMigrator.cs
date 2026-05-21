@@ -575,6 +575,66 @@ public static class DatabaseMigrator
                 FOREIGN KEY (RequestId) REFERENCES ProjectRequests(Id)      ON DELETE CASCADE
             )");
 
+        // ── PendingApprovalSettings — singleton config row (2026-05-21) ──────
+        // Drives the operational pending-mentor-approvals queue: reminder
+        // thresholds, channels, recipients, escalation, lecturer overrides,
+        // automation toggles. One canonical row at Id = 1; writes UPSERT it.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS PendingApprovalSettings (
+                Id                              INTEGER PRIMARY KEY,
+                -- Response-time thresholds (days)
+                WarningAfterDays                INTEGER NOT NULL DEFAULT 3,
+                EscalationAfterDays             INTEGER NOT NULL DEFAULT 7,
+                CriticalAfterDays               INTEGER NOT NULL DEFAULT 14,
+                -- Reminder channels
+                ChannelEmail                    INTEGER NOT NULL DEFAULT 1,
+                ChannelInSystem                 INTEGER NOT NULL DEFAULT 1,
+                ChannelSlack                    INTEGER NOT NULL DEFAULT 0,
+                -- Reminder frequency: 'Once' | 'Daily' | 'EveryNDays' | 'Weekdays'
+                ReminderFrequency               TEXT    NOT NULL DEFAULT 'Once',
+                ReminderIntervalDays            INTEGER NOT NULL DEFAULT 1,
+                -- Recipients (multi-select)
+                RecipientMentor                 INTEGER NOT NULL DEFAULT 1,
+                RecipientLecturer               INTEGER NOT NULL DEFAULT 0,
+                RecipientCoordinator            INTEGER NOT NULL DEFAULT 0,
+                RecipientTeam                   INTEGER NOT NULL DEFAULT 0,
+                -- Escalation behaviour
+                EscalateNotifyLecturer          INTEGER NOT NULL DEFAULT 1,
+                EscalateNotifyCoordinator       INTEGER NOT NULL DEFAULT 0,
+                MarkProjectAtRisk               INTEGER NOT NULL DEFAULT 1,
+                ShowInManagementDashboard       INTEGER NOT NULL DEFAULT 1,
+                -- Lecturer-override capabilities
+                LecturerCanApproveWithoutMentor INTEGER NOT NULL DEFAULT 1,
+                LecturerCanRejectWithoutMentor  INTEGER NOT NULL DEFAULT 0,
+                LecturerCanReopenSubmissions    INTEGER NOT NULL DEFAULT 1,
+                LecturerCanForceMilestone       INTEGER NOT NULL DEFAULT 0,
+                -- Automations
+                AutoEscalation                  INTEGER NOT NULL DEFAULT 1,
+                AutoProjectHealthUpdates        INTEGER NOT NULL DEFAULT 1,
+                AutoReminderScheduling          INTEGER NOT NULL DEFAULT 1,
+                AutoNotificationCleanup         INTEGER NOT NULL DEFAULT 0,
+                -- Audit
+                UpdatedAt                       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedByUserId                 INTEGER
+            )");
+
+        // ── ProjectRequestSeenStates — per-user read tracking (2026-05-19) ───
+        // Records when each user last viewed a given request. The list-view
+        // endpoints LEFT JOIN this table and emit HasUnread = r.UpdatedAt > s.LastSeenAt.
+        // Write endpoints (reply / recommendation / decision) also bump the
+        // actor's seen-state so the writer never sees their own message as
+        // unread on the next refresh.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectRequestSeenStates (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId      INTEGER NOT NULL,
+                RequestId   INTEGER NOT NULL,
+                LastSeenAt  TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (UserId, RequestId),
+                FOREIGN KEY (UserId)    REFERENCES users(Id)          ON DELETE CASCADE,
+                FOREIGN KEY (RequestId) REFERENCES ProjectRequests(Id) ON DELETE CASCADE
+            )");
+
         // ── ProjectRequestExtensions — extension-request side-table ──────────
         // 1:1 with ProjectRequests when RequestType = 'Extension'.
         // Carries fields that are meaningful only for an extension request, so
@@ -773,6 +833,27 @@ public static class DatabaseMigrator
         if (!submissionsColumns.Contains("EscalationReason"))
             await connection.ExecuteNonQueryAsync(
                 "ALTER TABLE TaskSubmissions ADD COLUMN EscalationReason TEXT");
+
+        // ── TaskSubmissions: Google Drive URL (2026-05-19) ───────────────────
+        // The student submission flow no longer accepts uploaded files — the
+        // only allowed payload is a publicly-shared Google Drive link.
+        // TaskSubmissionFiles is intentionally left intact so historical
+        // submissions still render their attachments for review.
+        if (!submissionsColumns.Contains("DriveUrl"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN DriveUrl TEXT");
+
+        // ── TaskSubmissions: manual Moodle-submission confirmation ──────────
+        // Students click "הגשתי במודל" after Moodle is done; the server marks
+        // the submission as officially handed in. CourseSubmittedAt (legacy,
+        // pre-refactor) is left alone — read paths COALESCE the new column
+        // with the old one so historical rows still display as submitted.
+        if (!submissionsColumns.Contains("MoodleSubmittedAt"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN MoodleSubmittedAt TEXT");
+        if (!submissionsColumns.Contains("MoodleSubmittedByUserId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskSubmissions ADD COLUMN MoodleSubmittedByUserId INTEGER");
 
         // ── Projects: manual Moodle submission tracking ──────────────────────
         // The Innovation Faculty's official deliverable submission happens in

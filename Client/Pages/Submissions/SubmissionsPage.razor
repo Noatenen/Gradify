@@ -11,13 +11,93 @@
 @inject ITaskSubmissionsService SubmissionsService
 @attribute [Authorize]
 
-<!-- Submission upload form (hosted on this page) -->
-<SubmissionModal TaskId="@_openTaskId" OnClose="CloseModal" />
+<!-- Submission upload form (hosted on this page).
+     EditSubmissionId > 0 puts the modal in "edit my latest pending" mode. -->
+<SubmissionModal TaskId="@_openTaskId"
+                 EditSubmissionId="@_editSubmissionId"
+                 InitialDriveUrl="@_editDriveUrl"
+                 InitialNotes="@_editNotes"
+                 OnClose="CloseModal" />
 
 <!-- Read-only submission history / details (hosted on this page) -->
 <TaskDetailModal TaskId="@_detailTaskId"
                  OnClose="CloseDetail"
-                 OnOpenSubmission="OpenSubmissionFromDetail" />
+                 OnOpenSubmission="OpenSubmissionFromDetail"
+                 OnEditMySubmission="OnEditFromDetail"
+                 OnDeleteMySubmission="OnDeleteFromDetail"
+                 OnMarkMoodleSubmitted="OnMarkMoodleFromDetail" />
+
+<!-- Moodle-confirmation modal -->
+@if (_moodleTask is not null)
+{
+    <div class="sub-confirm-overlay" @onclick="CancelMoodleMark">
+        <div class="sub-confirm-modal" dir="rtl" @onclick:stopPropagation="true"
+             role="dialog" aria-modal="true">
+            <div class="sub-confirm-head">
+                <span class="oi oi-question-mark sub-confirm-icon sub-confirm-icon-ok" aria-hidden="true"></span>
+                <h3 class="sub-confirm-title">אישור הגשה במודל</h3>
+            </div>
+            <p class="sub-confirm-body">
+                האם את/ה בטוח/ה שההגשה בוצעה במודל?
+            </p>
+            @if (!string.IsNullOrEmpty(_moodleError))
+            {
+                <div class="sub-confirm-error">@_moodleError</div>
+            }
+            <div class="sub-confirm-actions">
+                <button class="sub-confirm-cancel"
+                        @onclick="CancelMoodleMark"
+                        disabled="@_moodleBusy">
+                    ביטול
+                </button>
+                <button class="sub-confirm-ok"
+                        @onclick="ConfirmMoodleMarkAsync"
+                        disabled="@_moodleBusy">
+                    @if (_moodleBusy)
+                    { <span class="sub-spinner-sm"></span><span>שומר…</span> }
+                    else
+                    { <span class="oi oi-check" aria-hidden="true"></span><span>כן, הוגש</span> }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Delete-confirmation modal -->
+@if (_deleteTask is not null)
+{
+    <div class="sub-confirm-overlay" @onclick="CancelDelete">
+        <div class="sub-confirm-modal" dir="rtl" @onclick:stopPropagation="true"
+             role="dialog" aria-modal="true">
+            <div class="sub-confirm-head">
+                <span class="oi oi-warning sub-confirm-icon" aria-hidden="true"></span>
+                <h3 class="sub-confirm-title">ביטול הגשה</h3>
+            </div>
+            <p class="sub-confirm-body">
+                האם למחוק את ההגשה? לאחר המחיקה המשימה תחזור למצב פתוח להגשה.
+            </p>
+            @if (!string.IsNullOrEmpty(_deleteError))
+            {
+                <div class="sub-confirm-error">@_deleteError</div>
+            }
+            <div class="sub-confirm-actions">
+                <button class="sub-confirm-cancel"
+                        @onclick="CancelDelete"
+                        disabled="@_deleteBusy">
+                    ביטול
+                </button>
+                <button class="sub-confirm-delete"
+                        @onclick="ConfirmDeleteAsync"
+                        disabled="@_deleteBusy">
+                    @if (_deleteBusy)
+                    { <span class="sub-spinner-sm"></span><span>מוחק…</span> }
+                    else
+                    { <span class="oi oi-trash" aria-hidden="true"></span><span>מחק</span> }
+                </button>
+            </div>
+        </div>
+    </div>
+}
 
 @if (_isLoading)
 {
@@ -120,25 +200,87 @@ else
                     {
                         <div class="sub-card-prev @(isReturned ? "sub-card-prev-returned" : "")">
                             <span class="oi @(isReturned ? "oi-arrow-circle-left" : "oi-check")" aria-hidden="true"></span>
-                            הוגש לאחרונה: @task.LatestSubmittedAt.Value.ToString("dd/MM/yyyy HH:mm")
+                            הוגש לאחרונה: @task.LatestSubmittedAt.IsraelFormat()
                             (@task.SubmissionCount @(task.SubmissionCount == 1 ? "הגשה" : "הגשות"))
                         </div>
                     }
 
-                    @* Mentor approval reminder. The official final submission
-                       happens in Moodle (external) — our system only handles
-                       mentor review now (refactor: 2026-05-17). *@
+                    @* Drive-link "open" affordance for post-2026-05-19 submissions. *@
+                    @if (!string.IsNullOrWhiteSpace(task.LatestDriveUrl))
+                    {
+                        <div class="sub-drive-row">
+                            <a class="sub-drive-btn"
+                               href="@task.LatestDriveUrl"
+                               target="_blank" rel="noopener noreferrer">
+                                <span class="oi oi-external-link" aria-hidden="true"></span>
+                                פתיחת הקישור בדרייב
+                            </a>
+
+                            @* Edit + delete are available only while the mentor
+                               has not yet reviewed. After review the row is
+                               frozen and the student uses the resubmit flow. *@
+                            @if (task.LatestMentorStatus == "Pending" && task.LatestSubmissionId.HasValue)
+                            {
+                                <button type="button"
+                                        class="sub-edit-btn"
+                                        title="עריכת ההגשה האחרונה"
+                                        @onclick="@(() => OpenEdit(task))">
+                                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                                    עריכת הגשה
+                                </button>
+                                <button type="button"
+                                        class="sub-delete-btn"
+                                        title="ביטול ההגשה האחרונה"
+                                        @onclick="@(() => RequestDelete(task))">
+                                    <span class="oi oi-trash" aria-hidden="true"></span>
+                                    מחיקת הגשה
+                                </button>
+                            }
+                        </div>
+                    }
+
+                    @* Mentor-approved → ask the student to confirm Moodle. *@
                     @if (isMentorApproved && !isReturned)
                     {
-                        <div class="sub-card-moodle-reminder">
-                            <span class="oi oi-circle-check" aria-hidden="true"></span>
-                            <div>
-                                <div class="sub-moodle-reminder-title">אישור מנחה התקבל</div>
-                                <div class="sub-moodle-reminder-body">
-                                    יש לבצע את ההגשה הרשמית במודל בהתאם להנחיות הקורס.
+                        bool moodleDone = task.LatestCourseSubmittedAt.HasValue;
+
+                        @if (moodleDone)
+                        {
+                            <div class="sub-moodle-done">
+                                <span class="oi oi-circle-check sub-moodle-done-icon" aria-hidden="true"></span>
+                                <div class="sub-moodle-done-text">
+                                    <div class="sub-moodle-done-title">הוגש במודל</div>
+                                    <div class="sub-moodle-done-meta">
+                                        @if (!string.IsNullOrWhiteSpace(task.LatestMoodleSubmittedByName))
+                                        {
+                                            <span>סומן ע״י @task.LatestMoodleSubmittedByName ·</span>
+                                        }
+                                        <span>@task.LatestCourseSubmittedAt.IsraelFormat()</span>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
+                        }
+                        else
+                        {
+                            <div class="sub-card-moodle-reminder">
+                                <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                <div class="sub-moodle-reminder-body-wrap">
+                                    <div class="sub-moodle-reminder-title">אישור מנחה התקבל</div>
+                                    <div class="sub-moodle-reminder-body">
+                                        יש לבצע את ההגשה הרשמית במודל בהתאם להנחיות הקורס.
+                                    </div>
+                                </div>
+                                @if (task.LatestSubmissionId.HasValue)
+                                {
+                                    <button type="button"
+                                            class="sub-moodle-cta"
+                                            @onclick="@(() => RequestMoodleMark(task))">
+                                        <span class="oi oi-check" aria-hidden="true"></span>
+                                        הגשתי במודל
+                                    </button>
+                                }
+                            </div>
+                        }
                     }
 
                     <!-- Action button —
@@ -196,6 +338,21 @@ else
     private int  _openTaskId   = 0;   // upload form (SubmissionModal)
     private int  _detailTaskId = 0;   // read-only history (TaskDetailModal)
 
+    // Edit-mode plumbing for SubmissionModal
+    private int     _editSubmissionId = 0;
+    private string? _editDriveUrl;
+    private string? _editNotes;
+
+    // Delete-confirmation state
+    private StudentSubmissionTaskDto? _deleteTask;
+    private bool   _deleteBusy;
+    private string _deleteError = "";
+
+    // Moodle-confirmation state
+    private StudentSubmissionTaskDto? _moodleTask;
+    private bool   _moodleBusy;
+    private string _moodleError = "";
+
     protected override async Task OnInitializedAsync()
     {
         var result = await SubmissionsService.GetMySubmissionTasksAsync();
@@ -215,20 +372,147 @@ else
         }
     }
 
-    private void OpenSubmission(int taskId) => _openTaskId   = taskId;
+    private void OpenSubmission(int taskId)
+    {
+        // Fresh "submit" — clear any leftover edit-mode state so the modal
+        // doesn't pre-fill from a previous Edit click.
+        _editSubmissionId = 0;
+        _editDriveUrl     = null;
+        _editNotes        = null;
+        _openTaskId       = taskId;
+    }
+
+    /// <summary>Opens the SubmissionModal in edit-existing mode for the
+    /// currently latest, still-pending submission of the task.</summary>
+    private void OpenEdit(StudentSubmissionTaskDto task)
+    {
+        if (!task.LatestSubmissionId.HasValue || task.LatestMentorStatus != "Pending") return;
+        _editSubmissionId = task.LatestSubmissionId.Value;
+        _editDriveUrl     = task.LatestDriveUrl;
+        _editNotes        = null;  // server side doesn't expose latest notes here; leave blank for student to retype if needed
+        _openTaskId       = task.TaskId;
+    }
 
     // After the upload-form modal closes, refetch tasks so the new
     // LatestSubmissionId is reflected — the next click on this task will then
     // route to the read-only details view instead of the form.
     private async Task CloseModal()
     {
-        _openTaskId = 0;
+        _openTaskId       = 0;
+        _editSubmissionId = 0;
+        _editDriveUrl     = null;
+        _editNotes        = null;
+        var result = await SubmissionsService.GetMySubmissionTasksAsync();
+        if (result is not null) _tasks = result;
+    }
+
+    // ── Delete-confirmation flow ───────────────────────────────────────────
+    private void RequestDelete(StudentSubmissionTaskDto task)
+    {
+        if (!task.LatestSubmissionId.HasValue || task.LatestMentorStatus != "Pending") return;
+        _deleteTask  = task;
+        _deleteError = "";
+        _deleteBusy  = false;
+    }
+
+    private void CancelDelete()
+    {
+        if (_deleteBusy) return;
+        _deleteTask  = null;
+        _deleteError = "";
+    }
+
+    // ── Moodle-confirmation flow ───────────────────────────────────────────
+    private void RequestMoodleMark(StudentSubmissionTaskDto task)
+    {
+        if (!task.LatestSubmissionId.HasValue || task.LatestMentorStatus != "Approved") return;
+        if (task.LatestCourseSubmittedAt.HasValue) return; // already marked
+        _moodleTask  = task;
+        _moodleError = "";
+        _moodleBusy  = false;
+    }
+
+    private void CancelMoodleMark()
+    {
+        if (_moodleBusy) return;
+        _moodleTask  = null;
+        _moodleError = "";
+    }
+
+    private async Task ConfirmMoodleMarkAsync()
+    {
+        if (_moodleTask?.LatestSubmissionId is not int subId) return;
+        _moodleBusy  = true;
+        _moodleError = "";
+        var (ok, ts, by, err) = await SubmissionsService.MarkMoodleSubmittedAsync(subId);
+        if (!ok)
+        {
+            _moodleError = string.IsNullOrWhiteSpace(err)
+                ? "הסימון נכשל. נסה/י שנית."
+                : err;
+            _moodleBusy  = false;
+            return;
+        }
+
+        // Optimistic update on the cached task — the server returns the
+        // canonical timestamp + by-name so the page renders the done-banner
+        // immediately, without waiting for a list refetch.
+        _moodleTask.LatestCourseSubmittedAt     = ts;
+        _moodleTask.LatestMoodleSubmittedByName = by ?? "";
+
+        _moodleTask  = null;
+        _moodleBusy  = false;
+
+        // Refetch in the background so any derived state (Task.Status flips
+        // to Done, dashboards count it as complete) is reflected on next
+        // navigation. Best-effort — UI is already updated optimistically.
+        var fresh = await SubmissionsService.GetMySubmissionTasksAsync();
+        if (fresh is not null) _tasks = fresh;
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_deleteTask?.LatestSubmissionId is not int subId) return;
+        _deleteBusy  = true;
+        _deleteError = "";
+        var (ok, err) = await SubmissionsService.DeleteMySubmissionAsync(subId);
+        if (!ok)
+        {
+            _deleteError = string.IsNullOrWhiteSpace(err) ? "מחיקת ההגשה נכשלה. נסה/י שנית." : err;
+            _deleteBusy  = false;
+            return;
+        }
+        _deleteTask  = null;
+        _deleteBusy  = false;
+
+        // Refresh the cards so the row drops back to "טרם הוגש".
         var result = await SubmissionsService.GetMySubmissionTasksAsync();
         if (result is not null) _tasks = result;
     }
 
     private void OpenDetail(int taskId) => _detailTaskId = taskId;
     private void CloseDetail()          => _detailTaskId = 0;
+
+    // Bridges from TaskDetailModal → SubmissionModal / delete confirm.
+    private void OnEditFromDetail((int TaskId, int SubmissionId, string? DriveUrl, string? Notes) e)
+    {
+        _editSubmissionId = e.SubmissionId;
+        _editDriveUrl     = e.DriveUrl;
+        _editNotes        = e.Notes;
+        _openTaskId       = e.TaskId;
+    }
+
+    private void OnDeleteFromDetail(int submissionId)
+    {
+        var task = _tasks.FirstOrDefault(t => t.LatestSubmissionId == submissionId);
+        if (task is not null) RequestDelete(task);
+    }
+
+    private void OnMarkMoodleFromDetail(int submissionId)
+    {
+        var task = _tasks.FirstOrDefault(t => t.LatestSubmissionId == submissionId);
+        if (task is not null) RequestMoodleMark(task);
+    }
 
     // Bridge from TaskDetailModal: when the student clicks "הגשה מחדש" inside
     // the read-only view, close detail and open the upload form. CanSubmit

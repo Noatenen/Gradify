@@ -57,10 +57,10 @@
                 </div>
                 <div class="req-drawer-meta-item">
                     <span class="oi oi-clock" aria-hidden="true"></span>
-                    @_drawer.CreatedAt.ToString("dd/MM/yyyy HH:mm")
+                    @_drawer.CreatedAt.IsraelFormat()
                     @if (_drawer.UpdatedAt > _drawer.CreatedAt)
                     {
-                        <span class="req-updated-note">(עודכן @_drawer.UpdatedAt.ToString("dd/MM/yyyy HH:mm"))</span>
+                        <span class="req-updated-note">(עודכן @_drawer.UpdatedAt.IsraelFormat())</span>
                     }
                 </div>
                 @if (!string.IsNullOrEmpty(_drawer.AssignedToName))
@@ -270,7 +270,7 @@
                             <div class="req-thread-bubble">
                                 <div class="req-thread-meta">
                                     <span class="req-thread-author">@_drawer.CreatedByName</span>
-                                    <span class="req-thread-time">@_drawer.CreatedAt.ToString("dd/MM/yyyy HH:mm")</span>
+                                    <span class="req-thread-time">@_drawer.CreatedAt.IsraelFormat()</span>
                                 </div>
                                 <div class="req-thread-content">
                                     @if (!string.IsNullOrWhiteSpace(_drawer.Description))
@@ -296,7 +296,7 @@
                                 <div class="req-thread-bubble">
                                     <div class="req-thread-meta">
                                         <span class="req-thread-author">@evt.UserName</span>
-                                        <span class="req-thread-time">@evt.CreatedAt.ToString("dd/MM/yyyy HH:mm")</span>
+                                        <span class="req-thread-time">@evt.CreatedAt.IsraelFormat()</span>
                                     </div>
                                     <div class="req-thread-content">
                                         @EventSummary(evt)
@@ -375,7 +375,7 @@
                                             <td>@evt.OldValue</td>
                                             <td>@evt.NewValue</td>
                                             <td class="req-debug-content">@(evt.Content is { Length: > 40 } c ? c[..40] + "…" : evt.Content)</td>
-                                            <td class="req-debug-time">@evt.CreatedAt.ToString("HH:mm:ss.fff")</td>
+                                            <td class="req-debug-time">@evt.CreatedAt.IsraelFormat("HH:mm:ss.fff")</td>
                                         </tr>
                                     }
                                 </tbody>
@@ -682,7 +682,7 @@
                         foreach (var r in Filtered)
                         {
                             bool isSelected = _drawer?.Id == r.Id;
-                            <tr class="req-row @(isSelected ? "req-row-selected" : "")"
+                            <tr class="req-row @(isSelected ? "req-row-selected" : "") @(r.HasUnread ? "req-row-unread" : "")"
                                 @onclick="@(async () => await OpenDrawer(r))">
                                 <td>
                                     <span class="req-type-badge req-type-@TypeClass(r.RequestType)">
@@ -691,6 +691,10 @@
                                 </td>
                                 <td>
                                     <div class="req-title-cell-wrap">
+                                        @if (r.HasUnread)
+                                        {
+                                            <span class="req-unread-dot" title="עדכון חדש"></span>
+                                        }
                                         <span class="req-title-cell">@r.Title</span>
                                         @if (r.AttachmentCount > 0)
                                         {
@@ -728,7 +732,7 @@
                                 </td>
                                 <td class="req-date-cell">
                                     <div>@r.CreatedAt.ToString("dd/MM/yyyy")</div>
-                                    <div class="req-time">@r.CreatedAt.ToString("HH:mm")</div>
+                                    <div class="req-time">@r.CreatedAt.IsraelFormat("HH:mm")</div>
                                 </td>
                                 <td>
                                     <span class="req-priority-badge req-priority-@r.Priority.ToLower()">
@@ -913,6 +917,10 @@
     }
 
     // ── Filtered list ─────────────────────────────────────────────────────
+    // The "active" branch must include the Extension intermediate statuses
+    // (PendingMentorRecommendation, PendingLecturerDecision). Without them
+    // a request would vanish from the lecturer view the moment the mentor
+    // recommended a decision — bug reported 2026-05-19.
     private IEnumerable<ProjectRequestRowDto> Filtered => _all
         .Where(r => _kpiFilter switch
         {
@@ -920,12 +928,12 @@
             "new"        => r.Status == RequestStatuses.New,
             "inprogress" => r.Status is RequestStatuses.InProgress
                                      or RequestStatuses.NeedsInfo
-                                     or RequestStatuses.WaitingForStaff,
+                                     or RequestStatuses.WaitingForStaff
+                                     or RequestStatuses.PendingMentorRecommendation
+                                     or RequestStatuses.PendingLecturerDecision,
             "resolved"   => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed,
-            _            => r.Status is RequestStatuses.New
-                                     or RequestStatuses.InProgress
-                                     or RequestStatuses.NeedsInfo
-                                     or RequestStatuses.WaitingForStaff,
+            // Default "active" — everything except finalised.
+            _            => r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed),
         })
         .Where(r => string.IsNullOrEmpty(_filterType)     || r.RequestType == _filterType)
         .Where(r => string.IsNullOrEmpty(_filterStatus)   || r.Status      == _filterStatus)
@@ -935,7 +943,8 @@
                  || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                  || r.ProjectNumber.ToString().Contains(_searchQuery)
                  || r.CreatedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
-        .OrderByDescending(r => r.CreatedAt);
+        // WhatsApp-style: newest activity first.
+        .OrderByDescending(r => r.UpdatedAt);
 
     private void SetKpiFilter(string key)
     {
@@ -965,6 +974,15 @@
     private async Task OpenDrawer(ProjectRequestRowDto row)
     {
         _handleError = "";
+
+        // Clear the WhatsApp dot on the row immediately; tell the server in
+        // parallel so the state is also cleared across other tabs/devices.
+        if (row.HasUnread)
+        {
+            row.HasUnread = false;
+            _ = RequestsService.MarkReadAsync(row.Id);
+        }
+
         var detail   = await RequestsService.GetByIdAsync(row.Id);
         if (detail is null) return;
 

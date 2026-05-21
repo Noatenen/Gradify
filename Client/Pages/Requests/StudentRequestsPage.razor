@@ -165,7 +165,7 @@ else
                                 }
 
                                 <button type="button"
-                                        class="sreq-list-item @(isSelected ? "sreq-list-item--active" : "") @(isNeedsAction ? "sreq-list-item--action" : "") @(isDone ? "sreq-list-item--done" : "")"
+                                        class="sreq-list-item @(isSelected ? "sreq-list-item--active" : "") @(isNeedsAction ? "sreq-list-item--action" : "") @(isDone ? "sreq-list-item--done" : "") @(r.HasUnread ? "sreq-list-item--unread" : "")"
                                         @onclick="@(() => SelectRequest(r.Id))">
                                     <div class="sreq-list-item-row">
                                         <span class="sreq-type-badge sreq-type-@TypeClass(r.RequestType)">
@@ -174,6 +174,10 @@ else
                                         <span class="sreq-status-badge sreq-badge-@r.Status.ToLower()">
                                             @RequestStatuses.Label(r.Status)
                                         </span>
+                                        @if (r.HasUnread)
+                                        {
+                                            <span class="sreq-unread-dot" title="עדכון חדש"></span>
+                                        }
                                     </div>
                                     <h3 class="sreq-list-item-title">@r.Title</h3>
                                     <div class="sreq-list-item-preview">
@@ -240,13 +244,13 @@ else
                                 <div class="sreq-detail-meta">
                                     <span class="sreq-detail-meta-item">
                                         <span class="oi oi-clock" aria-hidden="true"></span>
-                                        נפתחה @r.CreatedAt.ToString("dd/MM/yyyy HH:mm")
+                                        נפתחה @r.CreatedAt.IsraelFormat()
                                     </span>
                                     @if (r.UpdatedAt > r.CreatedAt)
                                     {
                                         <span class="sreq-detail-meta-item">
                                             <span class="oi oi-loop-circular" aria-hidden="true"></span>
-                                            עודכנה @r.UpdatedAt.ToString("dd/MM/yyyy HH:mm")
+                                            עודכנה @r.UpdatedAt.IsraelFormat()
                                         </span>
                                     }
                                 </div>
@@ -265,6 +269,17 @@ else
                             <div class="sreq-waiting-banner">
                                 <span class="oi oi-clock" aria-hidden="true"></span>
                                 <span>תגובתך התקבלה — ממתין למענה הצוות האקדמי</span>
+                            </div>
+                        }
+
+                        @* The student's original body. Was missing from
+                           StudentOwnRequestDto until 2026-05-19 — this is
+                           the same text the mentor sees. *@
+                        @if (!string.IsNullOrWhiteSpace(r.Description))
+                        {
+                            <div class="sreq-own-body">
+                                <div class="sreq-own-body-label">הבקשה שלי</div>
+                                <div class="sreq-own-body-text">@r.Description</div>
                             </div>
                         }
 
@@ -293,7 +308,7 @@ else
                                         <div class="sreq-system-event">
                                             <span class="oi @SystemIcon(evt)" aria-hidden="true"></span>
                                             <span class="sreq-system-event-text">@EventSummary(evt)</span>
-                                            <span class="sreq-system-event-time">@evt.CreatedAt.ToString("dd/MM HH:mm")</span>
+                                            <span class="sreq-system-event-time">@evt.CreatedAt.IsraelFormat("dd/MM HH:mm")</span>
                                         </div>
                                     }
                                     else
@@ -309,7 +324,7 @@ else
                                                     {
                                                         <span class="sreq-chat-role">@RoleLabel(evt.UserRole)</span>
                                                     }
-                                                    <span class="sreq-chat-time">@evt.CreatedAt.ToString("dd/MM HH:mm")</span>
+                                                    <span class="sreq-chat-time">@evt.CreatedAt.IsraelFormat("dd/MM HH:mm")</span>
                                                 </div>
                                                 <div class="sreq-chat-bubble">@evt.Content</div>
                                                 @if (evt.Attachments.Count > 0)
@@ -481,7 +496,9 @@ else
                 "action"  => q.Where(r => r.Status == RequestStatuses.NeedsInfo),
                 "waiting" => q.Where(r => r.Status is RequestStatuses.New or RequestStatuses.InProgress or RequestStatuses.WaitingForStaff),
                 "done"    => q.Where(r => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed),
-                _         => q,
+                // Default = active only. Handled/closed requests appear only
+                // when the student explicitly clicks the "טופלו" pill.
+                _         => q.Where(r => r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed)),
             };
 
             if (!string.IsNullOrEmpty(_filterType))
@@ -549,7 +566,19 @@ else
         _selectedId = pick?.Id;
     }
 
-    private void SelectRequest(int id) => _selectedId = id;
+    private async Task SelectRequest(int id)
+    {
+        _selectedId = id;
+
+        // Best-effort mark-read so the WhatsApp dot clears immediately on
+        // both the open row and across other tabs after their next refresh.
+        var row = _requests.FirstOrDefault(r => r.Id == id);
+        if (row is { HasUnread: true })
+        {
+            row.HasUnread = false;                // optimistic local clear
+            await RequestsService.MarkReadAsync(id);
+        }
+    }
     private void ClearSelection()      => _selectedId = null;
 
     private void OpenModal()  => _showModal = true;
