@@ -122,6 +122,7 @@ app.UseHttpsRedirection();
 app.UseBlazorFrameworkFiles();
 app.UseStaticFiles();
 
+
 var provider = new FileExtensionContentTypeProvider();
 provider.Mappings[".data"] = "applocation/json";
 app.UseStaticFiles(new StaticFileOptions

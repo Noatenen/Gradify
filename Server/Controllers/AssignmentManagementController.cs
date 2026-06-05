@@ -513,6 +513,38 @@ public class AssignmentManagementController : ControllerBase
                     )";
         await _db.SaveDataAsync(milestonesSql, new { YearId = yearId });
 
+        // 1b. Selection-milestone invariant: a team that has just been
+        //     published-assigned is, by definition, done with the
+        //     "selection & assignment" phase. Mark that milestone
+        //     Completed for every project we just (or previously)
+        //     initialised. Idempotent — the WHERE Status<>'Completed'
+        //     guard means re-publishing doesn't reset CompletedAt.
+        //     Mirrors the one-time backfill in DatabaseMigrator
+        //     (EnsureSelectionMilestoneBackfillAsync); the two are kept
+        //     in sync intentionally.
+        const string selectionSql = @"
+            UPDATE ProjectMilestones
+            SET    Status      = 'Completed',
+                   CompletedAt = COALESCE(CompletedAt, datetime('now')),
+                   Notes       = CASE WHEN COALESCE(Notes, '') = ''
+                                      THEN 'הפרויקט שובץ בהצלחה'
+                                      ELSE Notes END
+            WHERE  Status <> 'Completed'
+              AND  AcademicYearMilestoneId IN (
+                    SELECT aym.Id
+                    FROM   AcademicYearMilestones aym
+                    JOIN   MilestoneTemplates mt ON mt.Id = aym.MilestoneTemplateId
+                    WHERE  aym.AcademicYearId = @YearId
+                      AND  mt.Title           = 'בחירת פרויקטים ושיבוצים'
+              )
+              AND  ProjectId IN (
+                    SELECT p.Id FROM Projects p
+                    WHERE  p.AcademicYearId   = @YearId
+                      AND  p.TeamId IS NOT NULL
+                      AND  COALESCE(p.AssignmentIsDraft, 0) = 0
+              )";
+        await _db.SaveDataAsync(selectionSql, new { YearId = yearId });
+
         // 2. Tasks — instantiate from TaskTemplates, joined through the
         //    ProjectMilestone rows we just ensured exist (or were already there).
         //    Type filtering is implicit: a Tasks row only appears for a project

@@ -689,6 +689,12 @@ public class TaskSubmissionsController : ControllerBase
             (req.MentorStatus != "Approved" && req.MentorStatus != "Returned"))
             return BadRequest("ערך לא תקין. ערכים חוקיים: Approved, Returned");
 
+        // Returning a submission for correction MUST include a non-empty
+        // mentor note — otherwise the student receives a "fix this" signal
+        // with zero context. Whitespace-only text is also rejected.
+        if (req.MentorStatus == "Returned" && string.IsNullOrWhiteSpace(req.MentorFeedback))
+            return BadRequest("יש להזין הערת מנחה לפני החזרת ההגשה לתיקון");
+
         // Resolve the TaskId before updating so we can sync Tasks.Status
         var subRow = (await _db.GetRecordsAsync<SubmissionTaskRow>(
             "SELECT TaskId FROM TaskSubmissions WHERE Id = @Id", new { Id = id }))

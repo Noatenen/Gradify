@@ -22,18 +22,18 @@ public class ManagementController : ControllerBase
 
     // ── GET /api/management/projects ────────────────────────────────────────
     //
-    // Returns ACTIVE assigned projects only — same definition as the lecturer
-    // and mentor dashboards (kept in sync intentionally):
+    // Returns ACTIVE assigned projects — the "live" set for management.
     //   1. p.TeamId IS NOT NULL                    (via the JOIN below)
     //   2. COALESCE(p.AssignmentIsDraft, 0) = 0    (assignment was published)
-    //   3. p.Status NOT IN ('Available','Unavailable')
-    //                                              (excludes catalog rows
-    //                                               whose TeamId is leftover
-    //                                               from earlier sessions)
+    //   3. Either p.Status is non-catalog, OR the project actually has at
+    //      least one active team member. The second branch catches projects
+    //      that were assigned students but whose Status wasn't flipped from
+    //      'Available' → 'InProgress' yet (data drift seen 2026-06 with
+    //      project #4) — such rows belong on the management page so a
+    //      lecturer can fix them, not on the catalog browse page.
     //
     // The Status condition is a catalog-state EXCLUSION, not a catalog-state
-    // INCLUSION rule — we drop the two browse states. Catalog browsing has
-    // its own page at /management/catalog.
+    // INCLUSION rule. Catalog browsing has its own page at /management/catalog.
     [HttpGet("projects")]
     public async Task<IActionResult> GetProjects(int authUserId)
     {
@@ -50,6 +50,17 @@ public class ManagementController : ControllerBase
                     (SELECT COUNT(*)
                      FROM   TeamMembers tm2
                      WHERE  tm2.TeamId = t.Id AND tm2.IsActive = 1)  AS TeamSize,
+                    (SELECT COUNT(*)
+                     FROM   ProjectMentors pm
+                     WHERE  pm.ProjectId = p.Id)                     AS MentorCount,
+                    COALESCE(
+                        (SELECT GROUP_CONCAT(
+                                    TRIM(COALESCE(mu.FirstName,'') || ' ' || COALESCE(mu.LastName,'')),
+                                    ', ')
+                         FROM   ProjectMentors pm
+                         JOIN   Users          mu ON mu.Id = pm.UserId
+                         WHERE  pm.ProjectId = p.Id),
+                    '')                                               AS MentorNames,
                     COALESCE(
                         (SELECT u.AcademicYear
                          FROM   TeamMembers tm2
@@ -69,7 +80,11 @@ public class ManagementController : ControllerBase
             JOIN    Teams        t   ON p.TeamId       = t.Id
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
             WHERE   COALESCE(p.AssignmentIsDraft, 0) = 0
-              AND   p.Status NOT IN ('Available', 'Unavailable')
+              AND   (
+                    p.Status NOT IN ('Available', 'Unavailable')
+                 OR EXISTS (SELECT 1 FROM TeamMembers tm
+                            WHERE tm.TeamId = t.Id AND tm.IsActive = 1)
+              )
             ORDER   BY p.ProjectNumber";
 
         var rows = await _db.GetRecordsAsync<ProjectManagementDto>(sql);

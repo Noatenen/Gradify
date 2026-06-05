@@ -378,6 +378,28 @@ public class AuthRepository
         var user = await GetUserById<UserForAdmin>(roles[0].UserId);
         if (user == null) return new AdminResults { Result = AuthResults.UserNotFound };
 
+        // ── Lecturer ⇒ Admin invariant (application-level validation) ──────
+        // Compute the post-request role set for this user, then reject the
+        // request up-front if it would leave the user as Staff-without-Admin.
+        // The DB trigger trg_userroles_admin_removal_cascade is the ultimate
+        // backstop, but it silently revokes Staff — surfacing a clear Hebrew
+        // error here is the kinder UX for the admin clicking the toggle.
+        int userId = roles[0].UserId;
+        var currentRoles = await GetUserRoles(userId);
+        var projected = new HashSet<string>(currentRoles, StringComparer.OrdinalIgnoreCase);
+        foreach (var r in roles)
+        {
+            if (r.Enable) projected.Add(r.Role);
+            else          projected.Remove(r.Role);
+        }
+        if (projected.Contains(Roles.Staff) && !projected.Contains(Roles.Admin))
+        {
+            return new AdminResults
+            {
+                Result = "lecturer_requires_admin: לא ניתן להגדיר משתמש כמרצה ללא הרשאת מנהל, וגם לא להסיר הרשאת מנהל ממשתמש שהוא מרצה"
+            };
+        }
+
         int rowsAffected = 0;
 
         // Process each role individually with correct parameters
@@ -390,7 +412,10 @@ public class AuthRepository
             // Execute SQL with the correct parameters for each role
             rowsAffected += await _db.SaveDataAsync(query, new { role.UserId, role.Role });
         }
-        user.Roles = roles.Where(r => r.Enable).Select(a => a.Role).ToList();
+
+        // Re-read so the response reflects what the DB triggers actually
+        // produced (e.g. Admin auto-granted when Staff was enabled).
+        user.Roles = await GetUserRoles(userId);
 
         return new AdminResults { Result = rowsAffected == 0 ? AuthResults.ChangeRoleFailed : AuthResults.Success, User = user };
     }
@@ -447,7 +472,16 @@ public class AuthRepository
             new Claim(JwtRegisteredClaimNames.FamilyName, user.LastName),
             new Claim("IsVerified", user.IsVerified.ToString().ToLower()) // Adding email verification claim
         };
-        foreach (var role in user.Roles)
+
+        // Lecturer ⇒ Admin: ensure any user with Staff also gets the Admin
+        // claim emitted. The DB layer (migrator triggers + backfill) keeps
+        // the data invariant; this is the last-mile belt-and-suspenders so a
+        // legacy DB row or any future drift cannot demote a Lecturer in
+        // authorization checks. Distinct() prevents a duplicate Admin claim.
+        var rolesForClaims = user.Roles
+            .Concat(user.Roles.Contains(Roles.Staff) ? new[] { Roles.Admin } : Array.Empty<string>())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var role in rolesForClaims)
         {
             claims.Add(new Claim(ClaimTypes.Role, role));
         }

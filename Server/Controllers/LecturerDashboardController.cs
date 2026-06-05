@@ -54,25 +54,41 @@ public class LecturerDashboardController : ControllerBase
 
         // ── 1. Base project list within scope ──────────────────────────────
         //
-        // Definition of an "active assigned project" — single source of truth
-        // for both the lecturer and mentor dashboards:
+        // Two scopes, two definitions of "the project set":
         //
-        //   1. p.AcademicYearId = current
-        //   2. p.TeamId IS NOT NULL                    (a team is assigned)
-        //   3. COALESCE(p.AssignmentIsDraft, 0) = 0    (assignment was published)
-        //   4. p.Status NOT IN ('Available','Unavailable')
-        //                                              (excludes catalog rows
-        //                                               whose TeamId is leftover
+        //  LECTURER scope — "every active assigned project in the cycle":
+        //    1. p.AcademicYearId = current
+        //    2. p.TeamId IS NOT NULL                    (a team is assigned)
+        //    3. COALESCE(p.AssignmentIsDraft, 0) = 0    (assignment published)
+        //    4. p.Status NOT IN ('Available','Unavailable')
+        //                                              (excludes catalog
+        //                                               browse rows whose
+        //                                               TeamId is leftover
         //                                               from earlier sessions)
         //
-        // Rationale for #4: in this DB, every truly published project has
-        // p.Status = 'InProgress' (or another non-catalog state). Many catalog
-        // rows retained legacy TeamId values from prior backfills; if we look
-        // only at TeamId + AssignmentIsDraft, the dashboard surfaces 109 rows
-        // even though only 2 are real. The Status condition here is a catalog-
-        // state EXCLUSION (we drop browse states), not a catalog-state
-        // INCLUSION rule, which matches "don't show catalog projects".
-        const string projectsSqlAll = @"
+        //  MENTOR scope — "every project I'm assigned to":
+        //    Sole gate is the ProjectMentors row. Same source of truth as
+        //    /api/mentor/projects ("הפרויקטים שלי"), so the two surfaces
+        //    NEVER disagree on assignment count or set.
+        //    The lecturer's Status / TeamId / AssignmentIsDraft filters are
+        //    intentionally NOT applied here: a mentor that was assigned to
+        //    a project must see it even when Status drifted to 'Available'
+        //    (regression seen 2026-06 — students assigned, status not yet
+        //    flipped to InProgress, mentor row exists, dashboard had been
+        //    hiding the project).
+        //    Cycle scope is preserved so historical assignments don't bleed
+        //    into the "current state" dashboard.
+        const string projectsSqlLecturer = @"
+            WHERE   p.AcademicYearId   = @YearId
+              AND   COALESCE(p.AssignmentIsDraft, 0) = 0
+              AND   p.TeamId IS NOT NULL
+              AND   p.Status NOT IN ('Available', 'Unavailable')";
+
+        const string projectsSqlMentor = @"
+            WHERE   p.AcademicYearId   = @YearId
+              AND   p.Id IN (SELECT ProjectId FROM ProjectMentors WHERE UserId = @UserId)";
+
+        string projectsSql = @"
             SELECT  p.Id           AS ProjectId,
                     p.ProjectNumber,
                     p.Title        AS ProjectTitle,
@@ -86,17 +102,8 @@ public class LecturerDashboardController : ControllerBase
                      WHERE  pmm.ProjectId = p.Id) AS MentorNames
             FROM    Projects p
             LEFT JOIN Teams  t ON t.Id = p.TeamId
-            WHERE   p.AcademicYearId   = @YearId
-              AND   COALESCE(p.AssignmentIsDraft, 0) = 0
-              AND   p.TeamId IS NOT NULL
-              AND   p.Status NOT IN ('Available', 'Unavailable')";
-
-        const string projectsSqlMentorOnly = @"
-              AND   p.Id IN (SELECT ProjectId FROM ProjectMentors WHERE UserId = @UserId)";
-
-        string projectsSql = projectsSqlAll
-                           + (restrictToMentor ? projectsSqlMentorOnly : "")
-                           + " ORDER BY p.ProjectNumber";
+            " + (restrictToMentor ? projectsSqlMentor : projectsSqlLecturer)
+              + " ORDER BY p.ProjectNumber";
 
         var projects = (await _db.GetRecordsAsync<ProjectBaseRow>(
             projectsSql, new { YearId = currentYearId, UserId = authUserId }))?.ToList() ?? new();
@@ -277,9 +284,8 @@ public class LecturerDashboardController : ControllerBase
                 LEFT JOIN TeamMilestoneDueDateOverrides mo
                                 ON mo.TeamId = p.TeamId AND mo.ProjectMilestoneId = t.ProjectMilestoneId
                 WHERE   p.AcademicYearId = @YearId
-                  AND   COALESCE(p.AssignmentIsDraft, 0) = 0
-                  AND   p.TeamId IS NOT NULL
-                  AND   p.Status NOT IN ('Available', 'Unavailable')
+                  -- Mentor scope: ProjectMentors is the sole project gate.
+                  -- See the rationale in the main projects query above.
                   AND   p.Id IN (SELECT ProjectId FROM ProjectMentors WHERE UserId = @UserId)
                   AND   t.IsMandatory = 1
                   AND   (t.Status IS NULL OR t.Status NOT IN ('Done','Completed','SubmittedToMentor'))

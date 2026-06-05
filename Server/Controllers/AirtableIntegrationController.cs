@@ -238,36 +238,138 @@ public class AirtableIntegrationController : ControllerBase
         return Ok(result);
     }
 
-    // ── POST /api/integrations/airtable/{id}/import ─────────────────────────
-    [HttpPost("{id:int}/import")]
-    public async Task<IActionResult> Import(int id, int authUserId)
+    // ── POST /api/integrations/airtable/{id}/preview ────────────────────────
+    //
+    // Dry-run for the admin's "confirm import" workflow. Fetches Airtable
+    // records and returns a per-record bucket label (New/Update/Warning/
+    // Error) WITHOUT writing anything to the DB. The follow-up endpoint
+    // is POST /import, which the UI calls only after the admin reviews
+    // the preview and clicks "אשר ייבוא".
+    [HttpPost("{id:int}/preview")]
+    public async Task<IActionResult> Preview(int id, int authUserId)
     {
         var options = await _airtable.LoadOptionsAsync(id);
         if (options is null) return NotFound("הגדרת אינטגרציה לא נמצאה");
 
-        // Must have all required mappings populated.
-        var mappings = (await _db.GetRecordsAsync<RequiredMappingRow>(@"
-            SELECT  LocalFieldName, AirtableFieldName, IsRequired
-            FROM    AirtableFieldMappings
-            WHERE   IntegrationSettingsId = @Id AND EntityType = 'Project'",
-            new { Id = id }))?.ToList() ?? new();
+        // Same required-mapping gate as Import — surface the misconfig
+        // before the admin sees an empty preview.
+        var requiredErr = await CheckRequiredMappingsAsync(id);
+        if (requiredErr is not null) return BadRequest(requiredErr);
 
-        var missingRequired = mappings
-            .Where(m => m.IsRequired && string.IsNullOrWhiteSpace(m.AirtableFieldName))
-            .Select(m => m.LocalFieldName)
-            .ToList();
+        var result = await _airtable.PreviewProjectsAsync(options);
+        return Ok(result);
+    }
 
-        if (missingRequired.Count > 0)
-        {
-            return BadRequest(
-                $"חסרות שיוכי שדות חובה: {string.Join(", ", missingRequired)}");
-        }
+    // ── POST /api/integrations/airtable/{id}/preview-fixture ────────────────
+    //
+    // Dev/QA-only: runs the same preview pipeline against an in-request
+    // set of mock Airtable records. No Airtable HTTP call, no DB writes.
+    // Lets a tester force the three preview buckets ("new", "update with
+    // diff", "suspected duplicate") deterministically without needing
+    // access to the live Airtable base.
+    //
+    // The integration id is still required so the analyser uses the
+    // configured FieldMap — that way fixture-bucket output mirrors what
+    // production would produce for the same payload.
+    [HttpPost("{id:int}/preview-fixture")]
+    public async Task<IActionResult> PreviewFixture(
+        int id, int authUserId,
+        [FromBody] AirtableFixturePreviewRequest req)
+    {
+        var options = await _airtable.LoadOptionsAsync(id);
+        if (options is null) return NotFound("הגדרת אינטגרציה לא נמצאה");
 
-        var result = await _airtable.SyncProjectsAsync(options);
+        var requiredErr = await CheckRequiredMappingsAsync(id);
+        if (requiredErr is not null) return BadRequest(requiredErr);
+
+        var result = await _airtable.PreviewFixtureAsync(options, req?.Records ?? new());
+        return Ok(result);
+    }
+
+    // ── POST /api/integrations/airtable/{id}/import ─────────────────────────
+    //
+    // The actual import. Optional request body may carry a SkipRecordIds
+    // list — Airtable records the admin opted-out of in the preview UI
+    // (typically suspected duplicates). Those records are counted as
+    // Skipped instead of upserted.
+    //
+    // Persists an AirtableImportRuns audit row so each run is investigable
+    // later — counts, who triggered it, and (on failure) a short error
+    // summary. The in-memory result is still returned to the UI.
+    [HttpPost("{id:int}/import")]
+    public async Task<IActionResult> Import(
+        int id, int authUserId,
+        [FromBody] AirtableImportRequest? req = null)
+    {
+        var options = await _airtable.LoadOptionsAsync(id);
+        if (options is null) return NotFound("הגדרת אינטגרציה לא נמצאה");
+
+        var requiredErr = await CheckRequiredMappingsAsync(id);
+        if (requiredErr is not null) return BadRequest(requiredErr);
+
+        // Build the skip set up front so the audit row + service share one
+        // source of truth. Tolerant of null / empty body — backwards-compat
+        // with any caller that POSTs without a body.
+        var skipSet = req?.SkipRecordIds is { Count: > 0 }
+            ? new HashSet<string>(req.SkipRecordIds.Where(s => !string.IsNullOrEmpty(s)))
+            : new HashSet<string>();
+
+        // Pre-insert an audit row so a crash mid-import still leaves a trail.
+        int runId = await _db.InsertReturnIdAsync(@"
+            INSERT INTO AirtableImportRuns
+                (IntegrationSettingsId, TriggeredByUserId, StartedAt, Status)
+            VALUES
+                (@Id, @UserId, datetime('now'), 'InProgress')",
+            new { Id = id, UserId = authUserId });
+
+        var result = await _airtable.SyncProjectsAsync(options, skipSet);
+
+        // Top-level status: Success | PartialFailure | Failure. PartialFailure
+        // means some rows succeeded and at least one failed; Failure means
+        // the whole sync errored out (SyncError set) OR nothing succeeded.
+        string status =
+            result.SyncError is not null                                ? "Failure" :
+            result.Failed > 0 && (result.Inserted + result.Updated) > 0 ? "PartialFailure" :
+            result.Failed > 0                                           ? "Failure" :
+                                                                          "Success";
 
         string summary = result.SyncError ??
-            $"נטענו {result.TotalFetched}, נוספו {result.Inserted}, עודכנו {result.Updated}, נכשלו {result.Failed}";
+            $"נטענו {result.TotalFetched}, נוספו {result.Inserted}, עודכנו {result.Updated}, " +
+            $"דולגו {result.Skipped}, נכשלו {result.Failed}";
 
+        // Cap details at 8 KB so a runaway error list can't balloon the row.
+        string details = result.Errors.Count == 0
+            ? ""
+            : string.Join("\n", result.Errors.Take(200));
+        if (details.Length > 8 * 1024) details = details[..(8 * 1024)];
+
+        await _db.SaveDataAsync(@"
+            UPDATE AirtableImportRuns
+            SET    FinishedAt   = datetime('now'),
+                   TotalFetched = @T,
+                   Inserted     = @I,
+                   Updated      = @U,
+                   Skipped      = @S,
+                   Failed       = @F,
+                   Status       = @Status,
+                   ErrorSummary = @Summary,
+                   ErrorDetails = @Details
+            WHERE  Id = @Id",
+            new
+            {
+                Id      = runId,
+                T       = result.TotalFetched,
+                I       = result.Inserted,
+                U       = result.Updated,
+                S       = result.Skipped,
+                F       = result.Failed,
+                Status  = status,
+                Summary = summary,
+                Details = details,
+            });
+
+        // Mirror the per-integration "last import" pointers for backwards
+        // compatibility with the existing list-page badge.
         await _db.SaveDataAsync(@"
             UPDATE AirtableIntegrationSettings
             SET    LastImportAt      = datetime('now'),
@@ -277,6 +379,55 @@ public class AirtableIntegrationController : ControllerBase
             new { Id = id, Summary = summary });
 
         return Ok(result);
+    }
+
+    // ── GET /api/integrations/airtable/{id}/import-runs ─────────────────────
+    //
+    // Lightweight audit log surfaced under each integration. Returns most
+    // recent first, capped at 25 — enough for ops triage without paging.
+    [HttpGet("{id:int}/import-runs")]
+    public async Task<IActionResult> GetImportRuns(int id, int authUserId)
+    {
+        if (!await ExistsAsync(
+            "SELECT 1 FROM AirtableIntegrationSettings WHERE Id = @Id", new { Id = id }))
+            return NotFound("הגדרת אינטגרציה לא נמצאה");
+
+        var rows = (await _db.GetRecordsAsync<AirtableImportRunDto>(@"
+            SELECT  r.Id, r.IntegrationSettingsId,
+                    r.TriggeredByUserId,
+                    COALESCE(TRIM(COALESCE(u.FirstName,'') || ' ' || COALESCE(u.LastName,'')), '')
+                                                            AS TriggeredByName,
+                    r.StartedAt, r.FinishedAt,
+                    r.TotalFetched, r.Inserted, r.Updated, r.Failed, r.Skipped,
+                    r.Status, r.ErrorSummary
+            FROM    AirtableImportRuns r
+            LEFT JOIN users u ON u.Id = r.TriggeredByUserId
+            WHERE   r.IntegrationSettingsId = @Id
+            ORDER   BY r.StartedAt DESC, r.Id DESC
+            LIMIT   25",
+            new { Id = id }))?.ToList() ?? new List<AirtableImportRunDto>();
+
+        return Ok(rows);
+    }
+
+    // Shared with /preview + /import — surfaces a 400 with the missing
+    // mapping names when an admin clicks before completing setup.
+    private async Task<string?> CheckRequiredMappingsAsync(int integrationId)
+    {
+        var mappings = (await _db.GetRecordsAsync<RequiredMappingRow>(@"
+            SELECT  LocalFieldName, AirtableFieldName, IsRequired
+            FROM    AirtableFieldMappings
+            WHERE   IntegrationSettingsId = @Id AND EntityType = 'Project'",
+            new { Id = integrationId }))?.ToList() ?? new();
+
+        var missingRequired = mappings
+            .Where(m => m.IsRequired && string.IsNullOrWhiteSpace(m.AirtableFieldName))
+            .Select(m => m.LocalFieldName)
+            .ToList();
+
+        return missingRequired.Count == 0
+            ? null
+            : $"חסרות שיוכי שדות חובה: {string.Join(", ", missingRequired)}";
     }
 
     // ── GET /api/integrations/airtable/{id}/mappings ────────────────────────

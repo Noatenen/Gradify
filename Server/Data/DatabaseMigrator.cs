@@ -1544,6 +1544,555 @@ public static class DatabaseMigrator
             "CREATE INDEX IF NOT EXISTS ix_ExtIntField_System  ON ExternalIntegrationFieldMappings  (SourceSystem, IsActive)");
         await connection.ExecuteNonQueryAsync(
             "CREATE INDEX IF NOT EXISTS ix_ExtIntStatus_System ON ExternalIntegrationStatusMappings (SourceSystem, IsActive)");
+
+        // ── Lecturer ⇒ Admin invariant ──────────────────────────────────────
+        // Business rule: every user with the Staff role ("מרצה" / Lecturer)
+        // MUST also have the Admin role. Enforced at the DB layer so it
+        // survives every write path (admin endpoints, scripts, future code).
+        await EnsureLecturerImpliesAdminAsync(connection);
+
+        // ── Request type definitions + per-type configurable fields ──────────
+        // Backs the admin-managed catalogue at /management/request-types.
+        // Existing 7 built-in request types are seeded once so historical
+        // ProjectRequests rows (which reference the Code string) keep working.
+        await EnsureRequestTypeDefinitionsAsync(connection);
+
+        // ── Roadmap stages — per-cycle "ציר התקדמות פרויקט" config ───────────
+        // A thin layer on top of AcademicYearMilestones: each stage is a
+        // per-cycle row with Hebrew name, suggested dates, and display order.
+        // Milestone-templates are bound to a stage via the new
+        // AcademicYearMilestones.RoadmapStageId column. Seven default stages
+        // are seeded per existing cycle from the mentor-guide structure;
+        // year-specific dates are intentionally left NULL so admins fill them.
+        await EnsureRoadmapStagesAsync(connection);
+
+        // ── Airtable bootstrap: one-time seed from appsettings.json ──────────
+        // The DB is the sole runtime source of Airtable integration config.
+        // For existing dev/staging machines that still have an "Airtable"
+        // section in appsettings.json, this migrator block copies that
+        // section once into a per-current-cycle AirtableIntegrationSettings
+        // row so nothing breaks on the very first boot after the appsettings
+        // fallback is removed from AirtableService. Strictly idempotent:
+        // skipped when (a) no current cycle is set, (b) a row already
+        // exists for that cycle, or (c) the appsettings token/baseId are
+        // empty. Re-running the migrator does nothing on subsequent boots.
+        await EnsureAirtableSeedFromAppsettingsAsync(connection, config);
+
+        // ── Import data-integrity guards + lightweight audit trail ──────────
+        // Two partial UNIQUE indexes close existing race windows around
+        // user IdNumber and project AirtableRecordId. Plus a small
+        // AirtableImportRuns table for post-mortem visibility on each
+        // Airtable import (was previously only in-memory + a truncated
+        // text blob on AirtableIntegrationSettings.LastImportSummary).
+        await EnsureImportIntegrityGuardsAsync(connection);
+
+        // ── Selection-milestone state invariant ─────────────────────────────
+        // Business rule: any project that has been published-assigned to a
+        // team (TeamId IS NOT NULL AND AssignmentIsDraft = 0) implies the
+        // "selection & assignment" milestone is already done. Existing data
+        // pre-dates the publish hook so a one-time backfill is required.
+        // Subsequent publishes maintain the invariant via the publish flow
+        // in AssignmentManagementController.
+        await EnsureSelectionMilestoneBackfillAsync(connection);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureLecturerImpliesAdminAsync
+    //
+    //  Enforces "Staff ⇒ Admin" at the database layer in four steps, all
+    //  idempotent and safe to re-run on every startup:
+    //
+    //    1. Dedupe any accidental duplicate (UserId, Role) rows so a UNIQUE
+    //       index can be added (rows already inserted by older code paths
+    //       that lacked WHERE NOT EXISTS guards).
+    //    2. UNIQUE index on (UserId, Role). Required by the INSERT OR IGNORE
+    //       used in the trigger and backfill below; also prevents duplicate
+    //       role rows going forward.
+    //    3. Backfill: for every existing Staff user that lacks Admin, insert
+    //       the missing Admin row.
+    //    4. Triggers:
+    //         • AFTER INSERT of Staff           → also insert Admin
+    //         • AFTER DELETE of Admin (while
+    //           the user still has Staff)       → cascade-delete Staff
+    //       These guarantee the invariant under any future write path,
+    //       including legacy `AdminController.UpdateUser` which wipes all
+    //       non-User roles and inserts a single new primary role.
+    //
+    //  Note: SQLite defaults to PRAGMA recursive_triggers = OFF, so the
+    //  Admin insert performed by the INSERT trigger does not re-fire it.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureLecturerImpliesAdminAsync(SqliteConnection connection)
+    {
+        // 1. Dedupe (UserId, Role) — keep the lowest Id per pair.
+        await connection.ExecuteNonQueryAsync(@"
+            DELETE FROM UserRoles
+            WHERE  Id NOT IN (
+                SELECT MIN(Id) FROM UserRoles GROUP BY UserId, Role
+            )");
+
+        // 2. UNIQUE index — idempotent.
+        await connection.ExecuteNonQueryAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_userroles_user_role ON UserRoles(UserId, Role)");
+
+        // 3. Backfill missing Admin rows for existing Lecturers.
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO UserRoles (UserId, Role)
+            SELECT DISTINCT UserId, 'Admin'
+            FROM   UserRoles
+            WHERE  Role = 'Staff'");
+
+        // 4a. INSERT trigger — Staff inserted ⇒ ensure Admin row exists.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TRIGGER IF NOT EXISTS trg_userroles_staff_implies_admin_ins
+            AFTER INSERT ON UserRoles
+            WHEN NEW.Role = 'Staff'
+            BEGIN
+                INSERT OR IGNORE INTO UserRoles (UserId, Role)
+                VALUES (NEW.UserId, 'Admin');
+            END");
+
+        // 4b. DELETE trigger — Admin removed from a Lecturer ⇒ also remove
+        //     their Staff row so the invariant holds. Application-level
+        //     validation in AuthRepository.ChangeRoles surfaces a Hebrew
+        //     error before reaching here, but this trigger guarantees the
+        //     invariant under any code path that bypasses that validation
+        //     (raw SQL, future endpoints, admin-edit wholesale-replace).
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TRIGGER IF NOT EXISTS trg_userroles_admin_removal_cascade
+            AFTER DELETE ON UserRoles
+            WHEN OLD.Role = 'Admin'
+              AND EXISTS (SELECT 1 FROM UserRoles
+                          WHERE UserId = OLD.UserId AND Role = 'Staff')
+            BEGIN
+                DELETE FROM UserRoles
+                WHERE  UserId = OLD.UserId AND Role = 'Staff';
+            END");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureRequestTypeDefinitionsAsync
+    //
+    //  Two tables back the admin-managed request type catalogue:
+    //
+    //    RequestTypeDefinitions — master row per type. Code is the stable
+    //      string identifier stored in ProjectRequests.RequestType. Seed
+    //      codes match the legacy RequestTypes constants 1:1 so existing
+    //      data keeps resolving to a label.
+    //
+    //    RequestTypeFields — child rows, the configurable form-field
+    //      builder. FieldType is one of the controlled values in
+    //      RequestTypeFieldTypes (ShortText / LongText / Date / File /
+    //      Select / Checkbox).
+    //
+    //  Seed: the 7 built-in types (IsBuiltIn = 1). Built-in types can be
+    //  edited and deactivated but never hard-deleted — the controller
+    //  enforces that, the seed sets the flag.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureRequestTypeDefinitionsAsync(SqliteConnection connection)
+    {
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS RequestTypeDefinitions (
+                Id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                Code               TEXT    NOT NULL UNIQUE,
+                Name               TEXT    NOT NULL,
+                Description        TEXT    NOT NULL DEFAULT '',
+                IsActive           INTEGER NOT NULL DEFAULT 1,
+                HandlerRole        TEXT    NOT NULL DEFAULT 'Admin,Staff',
+                AllowInternalNotes INTEGER NOT NULL DEFAULT 0,
+                FileUploadPolicy   TEXT    NOT NULL DEFAULT 'Optional',
+                IsBuiltIn          INTEGER NOT NULL DEFAULT 0,
+                CreatedAt          TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt          TEXT    NOT NULL DEFAULT (datetime('now'))
+            )");
+
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS RequestTypeFields (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                RequestTypeId   INTEGER NOT NULL,
+                Label           TEXT    NOT NULL,
+                FieldKey        TEXT    NOT NULL DEFAULT '',
+                FieldType       TEXT    NOT NULL,
+                IsRequired      INTEGER NOT NULL DEFAULT 0,
+                Options         TEXT    NOT NULL DEFAULT '',
+                SortOrder       INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (RequestTypeId) REFERENCES RequestTypeDefinitions(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_rtf_typeid ON RequestTypeFields(RequestTypeId)");
+
+        // Idempotent seed of the 7 historical built-in types. INSERT OR IGNORE
+        // means re-running the migrator on an already-seeded DB is a no-op.
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO RequestTypeDefinitions
+                (Code, Name, Description, IsActive, HandlerRole, AllowInternalNotes, FileUploadPolicy, IsBuiltIn)
+            VALUES
+                ('Extension',                 'בקשת דחייה',         'בקשה לדחיית מועד הגשת משימה או אבן דרך',     1, 'Admin,Staff,Mentor', 1, 'Optional', 1),
+                ('SpecialEvent',              'אירוע מיוחד',         'בקשה הקשורה לאירוע, מילואים או מחלה',         1, 'Admin,Staff',        0, 'Optional', 1),
+                ('TechnicalSupport',          'פנייה טכנולוגית',    'תקלות טכניות במערכת או בכלי הפרויקט',         1, 'Admin,Staff',        0, 'Optional', 1),
+                ('Meeting',                   'פגישה / בקשה כללית', 'בקשת פגישה או נושא כללי לצוות האקדמי',         1, 'Admin,Staff',        0, 'Optional', 1),
+                ('ClientChallenge',           'אתגר מול לקוח',       'קושי או בעיה מול לקוח הפרויקט',               1, 'Admin,Staff',        0, 'Optional', 1),
+                ('ContentChallenge',          'אתגר תוכן',           'בעיית תוכן או נושאים אקדמיים בפרויקט',         1, 'Admin,Staff',        0, 'Optional', 1),
+                ('CharacterizationChallenge', 'אתגר אפיון',          'בעיה באפיון הפרויקט או בדרישות',               1, 'Admin,Staff',        0, 'Optional', 1)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureRoadmapStagesAsync
+    //
+    //  Backs the "ציר התקדמות פרויקט" feature. The roadmap is one-level deep:
+    //  each AcademicYear has an ordered list of stages, and each existing
+    //  AcademicYearMilestones row (per-cycle milestone instantiation) can be
+    //  bound to at most one stage via the new RoadmapStageId column.
+    //
+    //  Schema:
+    //   - RoadmapStages: per-cycle stage definitions (name / dates / order /
+    //     active). UNIQUE(AcademicYearId, Code) keeps the seed idempotent and
+    //     guards against duplicate codes inside a single cycle.
+    //   - AcademicYearMilestones.RoadmapStageId: nullable FK with
+    //     ON DELETE SET NULL so that deleting a stage doesn't take milestones
+    //     down with it — they just become "unassigned" and fall back to the
+    //     existing milestone-only display.
+    //
+    //  Seed: seven default Hebrew stages drawn from the mentor-guide for
+    //  every existing AcademicYear that doesn't already have any stages.
+    //  Year-specific dates are intentionally left NULL — admins set them per
+    //  cycle from the management UI. INSERT OR IGNORE on the UNIQUE constraint
+    //  means re-running the migrator is a no-op for already-seeded cycles.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureRoadmapStagesAsync(SqliteConnection connection)
+    {
+        // 1. RoadmapStages table.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS RoadmapStages (
+                Id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                AcademicYearId      INTEGER NOT NULL,
+                Code                TEXT    NOT NULL,
+                Name                TEXT    NOT NULL,
+                Description         TEXT    NOT NULL DEFAULT '',
+                SuggestedStartDate  TEXT,
+                SuggestedEndDate    TEXT,
+                DisplayOrder        INTEGER NOT NULL DEFAULT 0,
+                IsActive            INTEGER NOT NULL DEFAULT 1,
+                CreatedAt           TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt           TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (AcademicYearId) REFERENCES AcademicYears(Id) ON DELETE CASCADE,
+                UNIQUE (AcademicYearId, Code)
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_roadmap_stages_year ON RoadmapStages(AcademicYearId, DisplayOrder)");
+
+        // 2. Nullable RoadmapStageId column on AcademicYearMilestones.
+        //    Guarded by PRAGMA table_info so re-running on an already-migrated
+        //    DB doesn't error. ON DELETE SET NULL preserves the milestone row
+        //    when a stage is deleted (milestone reverts to "unassigned").
+        var aymColumns = await GetColumnsAsync(connection, "AcademicYearMilestones");
+        if (!aymColumns.Contains("RoadmapStageId"))
+        {
+            // SQLite ALTER TABLE ADD COLUMN doesn't support inline FK clauses
+            // in older versions, but adding a plain INTEGER column is safe.
+            // The FK is enforced via the explicit RoadmapStages.OnDelete logic
+            // executed by trg_roadmap_stage_delete below.
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE AcademicYearMilestones ADD COLUMN RoadmapStageId INTEGER");
+        }
+
+        // SET NULL on stage delete — mirrors a real FK ON DELETE SET NULL.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TRIGGER IF NOT EXISTS trg_roadmap_stage_delete_nullify
+            AFTER DELETE ON RoadmapStages
+            BEGIN
+                UPDATE AcademicYearMilestones
+                SET    RoadmapStageId = NULL
+                WHERE  RoadmapStageId = OLD.Id;
+            END");
+
+        // 3. Seed seven default stages per existing cycle, idempotent via
+        //    UNIQUE(AcademicYearId, Code). Year-specific dates stay NULL.
+        var yearIds = (await connection.QueryYearIdsAsync()).ToList();
+        foreach (var yearId in yearIds)
+        {
+            await SeedDefaultStagesForCycleAsync(connection, yearId);
+        }
+    }
+
+    private static async Task SeedDefaultStagesForCycleAsync(SqliteConnection connection, int academicYearId)
+    {
+        var defaults = new (string Code, string Name, string Description, int Order)[]
+        {
+            ("Selection",         "בחירה ושיבוצים",                        "תהליך בחירת פרויקטים ושיבוץ סטודנטים לצוותים",        1),
+            ("Kickoff",           "התנעה",                                  "מפגשי פתיחה, היכרות עם הלקוח והגדרת אופן העבודה",     2),
+            ("Definition",        "הגדרת הבעיה וכיוון ראשוני לפתרון",      "ניסוח הצורך, מטרות ויעדים ראשוניים",                  3),
+            ("Specification",     "אפיון",                                  "סקירות, מחקר משתמשים ואפיון הפתרון",                  4),
+            ("Development",       "פיתוח",                                  "מוקאפים, אבי-טיפוס וגרסאות עובדות של המוצר",          5),
+            ("Evaluation",        "הערכה",                                  "תכנון, ביצוע וסיכום הערכת הפתרון מול משתמשים",       6),
+            ("SubmissionGrading", "הגשות וציונים",                          "הגשות סופיות, הגנה ומתן ציונים",                      7),
+        };
+
+        const string insertSql = @"
+            INSERT OR IGNORE INTO RoadmapStages
+                (AcademicYearId, Code, Name, Description, DisplayOrder, IsActive)
+            VALUES
+                (@AcademicYearId, @Code, @Name, @Description, @DisplayOrder, 1)";
+
+        foreach (var s in defaults)
+        {
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = insertSql;
+            cmd.Parameters.AddWithValue("@AcademicYearId", academicYearId);
+            cmd.Parameters.AddWithValue("@Code",           s.Code);
+            cmd.Parameters.AddWithValue("@Name",           s.Name);
+            cmd.Parameters.AddWithValue("@Description",    s.Description);
+            cmd.Parameters.AddWithValue("@DisplayOrder",   s.Order);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureAirtableSeedFromAppsettingsAsync
+    //
+    //  One-time bootstrap that copies the legacy appsettings.json "Airtable"
+    //  section into AirtableIntegrationSettings + AirtableFieldMappings for
+    //  the current academic year. After this block runs, the runtime no
+    //  longer reads appsettings — AirtableService.ResolveActiveOptionsAsync
+    //  uses the DB exclusively. The block is idempotent and self-skipping:
+    //
+    //    • no current cycle → skip (admin must mark one cycle current first)
+    //    • a row already exists for that cycle → skip (already migrated)
+    //    • appsettings has empty Token OR empty BaseId → skip
+    //      (no useful data to copy)
+    //
+    //  On subsequent boots all three guards short-circuit, so the block is
+    //  a no-op and safe to leave wired in indefinitely.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureAirtableSeedFromAppsettingsAsync(
+        SqliteConnection connection, IConfiguration config)
+    {
+        // Read the legacy "Airtable" section directly so we don't depend on
+        // the AirtableOptions class at migrator level (cleaner DI boundary).
+        var section = config.GetSection("Airtable");
+        if (!section.Exists()) return;
+
+        string token  = section.GetValue<string>("Token")     ?? "";
+        string baseId = section.GetValue<string>("BaseId")    ?? "";
+        string table  = section.GetValue<string>("TableName") ?? "";
+        string view   = section.GetValue<string>("ViewName")  ?? "";
+        bool   svo    = section.GetValue<bool?>("StudentVisibleOnly") ?? true;
+
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(baseId))
+            return;
+
+        // Find the current cycle. If no cycle is marked current, the admin
+        // must set one before the appsettings values can land in the DB.
+        int currentCycleId;
+        await using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT Id FROM AcademicYears WHERE IsCurrent = 1 LIMIT 1";
+            var raw = await cmd.ExecuteScalarAsync();
+            if (raw is null || raw is DBNull) return;
+            currentCycleId = Convert.ToInt32(raw);
+        }
+
+        // Skip if a row already exists for this cycle (re-run safety).
+        await using (var checkCmd = connection.CreateCommand())
+        {
+            checkCmd.CommandText = "SELECT 1 FROM AirtableIntegrationSettings WHERE AcademicYearId = @Y LIMIT 1";
+            checkCmd.Parameters.AddWithValue("@Y", currentCycleId);
+            var existing = await checkCmd.ExecuteScalarAsync();
+            if (existing is not null && existing is not DBNull) return;
+        }
+
+        // Insert the integration row + grab its Id. Marked IsActive=1 so the
+        // import flow continues to find the same config as before the
+        // fallback was removed.
+        long newId;
+        await using (var insertCmd = connection.CreateCommand())
+        {
+            insertCmd.CommandText = @"
+                INSERT INTO AirtableIntegrationSettings
+                    (AcademicYearId, Name, ApiToken, BaseId,
+                     ProjectsTable, ProjectsView, StudentVisibleOnly,
+                     IsActive, CreatedAt, UpdatedAt)
+                VALUES
+                    (@Y, @N, @T, @B, @PT, @PV, @SVO, 1,
+                     datetime('now'), datetime('now'));
+                SELECT last_insert_rowid();";
+            insertCmd.Parameters.AddWithValue("@Y",   currentCycleId);
+            insertCmd.Parameters.AddWithValue("@N",   "Imported from appsettings.json");
+            insertCmd.Parameters.AddWithValue("@T",   token);
+            insertCmd.Parameters.AddWithValue("@B",   baseId);
+            insertCmd.Parameters.AddWithValue("@PT",  table);
+            insertCmd.Parameters.AddWithValue("@PV",  view);
+            insertCmd.Parameters.AddWithValue("@SVO", svo ? 1 : 0);
+            newId = Convert.ToInt64(await insertCmd.ExecuteScalarAsync() ?? 0L);
+        }
+        if (newId == 0) return;
+
+        // Copy each FieldMap key into AirtableFieldMappings(EntityType='Project').
+        // Only non-empty values; we don't want to materialise default
+        // English placeholders as if they were configured Hebrew labels.
+        var fieldMapSection = section.GetSection("FieldMap");
+        if (!fieldMapSection.Exists()) return;
+
+        foreach (var kv in fieldMapSection.AsEnumerable(makePathsRelative: true))
+        {
+            if (string.IsNullOrEmpty(kv.Key)) continue;
+            string airtableName = kv.Value ?? "";
+            if (string.IsNullOrWhiteSpace(airtableName)) continue;
+
+            await using var mapCmd = connection.CreateCommand();
+            mapCmd.CommandText = @"
+                INSERT OR IGNORE INTO AirtableFieldMappings
+                    (IntegrationSettingsId, EntityType, LocalFieldName,
+                     AirtableFieldName, IsRequired, CreatedAt, UpdatedAt)
+                VALUES
+                    (@S, 'Project', @L, @A, 0,
+                     datetime('now'), datetime('now'))";
+            mapCmd.Parameters.AddWithValue("@S", newId);
+            mapCmd.Parameters.AddWithValue("@L", kv.Key);
+            mapCmd.Parameters.AddWithValue("@A", airtableName);
+            await mapCmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureImportIntegrityGuardsAsync
+    //
+    //  Three things, all idempotent:
+    //
+    //  1. Trim leading/trailing whitespace on existing users.IdNumber so the
+    //     UNIQUE index in step 2 sees the same normalized form that future
+    //     write paths use. Cheap one-time write — live DB audit on 2026-06-04
+    //     showed zero rows with whitespace, so this is effectively a no-op
+    //     today but guards against quietly-imported padding later.
+    //
+    //  2. Partial UNIQUE indexes (SQLite 3.8+):
+    //       users.IdNumber WHERE non-empty — students legitimately register
+    //           without an IdNumber (admins do too), so NULL/empty must
+    //           still be allowed multiple times. Only "I have a real ID"
+    //           rows must be unique.
+    //       Projects.AirtableRecordId WHERE non-null & non-empty — manually
+    //           created projects don't carry an Airtable record id; only
+    //           imported ones do, and only those must be unique.
+    //
+    //     The partial WHERE clauses are essential: a plain UNIQUE on a
+    //     NULL-permitting column would still allow multiple NULLs in SQLite,
+    //     but several empty strings would still collide. The WHERE guards
+    //     express the intent exactly.
+    //
+    //  3. AirtableImportRuns — lightweight per-import audit log so failed
+    //     imports can be investigated days later, not just within the
+    //     lifetime of the in-memory result DTO.
+    //
+    //  This entire block runs after all other migrations. Re-runs are no-ops:
+    //  CREATE UNIQUE INDEX IF NOT EXISTS + CREATE TABLE IF NOT EXISTS.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureImportIntegrityGuardsAsync(SqliteConnection connection)
+    {
+        // 1. Normalize existing IdNumbers (cheap one-time UPDATE).
+        await connection.ExecuteNonQueryAsync(@"
+            UPDATE users
+            SET    IdNumber = TRIM(IdNumber)
+            WHERE  IdNumber IS NOT NULL
+              AND  IdNumber <> TRIM(IdNumber)");
+
+        // 2a. Partial UNIQUE on users.IdNumber.
+        //     Live-DB audit (2026-06-04) confirmed zero existing duplicates,
+        //     so the index will create cleanly. If a future deploy hits a
+        //     dup, the CREATE will fail loudly with a constraint violation
+        //     — surfaces the data problem before silent corruption.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_users_idnumber_partial
+            ON users(IdNumber)
+            WHERE IdNumber IS NOT NULL AND IdNumber <> ''");
+
+        // 2b. Partial UNIQUE on Projects.AirtableRecordId.
+        //     Closes the race window in AirtableService.UpsertRecordAsync —
+        //     two concurrent imports of the same Airtable record can no
+        //     longer create two project rows. The service now uses INSERT
+        //     OR IGNORE on top of this; see AirtableService.cs for the
+        //     paired change.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_projects_airtable_record_partial
+            ON Projects(AirtableRecordId)
+            WHERE AirtableRecordId IS NOT NULL AND AirtableRecordId <> ''");
+
+        // 3. AirtableImportRuns audit table.
+        //    One row per actual import (not per preview). Captures who, when,
+        //    counts, and a short error summary. ErrorDetails is capped at
+        //    8 KB so a runaway error list can't balloon the table. No FK
+        //    cascade on TriggeredByUserId so an audit row survives a user
+        //    deletion; we just store the id and let the join LEFT-resolve.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS AirtableImportRuns (
+                Id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                IntegrationSettingsId INTEGER NOT NULL,
+                TriggeredByUserId     INTEGER,
+                StartedAt             TEXT    NOT NULL DEFAULT (datetime('now')),
+                FinishedAt            TEXT,
+                TotalFetched          INTEGER NOT NULL DEFAULT 0,
+                Inserted              INTEGER NOT NULL DEFAULT 0,
+                Updated               INTEGER NOT NULL DEFAULT 0,
+                Failed                INTEGER NOT NULL DEFAULT 0,
+                Skipped               INTEGER NOT NULL DEFAULT 0,
+                Status                TEXT    NOT NULL DEFAULT 'Success',
+                ErrorSummary          TEXT    NOT NULL DEFAULT '',
+                ErrorDetails          TEXT    NOT NULL DEFAULT '',
+                FOREIGN KEY (IntegrationSettingsId)
+                    REFERENCES AirtableIntegrationSettings(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_airtable_import_runs_settings " +
+            "ON AirtableImportRuns(IntegrationSettingsId, StartedAt DESC)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureSelectionMilestoneBackfillAsync
+    //
+    //  Business rule: a team that already holds a published project
+    //  assignment is, by definition, past the "selection & assignment"
+    //  phase — that milestone should be Completed. Pre-existing data
+    //  from before the publish hook didn't enforce this, producing
+    //  cases where the milestone screen showed "טרם נפתח" for teams
+    //  that clearly had a project.
+    //
+    //  One-time UPDATE: for every project where TeamId IS NOT NULL AND
+    //  AssignmentIsDraft = 0, mark its "בחירת פרויקטים ושיבוצים"
+    //  milestone Completed (with a Hebrew Notes value mirroring the
+    //  existing convention for seed-completed rows). Idempotent — the
+    //  WHERE clause excludes already-Completed rows, so re-running on
+    //  every boot is a no-op once the backfill is applied.
+    //
+    //  Edge cases:
+    //   • Drafts (AssignmentIsDraft=1) are skipped — the publish step
+    //     is the moment the assignment becomes "real".
+    //   • Projects with TeamId=NULL are skipped — no team, no completion.
+    //   • The "selection" milestone is identified by title match. If a
+    //     future cycle renames or replaces it, the backfill no-ops for
+    //     that cycle, which is the safe default.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureSelectionMilestoneBackfillAsync(SqliteConnection connection)
+    {
+        await connection.ExecuteNonQueryAsync(@"
+            UPDATE ProjectMilestones
+            SET    Status      = 'Completed',
+                   CompletedAt = COALESCE(CompletedAt, datetime('now')),
+                   Notes       = CASE WHEN COALESCE(Notes, '') = ''
+                                      THEN 'הפרויקט שובץ בהצלחה'
+                                      ELSE Notes END
+            WHERE  Status <> 'Completed'
+              AND  AcademicYearMilestoneId IN (
+                    SELECT aym.Id
+                    FROM   AcademicYearMilestones aym
+                    JOIN   MilestoneTemplates mt ON mt.Id = aym.MilestoneTemplateId
+                    WHERE  mt.Title = 'בחירת פרויקטים ושיבוצים'
+              )
+              AND  ProjectId IN (
+                    SELECT p.Id FROM Projects p
+                    WHERE  p.TeamId IS NOT NULL
+                      AND  COALESCE(p.AssignmentIsDraft, 0) = 0
+              )");
     }
 
     private static async Task<HashSet<string>> GetColumnsAsync(SqliteConnection connection, string tableName)
@@ -1560,6 +2109,19 @@ public static class DatabaseMigrator
         }
 
         return columns;
+    }
+
+    // Returns every AcademicYears.Id (used by the roadmap-stage seed to
+    // populate default stages for every existing cycle).
+    private static async Task<List<int>> QueryYearIdsAsync(this SqliteConnection connection)
+    {
+        var ids = new List<int>();
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT Id FROM AcademicYears ORDER BY Id";
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            ids.Add(reader.GetInt32(0));
+        return ids;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

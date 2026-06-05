@@ -119,9 +119,11 @@ public class ProjectRequestsController : ControllerBase
             return Ok(Array.Empty<ExtensionTargetDto>());
 
         // Submission tasks for this project — eligibility filter:
-        //   - Must have a due date
-        //   - Status must be a "still editable" state (Open / InProgress).
-        //     Done / Completed / SubmittedToMentor are excluded.
+        //   - Has a due date (per-team override wins over the base due date)
+        //   - Status is NOT one of the terminal/handed-in states:
+        //     Done / Completed / SubmittedToMentor. Overdue NotStarted /
+        //     Open / InProgress / Pending all qualify — being late is the
+        //     #1 reason a student opens an extension request.
         //   - Not closed (ClosedAt IS NULL)
         //   - No existing submission attached (any submission = "submitted",
         //     so the task is no longer in a state where extending the deadline
@@ -131,14 +133,19 @@ public class ProjectRequestsController : ControllerBase
                     t.Id                         AS Id,
                     t.Title                      AS Title,
                     COALESCE(mt.Title, '')       AS MilestoneTitle,
-                    t.DueDate                    AS CurrentDueDate
+                    COALESCE(tto.OverrideDueDate, t.DueDate)
+                                                  AS CurrentDueDate,
+                    COALESCE(t.Status, '')       AS Status
             FROM    Tasks                    t
-            LEFT JOIN ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
+            JOIN    Projects                 p   ON p.Id  = t.ProjectId
+            LEFT JOIN ProjectMilestones      pm  ON pm.Id = t.ProjectMilestoneId
             LEFT JOIN AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
             LEFT JOIN MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                                                  ON tto.TeamId = p.TeamId AND tto.TaskId = t.Id
             WHERE   t.ProjectId    = @ProjectId
               AND   t.IsSubmission = 1
-              AND   t.DueDate      IS NOT NULL
+              AND   COALESCE(tto.OverrideDueDate, t.DueDate) IS NOT NULL
               AND   t.ClosedAt     IS NULL
               AND   t.Status NOT IN ('Done', 'Completed', 'SubmittedToMentor')
               AND   NOT EXISTS (
@@ -158,26 +165,41 @@ public class ProjectRequestsController : ControllerBase
                           AND  e2.TaskId      = t.Id
                           AND  r2.Status NOT IN ('Resolved','Closed')
                     )
-            ORDER   BY t.DueDate, t.Id";
+            ORDER   BY COALESCE(tto.OverrideDueDate, t.DueDate), t.Id";
 
         var tasks = (await _db.GetRecordsAsync<ExtensionTargetDto>(
             tasksSql, new { ProjectId = projectId }))?.ToList() ?? new();
 
         // Milestones for this project (per-team, project-scoped) — eligibility:
-        //   - Must have a due date
-        //   - Not Completed
-        //   - Not finalized (CompletedAt IS NULL)
+        //   - Has a due date. The due date lives on AcademicYearMilestones,
+        //     NOT on ProjectMilestones (which has no DueDate column). A
+        //     prior version of this query read `pm.DueDate IS NOT NULL`
+        //     which silently evaluated to NULL on every row — the entire
+        //     milestones branch was returning zero rows. The fix resolves
+        //     the effective due date as
+        //         COALESCE(team-override, aym.DueDate)
+        //     mirroring the pattern used by ProjectHealthController and
+        //     the lecturer dashboard.
+        //   - Not finalized (CompletedAt IS NULL AND Status <> 'Completed').
+        //     Any other status, including 'NotStarted', is eligible —
+        //     overdue-NotStarted milestones are exactly the case the
+        //     student opens an extension request for.
         const string milestonesSql = @"
             SELECT  'Milestone'                  AS Kind,
                     pm.Id                        AS Id,
                     COALESCE(mt.Title, '')       AS Title,
                     NULL                         AS MilestoneTitle,
-                    pm.DueDate                   AS CurrentDueDate
+                    COALESCE(mo.OverrideDueDate, aym.DueDate)
+                                                  AS CurrentDueDate,
+                    COALESCE(pm.Status, '')      AS Status
             FROM    ProjectMilestones        pm
             JOIN    AcademicYearMilestones   aym ON aym.Id = pm.AcademicYearMilestoneId
             JOIN    MilestoneTemplates       mt  ON mt.Id  = aym.MilestoneTemplateId
+            JOIN    Projects                 p   ON p.Id   = pm.ProjectId
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                                                  ON mo.TeamId = p.TeamId AND mo.ProjectMilestoneId = pm.Id
             WHERE   pm.ProjectId = @ProjectId
-              AND   pm.DueDate     IS NOT NULL
+              AND   COALESCE(mo.OverrideDueDate, aym.DueDate) IS NOT NULL
               AND   pm.CompletedAt IS NULL
               AND   pm.Status      <> 'Completed'
               -- Mirrors the duplicate-active guard in POST /.
@@ -190,7 +212,7 @@ public class ProjectRequestsController : ControllerBase
                           AND  e2.ProjectMilestoneId = pm.Id
                           AND  r2.Status NOT IN ('Resolved','Closed')
                     )
-            ORDER   BY pm.DueDate, pm.Id";
+            ORDER   BY COALESCE(mo.OverrideDueDate, aym.DueDate), pm.Id";
 
         var milestones = (await _db.GetRecordsAsync<ExtensionTargetDto>(
             milestonesSql, new { ProjectId = projectId }))?.ToList() ?? new();
@@ -668,14 +690,20 @@ public class ProjectRequestsController : ControllerBase
                 // We deliberately fetch the raw status fields (instead of relying on
                 // the picker's filtered view) so we can produce the right Hebrew
                 // error message for each ineligibility reason.
+                // Effective due date = per-team override if present, else
+                // base t.DueDate. Mirrors the resolver in the picker query
+                // so this validation accepts whatever the student saw.
                 const string taskSql = @"
-                    SELECT  t.DueDate           AS DueDate,
+                    SELECT  COALESCE(tto.OverrideDueDate, t.DueDate) AS DueDate,
                             t.Status            AS Status,
                             t.ClosedAt          AS ClosedAt,
                             t.IsSubmission      AS IsSubmission,
                             (SELECT COUNT(*) FROM TaskSubmissions s WHERE s.TaskId = t.Id)
                                                 AS SubmissionCount
                     FROM    Tasks t
+                    JOIN    Projects p ON p.Id = t.ProjectId
+                    LEFT JOIN TeamTaskDueDateOverrides tto
+                                                  ON tto.TeamId = p.TeamId AND tto.TaskId = t.Id
                     WHERE   t.Id = @TaskId AND t.ProjectId = @ProjectId
                     LIMIT   1";
                 var taskRow = (await _db.GetRecordsAsync<TaskEligibilityRow>(
@@ -698,12 +726,21 @@ public class ProjectRequestsController : ControllerBase
             else if (req.TargetMilestoneId.HasValue)
             {
                 // Same approach for milestones — fetch raw fields, then map to a
-                // specific error message per reason.
+                // specific error message per reason. The effective due date
+                // is resolved as COALESCE(team-override, AcademicYearMilestones.DueDate)
+                // because ProjectMilestones itself has no DueDate column.
+                // (Without this join the validation always saw NULL and
+                // wrongly returned "הפריט אינו זמין" even for milestones the
+                // picker had legitimately offered.)
                 const string msSql = @"
-                    SELECT  pm.DueDate     AS DueDate,
+                    SELECT  COALESCE(mo.OverrideDueDate, aym.DueDate) AS DueDate,
                             pm.Status      AS Status,
                             pm.CompletedAt AS CompletedAt
                     FROM    ProjectMilestones pm
+                    JOIN    AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+                    JOIN    Projects p ON p.Id = pm.ProjectId
+                    LEFT JOIN TeamMilestoneDueDateOverrides mo
+                                                  ON mo.TeamId = p.TeamId AND mo.ProjectMilestoneId = pm.Id
                     WHERE   pm.Id = @MsId AND pm.ProjectId = @ProjectId
                     LIMIT   1";
                 var msRow = (await _db.GetRecordsAsync<MilestoneEligibilityRow>(

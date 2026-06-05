@@ -52,9 +52,20 @@ public class ProjectHealthController : ControllerBase
             LIMIT 1";
         var currentYearId = (await _db.GetRecordsAsync<int>(yearSql))?.FirstOrDefault() ?? 0;
 
-        // ── 1. Base project list (single source of truth for "active") ──────
-        // Same definition as the lecturer dashboard. Catalog rows are excluded.
-        const string projectsSqlAll = @"
+        // ── 1. Base project list — scope-aware definition ───────────────────
+        //
+        //  LECTURER scope: same "active assigned" definition as the lecturer
+        //    dashboard — drops catalog-state rows so the page isn't flooded
+        //    with hundreds of unassigned proposals.
+        //
+        //  MENTOR scope: ProjectMentors row is the sole project gate, identical
+        //    to /api/mentor/projects ("הפרויקטים שלי") and to the dashboard's
+        //    mentor scope after the 2026-06-03 fix. No Status/TeamId/Draft
+        //    filters — those silently hid legitimate assignments whose
+        //    Projects.Status hadn't been flipped to 'InProgress' yet (project
+        //    #4 regression). The cycle filter is preserved so historical
+        //    assignments don't bleed into a "current state" view.
+        const string baseProjectsSelect = @"
             SELECT  p.Id           AS ProjectId,
                     p.ProjectNumber,
                     p.Title        AS ProjectTitle,
@@ -71,14 +82,20 @@ public class ProjectHealthController : ControllerBase
                      WHERE  pmm.ProjectId = p.Id)            AS MentorName
             FROM    Projects p
             LEFT JOIN Teams  t ON t.Id = p.TeamId
+        ";
+
+        const string projectsSqlLecturer = @"
             WHERE   p.AcademicYearId   = @YearId
               AND   COALESCE(p.AssignmentIsDraft, 0) = 0
               AND   p.TeamId IS NOT NULL
               AND   p.Status NOT IN ('Available', 'Unavailable')";
-        const string projectsSqlMentorOnly = @"
+
+        const string projectsSqlMentor = @"
+            WHERE   p.AcademicYearId   = @YearId
               AND   p.Id IN (SELECT ProjectId FROM ProjectMentors WHERE UserId = @UserId)";
-        string projectsSql = projectsSqlAll
-                           + (restrictToMentor ? projectsSqlMentorOnly : "")
+
+        string projectsSql = baseProjectsSelect
+                           + (restrictToMentor ? projectsSqlMentor : projectsSqlLecturer)
                            + " ORDER BY p.ProjectNumber";
 
         var projects = (await _db.GetRecordsAsync<ProjectBaseRow>(

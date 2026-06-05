@@ -9,13 +9,11 @@ namespace AuthWithAdmin.Server.Data;
 /// Fetches project records from Airtable and upserts them into the local DB.
 ///
 /// Configuration is supplied per-call via <see cref="AirtableOptions"/>:
-///   · The new admin UI calls <see cref="SyncProjectsAsync(AirtableOptions)"/>
-///     with the saved row from AirtableIntegrationSettings.
-///   · The legacy <see cref="SyncProjectsAsync()"/> entry point — still wired
-///     to /api/airtable/sync-projects — first looks up the active DB
-///     configuration for the current academic year, then falls back to the
-///     "Airtable" section in appsettings.json so existing installations keep
-///     working without immediate admin action.
+/// the controller resolves the active <see cref="AirtableIntegrationSettings"/>
+/// row, builds an <see cref="AirtableOptions"/>, and invokes the per-row
+/// overload. The legacy "no-args, look up active" overload was removed
+/// on 2026-06-04 — every Airtable import now has to flow through the
+/// audited controller path so AirtableImportRuns receives a row.
 /// </summary>
 public class AirtableService
 {
@@ -44,23 +42,22 @@ public class AirtableService
     }
 
     // ── Public entry points ──────────────────────────────────────────────────
+    //
+    // The no-args SyncProjectsAsync() overload that used to live here was
+    // removed: it bypassed the audited controller (no AirtableImportRuns
+    // row written) and was reachable from the now-410'd
+    // /api/airtable/sync-projects endpoint. Callers must invoke the
+    // explicit-options overload below via AirtableIntegrationController.Import,
+    // which writes the audit row + per-integration LastImportAt/Summary.
 
-    /// <summary>Resolves the DB-backed active configuration (or appsettings fallback) and runs the sync.</summary>
-    public async Task<AirtableSyncResultDto> SyncProjectsAsync()
-    {
-        var options = await ResolveActiveOptionsAsync();
-        if (options is null)
-        {
-            return new AirtableSyncResultDto
-            {
-                SyncError = "Airtable אינו מוגדר. הגדירו אינטגרציה פעילה דרך ניהול > אינטגרציות."
-            };
-        }
-        return await SyncProjectsAsync(options);
-    }
-
-    /// <summary>Runs the sync with an explicit configuration (used by the admin UI per-row).</summary>
-    public async Task<AirtableSyncResultDto> SyncProjectsAsync(AirtableOptions options)
+    /// <summary>Runs the sync with an explicit configuration.
+    /// <paramref name="skipRecordIds"/> is the optional opt-out list — Airtable
+    /// records whose id is in this set are counted as Skipped and never
+    /// touched on the local side. Used by the preview→confirm workflow so
+    /// the admin can deselect suspected duplicates before committing.</summary>
+    public async Task<AirtableSyncResultDto> SyncProjectsAsync(
+        AirtableOptions options,
+        HashSet<string>? skipRecordIds = null)
     {
         if (!options.IsConfigured)
         {
@@ -131,6 +128,17 @@ public class AirtableService
 
         foreach (var record in records)
         {
+            // Admin-chosen skip list (per-row opt-out from the preview UI).
+            // Counted as Skipped, never processed. Distinct from Failed so
+            // the audit row makes the admin's intent explicit.
+            if (skipRecordIds is not null
+                && !string.IsNullOrEmpty(record.Id)
+                && skipRecordIds.Contains(record.Id))
+            {
+                result.Skipped++;
+                continue;
+            }
+
             try
             {
                 await UpsertRecordAsync(options, record, typesByName, counter, currentYearId, result);
@@ -165,6 +173,449 @@ public class AirtableService
         {
             result.SyncError =
                 $"כל {result.Failed} הרשומות נכשלו. דוגמה לשגיאה ראשונה: {result.Errors[0]}";
+        }
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  PreviewProjectsAsync — read-only dry-run for the admin UI
+    //
+    //  Reuses the same Airtable fetch + StudentVisibleOnly filter that the
+    //  real sync uses, then categorises each record into one of four buckets
+    //  without any DB writes:
+    //
+    //    New     — no existing Projects row has this AirtableRecordId
+    //    Update  — row exists; at least one mapped field differs
+    //    Warning — row will be created/updated, but data is suspect
+    //              (missing title, unmapped project type, no name, etc.)
+    //    Error   — record cannot be imported at all (no Airtable id, etc.)
+    //
+    //  The Update bucket also lists the Hebrew field labels that would
+    //  change, so the admin can confirm a no-op import doesn't actually
+    //  bump a field they didn't expect.
+    // ─────────────────────────────────────────────────────────────────────────
+    public async Task<AirtablePreviewResultDto> PreviewProjectsAsync(AirtableOptions options)
+    {
+        if (!options.IsConfigured)
+        {
+            return new AirtablePreviewResultDto
+            {
+                PreviewError = "תצורת Airtable אינה מלאה (Token / BaseId / ProjectsTable חסרים)."
+            };
+        }
+
+        List<AirtableRecord> records;
+        try
+        {
+            records = await FetchAllRecordsAsync(options);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Preview: failed to fetch records from Airtable.");
+            return new AirtablePreviewResultDto
+            {
+                PreviewError = $"שגיאה בגישה ל-Airtable: {ex.Message}"
+            };
+        }
+
+        var fm = options.FieldMap;
+        if (options.StudentVisibleOnly && !string.IsNullOrWhiteSpace(fm.IncludeInPool))
+        {
+            records = records
+                .Where(r => string.Equals(
+                    GetString(r.Fields, fm.IncludeInPool), "true",
+                    StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        var result = new AirtablePreviewResultDto { TotalFetched = records.Count };
+
+        // Pull every (AirtableRecordId → existing-row fields) we might compare
+        // against in one round-trip, keyed by record id. Avoids N+1 lookups.
+        var existingByRecordId = new Dictionary<string, ExistingProjectRow>(StringComparer.Ordinal);
+        if (records.Count > 0)
+        {
+            var rows = await _db.GetRecordsAsync<ExistingProjectRow>(@"
+                SELECT  Id, AirtableRecordId,
+                        COALESCE(Title,'')            AS Title,
+                        COALESCE(Description,'')      AS Description,
+                        ProjectTypeId,
+                        COALESCE(Status,'')           AS Status,
+                        COALESCE(OrganizationName,'') AS OrganizationName,
+                        COALESCE(OrganizationType,'') AS OrganizationType,
+                        COALESCE(ProjectTopic,'')     AS ProjectTopic,
+                        COALESCE(Contents,'')         AS Contents,
+                        COALESCE(ContactPerson,'')    AS ContactPerson,
+                        COALESCE(ContactRole,'')      AS ContactRole,
+                        COALESCE(ContactEmail,'')     AS ContactEmail,
+                        COALESCE(ContactPhone,'')     AS ContactPhone,
+                        COALESCE(Goals,'')            AS Goals,
+                        COALESCE(TargetAudience,'')   AS TargetAudience,
+                        COALESCE(Priority,'')         AS Priority
+                FROM    Projects
+                WHERE   AirtableRecordId IS NOT NULL AND AirtableRecordId <> ''");
+            if (rows is not null)
+                foreach (var r in rows)
+                    if (!string.IsNullOrEmpty(r.AirtableRecordId))
+                        existingByRecordId[r.AirtableRecordId] = r;
+        }
+
+        // Suspect-duplicate index: look up local rows by normalised title and
+        // by ProjectNumber so the analyser can flag a "New" record that looks
+        // suspiciously like an existing project. The AirtableRecordId match
+        // is the authoritative dedupe key — this is a warning layer on top.
+        // Pulls ALL projects (not just Airtable-sourced) so manual catalog
+        // entries also get the collision check.
+        var existingByTitle  = new Dictionary<string, ExistingByTitleRow>(StringComparer.Ordinal);
+        var existingByNumber = new Dictionary<int, ExistingByTitleRow>();
+        {
+            var rows = await _db.GetRecordsAsync<ExistingByTitleRow>(@"
+                SELECT  Id, ProjectNumber, COALESCE(Title,'') AS Title,
+                        COALESCE(AirtableRecordId,'') AS AirtableRecordId
+                FROM    Projects");
+            if (rows is not null)
+            {
+                foreach (var r in rows)
+                {
+                    string key = NormaliseTitle(r.Title);
+                    if (key.Length > 0 && !existingByTitle.ContainsKey(key))
+                        existingByTitle[key] = r;
+                    if (r.ProjectNumber > 0 && !existingByNumber.ContainsKey(r.ProjectNumber))
+                        existingByNumber[r.ProjectNumber] = r;
+                }
+            }
+        }
+
+        // Cache project-type lookup so warnings on unmapped types are cheap.
+        var typeRows = await _db.GetRecordsAsync<ProjectTypeRow>(
+            "SELECT Id, Name FROM ProjectTypes");
+        var typesByName = typeRows?
+            .ToDictionary(t => t.Name.ToLowerInvariant(), t => t.Id)
+            ?? new Dictionary<string, int>();
+
+        foreach (var record in records)
+        {
+            var row = AnalyzeRecord(
+                record, options, typesByName,
+                existingByRecordId, existingByTitle, existingByNumber);
+            result.Rows.Add(row);
+            switch (row.Kind)
+            {
+                case AirtablePreviewKinds.New:     result.NewCount++;     break;
+                case AirtablePreviewKinds.Update:  result.UpdateCount++;  break;
+                case AirtablePreviewKinds.Warning: result.WarningCount++; break;
+                case AirtablePreviewKinds.Error:   result.ErrorCount++;   break;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Case-insensitive, whitespace-collapsed title key. Used for
+    /// the "looks like an existing project" warning — not for dedupe (the
+    /// authoritative key is AirtableRecordId).</summary>
+    private static string NormaliseTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return "";
+        var s = title.Trim().ToLowerInvariant();
+        // Collapse runs of whitespace to single spaces so " A  B " == "a b".
+        var sb = new System.Text.StringBuilder(s.Length);
+        bool prevSpace = false;
+        foreach (var ch in s)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!prevSpace) sb.Append(' ');
+                prevSpace = true;
+            }
+            else
+            {
+                sb.Append(ch);
+                prevSpace = false;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private sealed class ExistingByTitleRow
+    {
+        public int    Id               { get; set; }
+        public int    ProjectNumber    { get; set; }
+        public string Title            { get; set; } = "";
+        public string AirtableRecordId { get; set; } = "";
+    }
+
+    /// <summary>Pure function — read fields from one Airtable record, compare
+    /// against the local DB state, and classify into one of four buckets.
+    /// No I/O.</summary>
+    private static AirtablePreviewRowDto AnalyzeRecord(
+        AirtableRecord record,
+        AirtableOptions options,
+        Dictionary<string, int> typesByName,
+        Dictionary<string, ExistingProjectRow> existingByRecordId,
+        Dictionary<string, ExistingByTitleRow> existingByTitle,
+        Dictionary<int, ExistingByTitleRow> existingByNumber)
+    {
+        var fm = options.FieldMap;
+        var f  = record.Fields;
+
+        string title    = GetString(f, fm.Title);
+        string orgName  = GetString(f, fm.OrganizationName);
+        int    number   = GetInt(f, fm.ProjectNumber);
+
+        var row = new AirtablePreviewRowDto
+        {
+            RecordId         = record.Id,
+            Title            = string.IsNullOrWhiteSpace(title) ? "(ללא כותרת)" : title,
+            OrganizationName = orgName,
+            ProjectNumber    = number > 0 ? number : null,
+        };
+
+        // ── Error: record itself can't be imported at all ────────────────
+        if (string.IsNullOrWhiteSpace(record.Id))
+        {
+            row.Kind   = AirtablePreviewKinds.Error;
+            row.Detail = "חסר מזהה רשומה ב-Airtable";
+            return row;
+        }
+
+        // ── Existing? ────────────────────────────────────────────────────
+        existingByRecordId.TryGetValue(record.Id, out var existing);
+
+        // Collect soft warnings — these don't block, but the admin should see.
+        var warnings = new List<string>();
+        if (string.IsNullOrWhiteSpace(title))
+            warnings.Add("חסרה כותרת");
+        if (string.IsNullOrWhiteSpace(orgName))
+            warnings.Add("חסר שם ארגון");
+
+        string orgType = GetString(f, fm.OrganizationType);
+        if (!string.IsNullOrWhiteSpace(orgType) && !typesByName.ContainsKey(orgType.ToLowerInvariant()))
+            warnings.Add($"סוג ארגון לא ידוע: \"{orgType}\"");
+
+        // ── New rows ─────────────────────────────────────────────────────
+        if (existing is null)
+        {
+            // Suspected-duplicate check: AirtableRecordId didn't match an
+            // existing row, but the local DB has a project with the same
+            // ProjectNumber OR a near-identical title. That's almost
+            // certainly a manually-created twin of an Airtable record —
+            // import would create a second project with the same name.
+            string normalisedTitle = NormaliseTitle(title);
+            if (number > 0 && existingByNumber.TryGetValue(number, out var twinByNum)
+                && twinByNum.AirtableRecordId != record.Id)
+            {
+                warnings.Add(
+                    $"כפילות חשודה — מספר פרויקט #{number} כבר קיים (\"{Truncate(twinByNum.Title, 50)}\"). " +
+                    "הייבוא ייצור פרויקט חדש עם מספר אחר.");
+            }
+            else if (normalisedTitle.Length > 0
+                     && existingByTitle.TryGetValue(normalisedTitle, out var twinByTitle)
+                     && twinByTitle.AirtableRecordId != record.Id)
+            {
+                string twinTag = twinByTitle.ProjectNumber > 0
+                    ? $"#{twinByTitle.ProjectNumber}"
+                    : $"id {twinByTitle.Id}";
+                warnings.Add(
+                    $"כפילות חשודה — כותרת זהה לפרויקט קיים {twinTag}. " +
+                    "אם זו אותה הצעה, יש לשייך AirtableRecordId לפרויקט הקיים לפני הייבוא.");
+            }
+
+            row.Kind   = warnings.Count > 0 ? AirtablePreviewKinds.Warning : AirtablePreviewKinds.New;
+            row.Detail = warnings.Count > 0 ? string.Join(" · ", warnings) : "";
+            return row;
+        }
+
+        // ── Update rows: diff each mapped field ──────────────────────────
+        row.ExistingProjectId = existing.Id;
+
+        var changes = new List<string>();
+        if (!StrEq(existing.Title,            title))                                    changes.Add("כותרת");
+        if (!StrEq(existing.Description,      GetString(f, fm.Description)))             changes.Add("תיאור");
+        if (!StrEq(existing.Status,           GetString(f, fm.Status)))                  changes.Add("סטטוס");
+        if (!StrEq(existing.OrganizationName, orgName))                                  changes.Add("שם ארגון");
+        if (!StrEq(existing.OrganizationType, orgType))                                  changes.Add("סוג ארגון");
+        if (!StrEq(existing.ProjectTopic,     GetString(f, fm.ProjectTopic)))            changes.Add("נושא");
+        if (!StrEq(existing.Contents,         GetString(f, fm.Contents)))                changes.Add("תכנים");
+        if (!StrEq(existing.ContactPerson,    GetString(f, fm.ContactPerson)))           changes.Add("איש קשר");
+        if (!StrEq(existing.ContactRole,      GetString(f, fm.ContactRole)))             changes.Add("תפקיד איש קשר");
+        if (!StrEq(existing.ContactEmail,     GetString(f, fm.ContactEmail)))            changes.Add("דוא״ל");
+        if (!StrEq(existing.ContactPhone,     GetString(f, fm.ContactPhone)))            changes.Add("טלפון");
+        if (!StrEq(existing.Goals,            GetString(f, fm.Goals)))                   changes.Add("מטרות");
+        if (!StrEq(existing.TargetAudience,   GetString(f, fm.TargetAudience)))          changes.Add("קהל יעד");
+        if (!StrEq(existing.Priority,         GetString(f, fm.Priority)))                changes.Add("עדיפות");
+
+        if (warnings.Count > 0)
+        {
+            // Soft warning trumps a clean Update so the admin sees the issue.
+            row.Kind   = AirtablePreviewKinds.Warning;
+            row.Detail = string.Join(" · ", warnings) +
+                         (changes.Count > 0 ? "  ·  שדות שישתנו: " + string.Join(", ", changes) : "");
+        }
+        else if (changes.Count > 0)
+        {
+            row.Kind   = AirtablePreviewKinds.Update;
+            row.Detail = "שדות שישתנו: " + string.Join(", ", changes);
+        }
+        else
+        {
+            // No-op update — row exists, nothing differs. Still surface as
+            // "Update" with zero fields so the count math is honest, but
+            // mark the detail so the admin sees it.
+            row.Kind   = AirtablePreviewKinds.Update;
+            row.Detail = "אין שינוי בשדות (יעודכן LastSyncedAt בלבד)";
+        }
+
+        return row;
+    }
+
+    private static bool StrEq(string? a, string? b)
+        => string.Equals(a ?? "", b ?? "", StringComparison.Ordinal);
+
+    private sealed class ExistingProjectRow
+    {
+        public int    Id               { get; set; }
+        public string AirtableRecordId { get; set; } = "";
+        public string Title            { get; set; } = "";
+        public string Description      { get; set; } = "";
+        public int    ProjectTypeId    { get; set; }
+        public string Status           { get; set; } = "";
+        public string OrganizationName { get; set; } = "";
+        public string OrganizationType { get; set; } = "";
+        public string ProjectTopic     { get; set; } = "";
+        public string Contents         { get; set; } = "";
+        public string ContactPerson    { get; set; } = "";
+        public string ContactRole      { get; set; } = "";
+        public string ContactEmail     { get; set; } = "";
+        public string ContactPhone     { get; set; } = "";
+        public string Goals            { get; set; } = "";
+        public string TargetAudience   { get; set; } = "";
+        public string Priority         { get; set; } = "";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  PreviewFixtureAsync — dev/QA only
+    //
+    //  Runs the same AnalyzeRecord pipeline against a posted set of mock
+    //  Airtable records, without making any Airtable HTTP call and without
+    //  writing to the DB. Lets QA verify each of the four preview buckets
+    //  ("New", "Update", "Warning", "Error") fires correctly without
+    //  needing access to the live Airtable base.
+    //
+    //  Reuses the same field-by-field diff logic as PreviewProjectsAsync,
+    //  so a "Title-changed" signal in this fixture produces identical
+    //  Detail text to a real Airtable record whose title changed.
+    // ─────────────────────────────────────────────────────────────────────────
+    public async Task<AirtablePreviewResultDto> PreviewFixtureAsync(
+        AirtableOptions options,
+        List<AirtableFixtureRecordDto> fixtureRecords)
+    {
+        var result = new AirtablePreviewResultDto
+        {
+            TotalFetched = fixtureRecords?.Count ?? 0,
+        };
+        if (fixtureRecords is null || fixtureRecords.Count == 0) return result;
+
+        // Build the same three indexes the real preview uses.
+        var existingByRecordId = new Dictionary<string, ExistingProjectRow>(StringComparer.Ordinal);
+        var existingByTitle    = new Dictionary<string, ExistingByTitleRow>(StringComparer.Ordinal);
+        var existingByNumber   = new Dictionary<int, ExistingByTitleRow>();
+
+        var rows = await _db.GetRecordsAsync<ExistingProjectRow>(@"
+            SELECT  Id, AirtableRecordId,
+                    COALESCE(Title,'')            AS Title,
+                    COALESCE(Description,'')      AS Description,
+                    ProjectTypeId,
+                    COALESCE(Status,'')           AS Status,
+                    COALESCE(OrganizationName,'') AS OrganizationName,
+                    COALESCE(OrganizationType,'') AS OrganizationType,
+                    COALESCE(ProjectTopic,'')     AS ProjectTopic,
+                    COALESCE(Contents,'')         AS Contents,
+                    COALESCE(ContactPerson,'')    AS ContactPerson,
+                    COALESCE(ContactRole,'')      AS ContactRole,
+                    COALESCE(ContactEmail,'')     AS ContactEmail,
+                    COALESCE(ContactPhone,'')     AS ContactPhone,
+                    COALESCE(Goals,'')            AS Goals,
+                    COALESCE(TargetAudience,'')   AS TargetAudience,
+                    COALESCE(Priority,'')         AS Priority
+            FROM    Projects
+            WHERE   AirtableRecordId IS NOT NULL AND AirtableRecordId <> ''");
+        if (rows is not null)
+            foreach (var r in rows)
+                if (!string.IsNullOrEmpty(r.AirtableRecordId))
+                    existingByRecordId[r.AirtableRecordId] = r;
+
+        var titleRows = await _db.GetRecordsAsync<ExistingByTitleRow>(@"
+            SELECT  Id, ProjectNumber, COALESCE(Title,'') AS Title,
+                    COALESCE(AirtableRecordId,'') AS AirtableRecordId
+            FROM    Projects");
+        if (titleRows is not null)
+        {
+            foreach (var r in titleRows)
+            {
+                string key = NormaliseTitle(r.Title);
+                if (key.Length > 0 && !existingByTitle.ContainsKey(key))
+                    existingByTitle[key] = r;
+                if (r.ProjectNumber > 0 && !existingByNumber.ContainsKey(r.ProjectNumber))
+                    existingByNumber[r.ProjectNumber] = r;
+            }
+        }
+
+        var typeRows = await _db.GetRecordsAsync<ProjectTypeRow>(
+            "SELECT Id, Name FROM ProjectTypes");
+        var typesByName = typeRows?
+            .ToDictionary(t => t.Name.ToLowerInvariant(), t => t.Id)
+            ?? new Dictionary<string, int>();
+
+        // Translate each fixture row into the shape AnalyzeRecord expects
+        // (an AirtableRecord with a Fields dictionary keyed by the
+        // integration's FieldMap names) so the SAME analyser fires. Field
+        // values must be JsonElement to match the production-record shape.
+        var fm = options.FieldMap;
+        static void SetStr(Dictionary<string, JsonElement> d, string key, string val)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            d[key] = JsonSerializer.SerializeToElement(val ?? "");
+        }
+        static void SetInt(Dictionary<string, JsonElement> d, string key, int val)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return;
+            d[key] = JsonSerializer.SerializeToElement(val);
+        }
+
+        foreach (var fx in fixtureRecords)
+        {
+            var fields = new Dictionary<string, JsonElement>();
+            SetStr(fields, fm.Title,            fx.Title);
+            if (fx.ProjectNumber.HasValue) SetInt(fields, fm.ProjectNumber, fx.ProjectNumber.Value);
+            SetStr(fields, fm.OrganizationName, fx.OrganizationName);
+            SetStr(fields, fm.OrganizationType, fx.OrganizationType);
+            SetStr(fields, fm.Description,      fx.Description);
+            SetStr(fields, fm.Status,           fx.Status);
+            SetStr(fields, fm.ProjectTopic,     fx.ProjectTopic);
+            SetStr(fields, fm.Contents,         fx.Contents);
+            SetStr(fields, fm.ContactPerson,    fx.ContactPerson);
+            SetStr(fields, fm.ContactRole,      fx.ContactRole);
+            SetStr(fields, fm.ContactEmail,     fx.ContactEmail);
+            SetStr(fields, fm.ContactPhone,     fx.ContactPhone);
+            SetStr(fields, fm.Goals,            fx.Goals);
+            SetStr(fields, fm.TargetAudience,   fx.TargetAudience);
+            SetStr(fields, fm.Priority,         fx.Priority);
+
+            var record = new AirtableRecord { Id = fx.RecordId ?? "", Fields = fields };
+
+            var row = AnalyzeRecord(
+                record, options, typesByName,
+                existingByRecordId, existingByTitle, existingByNumber);
+            result.Rows.Add(row);
+            switch (row.Kind)
+            {
+                case AirtablePreviewKinds.New:     result.NewCount++;     break;
+                case AirtablePreviewKinds.Update:  result.UpdateCount++;  break;
+                case AirtablePreviewKinds.Warning: result.WarningCount++; break;
+                case AirtablePreviewKinds.Error:   result.ErrorCount++;   break;
+            }
         }
 
         return result;
@@ -233,7 +684,17 @@ public class AirtableService
 
     // ── Configuration loading ────────────────────────────────────────────────
 
-    /// <summary>Picks the active Airtable config for the current academic year, or null/appsettings-fallback.</summary>
+    /// <summary>
+    /// Picks the active Airtable config for the current academic year.
+    /// Returns null when no current cycle exists OR no integration row is
+    /// marked IsActive=1 for that cycle. The DB is the SOLE source — the
+    /// legacy appsettings.json "Airtable" section is no longer consulted
+    /// (it is bootstrap-migrated into the DB by
+    /// DatabaseMigrator.EnsureAirtableSeedFromAppsettingsAsync on first
+    /// boot). Configuring a new academic year now means: create a cycle,
+    /// mark it current, then add an AirtableIntegrationSettings row from
+    /// /management/integrations/airtable — no code or appsettings edits.
+    /// </summary>
     public async Task<AirtableOptions?> ResolveActiveOptionsAsync()
     {
         var rows = await _db.GetRecordsAsync<int>(
@@ -241,12 +702,7 @@ public class AirtableService
             "AND AcademicYearId IN (SELECT Id FROM AcademicYears WHERE IsCurrent = 1) LIMIT 1");
         int settingsId = rows?.FirstOrDefault() ?? 0;
 
-        if (settingsId > 0)
-            return await LoadOptionsAsync(settingsId);
-
-        // Legacy fallback — appsettings.json "Airtable" section.
-        var legacy = _config.GetSection(AirtableOptions.SectionName).Get<AirtableOptions>();
-        return legacy is { IsConfigured: true } ? legacy : null;
+        return settingsId > 0 ? await LoadOptionsAsync(settingsId) : null;
     }
 
     /// <summary>Builds an <see cref="AirtableOptions"/> from the saved DB rows for a given integration id.</summary>
@@ -411,69 +867,28 @@ public class AirtableService
             "SELECT Id FROM Projects WHERE AirtableRecordId = @RecordId",
             new { RecordId = record.Id })).FirstOrDefault();
 
-        if (existingId > 0)
+        if (existingId == 0)
         {
-            await _db.SaveDataAsync(@"
-                UPDATE Projects
-                SET    Title            = @Title,
-                       Description      = @Description,
-                       ProjectTypeId    = @ProjectTypeId,
-                       Status           = @Status,
-                       OrganizationName = @OrganizationName,
-                       OrganizationType = @OrganizationType,
-                       ProjectTopic     = @ProjectTopic,
-                       Contents         = @Contents,
-                       ContactPerson    = @ContactPerson,
-                       ContactRole      = @ContactRole,
-                       ContactEmail     = @ContactEmail,
-                       ContactPhone     = @ContactPhone,
-                       Goals            = @Goals,
-                       TargetAudience   = @TargetAudience,
-                       Priority         = @Priority,
-                       SourceType       = 'Airtable',
-                       LastSyncedAt     = @LastSyncedAt
-                WHERE  Id = @Id",
-                new
-                {
-                    Title            = title,
-                    Description      = description,
-                    ProjectTypeId    = typeId,
-                    Status           = status,
-                    OrganizationName = orgName,
-                    OrganizationType = orgType,
-                    ProjectTopic     = projectTopic,
-                    Contents         = contents,
-                    ContactPerson    = contact,
-                    ContactRole      = contactRole,
-                    ContactEmail     = contactEmail,
-                    ContactPhone     = contactPhone,
-                    Goals            = goals,
-                    TargetAudience   = audience,
-                    Priority         = priority,
-                    LastSyncedAt     = syncedAt,
-                    Id               = existingId,
-                });
-
-            result.Updated++;
-        }
-        else
-        {
+            // ── Insert path with race-safe partial UNIQUE ─────────────────
+            // DatabaseMigrator.EnsureImportIntegrityGuardsAsync creates a
+            // partial UNIQUE on Projects.AirtableRecordId (when non-null /
+            // non-empty). Two concurrent imports of the same record will
+            // both see existingId=0 here; the second one's INSERT OR IGNORE
+            // returns 0 rows affected, at which point we re-query the row
+            // the other importer just wrote and fall through to UPDATE.
             int dupCount = (await _db.GetRecordsAsync<int>(
                 "SELECT COUNT(1) FROM Projects WHERE ProjectNumber = @Num",
                 new { Num = projectNumber })).FirstOrDefault();
-
-            if (dupCount > 0)
-                projectNumber = ++counter.Value;
+            if (dupCount > 0) projectNumber = ++counter.Value;
 
             int teamId = await _db.InsertReturnIdAsync(
                 "INSERT INTO Teams (AcademicYearId) VALUES (@AcademicYearId)",
                 new { AcademicYearId = academicYearId });
-
             if (teamId == 0)
                 throw new InvalidOperationException("Failed to create team for Airtable project.");
 
-            await _db.InsertReturnIdAsync(@"
-                INSERT INTO Projects
+            int insertedRows = await _db.SaveDataAsync(@"
+                INSERT OR IGNORE INTO Projects
                     (ProjectNumber, Title, Description, Status, TeamId, AcademicYearId, ProjectTypeId,
                      SourceType, AirtableRecordId,
                      OrganizationName, OrganizationType, ProjectTopic, Contents,
@@ -509,8 +924,77 @@ public class AirtableService
                     LastSyncedAt     = syncedAt,
                 });
 
-            result.Inserted++;
+            if (insertedRows > 0)
+            {
+                result.Inserted++;
+                return;
+            }
+
+            // ── Race fallback ────────────────────────────────────────────
+            // The partial UNIQUE on AirtableRecordId blocked the insert
+            // because another concurrent import already created the row.
+            // Clean up the orphan Teams row we just inserted (no Project
+            // points at it), then re-resolve existingId and continue into
+            // the UPDATE branch below so this importer's data still wins
+            // for the fields that changed since the other insert.
+            await _db.SaveDataAsync(@"
+                DELETE FROM Teams
+                WHERE  Id = @TeamId
+                  AND  NOT EXISTS (SELECT 1 FROM Projects WHERE TeamId = @TeamId)",
+                new { TeamId = teamId });
+
+            existingId = (await _db.GetRecordsAsync<int>(
+                "SELECT Id FROM Projects WHERE AirtableRecordId = @RecordId",
+                new { RecordId = record.Id })).FirstOrDefault();
+
+            if (existingId == 0)
+                throw new InvalidOperationException(
+                    $"Race fallback could not resolve existing project for record {record.Id}.");
         }
+
+        // ── Update path (used for pre-existing rows AND race fallback) ──
+        await _db.SaveDataAsync(@"
+            UPDATE Projects
+            SET    Title            = @Title,
+                   Description      = @Description,
+                   ProjectTypeId    = @ProjectTypeId,
+                   Status           = @Status,
+                   OrganizationName = @OrganizationName,
+                   OrganizationType = @OrganizationType,
+                   ProjectTopic     = @ProjectTopic,
+                   Contents         = @Contents,
+                   ContactPerson    = @ContactPerson,
+                   ContactRole      = @ContactRole,
+                   ContactEmail     = @ContactEmail,
+                   ContactPhone     = @ContactPhone,
+                   Goals            = @Goals,
+                   TargetAudience   = @TargetAudience,
+                   Priority         = @Priority,
+                   SourceType       = 'Airtable',
+                   LastSyncedAt     = @LastSyncedAt
+            WHERE  Id = @Id",
+            new
+            {
+                Title            = title,
+                Description      = description,
+                ProjectTypeId    = typeId,
+                Status           = status,
+                OrganizationName = orgName,
+                OrganizationType = orgType,
+                ProjectTopic     = projectTopic,
+                Contents         = contents,
+                ContactPerson    = contact,
+                ContactRole      = contactRole,
+                ContactEmail     = contactEmail,
+                ContactPhone     = contactPhone,
+                Goals            = goals,
+                TargetAudience   = audience,
+                Priority         = priority,
+                LastSyncedAt     = syncedAt,
+                Id               = existingId,
+            });
+
+        result.Updated++;
     }
 
     // ── Field extraction helpers ──────────────────────────────────────────────
