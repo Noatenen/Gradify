@@ -1,24 +1,22 @@
 @page "/management/request-types"
 @layout AppLayout
-@attribute [Authorize(Roles = $"{Roles.Admin},{Roles.Staff}")]
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject NavigationManager Nav
+@inject IRequestTypesService Service
+@inject IJSRuntime JS
 
 @*
-    Request Type Management — configuration-only screen for the structure
-    and behaviour of student request types. Operational request handling
-    lives at the side-nav "בקשות" item (/management/requests).
-
-    This is a placeholder created on 2026-05-21 as part of the nav
-    reorganisation. The full editor (field-builder UI, role-binding,
-    status configuration, internal-notes toggle, etc.) lands in a follow-up
-    feature — the placeholder simply states intent and links back so the
-    page is reachable from the management area without leaving a 404.
+    Admin-managed catalogue of student request types.
+    Backed by /api/request-types. Built-in seed rows (Extension, Meeting, …)
+    are editable and toggleable but cannot be hard-deleted. The Lecturer⇒Admin
+    invariant means a Lecturer reaches this page through their Admin role.
 *@
 
 <div class="rtm-page" dir="rtl">
 
-    <!-- Top bar -->
+    <!-- ── Top bar ── -->
     <div class="rtm-topbar">
         <div class="rtm-topbar-start">
             <button class="rtm-back-btn"
@@ -31,60 +29,541 @@
                 <h1 class="rtm-title">ניהול סוגי בקשות</h1>
             </div>
         </div>
-    </div>
-
-    <!-- Coming-soon notice -->
-    <div class="rtm-soon-card">
-        <span class="oi oi-clock rtm-soon-icon" aria-hidden="true"></span>
-        <div>
-            <h2 class="rtm-soon-title">המסך נמצא בפיתוח</h2>
-            <p class="rtm-soon-body">
-                ניהול תפעולי של בקשות סטודנטים נשאר בלשונית "בקשות" בתפריט הצד.
-                כאן יתווסף בעתיד עורך תצורה ייעודי לסוגי הבקשות עצמם.
-            </p>
+        <div class="rtm-topbar-end">
+            <button class="rtm-primary-btn" @onclick="OpenCreateModal" disabled="@_loading">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                סוג בקשה חדש
+            </button>
         </div>
     </div>
 
-    <!-- Planned configuration sections -->
-    <div class="rtm-grid">
-        <article class="rtm-section">
-            <h3 class="rtm-section-title">
-                <span class="oi oi-list-rich" aria-hidden="true"></span>
-                סוגי בקשות
-            </h3>
-            <ul class="rtm-section-list">
-                <li>הוספת סוג בקשה חדש</li>
-                <li>עריכת סוג בקשה קיים</li>
-                <li>הפעלה / השבתה של סוג בקשה</li>
-            </ul>
-        </article>
+    <!-- ── Toast / status banner ── -->
+    @if (!string.IsNullOrEmpty(_banner))
+    {
+        <div class="rtm-banner @(_bannerSuccess ? "rtm-banner--ok" : "rtm-banner--err")">
+            <span class="oi @(_bannerSuccess ? "oi-circle-check" : "oi-warning")" aria-hidden="true"></span>
+            <span>@_banner</span>
+            <button type="button" class="rtm-banner-close" @onclick="@(() => _banner = "")" title="סגירה">
+                <span class="oi oi-x" aria-hidden="true"></span>
+            </button>
+        </div>
+    }
 
-        <article class="rtm-section">
-            <h3 class="rtm-section-title">
-                <span class="oi oi-clipboard" aria-hidden="true"></span>
-                שדות בטופס הבקשה
-            </h3>
-            <ul class="rtm-section-list">
-                <li>טקסט קצר / טקסט ארוך</li>
-                <li>תאריך</li>
-                <li>העלאת קובץ</li>
-                <li>רשימה נפתחת (Select)</li>
-                <li>תיבת סימון (Checkbox)</li>
-                <li>סימון "חובה / אופציונלי" לכל שדה</li>
-            </ul>
-        </article>
-
-        <article class="rtm-section">
-            <h3 class="rtm-section-title">
-                <span class="oi oi-tag" aria-hidden="true"></span>
-                סטטוסים והרשאות
-            </h3>
-            <ul class="rtm-section-list">
-                <li>הגדרת הסטטוסים האפשריים לכל סוג בקשה</li>
-                <li>מי רשאי לטפל בסוג בקשה זה</li>
-                <li>הפעלת הערות פנימיות (מנחה ↔ מרצה)</li>
-                <li>הגדרת אילו תגובות הסטודנט רואה — סופיות בלבד או הכל</li>
-            </ul>
-        </article>
+    <!-- ── Table ── -->
+    <div class="rtm-table-panel">
+        <table class="rtm-table">
+            <thead>
+                <tr>
+                    <th>שם סוג הבקשה</th>
+                    <th>תיאור</th>
+                    <th>מי מטפל</th>
+                    <th>קבצים</th>
+                    <th>הערות פנימיות</th>
+                    <th>סטטוס</th>
+                    <th>עודכן</th>
+                    <th class="rtm-th-actions">פעולות</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_loading)
+                {
+                    <tr><td colspan="8" class="rtm-empty"><span class="rtm-spinner-inline"></span>טוען סוגי בקשות…</td></tr>
+                }
+                else if (_loadError)
+                {
+                    <tr><td colspan="8" class="rtm-empty rtm-empty--err"><span class="oi oi-warning"></span> שגיאה בטעינה. רענן את הדף.</td></tr>
+                }
+                else if (_items.Count == 0)
+                {
+                    <tr><td colspan="8" class="rtm-empty">אין עדיין סוגי בקשות. ניתן להוסיף סוג חדש מהכפתור למעלה.</td></tr>
+                }
+                else
+                {
+                    @foreach (var t in _items)
+                    {
+                        <tr class="rtm-row @(t.IsActive ? "" : "rtm-row--inactive")">
+                            <td class="rtm-name-cell">
+                                <div class="rtm-name-wrap">
+                                    <span class="rtm-name">@t.Name</span>
+                                    @if (t.IsBuiltIn)
+                                    {
+                                        <span class="rtm-pill rtm-pill--builtin" title="סוג בקשה מובנה — לא ניתן למחיקה">מובנה</span>
+                                    }
+                                    @if (t.UsageCount > 0)
+                                    {
+                                        <span class="rtm-pill rtm-pill--usage" title="מספר הבקשות במערכת מסוג זה">@t.UsageCount בקשות</span>
+                                    }
+                                </div>
+                                <div class="rtm-code">@t.Code</div>
+                            </td>
+                            <td class="rtm-desc-cell">@(string.IsNullOrWhiteSpace(t.Description) ? "—" : t.Description)</td>
+                            <td>@HandlerRolesLabel(t.HandlerRole)</td>
+                            <td>@RequestTypeFileUploadPolicies.Label(t.FileUploadPolicy)</td>
+                            <td>
+                                <span class="rtm-bool @(t.AllowInternalNotes ? "rtm-bool--on" : "rtm-bool--off")">
+                                    @(t.AllowInternalNotes ? "מופעל" : "מבוטל")
+                                </span>
+                            </td>
+                            <td>
+                                <span class="rtm-status @(t.IsActive ? "rtm-status--active" : "rtm-status--inactive")">
+                                    @(t.IsActive ? "פעיל" : "מושבת")
+                                </span>
+                            </td>
+                            <td class="rtm-date-cell">@t.UpdatedAt.ToLocalTime().ToString("dd/MM/yyyy")</td>
+                            <td class="rtm-actions-cell">
+                                <button class="rtm-icon-btn" title="עריכה" @onclick="@(() => OpenEditModal(t))">
+                                    <span class="oi oi-pencil" aria-hidden="true"></span>
+                                </button>
+                                <button class="rtm-icon-btn"
+                                        title="@(t.IsActive ? "השבתה" : "הפעלה")"
+                                        @onclick="@(() => ToggleActive(t))">
+                                    <span class="oi @(t.IsActive ? "oi-circle-x" : "oi-circle-check")" aria-hidden="true"></span>
+                                </button>
+                                <button class="rtm-icon-btn rtm-icon-btn--danger"
+                                        title="מחיקה"
+                                        disabled="@(t.IsBuiltIn || t.UsageCount > 0)"
+                                        @onclick="@(() => DeleteType(t))">
+                                    <span class="oi oi-trash" aria-hidden="true"></span>
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
     </div>
+
 </div>
+
+<!-- ══════════════════════════════════════════
+     EDIT / CREATE MODAL
+     ══════════════════════════════════════════ -->
+@if (_modalOpen && _form is not null)
+{
+    <div class="rtm-modal-overlay" @onclick="CloseModal">
+        <div class="rtm-modal" dir="rtl" @onclick:stopPropagation="true">
+            <div class="rtm-modal-header">
+                <h2 class="rtm-modal-title">
+                    @(_editingId.HasValue ? "עריכת סוג בקשה" : "סוג בקשה חדש")
+                </h2>
+                <button class="rtm-modal-close" @onclick="CloseModal" title="סגירה" disabled="@_saving">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="rtm-modal-body">
+
+                <!-- Code -->
+                <div class="rtm-field">
+                    <label class="rtm-label">קוד <span class="rtm-required">*</span></label>
+                    <input type="text" class="rtm-input"
+                           @bind="_form.Code"
+                           disabled="@(_editingId.HasValue || _saving)"
+                           maxlength="64"
+                           placeholder="לדוגמה: EquipmentRequest" />
+                    <div class="rtm-hint">מזהה אנגלי קבוע, לאחר יצירת הסוג לא ניתן לשנותו. אותיות באנגלית, ספרות, מקף ותחתון בלבד.</div>
+                </div>
+
+                <!-- Name + Description -->
+                <div class="rtm-field-row">
+                    <div class="rtm-field rtm-field--grow">
+                        <label class="rtm-label">שם בעברית <span class="rtm-required">*</span></label>
+                        <input type="text" class="rtm-input"
+                               @bind="_form.Name" maxlength="80"
+                               disabled="@_saving"
+                               placeholder="לדוגמה: בקשת ציוד" />
+                    </div>
+                </div>
+
+                <div class="rtm-field">
+                    <label class="rtm-label">תיאור קצר</label>
+                    <textarea class="rtm-textarea"
+                              rows="2"
+                              @bind="_form.Description"
+                              maxlength="400"
+                              disabled="@_saving"
+                              placeholder="הסבר קצר שיוצג למנהל. לא חובה."></textarea>
+                </div>
+
+                <!-- Settings row 1 -->
+                <div class="rtm-field-row">
+                    <div class="rtm-field rtm-field--grow">
+                        <label class="rtm-label">מי מטפל בסוג זה <span class="rtm-required">*</span></label>
+                        <div class="rtm-checkbox-group">
+                            @foreach (var r in RequestTypeHandlerRoles.All)
+                            {
+                                <label class="rtm-checkbox">
+                                    <input type="checkbox"
+                                           checked="@_handlerRoleSet.Contains(r)"
+                                           disabled="@_saving"
+                                           @onchange="@((ChangeEventArgs e) => ToggleHandler(r, (bool)(e.Value ?? false)))" />
+                                    <span>@RequestTypeHandlerRoles.Label(r)</span>
+                                </label>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings row 2 -->
+                <div class="rtm-field-row">
+                    <div class="rtm-field rtm-field--grow">
+                        <label class="rtm-label">העלאת קבצים</label>
+                        <select class="rtm-select" @bind="_form.FileUploadPolicy" disabled="@_saving">
+                            @foreach (var p in RequestTypeFileUploadPolicies.All)
+                            {
+                                <option value="@p">@RequestTypeFileUploadPolicies.Label(p)</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="rtm-field rtm-field--grow">
+                        <label class="rtm-label">סטטוס</label>
+                        <label class="rtm-toggle">
+                            <input type="checkbox" @bind="_form.IsActive" disabled="@_saving" />
+                            <span class="rtm-toggle-track"><span class="rtm-toggle-thumb"></span></span>
+                            <span class="rtm-toggle-label">@(_form.IsActive ? "פעיל" : "מושבת")</span>
+                        </label>
+                    </div>
+                    <div class="rtm-field rtm-field--grow">
+                        <label class="rtm-label">הערות פנימיות</label>
+                        <label class="rtm-toggle">
+                            <input type="checkbox" @bind="_form.AllowInternalNotes" disabled="@_saving" />
+                            <span class="rtm-toggle-track"><span class="rtm-toggle-thumb"></span></span>
+                            <span class="rtm-toggle-label">@(_form.AllowInternalNotes ? "מופעל" : "מבוטל")</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- ── Fields builder ── -->
+                <div class="rtm-fields-section">
+                    <div class="rtm-fields-header">
+                        <h3 class="rtm-section-title">
+                            <span class="oi oi-list" aria-hidden="true"></span>
+                            שדות בטופס הבקשה
+                        </h3>
+                        <button type="button" class="rtm-ghost-btn" @onclick="AddField" disabled="@_saving">
+                            <span class="oi oi-plus" aria-hidden="true"></span>
+                            הוסף שדה
+                        </button>
+                    </div>
+
+                    @if (_form.Fields.Count == 0)
+                    {
+                        <div class="rtm-fields-empty">
+                            לא הוגדרו שדות מותאמים. כותרת, פירוט וצירוף קבצים זמינים כברירת מחדל לסטודנט.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="rtm-fields-list">
+                            @for (int i = 0; i < _form.Fields.Count; i++)
+                            {
+                                var idx = i;
+                                var f   = _form.Fields[idx];
+                                <div class="rtm-field-card">
+                                    <div class="rtm-field-card-row">
+                                        <div class="rtm-field rtm-field--grow">
+                                            <label class="rtm-label-sm">תווית בעברית</label>
+                                            <input type="text" class="rtm-input"
+                                                   value="@f.Label"
+                                                   @oninput="@((ChangeEventArgs e) => f.Label = (e.Value?.ToString() ?? ""))"
+                                                   maxlength="80"
+                                                   disabled="@_saving"
+                                                   placeholder="לדוגמה: שם הציוד הנדרש" />
+                                        </div>
+                                        <div class="rtm-field rtm-field--shrink">
+                                            <label class="rtm-label-sm">סוג שדה</label>
+                                            <select class="rtm-select"
+                                                    value="@f.FieldType"
+                                                    @onchange="@((ChangeEventArgs e) => f.FieldType = (e.Value?.ToString() ?? RequestTypeFieldTypes.ShortText))"
+                                                    disabled="@_saving">
+                                                @foreach (var ft in RequestTypeFieldTypes.All)
+                                                {
+                                                    <option value="@ft">@RequestTypeFieldTypes.Label(ft)</option>
+                                                }
+                                            </select>
+                                        </div>
+                                        <div class="rtm-field rtm-field--required-cell">
+                                            <label class="rtm-checkbox rtm-checkbox--small">
+                                                <input type="checkbox"
+                                                       checked="@f.IsRequired"
+                                                       @onchange="@((ChangeEventArgs e) => f.IsRequired = (bool)(e.Value ?? false))"
+                                                       disabled="@_saving" />
+                                                <span>חובה</span>
+                                            </label>
+                                        </div>
+                                        <button type="button"
+                                                class="rtm-icon-btn rtm-icon-btn--danger"
+                                                title="הסר שדה"
+                                                disabled="@_saving"
+                                                @onclick="@(() => RemoveField(idx))">
+                                            <span class="oi oi-trash" aria-hidden="true"></span>
+                                        </button>
+                                    </div>
+                                    @if (f.FieldType == RequestTypeFieldTypes.Select)
+                                    {
+                                        <div class="rtm-field">
+                                            <label class="rtm-label-sm">אפשרויות (שורה לכל אפשרות)</label>
+                                            <textarea class="rtm-textarea" rows="3"
+                                                      value="@f.Options"
+                                                      @oninput="@((ChangeEventArgs e) => f.Options = (e.Value?.ToString() ?? ""))"
+                                                      disabled="@_saving"
+                                                      placeholder="אפשרות ראשונה&#10;אפשרות שנייה"></textarea>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                @if (!string.IsNullOrEmpty(_formError))
+                {
+                    <div class="rtm-error">
+                        <span class="oi oi-warning" aria-hidden="true"></span>
+                        @_formError
+                    </div>
+                }
+            </div>
+
+            <div class="rtm-modal-footer">
+                <button class="rtm-ghost-btn" @onclick="CloseModal" disabled="@_saving">ביטול</button>
+                <button class="rtm-primary-btn" @onclick="SaveForm" disabled="@_saving">
+                    @if (_saving)
+                    {
+                        <span class="rtm-spinner-inline"></span><span>שומר…</span>
+                    }
+                    else
+                    {
+                        <span class="oi oi-check" aria-hidden="true"></span><span>שמירה</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ── List state ───────────────────────────────────────────────────────────
+    private List<RequestTypeDefinitionDto> _items = new();
+    private bool _loading   = true;
+    private bool _loadError;
+    private string _banner  = "";
+    private bool   _bannerSuccess;
+
+    // ── Modal state ──────────────────────────────────────────────────────────
+    private bool _modalOpen;
+    private SaveRequestTypeRequest? _form;
+    private int? _editingId;
+    private bool _saving;
+    private string _formError = "";
+    private HashSet<string> _handlerRoleSet = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading   = true;
+        _loadError = false;
+        var data = await Service.GetAllAsync();
+        if (data is null) _loadError = true;
+        else _items = data;
+        _loading = false;
+    }
+
+    // ── Modal open / close ──────────────────────────────────────────────────
+    private void OpenCreateModal()
+    {
+        _editingId = null;
+        _form = new SaveRequestTypeRequest
+        {
+            Code               = "",
+            Name               = "",
+            Description        = "",
+            IsActive           = true,
+            HandlerRole        = "Admin,Staff",
+            AllowInternalNotes = false,
+            FileUploadPolicy   = RequestTypeFileUploadPolicies.Optional,
+            Fields             = new(),
+        };
+        _handlerRoleSet = new(new[] { "Admin", "Staff" }, StringComparer.OrdinalIgnoreCase);
+        _formError = "";
+        _modalOpen = true;
+    }
+
+    private void OpenEditModal(RequestTypeDefinitionDto t)
+    {
+        _editingId = t.Id;
+        _form = new SaveRequestTypeRequest
+        {
+            Code               = t.Code,
+            Name               = t.Name,
+            Description        = t.Description,
+            IsActive           = t.IsActive,
+            HandlerRole        = t.HandlerRole,
+            AllowInternalNotes = t.AllowInternalNotes,
+            FileUploadPolicy   = t.FileUploadPolicy,
+            // Deep-copy fields so cancelling the modal doesn't mutate the row.
+            Fields = t.Fields.Select(f => new RequestTypeFieldDto
+            {
+                Id           = f.Id,
+                RequestTypeId = f.RequestTypeId,
+                Label        = f.Label,
+                FieldKey     = f.FieldKey,
+                FieldType    = f.FieldType,
+                IsRequired   = f.IsRequired,
+                Options      = f.Options,
+                SortOrder    = f.SortOrder,
+            }).ToList(),
+        };
+        _handlerRoleSet = new(
+            (t.HandlerRole ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            StringComparer.OrdinalIgnoreCase);
+        _formError = "";
+        _modalOpen = true;
+    }
+
+    private void CloseModal()
+    {
+        if (_saving) return;
+        _modalOpen = false;
+        _form      = null;
+        _editingId = null;
+        _formError = "";
+    }
+
+    // ── Field builder helpers ───────────────────────────────────────────────
+    private void AddField()
+    {
+        if (_form is null) return;
+        if (_form.Fields.Count >= 20)
+        {
+            _formError = "ניתן להגדיר עד 20 שדות לסוג בקשה";
+            return;
+        }
+        _form.Fields.Add(new RequestTypeFieldDto
+        {
+            Label      = "",
+            FieldType  = RequestTypeFieldTypes.ShortText,
+            IsRequired = false,
+            Options    = "",
+            SortOrder  = _form.Fields.Count,
+        });
+    }
+
+    private void RemoveField(int index)
+    {
+        if (_form is null) return;
+        if (index < 0 || index >= _form.Fields.Count) return;
+        _form.Fields.RemoveAt(index);
+    }
+
+    private void ToggleHandler(string role, bool isChecked)
+    {
+        if (isChecked) _handlerRoleSet.Add(role);
+        else           _handlerRoleSet.Remove(role);
+        if (_form is not null)
+            _form.HandlerRole = string.Join(",", _handlerRoleSet);
+    }
+
+    // ── Submit ──────────────────────────────────────────────────────────────
+    private async Task SaveForm()
+    {
+        if (_form is null) return;
+
+        _formError = "";
+
+        if (!_editingId.HasValue && string.IsNullOrWhiteSpace(_form.Code))
+        {
+            _formError = "קוד סוג הבקשה הוא שדה חובה";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_form.Name))
+        {
+            _formError = "שם סוג הבקשה הוא שדה חובה";
+            return;
+        }
+        if (_handlerRoleSet.Count == 0)
+        {
+            _formError = "יש לבחור לפחות תפקיד מטפל אחד";
+            return;
+        }
+        foreach (var f in _form.Fields)
+        {
+            if (string.IsNullOrWhiteSpace(f.Label))
+            {
+                _formError = "כל שדה חייב לכלול תווית";
+                return;
+            }
+        }
+
+        _form.HandlerRole = string.Join(",", _handlerRoleSet);
+
+        _saving = true;
+        (RequestTypeDefinitionDto? Item, string? Error) result = _editingId.HasValue
+            ? await Service.UpdateAsync(_editingId.Value, _form)
+            : await Service.CreateAsync(_form);
+        _saving = false;
+
+        if (result.Error is not null || result.Item is null)
+        {
+            _formError = result.Error ?? "שמירת סוג הבקשה נכשלה";
+            return;
+        }
+
+        ShowBanner(_editingId.HasValue ? "סוג הבקשה עודכן בהצלחה" : "סוג הבקשה נוצר בהצלחה", success: true);
+        _modalOpen = false;
+        _form      = null;
+        _editingId = null;
+        await LoadAsync();
+    }
+
+    private async Task ToggleActive(RequestTypeDefinitionDto t)
+    {
+        bool nextState = !t.IsActive;
+        string action  = nextState ? "להפעיל" : "להשבית";
+        bool ok = await JS.InvokeAsync<bool>("confirm", $"האם {action} את סוג הבקשה \"{t.Name}\"?");
+        if (!ok) return;
+
+        var err = await Service.ToggleActiveAsync(t.Id, nextState);
+        if (err is not null)
+        {
+            ShowBanner(err, success: false);
+            return;
+        }
+        ShowBanner(nextState ? "סוג הבקשה הופעל" : "סוג הבקשה הושבת", success: true);
+        await LoadAsync();
+    }
+
+    private async Task DeleteType(RequestTypeDefinitionDto t)
+    {
+        bool ok = await JS.InvokeAsync<bool>("confirm",
+            $"האם למחוק את סוג הבקשה \"{t.Name}\"? פעולה זו אינה הפיכה.");
+        if (!ok) return;
+
+        var err = await Service.DeleteAsync(t.Id);
+        if (err is not null)
+        {
+            // 409 conflicts (in-use / built-in) surface here with the Hebrew
+            // hint to deactivate instead.
+            ShowBanner(err, success: false);
+            return;
+        }
+        ShowBanner("סוג הבקשה נמחק", success: true);
+        await LoadAsync();
+    }
+
+    // ── Display helpers ─────────────────────────────────────────────────────
+    private static string HandlerRolesLabel(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "—";
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                       .Select(RequestTypeHandlerRoles.Label);
+        return string.Join(", ", parts);
+    }
+
+    private void ShowBanner(string text, bool success)
+    {
+        _banner        = text;
+        _bannerSuccess = success;
+    }
+}

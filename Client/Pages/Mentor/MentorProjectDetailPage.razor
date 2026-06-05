@@ -4,6 +4,7 @@
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IMentorProjectsService MentorService
+@inject IRoadmapStagesService RoadmapService
 @inject NavigationManager Nav
 
 <!-- ══ Review drawer backdrop ════════════════════════════════════════════════ -->
@@ -222,15 +223,23 @@
                         <div class="mpd-drawer-section-title">סקירת מנחה</div>
 
                         <div class="mpd-review-feedback-wrap">
-                            <label class="mpd-review-feedback-label">פידבק (אופציונלי)</label>
+                            <label class="mpd-review-feedback-label">פידבק (נדרש בעת החזרה לתיקון)</label>
                             <textarea class="mpd-review-feedback"
                                       rows="3"
                                       placeholder="הוסף הערות או הסברים לסטודנט…"
-                                      @bind="_reviewFeedback"
+                                      value="@_reviewFeedback"
+                                      @oninput="@((ChangeEventArgs e) => { _reviewFeedback = e.Value?.ToString() ?? string.Empty; if (_feedbackError.Length > 0) _feedbackError = string.Empty; })"
                                       disabled="@_reviewing">
                             </textarea>
                         </div>
 
+                        @if (!string.IsNullOrEmpty(_feedbackError))
+                        {
+                            <div class="mpd-review-error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                @_feedbackError
+                            </div>
+                        }
                         @if (_reviewError)
                         {
                             <div class="mpd-review-error">
@@ -443,6 +452,194 @@
             </div>
         }
 
+        <!-- ── Roadmap progress timeline ───────────────────────────────────── -->
+        @* Source of truth: /api/roadmap-stages/projects/{id}/progress.
+           Falls back to "no stages configured" messaging when the cycle has
+           no roadmap stages yet — admins set this up at /management/cycles/{id}/stages.
+        *@
+        @if (_roadmapLoading)
+        {
+            <div class="mpd-roadmap mpd-roadmap--loading">
+                <span class="mpd-spinner-sm"></span>
+                <span>טוען ציר התקדמות פרויקט…</span>
+            </div>
+        }
+        else if (_roadmap is not null && _roadmap.Stages.Count > 0)
+        {
+            // "Stages exist, but no AYM is bound to any of them" — the
+            // strip would otherwise show a wall of grey "ללא אבני דרך"
+            // chips with no explanation. Banner makes the source of the
+            // emptiness explicit and points the mentor at the right
+            // person to fix it.
+            bool noMilestonesLinked = _roadmap.Stages.Sum(s => s.LinkedMilestoneCount) == 0;
+
+            <div class="mpd-roadmap">
+                <div class="mpd-roadmap-head">
+                    <div class="mpd-roadmap-title-wrap">
+                        <span class="oi oi-graph mpd-roadmap-icon" aria-hidden="true"></span>
+                        <h2 class="mpd-roadmap-title">ציר התקדמות פרויקט</h2>
+                    </div>
+                    <span class="mpd-schedule-pill mpd-schedule-@_roadmap.ScheduleStatus.ToLower()">
+                        @RoadmapScheduleStatuses.Label(_roadmap.ScheduleStatus)
+                    </span>
+                </div>
+
+                @if (noMilestonesLinked)
+                {
+                    <div class="mpd-roadmap-notice">
+                        <span class="oi oi-info" aria-hidden="true"></span>
+                        <div class="mpd-roadmap-notice-body">
+                            <strong>ציר ההתקדמות הוגדר עבור המחזור, אך עדיין לא קושרו אבני דרך לשלבים.</strong>
+                            מנהל/מרצה יכול להגדיר זאת במסך ניהול שלבי תוכנית.
+                            עד שזה יקרה, השלב הנוכחי מבוסס על תאריכים מוצעים בלבד.
+                            @if (RoleService.IsAdminOrStaff(_user))
+                            {
+                                <button type="button"
+                                        class="mpd-roadmap-cta"
+                                        @onclick="@(() => Nav.NavigateTo($"/management/cycles/{_roadmap.AcademicYearId}/stages"))">
+                                    <span class="oi oi-graph" aria-hidden="true"></span>
+                                    מעבר לניהול שלבי תוכנית
+                                </button>
+                            }
+                        </div>
+                    </div>
+                }
+
+                <div class="mpd-roadmap-strip">
+                    @foreach (var st in _roadmap.Stages)
+                    {
+                        bool isCurrent = st.Status == RoadmapStageStatuses.Current;
+                        <button type="button"
+                                class="mpd-stage mpd-stage--@st.Status.ToLower() @(isCurrent ? "mpd-stage--expanded" : "") @(_expandedStageId == st.StageId ? "mpd-stage--expanded" : "")"
+                                title="@st.Description"
+                                @onclick="@(() => ToggleStage(st.StageId))">
+                            <div class="mpd-stage-dot">
+                                @if (st.Status == RoadmapStageStatuses.Completed)
+                                {
+                                    <span class="oi oi-check" aria-hidden="true"></span>
+                                }
+                                else
+                                {
+                                    <span>@st.DisplayOrder</span>
+                                }
+                            </div>
+                            <div class="mpd-stage-name">@st.Name</div>
+                            @if (st.LinkedMilestoneCount > 0)
+                            {
+                                <div class="mpd-stage-pct">@st.CompletedMilestoneCount / @st.LinkedMilestoneCount</div>
+                            }
+                            else
+                            {
+                                <div class="mpd-stage-pct mpd-stage-pct--muted">ללא אבני דרך</div>
+                            }
+                        </button>
+                    }
+                </div>
+
+                @{
+                    var current = _roadmap.Stages.FirstOrDefault(s => s.Status == RoadmapStageStatuses.Current);
+                    var focused = _expandedStageId.HasValue
+                        ? _roadmap.Stages.FirstOrDefault(s => s.StageId == _expandedStageId.Value)
+                        : current;
+                }
+
+                @if (focused is not null)
+                {
+                    <div class="mpd-roadmap-current">
+                        <div class="mpd-roadmap-current-head">
+                            <div>
+                                <div class="mpd-roadmap-current-label">
+                                    @(focused.Status == RoadmapStageStatuses.Current ? "שלב נוכחי" : "שלב")
+                                </div>
+                                <div class="mpd-roadmap-current-name">@focused.Name</div>
+                            </div>
+                            @if (focused.SuggestedStartDate.HasValue || focused.SuggestedEndDate.HasValue)
+                            {
+                                <div class="mpd-roadmap-current-dates">
+                                    @(focused.SuggestedStartDate?.ToString("dd/MM/yyyy") ?? "—")
+                                    ←
+                                    @(focused.SuggestedEndDate?.ToString("dd/MM/yyyy") ?? "—")
+                                </div>
+                            }
+                        </div>
+
+                        @if (focused.Milestones.Count > 0)
+                        {
+                            <div class="mpd-roadmap-prog">
+                                <div class="mpd-prog-bar">
+                                    <div class="mpd-prog-fill" style="width:@(focused.ProgressPct)%"></div>
+                                </div>
+                                <span class="mpd-prog-pct">@(focused.ProgressPct)%</span>
+                            </div>
+                            <ul class="mpd-roadmap-milestones">
+                                @foreach (var m in focused.Milestones)
+                                {
+                                    bool isComplete = string.Equals(m.Status, "Completed", StringComparison.OrdinalIgnoreCase);
+                                    <li class="mpd-roadmap-milestone @(isComplete ? "mpd-roadmap-milestone--done" : "")">
+                                        <span class="oi @(isComplete ? "oi-check" : "oi-clock") mpd-roadmap-milestone-icon" aria-hidden="true"></span>
+                                        <span class="mpd-roadmap-milestone-title">@m.Title</span>
+                                        @if (m.DueDate.HasValue)
+                                        {
+                                            <span class="mpd-roadmap-milestone-date">@m.DueDate.Value.ToString("dd/MM/yyyy")</span>
+                                        }
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        else
+                        {
+                            <div class="mpd-roadmap-empty">לא משויכות אבני דרך לשלב זה.</div>
+                        }
+                    </div>
+                }
+
+                @if (_roadmap.Upcoming is not null || _roadmap.Overdue is not null)
+                {
+                    <div class="mpd-roadmap-callouts">
+                        @if (_roadmap.Overdue is not null)
+                        {
+                            <div class="mpd-callout mpd-callout--overdue">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                <div>
+                                    <div class="mpd-callout-label">איחור</div>
+                                    <div class="mpd-callout-body">
+                                        @_roadmap.Overdue.Title
+                                        @if (_roadmap.Overdue.DaysUntilDue.HasValue)
+                                        {
+                                            <span class="mpd-callout-days">— @(-_roadmap.Overdue.DaysUntilDue.Value) ימים</span>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                        @if (_roadmap.Upcoming is not null)
+                        {
+                            <div class="mpd-callout mpd-callout--upcoming">
+                                <span class="oi oi-clock" aria-hidden="true"></span>
+                                <div>
+                                    <div class="mpd-callout-label">המשימה הבאה</div>
+                                    <div class="mpd-callout-body">
+                                        @_roadmap.Upcoming.Title
+                                        @if (_roadmap.Upcoming.DaysUntilDue is int d && d >= 0)
+                                        {
+                                            <span class="mpd-callout-days">— בעוד @d ימים</span>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+        else if (_roadmap is not null)
+        {
+            <div class="mpd-roadmap mpd-roadmap--empty">
+                <span class="oi oi-graph" aria-hidden="true"></span>
+                <span>לא הוגדרו שלבי תוכנית למחזור זה. פנה למנהל המערכת להגדרת שלבים.</span>
+            </div>
+        }
+
         <!-- ── Milestones & tasks ──────────────────────────────────────────── -->
         <div class="mpd-milestones">
             @foreach (var milestone in _detail.Milestones)
@@ -545,15 +742,23 @@
 @code {
     [Parameter] public int Id { get; set; }
 
+    /// <summary>Cascaded from the root layout. Drives the "מעבר לניהול
+    /// שלבי תוכנית" CTA — only admin/lecturer accounts see it, so the
+    /// link doesn't dead-end for mentor-only users.</summary>
+    [CascadingParameter] private User? _user { get; set; }
+
     private MentorProjectDetailDto?       _detail    = null;
     private bool                          _isLoading = true;
     private readonly HashSet<int>         _expandedMilestones = new();
 
     // ── Review drawer state ──────────────────────────────────────────────────
-    private MentorSubmissionContextDto? _reviewCtx     = null;
+    private MentorSubmissionContextDto? _reviewCtx      = null;
     private bool                        _reviewLoading  = false;
     private bool                        _reviewing      = false;
     private bool                        _reviewError    = false;
+    /// <summary>Validation-specific error shown when "Return" is clicked
+    /// without a non-empty feedback note. Cleared on any feedback edit.</summary>
+    private string                      _feedbackError  = "";
     private string                      _reviewFeedback = "";
     private string                      _pendingAction  = "";
     private readonly HashSet<int>       _expandedRounds = new();
@@ -562,6 +767,18 @@
     {
         if (!_expandedRounds.Remove(submissionId))
             _expandedRounds.Add(submissionId);
+    }
+
+    // ── Roadmap state ────────────────────────────────────────────────────────
+    private ProjectRoadmapProgressDto? _roadmap;
+    private bool _roadmapLoading = true;
+    /// <summary>Stage card currently open in the stage-detail block. When
+    /// null, the block shows the Current stage by default.</summary>
+    private int? _expandedStageId;
+
+    private void ToggleStage(int stageId)
+    {
+        _expandedStageId = (_expandedStageId == stageId) ? null : stageId;
     }
 
     protected override async Task OnInitializedAsync()
@@ -575,6 +792,12 @@
                 _expandedMilestones.Add(first.ProjectMilestoneId);
         }
         _isLoading = false;
+
+        // Roadmap is independent of MentorService.GetProjectDetailAsync —
+        // load it in parallel-after so the main detail renders first and the
+        // roadmap fills in (with its own spinner) a moment later.
+        _roadmap = await RoadmapService.GetProjectProgressAsync(Id);
+        _roadmapLoading = false;
     }
 
     // ── Drawer open/close ────────────────────────────────────────────────────
@@ -584,6 +807,7 @@
         _reviewCtx     = null;
         _reviewFeedback = "";
         _reviewError   = false;
+        _feedbackError = "";
         _reviewLoading = true;
         StateHasChanged();
 
@@ -611,6 +835,7 @@
         _reviewCtx = null;
         _reviewFeedback = "";
         _reviewError   = false;
+        _feedbackError = "";
     }
 
     // ── Review submit ────────────────────────────────────────────────────────
@@ -619,9 +844,20 @@
     {
         if (_reviewCtx is null || _reviewing) return;
 
+        // Validation: returning for correction requires a non-empty note.
+        // Backend enforces the same rule with the identical Hebrew message —
+        // this branch just avoids the round-trip when we can see it locally.
+        if (action == "Returned" && string.IsNullOrWhiteSpace(_reviewFeedback))
+        {
+            _feedbackError = "יש להזין הערת מנחה לפני החזרת ההגשה לתיקון";
+            StateHasChanged();
+            return;
+        }
+
         _reviewing    = true;
         _pendingAction = action;
         _reviewError   = false;
+        _feedbackError = "";
         StateHasChanged();
 
         bool ok = await MentorService.ReviewSubmissionAsync(

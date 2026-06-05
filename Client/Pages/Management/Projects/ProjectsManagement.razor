@@ -6,6 +6,40 @@
 @inject IManagementService ManagementService
 
 <!-- ══════════════════════════════════════════
+     MENTOR-ONLY ASSIGNMENT MODAL
+     ──────────────────────────────────────────
+     Lightweight focused dialog launched from the "ללא מנחה משויך" warning
+     button (or any mentor cell). Reuses the existing ProjectMentorsEditor
+     component so add/remove logic isn't duplicated. Closing reloads the
+     projects list so the badge / count chip refreshes.
+     ══════════════════════════════════════════ -->
+@if (_mentorAssignProject is not null)
+{
+    <div class="pm-modal-overlay" @onclick="CloseMentorAssign">
+        <div class="pm-modal-box" @onclick:stopPropagation="true">
+            <div class="pm-modal-header">
+                <div class="pm-modal-header-info">
+                    <div class="pm-modal-number-badge">#@_mentorAssignProject.ProjectNumber</div>
+                    <div>
+                        <div class="pm-modal-header-label">שיוך מנחה</div>
+                        <div class="pm-modal-title">@_mentorAssignProject.Title</div>
+                    </div>
+                </div>
+                <button class="pm-modal-close-btn" @onclick="CloseMentorAssign" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+            <div class="pm-modal-body">
+                <ProjectMentorsEditor ProjectId="@_mentorAssignProject.Id" />
+            </div>
+            <div class="pm-modal-footer">
+                <button class="pm-modal-cancel-btn" @onclick="CloseMentorAssign">סגירה</button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ══════════════════════════════════════════
      EDIT PROJECT MODAL  (always edit mode)
      ══════════════════════════════════════════ -->
 @if (_editProject is not null)
@@ -451,6 +485,17 @@
                 <option value="Active">פעיל</option>
                 <option value="Inactive">לא פעיל</option>
             </select>
+            @{ int noMentorCount = _allProjects.Count(p => p.MentorCount == 0); }
+            @if (noMentorCount > 0)
+            {
+                <button type="button"
+                        class="pm-no-mentor-chip @(_filterNoMentor ? "pm-no-mentor-chip--active" : "")"
+                        title="הצג רק פרויקטים ללא מנחה משויך"
+                        @onclick="@(() => _filterNoMentor = !_filterNoMentor)">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    <span>ללא מנחה (@noMentorCount)</span>
+                </button>
+            }
         </div>
     </div>
 
@@ -466,6 +511,7 @@
                         <th>שם פרויקט</th>
                         <th>סוג</th>
                         <th>צוות</th>
+                        <th>מנחה</th>
                         <th>מחזור</th>
                         <th>סטטוס</th>
                         <th class="pm-th-actions">פעולות</th>
@@ -475,7 +521,7 @@
                     @if (_loading)
                     {
                         <tr>
-                            <td colspan="7" class="pm-empty">
+                            <td colspan="8" class="pm-empty">
                                 <span class="pm-spinner-inline"></span>
                                 טוען פרויקטים...
                             </td>
@@ -484,7 +530,7 @@
                     else if (_loadError)
                     {
                         <tr>
-                            <td colspan="7" class="pm-empty pm-empty--error">
+                            <td colspan="8" class="pm-empty pm-empty--error">
                                 <span class="oi oi-warning" aria-hidden="true"></span>
                                 שגיאה בטעינת הפרויקטים. רענן את הדף.
                             </td>
@@ -493,7 +539,7 @@
                     else if (!FilteredProjects.Any())
                     {
                         <tr>
-                            <td colspan="7" class="pm-empty">
+                            <td colspan="8" class="pm-empty">
                                 <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
                                 לא נמצאו פרויקטים התואמים את הסינון
                             </td>
@@ -539,6 +585,28 @@
                                         <span class="pm-no-team">ללא שיבוץ</span>
                                     }
                                 </td>
+                                <td class="pm-cell-mentor" @onclick:stopPropagation="true">
+                                    @if (proj.MentorCount == 0)
+                                    {
+                                        <button type="button"
+                                                class="pm-mentor-warn"
+                                                title="לחץ לשיוך מנחה לפרויקט זה"
+                                                @onclick="@(() => OpenMentorAssign(proj))">
+                                            <span class="oi oi-warning" aria-hidden="true"></span>
+                                            <span>ללא מנחה משויך</span>
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <button type="button"
+                                                class="pm-mentor-ok"
+                                                title="@proj.MentorNames"
+                                                @onclick="@(() => OpenMentorAssign(proj))">
+                                            <span class="oi oi-person" aria-hidden="true"></span>
+                                            <span>@(proj.MentorCount == 1 ? "מנחה אחד" : $"{proj.MentorCount} מנחים")</span>
+                                        </button>
+                                    }
+                                </td>
                                 <td class="pm-cell-secondary">
                                     @(string.IsNullOrEmpty(proj.AcademicYear) ? "—" : proj.AcademicYear)
                                 </td>
@@ -574,6 +642,11 @@
                                                         @onclick="@(() => OpenEdit(proj))">
                                                     <span class="oi oi-pencil" aria-hidden="true"></span>
                                                     עריכת פרויקט
+                                                </button>
+                                                <button class="pm-row-action"
+                                                        @onclick="@(() => OpenMentorAssign(proj))">
+                                                    <span class="oi oi-person" aria-hidden="true"></span>
+                                                    שיוך מנחה
                                                 </button>
                                                 <div class="pm-row-menu-sep"></div>
                                                 <button class="pm-row-action @(proj.Status == "Active" ? "pm-row-action--danger" : "")"
@@ -645,17 +718,44 @@
     private string _filterType   = "";
     private string _filterCycle  = "";
     private string _filterStatus = "";
+    /// <summary>Toggle for the "ללא מנחה" filter chip — scopes the table
+    /// to projects with MentorCount == 0 so missing assignments are easy
+    /// to triage in bulk.</summary>
+    private bool   _filterNoMentor = false;
 
     private IEnumerable<ProjectManagementDto> FilteredProjects => _allProjects
         .Where(p => string.IsNullOrEmpty(_filterType)   || p.ProjectType == _filterType)
         .Where(p => string.IsNullOrEmpty(_filterCycle)  || p.AcademicYear == _filterCycle)
         .Where(p => string.IsNullOrEmpty(_filterStatus) || p.Status == _filterStatus)
+        .Where(p => !_filterNoMentor || p.MentorCount == 0)
         .Where(p =>
         {
             if (string.IsNullOrEmpty(_searchQuery)) return true;
             return p.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
                 || p.ProjectNumber.ToString().Contains(_searchQuery);
         });
+
+    // ─────────────────────────────────────────────────
+    //  Mentor-assignment quick modal
+    // ─────────────────────────────────────────────────
+    /// <summary>When non-null the dedicated mentor-only modal is shown.
+    /// Reuses ProjectMentorsEditor — no duplicate management flow.</summary>
+    private ProjectManagementDto? _mentorAssignProject;
+
+    private void OpenMentorAssign(ProjectManagementDto p)
+    {
+        _mentorAssignProject = p;
+        _openRowMenuId       = -1;
+    }
+
+    private async Task CloseMentorAssign()
+    {
+        _mentorAssignProject = null;
+        // Reload so the "ללא מנחה משויך" badge / chip count reflects the
+        // latest assignment state without forcing a full page refresh.
+        var refreshed = await ManagementService.GetProjectsAsync();
+        if (refreshed is not null) _allProjects = refreshed;
+    }
 
     // ─────────────────────────────────────────────────
     //  Menu state

@@ -89,13 +89,35 @@
                         </div>
                         <div class="atm-meta-item">
                             <span class="atm-meta-label">ייבוא אחרון</span>
-                            <span class="atm-meta-value">@FormatDateOrEmpty(c.LastImportAt)</span>
+                            @if (!string.IsNullOrWhiteSpace(c.LastImportAt))
+                            {
+                                @* Date itself is the entry point to history.
+                                   "Why are you showing me a date with no
+                                   action?" — well, now it's the action. *@
+                                <button type="button"
+                                        class="atm-meta-value atm-meta-link"
+                                        title="צפייה בהיסטוריית ייבוא"
+                                        @onclick="@(() => OpenImportRuns(c.Id))">
+                                    @FormatDateOrEmpty(c.LastImportAt)
+                                    <span class="oi oi-clock atm-meta-link-icon" aria-hidden="true"></span>
+                                </button>
+                            }
+                            else
+                            {
+                                <span class="atm-meta-value">—</span>
+                            }
                         </div>
                     </div>
 
                     @if (!string.IsNullOrWhiteSpace(c.LastImportSummary))
                     {
-                        <div class="atm-card-summary">@c.LastImportSummary</div>
+                        <button type="button"
+                                class="atm-card-summary atm-card-summary--clickable"
+                                title="צפייה בהיסטוריית ייבוא מלאה"
+                                @onclick="@(() => OpenImportRuns(c.Id))">
+                            @c.LastImportSummary
+                            <span class="atm-card-summary-cta">— צפייה בכל ההיסטוריה ←</span>
+                        </button>
                     }
 
                     <div class="atm-card-actions">
@@ -112,9 +134,18 @@
                         </button>
                         <button class="atm-btn atm-btn-secondary"
                                 disabled="@(_busyId == c.Id || !c.HasToken || !c.IsActive)"
-                                @onclick="@(() => RunImport(c.Id))">
+                                @onclick="@(() => OpenPreview(c.Id))">
                             <span class="oi oi-cloud-download" aria-hidden="true"></span>
                             ייבוא מאיירטייבל
+                        </button>
+                        @* Highlighted history button so the admin can see
+                           "the past N imports of this integration" without
+                           hunting through a row of identical secondaries. *@
+                        <button class="atm-btn atm-btn-history"
+                                title="צפייה ברשימת הייבואים האחרונים של אינטגרציה זו"
+                                @onclick="@(() => OpenImportRuns(c.Id))">
+                            <span class="oi oi-clock" aria-hidden="true"></span>
+                            היסטוריית ייבוא
                         </button>
                         <button class="atm-btn @(c.IsActive ? "atm-btn-danger" : "atm-btn-secondary")"
                                 disabled="@(_busyId == c.Id)"
@@ -290,6 +321,184 @@
 }
 
 <!-- Import results modal -->
+@* ═══════════════════════════════════════════════════════════════════════
+   Preview modal — admin's "confirm before applying" surface. Shows the
+   four buckets (New / Update / Warning / Error), each collapsible. Only
+   the "אשר ייבוא" button writes — the open of the modal is itself a
+   read-only POST /preview that touches no Projects rows.
+   ═══════════════════════════════════════════════════════════════════════ *@
+@if (_preview is not null || _previewLoading)
+{
+    <div class="atm-modal-backdrop" @onclick="ClosePreview"></div>
+    <div class="atm-modal" dir="rtl" @onclick:stopPropagation="true">
+        <header class="atm-modal-head">
+            <h2 class="atm-modal-title">תצוגה מקדימה של ייבוא</h2>
+            <button class="atm-icon-btn" @onclick="ClosePreview">×</button>
+        </header>
+
+        @if (_previewLoading)
+        {
+            <div class="atm-preview-loading">
+                <span class="atm-spinner-inline"></span>
+                <span>טוען רשומות מ-Airtable וניתוח השוואה — לא נכתב מידע למסד הנתונים…</span>
+            </div>
+        }
+        else if (_preview!.PreviewError is not null)
+        {
+            <div class="atm-toast atm-toast-error">@_preview.PreviewError</div>
+        }
+        else
+        {
+            @* Plain-language analysis summary — exact Hebrew phrasing the
+               spec calls for, so the admin can read the four buckets as a
+               narrative, not just colored tiles. *@
+            <div class="atm-preview-sentences">
+                <p>נמצאו <strong>@_preview.NewCount</strong> רשומות חדשות.</p>
+                <p>נמצאו <strong>@_preview.UpdateCount</strong> רשומות קיימות שיעודכנו.</p>
+                <p>
+                    נמצאו <strong>@_preview.WarningCount</strong> רשומות החשודות ככפילויות.
+                    @if (_preview.WarningCount > 0)
+                    {
+                        <span class="atm-preview-sentences-hint">
+                            נדרשת סקירה ידנית — סמן את הרשומות שברצונך לייבא.
+                        </span>
+                    }
+                </p>
+                @if (_preview.ErrorCount > 0)
+                {
+                    <p class="atm-preview-sentences-err">
+                        נמצאו <strong>@_preview.ErrorCount</strong> רשומות שלא ניתן לייבא (שגיאות נתונים).
+                    </p>
+                }
+            </div>
+
+            <div class="atm-preview-explainer">
+                <span class="oi oi-info atm-preview-explainer-icon" aria-hidden="true"></span>
+                <div>
+                    <strong>זיהוי כפילויות מבוסס על AirtableRecordId.</strong>
+                    רשומה עם אותו מזהה Airtable תעודכן (לא תיווצר כפילות).
+                    רשומה חדשה שלה כותרת או מספר פרויקט זהים לפרויקט קיים מסומנת כ-<em>"כפילות חשודה"</em>
+                    ולא תיובא אלא אם תסומן ידנית.
+                </div>
+            </div>
+
+            @if (_preview.WarningCount == 0 && _preview.ErrorCount == 0)
+            {
+                <div class="atm-preview-clean">
+                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                    <span>לא נמצאו כפילויות חשודות. כל הרשומות הקיימות יעודכנו לפי מזהה Airtable.</span>
+                </div>
+            }
+
+            @* Bulk-toggle row for the suspected-duplicate bucket — saves a
+               lot of clicking when the admin has reviewed and wants to
+               include / exclude them en-masse. *@
+            @if (_preview.WarningCount > 0)
+            {
+                <div class="atm-preview-bulk">
+                    <span class="atm-preview-bulk-label">פעולות מהירות לכפילויות חשודות:</span>
+                    <button type="button" class="atm-bulk-btn"
+                            @onclick="@(() => SetBucketSelection(AirtablePreviewKinds.Warning, true))">
+                        סמן הכל לייבוא
+                    </button>
+                    <button type="button" class="atm-bulk-btn"
+                            @onclick="@(() => SetBucketSelection(AirtablePreviewKinds.Warning, false))">
+                        בטל סימון הכל
+                    </button>
+                </div>
+            }
+
+            @RenderBucket("🟢 פרויקטים חדשים",          AirtablePreviewKinds.New,    "atm-preview-row--new")
+            @RenderBucket("🔵 פרויקטים שיתעדכנו",       AirtablePreviewKinds.Update, "atm-preview-row--update")
+            @RenderBucket("🟡 כפילויות חשודות לסקירה",  AirtablePreviewKinds.Warning,"atm-preview-row--warn")
+            @RenderBucket("🔴 רשומות שלא ניתן לייבא",   AirtablePreviewKinds.Error,  "atm-preview-row--err")
+        }
+
+        <div class="atm-modal-actions">
+            <button class="atm-btn atm-btn-secondary" @onclick="ClosePreview" disabled="@_confirmRunning">
+                ביטול
+            </button>
+            <button class="atm-btn atm-btn-primary"
+                    disabled="@(_previewLoading || _preview is null || _preview.PreviewError is not null || _confirmRunning || IncludedCount == 0)"
+                    @onclick="ConfirmImport">
+                @if (_confirmRunning)
+                {
+                    <span class="atm-spinner-inline"></span>
+                    <span>מייבא…</span>
+                }
+                else
+                {
+                    <span class="oi oi-check" aria-hidden="true"></span>
+                    <span>אשר ייבוא של @IncludedCount רשומות</span>
+                }
+            </button>
+        </div>
+    </div>
+}
+
+@* ═══════════════════════════════════════════════════════════════════════
+   Import-history modal — last 25 runs for this integration.
+   ═══════════════════════════════════════════════════════════════════════ *@
+@if (_runsForId is not null)
+{
+    <div class="atm-modal-backdrop" @onclick="CloseImportRuns"></div>
+    <div class="atm-modal" dir="rtl" @onclick:stopPropagation="true">
+        <header class="atm-modal-head">
+            <h2 class="atm-modal-title">היסטוריית ייבוא</h2>
+            <button class="atm-icon-btn" @onclick="CloseImportRuns">×</button>
+        </header>
+
+        @if (_runsLoading)
+        {
+            <div class="atm-preview-loading">
+                <span class="atm-spinner-inline"></span>
+                <span>טוען היסטוריה…</span>
+            </div>
+        }
+        else if (_runs.Count == 0)
+        {
+            <div class="atm-import-empty">עדיין לא בוצע ייבוא דרך אינטגרציה זו.</div>
+        }
+        else
+        {
+            <table class="atm-runs-table">
+                <thead>
+                    <tr>
+                        <th>תאריך</th>
+                        <th>הופעל ע״י</th>
+                        <th>נטענו</th>
+                        <th>נוספו</th>
+                        <th>עודכנו</th>
+                        <th>דולגו</th>
+                        <th>נכשלו</th>
+                        <th>סטטוס</th>
+                        <th>סיכום</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in _runs)
+                    {
+                        <tr>
+                            <td>@r.StartedAt.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td>
+                            <td>@(string.IsNullOrWhiteSpace(r.TriggeredByName) ? "—" : r.TriggeredByName)</td>
+                            <td>@r.TotalFetched</td>
+                            <td>@r.Inserted</td>
+                            <td>@r.Updated</td>
+                            <td>@r.Skipped</td>
+                            <td>@r.Failed</td>
+                            <td><span class="atm-run-status atm-run-status--@r.Status.ToLower()">@RunStatusLabel(r.Status)</span></td>
+                            <td class="atm-runs-summary" title="@r.ErrorSummary">@r.ErrorSummary</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        <div class="atm-modal-actions">
+            <button class="atm-btn atm-btn-primary" @onclick="CloseImportRuns">סגור</button>
+        </div>
+    </div>
+}
+
 @if (_lastImport is not null)
 {
     <div class="atm-modal-backdrop" @onclick="CloseImportResult"></div>
@@ -308,6 +517,7 @@
                 <li>נטענו: <strong>@_lastImport.TotalFetched</strong></li>
                 <li>נוספו: <strong>@_lastImport.Inserted</strong></li>
                 <li>עודכנו: <strong>@_lastImport.Updated</strong></li>
+                <li>דולגו: <strong>@_lastImport.Skipped</strong></li>
                 <li>נכשלו: <strong>@_lastImport.Failed</strong></li>
             </ul>
             @if (_lastImport.Errors.Count > 0)
@@ -324,6 +534,13 @@
             }
         }
         <div class="atm-modal-actions">
+            @if (_lastImportForId.HasValue)
+            {
+                <button class="atm-btn atm-btn-history" @onclick="GoToHistoryFromResult">
+                    <span class="oi oi-clock" aria-hidden="true"></span>
+                    היסטוריית ייבוא
+                </button>
+            }
             <button class="atm-btn atm-btn-primary" @onclick="CloseImportResult">סגור</button>
         </div>
     </div>
@@ -355,10 +572,84 @@
     // Import results modal
     private AirtableSyncResultDto? _lastImport;
 
+    /// <summary>Deep-link shortcut from /management/integrations: when the
+    /// hub's "היסטוריית ייבוא" button is clicked, the page lands here with
+    /// ?openHistoryForLatest=1, and the history modal pre-opens for the
+    /// config with the most-recent LastImportAt.</summary>
+    [SupplyParameterFromQuery(Name = "openHistoryForLatest")]
+    public string? OpenHistoryForLatest { get; set; }
+
+    /// <summary>Deep-link from the hub's new first-class "היסטוריית ייבוא"
+    /// button. Opens the history modal for the active integration even
+    /// when it has zero past runs — the modal itself renders the empty
+    /// state, which is the right answer when the admin wants to check
+    /// "did anything run yet?".</summary>
+    [SupplyParameterFromQuery(Name = "openHistoryForActive")]
+    public string? OpenHistoryForActive { get; set; }
+
+    /// <summary>Deep-link shortcut from /management/catalog: when an admin
+    /// clicks "ייבוא פרויקטים" on the catalog page, they land here with
+    /// ?triggerPreviewForActive=1 and the preview modal auto-opens for
+    /// the single active Airtable integration. This is the canonical
+    /// guard against bypassing the preview — the catalog button never
+    /// runs an import directly.</summary>
+    [SupplyParameterFromQuery(Name = "triggerPreviewForActive")]
+    public string? TriggerPreviewForActive { get; set; }
+
     protected override async Task OnInitializedAsync()
     {
         await Reload();
         _years = (await ManagementService.GetAcademicYearsAsync()) ?? new();
+
+        if (OpenHistoryForLatest == "1" && _configs.Count > 0)
+        {
+            var latest = _configs
+                .Where(c => !string.IsNullOrWhiteSpace(c.LastImportAt))
+                .OrderByDescending(c => c.LastImportAt)
+                .FirstOrDefault();
+            if (latest is not null) await OpenImportRuns(latest.Id);
+        }
+
+        if (OpenHistoryForActive == "1" && _configs.Count > 0)
+        {
+            // Picks the active integration regardless of whether it has
+            // any past runs — the modal renders "no runs yet" gracefully
+            // and the admin sees that the integration exists but is
+            // un-imported, which is the answer they're after.
+            // Falls back to the most-recently-imported config, then to
+            // any first config, so the button is never a dead-end.
+            var target = _configs.FirstOrDefault(c => c.IsActive && c.HasToken)
+                      ?? _configs
+                            .Where(c => !string.IsNullOrWhiteSpace(c.LastImportAt))
+                            .OrderByDescending(c => c.LastImportAt)
+                            .FirstOrDefault()
+                      ?? _configs.FirstOrDefault();
+            if (target is not null) await OpenImportRuns(target.Id);
+        }
+
+        if (TriggerPreviewForActive == "1" && _configs.Count > 0)
+        {
+            // Pick the single active configuration. If multiple are active
+            // (unusual — the schema doesn't forbid it), prefer the one with
+            // the most-recent test or import, then by Id. If none is
+            // active, surface a friendly banner so the admin knows to
+            // activate one before importing.
+            var active = _configs
+                .Where(c => c.IsActive && c.HasToken)
+                .OrderByDescending(c => c.LastImportAt ?? c.LastTestedAt ?? "")
+                .ThenByDescending(c => c.Id)
+                .FirstOrDefault();
+            if (active is not null)
+            {
+                await OpenPreview(active.Id);
+            }
+            else
+            {
+                _messageError = true;
+                _message      = "לא נמצאה אינטגרציית Airtable פעילה עם טוקן מוגדר. " +
+                                "יש להגדיר ולהפעיל אינטגרציה לפני ייבוא קטלוג הפרויקטים.";
+            }
+        }
     }
 
     private async Task Reload()
@@ -497,25 +788,260 @@
         await Reload();
     }
 
-    private async Task RunImport(int id)
+    // ── Preview ─→ Confirm ─→ Import flow ──────────────────────────────────
+    private AirtablePreviewResultDto?  _preview;
+    private bool                       _previewLoading;
+    private int?                       _previewForId;
+    private bool                       _confirmRunning;
+
+    /// <summary>Per-row import decision. Keyed by Airtable RecordId.
+    /// Populated when the preview loads: New + Update default to true
+    /// (include), Warning defaults to false (skip — admin must opt-in),
+    /// Error rows are never present here (they can't be imported).</summary>
+    private readonly Dictionary<string, bool> _includeByRecordId = new();
+
+    /// <summary>Live count of rows the admin has selected for import.
+    /// Drives the confirm button label.</summary>
+    private int IncludedCount => _includeByRecordId.Values.Count(v => v);
+
+    private async Task OpenPreview(int id)
     {
-        _busyId = id;
-        var res = await AirtableService.ImportAsync(id);
-        _busyId = null;
+        _previewForId  = id;
+        _preview       = null;
+        _previewLoading = true;
+        _busyId        = id;
+        _includeByRecordId.Clear();
+        StateHasChanged();
+
+        var res = await AirtableService.PreviewAsync(id);
+        _previewLoading = false;
+        _busyId         = null;
+
+        if (res is null)
+        {
+            _preview = new AirtablePreviewResultDto
+            {
+                PreviewError = "תצוגה מקדימה נכשלה — בדוק חיבור ותצורה"
+            };
+            return;
+        }
+
+        _preview = res;
+
+        // Seed per-row decisions with the spec'd defaults: include New and
+        // Update silently, force the admin to opt-in to suspected dupes,
+        // leave errors out of the dictionary so they can't be picked.
+        foreach (var row in res.Rows)
+        {
+            if (string.IsNullOrEmpty(row.RecordId)) continue;
+            _includeByRecordId[row.RecordId] = row.Kind switch
+            {
+                AirtablePreviewKinds.New     => true,
+                AirtablePreviewKinds.Update  => true,
+                AirtablePreviewKinds.Warning => false,
+                _                            => false, // Error — also excluded from dict via initial value, but defensive
+            };
+        }
+    }
+
+    private void SetIncluded(string recordId, bool included)
+    {
+        if (string.IsNullOrEmpty(recordId)) return;
+        _includeByRecordId[recordId] = included;
+    }
+
+    /// <summary>Bulk include/exclude every row in one bucket — wired to
+    /// the "סמן הכל לייבוא" / "בטל סימון" buttons on the suspected-dup
+    /// bulk-toolbar.</summary>
+    private void SetBucketSelection(string kind, bool included)
+    {
+        if (_preview is null) return;
+        foreach (var row in _preview.Rows)
+        {
+            if (row.Kind != kind) continue;
+            if (string.IsNullOrEmpty(row.RecordId)) continue;
+            _includeByRecordId[row.RecordId] = included;
+        }
+    }
+
+    private void ClosePreview()
+    {
+        if (_confirmRunning) return;
+        _preview        = null;
+        _previewForId   = null;
+        _previewLoading = false;
+        _includeByRecordId.Clear();
+    }
+
+    private async Task ConfirmImport()
+    {
+        if (_previewForId is null || _confirmRunning) return;
+        _confirmRunning   = true;
+        int integrationId = _previewForId.Value;
+        _busyId           = integrationId;
+        StateHasChanged();
+
+        // Build the skip-list from the decision dictionary. Anything the
+        // admin unchecked (or never checked, for suspected duplicates) goes
+        // into the list — the server counts those as Skipped, never
+        // upserts them. Error rows aren't in the dictionary at all, but
+        // we add them defensively so the audit row reflects the count.
+        var skipRecordIds = new List<string>();
+        if (_preview is not null)
+        {
+            foreach (var row in _preview.Rows)
+            {
+                if (string.IsNullOrEmpty(row.RecordId)) continue;
+                bool include = _includeByRecordId.TryGetValue(row.RecordId, out var v) && v;
+                if (!include) skipRecordIds.Add(row.RecordId);
+            }
+        }
+
+        var res = await AirtableService.ImportAsync(integrationId, skipRecordIds);
+
+        _confirmRunning = false;
+        _busyId         = null;
+
+        // Close preview, surface result via the existing result modal.
+        _preview      = null;
+        _previewForId = null;
+        _includeByRecordId.Clear();
+
         if (res is null)
         {
             _messageError = true;
-            _message = "פעולת הייבוא נכשלה";
+            _message      = "פעולת הייבוא נכשלה";
         }
         else
         {
-            _lastImport = res;
-            _messageError = !string.IsNullOrEmpty(res.SyncError);
-            _message = res.SyncError ??
-                $"הייבוא הסתיים — {res.Inserted} נוספו, {res.Updated} עודכנו, {res.Failed} נכשלו";
+            _lastImport      = res;
+            _lastImportForId = integrationId;     // remembered for "מעבר להיסטוריית ייבוא"
+            _messageError    = !string.IsNullOrEmpty(res.SyncError);
+            _message         = res.SyncError ??
+                $"הייבוא הסתיים — {res.Inserted} נוספו, {res.Updated} עודכנו, " +
+                $"{res.Skipped} דולגו, {res.Failed} נכשלו";
         }
         await Reload();
     }
+
+    /// <summary>State remembers which integration row produced the current
+    /// result modal so the "מעבר להיסטוריית ייבוא" button knows where to
+    /// take the admin. Cleared when the result modal closes.</summary>
+    private int? _lastImportForId;
+
+    private async Task GoToHistoryFromResult()
+    {
+        int? id = _lastImportForId;
+        // Close the result modal first so the history opens on top of the
+        // bare page, not stacked.
+        _lastImport      = null;
+        _lastImportForId = null;
+        if (id.HasValue) await OpenImportRuns(id.Value);
+    }
+
+    // ── Import-history modal ─────────────────────────────────────────────
+    private int?                      _runsForId;
+    private bool                      _runsLoading;
+    private List<AirtableImportRunDto> _runs = new();
+
+    private async Task OpenImportRuns(int id)
+    {
+        _runsForId   = id;
+        _runs        = new();
+        _runsLoading = true;
+        StateHasChanged();
+
+        var data     = await AirtableService.GetImportRunsAsync(id);
+        _runs        = data ?? new();
+        _runsLoading = false;
+    }
+
+    private void CloseImportRuns()
+    {
+        _runsForId   = null;
+        _runs        = new();
+        _runsLoading = false;
+    }
+
+    private static string RunStatusLabel(string s) => s switch
+    {
+        "Success"        => "הצליח",
+        "PartialFailure" => "חלקי",
+        "Failure"        => "נכשל",
+        "InProgress"     => "בתהליך",
+        _                => s,
+    };
+
+    // Renders one of the four preview buckets (called from the markup).
+    // Warnings + errors auto-open so the admin sees them immediately. New
+    // and Update auto-open when the count is small; large buckets stay
+    // collapsed to keep the modal scrollable but a click expands the full
+    // list — no row cap, the admin can inspect every record.
+    //
+    // Each row carries a checkbox driving the import decision:
+    //   New / Update  → default INCLUDE (user can uncheck to skip)
+    //   Warning       → default SKIP    (user must check to include)
+    //   Error         → never importable (no checkbox, locked icon)
+    private RenderFragment RenderBucket(string heading, string kind, string rowClass) => __builder =>
+    {
+        var items = _preview?.Rows?.Where(r => r.Kind == kind).ToList() ?? new();
+        if (items.Count == 0) return;
+        bool isAlert     = kind is AirtablePreviewKinds.Warning or AirtablePreviewKinds.Error;
+        bool isErrorKind = kind == AirtablePreviewKinds.Error;
+        bool openByDefault = isAlert || items.Count <= 10;
+        int  includedInBucket = isErrorKind
+            ? 0
+            : items.Count(r => _includeByRecordId.TryGetValue(r.RecordId, out var v) && v);
+        <details class="atm-preview-section" open="@openByDefault">
+            <summary class="atm-preview-summary-row">
+                @heading
+                <span class="atm-preview-count">@items.Count</span>
+                @if (!isErrorKind)
+                {
+                    <span class="atm-preview-include-count" title="מסומנות לייבוא בקבוצה זו">
+                        @includedInBucket / @items.Count
+                    </span>
+                }
+            </summary>
+            <ul class="atm-preview-list">
+                @foreach (var row in items)
+                {
+                    <li class="@rowClass">
+                        <label class="atm-preview-row-label">
+                            @if (isErrorKind)
+                            {
+                                <span class="atm-preview-row-locked" title="שגיאת נתונים — לא ניתן לייבא">
+                                    <span class="oi oi-lock-locked" aria-hidden="true"></span>
+                                </span>
+                            }
+                            else
+                            {
+                                bool included = _includeByRecordId.TryGetValue(row.RecordId, out var v) && v;
+                                <input type="checkbox"
+                                       class="atm-preview-row-check"
+                                       checked="@included"
+                                       @onchange="@((ChangeEventArgs e) => SetIncluded(row.RecordId, (bool)(e.Value ?? false)))" />
+                            }
+                            <div class="atm-preview-row-body">
+                                <div class="atm-preview-row-title">
+                                    <span class="atm-preview-row-num">@(row.ProjectNumber.HasValue ? $"#{row.ProjectNumber}" : "")</span>
+                                    <span>@row.Title</span>
+                                    @if (!string.IsNullOrWhiteSpace(row.OrganizationName))
+                                    {
+                                        <span class="atm-preview-row-org">— @row.OrganizationName</span>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(row.Detail))
+                                {
+                                    <div class="atm-preview-row-detail">@row.Detail</div>
+                                }
+                            </div>
+                        </label>
+                    </li>
+                }
+            </ul>
+        </details>
+    };
 
     private async Task ToggleActive(AirtableIntegrationListItemDto c)
     {
@@ -554,7 +1080,11 @@
         }
     }
 
-    private void CloseImportResult() => _lastImport = null;
+    private void CloseImportResult()
+    {
+        _lastImport      = null;
+        _lastImportForId = null;
+    }
 
     private static string LocalLabel(string key) => key switch
     {

@@ -3,6 +3,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @inject IProjectRequestsService RequestsService
 @inject IProjectContextService  ProjectContext
+@inject IRequestTypesService    RequestTypesService
 
 @if (IsOpen)
 {
@@ -58,9 +59,9 @@
                                 @bind="_requestType"
                                 disabled="@(_phase == Phase.Submitting)">
                             <option value="">— בחר סוג בקשה —</option>
-                            @foreach (var t in RequestTypes.All)
+                            @foreach (var t in _availableTypes)
                             {
-                                <option value="@t">@RequestTypes.Label(t)</option>
+                                <option value="@t.Code">@t.Name</option>
                             }
                         </select>
                         @if (_touched && string.IsNullOrEmpty(_requestType))
@@ -132,7 +133,7 @@
                                             <optgroup label="משימות הגשה">
                                                 @foreach (var t in _extTargets.Where(x => x.Kind == "Task"))
                                                 {
-                                                    <option value="@($"Task:{t.Id}")">@t.Title</option>
+                                                    <option value="@($"Task:{t.Id}")">@OptionLabel(t)</option>
                                                 }
                                             </optgroup>
                                         }
@@ -141,7 +142,7 @@
                                             <optgroup label="אבני דרך">
                                                 @foreach (var t in _extTargets.Where(x => x.Kind == "Milestone"))
                                                 {
-                                                    <option value="@($"Milestone:{t.Id}")">@t.Title</option>
+                                                    <option value="@($"Milestone:{t.Id}")">@OptionLabel(t)</option>
                                                 }
                                             </optgroup>
                                         }
@@ -154,16 +155,99 @@
                             </div>
 
                             @{
-                                var selected = SelectedTarget;
+                                var selected   = SelectedTarget;
+                                int? overdueDays = OverdueDays(selected);
+                                bool hasDueDate  = selected?.CurrentDueDate is not null;
                             }
 
                             @if (selected is not null)
                             {
-                                <div class="nrm-field">
-                                    <label class="nrm-label">תאריך הגשה נוכחי</label>
-                                    <div class="nrm-readonly-value">
-                                        @(selected.CurrentDueDate?.ToString("dd/MM/yyyy") ?? "—")
+                                @* Details panel — surfaces the full context of
+                                   the selected target so the student knows
+                                   what they're asking to defer. Conditional
+                                   sub-blocks below cover the three states
+                                   (overdue / has-date / no-date). *@
+                                <div class="nrm-ext-details">
+                                    <div class="nrm-ext-row">
+                                        <span class="nrm-ext-label">פריט נבחר</span>
+                                        <span class="nrm-ext-value nrm-ext-value-strong">
+                                            <span class="nrm-ext-kind">
+                                                @(selected.Kind == "Task" ? "משימה" : "אבן דרך")
+                                            </span>
+                                            @selected.Title
+                                        </span>
                                     </div>
+
+                                    @if (selected.Kind == "Task" && !string.IsNullOrWhiteSpace(selected.MilestoneTitle))
+                                    {
+                                        <div class="nrm-ext-row">
+                                            <span class="nrm-ext-label">אבן דרך משויכת</span>
+                                            <span class="nrm-ext-value">@selected.MilestoneTitle</span>
+                                        </div>
+                                    }
+
+                                    @if (!string.IsNullOrWhiteSpace(_projectTitle))
+                                    {
+                                        <div class="nrm-ext-row">
+                                            <span class="nrm-ext-label">פרויקט / צוות</span>
+                                            <span class="nrm-ext-value">
+                                                @_projectTitle
+                                                @if (!string.IsNullOrWhiteSpace(_teamName))
+                                                {
+                                                    <span class="nrm-ext-muted"> — @_teamName</span>
+                                                }
+                                            </span>
+                                        </div>
+                                    }
+
+                                    @if (!string.IsNullOrWhiteSpace(selected.Status))
+                                    {
+                                        <div class="nrm-ext-row">
+                                            <span class="nrm-ext-label">סטטוס נוכחי</span>
+                                            <span class="nrm-ext-value">@StatusLabel(selected.Status)</span>
+                                        </div>
+                                    }
+
+                                    @if (hasDueDate)
+                                    {
+                                        <div class="nrm-ext-row">
+                                            <span class="nrm-ext-label">תאריך יעד נוכחי</span>
+                                            <span class="nrm-ext-value nrm-ext-value-strong">
+                                                @selected.CurrentDueDate!.Value.ToString("dd.MM.yyyy")
+                                            </span>
+                                        </div>
+
+                                        @if (overdueDays is > 0)
+                                        {
+                                            <div class="nrm-ext-banner nrm-ext-banner-overdue">
+                                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                                <div>
+                                                    <div class="nrm-ext-banner-title">
+                                                        הפריט כבר באיחור של @overdueDays.Value ימים
+                                                    </div>
+                                                    <div class="nrm-ext-banner-body">
+                                                        בקשת הדחייה תועבר לבדיקה ביחס לתאריך היעד הנוכחי.
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <div class="nrm-ext-banner nrm-ext-banner-ok">
+                                                <span class="oi oi-info" aria-hidden="true"></span>
+                                                <span>
+                                                    תאריך היעד הנוכחי: @selected.CurrentDueDate.Value.ToString("dd.MM.yyyy")
+                                                </span>
+                                            </div>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <div class="nrm-ext-banner nrm-ext-banner-warn">
+                                            <span class="oi oi-warning" aria-hidden="true"></span>
+                                            <span>לא מוגדר תאריך יעד לפריט זה</span>
+                                        </div>
+                                    }
                                 </div>
                             }
 
@@ -339,7 +423,17 @@
     private string _submitError = "";
 
     // Resolved on first open
-    private int _projectId;
+    private int    _projectId;
+    /// <summary>Surfaced in the extension-request details panel so the
+    /// student can confirm which project the deferral targets.</summary>
+    private string _projectTitle = "";
+    private string _teamName     = "";
+
+    // Active request types loaded from /api/request-types/active. Falls back
+    // to the legacy hard-coded constants if the catalogue is empty or the
+    // fetch fails, so the picker never goes silent on the student.
+    private List<RequestTypeDefinitionDto> _availableTypes = new();
+    private bool _typesLoaded;
 
     // Extension-only state — populated when the student opens the modal and
     // selects type=Extension. The picker source is fetched once per modal open
@@ -369,7 +463,35 @@
         if (IsOpen && _projectId == 0)
         {
             var ctx = await ProjectContext.GetAsync();
-            _projectId = ctx?.ProjectId ?? 0;
+            _projectId    = ctx?.ProjectId ?? 0;
+            _projectTitle = ctx?.ProjectTitle ?? "";
+            _teamName     = ctx?.TeamName ?? "";
+        }
+
+        // Load the active request types catalogue once per modal lifetime.
+        // Disabled types are filtered server-side so the student never sees
+        // them. If the fetch fails or returns empty (e.g. fresh deploy before
+        // the migrator runs on a hosted env), fall back to the legacy static
+        // constants so the picker never goes silent.
+        if (IsOpen && !_typesLoaded)
+        {
+            var list = await RequestTypesService.GetActiveAsync();
+            if (list is { Count: > 0 })
+            {
+                _availableTypes = list;
+            }
+            else
+            {
+                _availableTypes = RequestTypes.All
+                    .Select(code => new RequestTypeDefinitionDto
+                    {
+                        Code = code,
+                        Name = RequestTypes.Label(code),
+                        IsActive = true,
+                    })
+                    .ToList();
+            }
+            _typesLoaded = true;
         }
 
         // Load extension picker targets the first time the modal opens.
@@ -556,4 +678,50 @@
         var c = ct.Trim().ToLowerInvariant();
         return c is "image/jpeg" or "image/jpg" or "image/png" or "image/webp";
     }
+
+    // ── Extension-target helpers ─────────────────────────────────────────
+    //
+    // Used by the deadline-extension request flow. These are pure
+    // functions on the ExtensionTargetDto / DateTime values; no state
+    // mutation, no I/O. The dropdown label and the details-panel banner
+    // both share the same OverdueDays computation so they can never
+    // disagree on whether a target is late.
+
+    /// <summary>Days past the current due date, or null when the item has no
+    /// due date. Negative values are clamped to null so we never call the
+    /// banner "overdue by -3 days" for a future deadline.</summary>
+    private static int? OverdueDays(ExtensionTargetDto? t)
+    {
+        if (t?.CurrentDueDate is null) return null;
+        int days = (DateTime.Today - t.CurrentDueDate.Value.Date).Days;
+        return days > 0 ? days : null;
+    }
+
+    /// <summary>Dropdown-option text: "Title — יעד: dd.MM.yyyy — באיחור N ימים"
+    /// when the item is overdue, "Title — יעד: dd.MM.yyyy" when on time, and
+    /// "Title — ללא תאריך יעד" when no date is set. The same Title is the
+    /// only thing the legacy UI showed.</summary>
+    private static string OptionLabel(ExtensionTargetDto t)
+    {
+        if (t.CurrentDueDate is null) return $"{t.Title} — ללא תאריך יעד";
+        string dueStr = t.CurrentDueDate.Value.ToString("dd.MM.yyyy");
+        int? late = OverdueDays(t);
+        return late is > 0
+            ? $"{t.Title} — יעד: {dueStr} — באיחור {late.Value} ימים"
+            : $"{t.Title} — יעד: {dueStr}";
+    }
+
+    /// <summary>Hebrew label for the raw Status string. Falls back to the
+    /// raw value when an unknown code is encountered so the student still
+    /// sees something useful rather than a blank.</summary>
+    private static string StatusLabel(string raw) => raw switch
+    {
+        "Open"               => "פתוח",
+        "InProgress"         => "בביצוע",
+        "Done"               => "הושלם",
+        "Completed"          => "הושלם",
+        "SubmittedToMentor"  => "הוגש למנחה",
+        "NotStarted"         => "טרם החל",
+        _                    => raw,
+    };
 }

@@ -17,6 +17,13 @@ public class ProjectManagementDto
     public int     TeamId        { get; set; }
     /// <summary>Count of active team members.</summary>
     public int     TeamSize      { get; set; }
+    /// <summary>Number of mentors assigned to the project (ProjectMentors row
+    /// count). 0 means "ללא מנחה משויך" — surfaces the warning badge + the
+    /// "שיוך מנחה" quick-action on the management table.</summary>
+    public int     MentorCount   { get; set; }
+    /// <summary>Comma-separated names of currently assigned mentors. Empty
+    /// when MentorCount == 0. Driven by the table cell tooltip / mini-list.</summary>
+    public string  MentorNames   { get; set; } = "";
     /// <summary>Academic year derived from the team's active members (e.g. "2025-2026").</summary>
     public string  AcademicYear  { get; set; } = "";
 

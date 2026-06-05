@@ -226,14 +226,22 @@
                     <div class="msu-drawer-section msu-drawer-review-section">
                         <div class="msu-drawer-section-title">סקירת מנחה</div>
                         <div class="msu-review-feedback-wrap">
-                            <label class="msu-review-feedback-label">פידבק (אופציונלי)</label>
+                            <label class="msu-review-feedback-label">פידבק (נדרש בעת החזרה לתיקון)</label>
                             <textarea class="msu-review-feedback"
                                       rows="3"
                                       placeholder="הוסף הערות לסטודנט…"
-                                      @bind="_reviewFeedback"
+                                      value="@_reviewFeedback"
+                                      @oninput="@((ChangeEventArgs e) => { _reviewFeedback = e.Value?.ToString() ?? string.Empty; if (_feedbackError.Length > 0) _feedbackError = string.Empty; })"
                                       disabled="@_reviewing">
                             </textarea>
                         </div>
+                        @if (!string.IsNullOrEmpty(_feedbackError))
+                        {
+                            <div class="msu-review-error">
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                                @_feedbackError
+                            </div>
+                        }
                         @if (_reviewError)
                         {
                             <div class="msu-review-error">
@@ -409,13 +417,16 @@
     private List<MentorPendingSubmissionDto> _submissions = new();
     private bool                             _isLoading   = true;
 
-    private MentorSubmissionContextDto? _reviewCtx      = null;
-    private bool                        _reviewLoading  = false;
-    private bool                        _reviewing      = false;
-    private bool                        _reviewError    = false;
-    private string                      _reviewFeedback = "";
-    private string                      _pendingAction  = "";
-    private readonly HashSet<int>       _expandedRounds = new();
+    private MentorSubmissionContextDto? _reviewCtx       = null;
+    private bool                        _reviewLoading   = false;
+    private bool                        _reviewing       = false;
+    private bool                        _reviewError     = false;
+    /// <summary>Validation-specific error shown when "Return" is clicked
+    /// without a non-empty feedback note. Cleared on any feedback edit.</summary>
+    private string                      _feedbackError   = "";
+    private string                      _reviewFeedback  = "";
+    private string                      _pendingAction   = "";
+    private readonly HashSet<int>       _expandedRounds  = new();
 
     // Escalation state (mentor → lecturer attention flag). Resets every drawer open.
     private bool   _escalateOpen   = false;
@@ -435,6 +446,7 @@
         _reviewCtx      = null;
         _reviewFeedback = "";
         _reviewError    = false;
+        _feedbackError  = "";
         _reviewLoading  = true;
         // Reset escalation block for the new submission.
         _escalateOpen = false; _escalateBusy = false;
@@ -457,6 +469,7 @@
         _reviewCtx      = null;
         _reviewFeedback = "";
         _reviewError    = false;
+        _feedbackError  = "";
     }
 
     private async Task EscalateAsync()
@@ -494,9 +507,20 @@
     {
         if (_reviewCtx is null || _reviewing) return;
 
+        // Validation: returning for correction requires a non-empty note.
+        // Backend enforces the same rule with the identical Hebrew message —
+        // this branch just avoids the round-trip when we can see it locally.
+        if (action == "Returned" && string.IsNullOrWhiteSpace(_reviewFeedback))
+        {
+            _feedbackError = "יש להזין הערת מנחה לפני החזרת ההגשה לתיקון";
+            StateHasChanged();
+            return;
+        }
+
         _reviewing     = true;
         _pendingAction = action;
         _reviewError   = false;
+        _feedbackError = "";
         StateHasChanged();
 
         bool ok = await MentorService.ReviewSubmissionAsync(

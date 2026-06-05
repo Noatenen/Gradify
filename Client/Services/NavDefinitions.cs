@@ -67,6 +67,7 @@ public static class NavDefinitions
     {
         new NavItem("דשבורד מנחה", "dashboard/mentor",     "oi-pulse",            NavLinkMatch.Prefix),
         new NavItem("פרויקטים",    "mentor/projects",      "oi-folder",           NavLinkMatch.Prefix),
+        new NavItem("ציר התקדמות", "mentor/roadmap",       "oi-graph",            NavLinkMatch.Prefix),
         new NavItem("בריאות פרויקטים", "project-health",   "oi-heart",            NavLinkMatch.Prefix),
         new NavItem("אבני דרך",    "milestones-overview",  "oi-flag",             NavLinkMatch.Prefix),
         new NavItem("הגשות",       "mentor/submissions",   "oi-inbox",            NavLinkMatch.Prefix),

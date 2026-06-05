@@ -1,0 +1,474 @@
+@page "/management/cycles/{CycleId:int}/stages"
+@layout AppLayout
+@attribute [Authorize(Roles = $"{Roles.Admin},{Roles.Staff}")]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IRoadmapStagesService Service
+@inject IJSRuntime JS
+
+@*
+    Per-cycle roadmap-stage editor. Mounts under the existing cycles screen
+    so configuration lives close to the cycle it belongs to.
+
+    Three things happen here:
+      1. CRUD on RoadmapStages rows (Hebrew name, dates, order, active).
+      2. Linking AcademicYearMilestones rows to a stage so the mentor view
+         can compute per-team progress.
+      3. Soft-delete-equivalent: deleting a stage clears links via trigger;
+         deactivating just hides it from the mentor timeline.
+*@
+
+<div class="crs-page" dir="rtl">
+
+    <!-- Top bar -->
+    <div class="crs-topbar">
+        <div class="crs-topbar-start">
+            <button class="crs-back-btn"
+                    @onclick="@(() => Nav.NavigateTo("/management/cycles"))"
+                    title="חזרה לניהול מחזורים">
+                <span class="oi oi-chevron-right" aria-hidden="true"></span>
+            </button>
+            <div>
+                <div class="crs-breadcrumb">ניהול / מחזורים</div>
+                <h1 class="crs-title">ציר התקדמות פרויקט — מחזור #@CycleId</h1>
+            </div>
+        </div>
+        <div class="crs-topbar-end">
+            <button class="crs-primary-btn" @onclick="OpenCreateModal" disabled="@_loading">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+                שלב חדש
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_banner))
+    {
+        <div class="crs-banner @(_bannerSuccess ? "crs-banner--ok" : "crs-banner--err")">
+            <span class="oi @(_bannerSuccess ? "oi-circle-check" : "oi-warning")" aria-hidden="true"></span>
+            <span>@_banner</span>
+            <button type="button" class="crs-banner-close" @onclick="@(() => _banner = "")" title="סגירה">
+                <span class="oi oi-x" aria-hidden="true"></span>
+            </button>
+        </div>
+    }
+
+    <!-- Stages list -->
+    @if (_loading)
+    {
+        <div class="crs-empty"><span class="crs-spinner-inline"></span>טוען שלבים…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="crs-empty crs-empty--err"><span class="oi oi-warning"></span> שגיאה בטעינה. נסה לרענן.</div>
+    }
+    else if (_stages.Count == 0)
+    {
+        <div class="crs-empty">אין שלבים מוגדרים במחזור זה. ניתן להוסיף שלב חדש מהכפתור למעלה.</div>
+    }
+    else
+    {
+        <div class="crs-list">
+            @foreach (var s in _stages)
+            {
+                <article class="crs-card @(s.IsActive ? "" : "crs-card--inactive")">
+                    <div class="crs-card-head">
+                        <div class="crs-order-badge">@s.DisplayOrder</div>
+                        <div class="crs-card-head-text">
+                            <h2 class="crs-card-name">@s.Name</h2>
+                            <div class="crs-card-code">@s.Code</div>
+                        </div>
+                        <div class="crs-card-status">
+                            <span class="crs-status-pill @(s.IsActive ? "crs-status--active" : "crs-status--inactive")">
+                                @(s.IsActive ? "פעיל" : "מושבת")
+                            </span>
+                        </div>
+                        <div class="crs-card-actions">
+                            <button class="crs-icon-btn" title="עריכה" @onclick="@(() => OpenEditModal(s))">
+                                <span class="oi oi-pencil" aria-hidden="true"></span>
+                            </button>
+                            <button class="crs-icon-btn"
+                                    title="@(s.IsActive ? "השבתה" : "הפעלה")"
+                                    @onclick="@(() => ToggleActive(s))">
+                                <span class="oi @(s.IsActive ? "oi-circle-x" : "oi-circle-check")" aria-hidden="true"></span>
+                            </button>
+                            <button class="crs-icon-btn crs-icon-btn--danger" title="מחיקה"
+                                    @onclick="@(() => DeleteStage(s))">
+                                <span class="oi oi-trash" aria-hidden="true"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(s.Description))
+                    {
+                        <p class="crs-card-desc">@s.Description</p>
+                    }
+
+                    <div class="crs-card-meta">
+                        <span class="crs-meta-item">
+                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                            @(s.SuggestedStartDate?.ToString("dd/MM/yyyy") ?? "—")
+                            ←
+                            @(s.SuggestedEndDate?.ToString("dd/MM/yyyy") ?? "—")
+                        </span>
+                        <span class="crs-meta-item">
+                            <span class="oi oi-task" aria-hidden="true"></span>
+                            @s.LinkedMilestones.Count אבני דרך
+                        </span>
+                        <button class="crs-link-btn" @onclick="@(() => OpenLinkModal(s))">
+                            <span class="oi oi-link-intact" aria-hidden="true"></span>
+                            ניהול אבני דרך
+                        </button>
+                    </div>
+
+                    @if (s.LinkedMilestones.Count > 0)
+                    {
+                        <ul class="crs-milestone-chips">
+                            @foreach (var m in s.LinkedMilestones)
+                            {
+                                <li class="crs-chip" title="@m.Title">@m.Title</li>
+                            }
+                        </ul>
+                    }
+                </article>
+            }
+        </div>
+    }
+</div>
+
+<!-- ══ Stage edit / create modal ════════════════════════════════════════════ -->
+@if (_modalOpen && _form is not null)
+{
+    <div class="crs-modal-overlay" @onclick="CloseModal">
+        <div class="crs-modal" dir="rtl" @onclick:stopPropagation="true">
+            <div class="crs-modal-header">
+                <h2 class="crs-modal-title">@(_editingId.HasValue ? "עריכת שלב" : "שלב חדש")</h2>
+                <button class="crs-modal-close" @onclick="CloseModal" disabled="@_saving" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="crs-modal-body">
+                <div class="crs-field">
+                    <label class="crs-label">קוד <span class="crs-required">*</span></label>
+                    <input class="crs-input" type="text" @bind="_form.Code"
+                           disabled="@(_editingId.HasValue || _saving)"
+                           maxlength="64" placeholder="לדוגמה: Specification" />
+                    <div class="crs-hint">מזהה אנגלי קבוע (אותיות, ספרות, מקף, תחתון). לא ניתן לשנותו לאחר היצירה.</div>
+                </div>
+
+                <div class="crs-field">
+                    <label class="crs-label">שם השלב בעברית <span class="crs-required">*</span></label>
+                    <input class="crs-input" type="text" @bind="_form.Name"
+                           disabled="@_saving" maxlength="120"
+                           placeholder="לדוגמה: אפיון" />
+                </div>
+
+                <div class="crs-field">
+                    <label class="crs-label">תיאור קצר</label>
+                    <textarea class="crs-textarea" rows="2" @bind="_form.Description"
+                              maxlength="500" disabled="@_saving"
+                              placeholder="הסבר קצר על השלב — יוצג לסוקרים ולמנחים."></textarea>
+                </div>
+
+                <div class="crs-field-row">
+                    <div class="crs-field crs-field--grow">
+                        <label class="crs-label">תאריך התחלה מוצע</label>
+                        <input class="crs-input" type="date" @bind="_form.SuggestedStartDate" disabled="@_saving" />
+                    </div>
+                    <div class="crs-field crs-field--grow">
+                        <label class="crs-label">תאריך סיום מוצע</label>
+                        <input class="crs-input" type="date" @bind="_form.SuggestedEndDate" disabled="@_saving" />
+                    </div>
+                </div>
+
+                <div class="crs-field-row">
+                    <div class="crs-field crs-field--small">
+                        <label class="crs-label">סדר תצוגה</label>
+                        <input class="crs-input" type="number" min="0" max="999"
+                               @bind="_form.DisplayOrder" disabled="@_saving" />
+                    </div>
+                    <div class="crs-field crs-field--grow">
+                        <label class="crs-label">סטטוס</label>
+                        <label class="crs-toggle">
+                            <input type="checkbox" @bind="_form.IsActive" disabled="@_saving" />
+                            <span class="crs-toggle-track"><span class="crs-toggle-thumb"></span></span>
+                            <span class="crs-toggle-label">@(_form.IsActive ? "פעיל" : "מושבת")</span>
+                        </label>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_formError))
+                {
+                    <div class="crs-error"><span class="oi oi-warning" aria-hidden="true"></span> @_formError</div>
+                }
+            </div>
+
+            <div class="crs-modal-footer">
+                <button class="crs-ghost-btn" @onclick="CloseModal" disabled="@_saving">ביטול</button>
+                <button class="crs-primary-btn" @onclick="SaveForm" disabled="@_saving">
+                    @if (_saving) { <span class="crs-spinner-inline"></span><span>שומר…</span> }
+                    else          { <span class="oi oi-check" aria-hidden="true"></span><span>שמירה</span> }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ══ Milestone link modal ═════════════════════════════════════════════════ -->
+@if (_linkModalOpen && _linkingStage is not null)
+{
+    <div class="crs-modal-overlay" @onclick="CloseLinkModal">
+        <div class="crs-modal" dir="rtl" @onclick:stopPropagation="true">
+            <div class="crs-modal-header">
+                <h2 class="crs-modal-title">ניהול אבני דרך — @_linkingStage.Name</h2>
+                <button class="crs-modal-close" @onclick="CloseLinkModal" disabled="@_linkSaving" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="crs-modal-body">
+                <p class="crs-hint">
+                    סמן את אבני הדרך שיהיו חלק משלב זה. אבן דרך שכבר משויכת לשלב אחר תוצג עם
+                    תווית מתאימה — סימון תעביר אותה לשלב הנוכחי.
+                </p>
+
+                @if (_linkLoading)
+                {
+                    <div class="crs-empty"><span class="crs-spinner-inline"></span>טוען אבני דרך…</div>
+                }
+                else if (_availableMilestones.Count == 0)
+                {
+                    <div class="crs-empty">אין אבני דרך זמינות במחזור זה. יש להחיל תבניות מתוך מסך המחזורים.</div>
+                }
+                else
+                {
+                    <div class="crs-link-list">
+                        @foreach (var m in _availableMilestones)
+                        {
+                            bool isLinkedHere     = _linkedAymIds.Contains(m.AcademicYearMilestoneId);
+                            bool isLinkedToOther  = m.CurrentStageId.HasValue && m.CurrentStageId != _linkingStage.Id;
+                            <label class="crs-link-row @(isLinkedHere ? "crs-link-row--on" : "")">
+                                <input type="checkbox"
+                                       checked="@isLinkedHere"
+                                       disabled="@_linkSaving"
+                                       @onchange="@((ChangeEventArgs e) => ToggleLink(m.AcademicYearMilestoneId, (bool)(e.Value ?? false)))" />
+                                <span class="crs-link-title">@m.Title</span>
+                                @if (isLinkedToOther)
+                                {
+                                    <span class="crs-link-other">משויך כעת לשלב אחר</span>
+                                }
+                            </label>
+                        }
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(_linkError))
+                {
+                    <div class="crs-error"><span class="oi oi-warning" aria-hidden="true"></span> @_linkError</div>
+                }
+            </div>
+
+            <div class="crs-modal-footer">
+                <button class="crs-ghost-btn" @onclick="CloseLinkModal" disabled="@_linkSaving">ביטול</button>
+                <button class="crs-primary-btn" @onclick="SaveLinks" disabled="@_linkSaving">
+                    @if (_linkSaving) { <span class="crs-spinner-inline"></span><span>שומר…</span> }
+                    else              { <span class="oi oi-check" aria-hidden="true"></span><span>שמירה</span> }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int CycleId { get; set; }
+
+    // ── List state ─────────────────────────────────────────────────────────
+    private List<RoadmapStageDto> _stages = new();
+    private bool _loading   = true;
+    private bool _loadError;
+    private string _banner  = "";
+    private bool   _bannerSuccess;
+
+    // ── Stage modal state ─────────────────────────────────────────────────
+    private bool _modalOpen;
+    private SaveRoadmapStageRequest? _form;
+    private int? _editingId;
+    private bool _saving;
+    private string _formError = "";
+
+    // ── Link modal state ──────────────────────────────────────────────────
+    private bool _linkModalOpen;
+    private RoadmapStageDto? _linkingStage;
+    private List<AvailableMilestoneRowDto> _availableMilestones = new();
+    private HashSet<int> _linkedAymIds = new();
+    private bool _linkLoading;
+    private bool _linkSaving;
+    private string _linkError = "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading   = true;
+        _loadError = false;
+        var data = await Service.GetForCycleAsync(CycleId);
+        if (data is null) _loadError = true;
+        else _stages = data;
+        _loading = false;
+    }
+
+    // ── Stage modal ────────────────────────────────────────────────────────
+    private void OpenCreateModal()
+    {
+        _editingId = null;
+        int nextOrder = _stages.Count == 0 ? 1 : _stages.Max(s => s.DisplayOrder) + 1;
+        _form = new SaveRoadmapStageRequest
+        {
+            Code = "",
+            Name = "",
+            Description = "",
+            DisplayOrder = nextOrder,
+            IsActive = true,
+        };
+        _formError = "";
+        _modalOpen = true;
+    }
+
+    private void OpenEditModal(RoadmapStageDto s)
+    {
+        _editingId = s.Id;
+        _form = new SaveRoadmapStageRequest
+        {
+            Code               = s.Code,
+            Name               = s.Name,
+            Description        = s.Description,
+            SuggestedStartDate = s.SuggestedStartDate,
+            SuggestedEndDate   = s.SuggestedEndDate,
+            DisplayOrder       = s.DisplayOrder,
+            IsActive           = s.IsActive,
+        };
+        _formError = "";
+        _modalOpen = true;
+    }
+
+    private void CloseModal()
+    {
+        if (_saving) return;
+        _modalOpen = false;
+        _form      = null;
+        _editingId = null;
+        _formError = "";
+    }
+
+    private async Task SaveForm()
+    {
+        if (_form is null) return;
+        _formError = "";
+
+        if (!_editingId.HasValue && string.IsNullOrWhiteSpace(_form.Code))
+        {
+            _formError = "קוד השלב הוא שדה חובה";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_form.Name))
+        {
+            _formError = "שם השלב הוא שדה חובה";
+            return;
+        }
+
+        _saving = true;
+        var result = _editingId.HasValue
+            ? await Service.UpdateAsync(_editingId.Value, _form)
+            : await Service.CreateAsync(CycleId, _form);
+        _saving = false;
+
+        if (result.Error is not null || result.Item is null)
+        {
+            _formError = result.Error ?? "שמירת השלב נכשלה";
+            return;
+        }
+
+        ShowBanner(_editingId.HasValue ? "השלב עודכן בהצלחה" : "השלב נוצר בהצלחה", success: true);
+        _modalOpen = false;
+        _form      = null;
+        _editingId = null;
+        await LoadAsync();
+    }
+
+    private async Task ToggleActive(RoadmapStageDto s)
+    {
+        var err = await Service.ToggleActiveAsync(s.Id, !s.IsActive);
+        if (err is not null) { ShowBanner(err, success: false); return; }
+        ShowBanner(s.IsActive ? "השלב הושבת" : "השלב הופעל", success: true);
+        await LoadAsync();
+    }
+
+    private async Task DeleteStage(RoadmapStageDto s)
+    {
+        bool ok = await JS.InvokeAsync<bool>("confirm",
+            $"האם למחוק את השלב \"{s.Name}\"? אבני דרך שמשויכות יוסרו מהשלב אך לא יימחקו.");
+        if (!ok) return;
+
+        var err = await Service.DeleteAsync(s.Id);
+        if (err is not null) { ShowBanner(err, success: false); return; }
+        ShowBanner("השלב נמחק", success: true);
+        await LoadAsync();
+    }
+
+    // ── Link modal ─────────────────────────────────────────────────────────
+    private async Task OpenLinkModal(RoadmapStageDto s)
+    {
+        _linkingStage  = s;
+        _linkedAymIds  = s.LinkedMilestones.Select(m => m.AcademicYearMilestoneId).ToHashSet();
+        _linkError     = "";
+        _linkLoading   = true;
+        _linkModalOpen = true;
+        StateHasChanged();
+
+        var rows = await Service.GetAvailableMilestonesAsync(CycleId);
+        _availableMilestones = rows ?? new();
+        _linkLoading = false;
+    }
+
+    private void CloseLinkModal()
+    {
+        if (_linkSaving) return;
+        _linkModalOpen = false;
+        _linkingStage  = null;
+        _availableMilestones.Clear();
+        _linkedAymIds.Clear();
+        _linkError = "";
+    }
+
+    private void ToggleLink(int aymId, bool isChecked)
+    {
+        if (isChecked) _linkedAymIds.Add(aymId);
+        else           _linkedAymIds.Remove(aymId);
+    }
+
+    private async Task SaveLinks()
+    {
+        if (_linkingStage is null) return;
+        _linkSaving = true;
+        var result = await Service.LinkMilestonesAsync(_linkingStage.Id, _linkedAymIds.ToList());
+        _linkSaving = false;
+
+        if (result.Error is not null)
+        {
+            _linkError = result.Error;
+            return;
+        }
+
+        ShowBanner("אבני הדרך עודכנו לשלב", success: true);
+        _linkModalOpen = false;
+        _linkingStage  = null;
+        await LoadAsync();
+    }
+
+    private void ShowBanner(string text, bool success)
+    {
+        _banner        = text;
+        _bannerSuccess = success;
+    }
+}

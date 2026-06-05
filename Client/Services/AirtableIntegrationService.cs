@@ -10,9 +10,14 @@ public interface IAirtableIntegrationService
     Task<int?>                                  CreateAsync(SaveAirtableIntegrationRequest req);
     Task<bool>                                  UpdateAsync(int id, SaveAirtableIntegrationRequest req);
     Task<AirtableTestResultDto?>                TestAsync(int id);
-    Task<AirtableSyncResultDto?>                ImportAsync(int id);
+    Task<AirtablePreviewResultDto?>             PreviewAsync(int id);
+    /// <summary>Runs the actual import. <paramref name="skipRecordIds"/>
+    /// is the admin's per-row opt-out list from the preview UI; null or
+    /// empty means "import everything fetched".</summary>
+    Task<AirtableSyncResultDto?>                ImportAsync(int id, List<string>? skipRecordIds = null);
     Task<List<AirtableFieldMappingDto>?>        GetMappingsAsync(int id);
     Task<bool>                                  SaveMappingsAsync(int id, List<AirtableFieldMappingDto> mappings);
+    Task<List<AirtableImportRunDto>?>           GetImportRunsAsync(int id);
 }
 
 public class AirtableIntegrationService : IAirtableIntegrationService
@@ -65,13 +70,41 @@ public class AirtableIntegrationService : IAirtableIntegrationService
         catch { return null; }
     }
 
-    public async Task<AirtableSyncResultDto?> ImportAsync(int id)
+    public async Task<AirtablePreviewResultDto?> PreviewAsync(int id)
     {
         try
         {
-            var res = await _http.PostAsync($"api/integrations/airtable/{id}/import", null);
+            var res = await _http.PostAsync($"api/integrations/airtable/{id}/preview", null);
+            if (!res.IsSuccessStatusCode)
+            {
+                string body = await res.Content.ReadAsStringAsync();
+                return new AirtablePreviewResultDto { PreviewError = body.Trim('"') };
+            }
+            return await res.Content.ReadFromJsonAsync<AirtablePreviewResultDto>();
+        }
+        catch { return null; }
+    }
+
+    public async Task<AirtableSyncResultDto?> ImportAsync(int id, List<string>? skipRecordIds = null)
+    {
+        try
+        {
+            // Always POST a body (even an empty SkipRecordIds list) so the
+            // server-side model binder is happy and the audit row records
+            // an explicit skip-count of zero.
+            var body = new AirtableImportRequest
+            {
+                SkipRecordIds = skipRecordIds ?? new()
+            };
+            var res = await _http.PostAsJsonAsync($"api/integrations/airtable/{id}/import", body);
             return await res.Content.ReadFromJsonAsync<AirtableSyncResultDto>();
         }
+        catch { return null; }
+    }
+
+    public async Task<List<AirtableImportRunDto>?> GetImportRunsAsync(int id)
+    {
+        try { return await _http.GetFromJsonAsync<List<AirtableImportRunDto>>($"api/integrations/airtable/{id}/import-runs"); }
         catch { return null; }
     }
 

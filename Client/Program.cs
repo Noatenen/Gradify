@@ -29,6 +29,8 @@ builder.Services.AddScoped<IMilestoneManagementService, MilestoneManagementServi
 builder.Services.AddScoped<ITaskManagementService, TaskManagementService>();
 builder.Services.AddScoped<ITaskSubmissionsService, TaskSubmissionsService>();
 builder.Services.AddScoped<IProjectRequestsService, ProjectRequestsService>();
+builder.Services.AddScoped<IRequestTypesService, RequestTypesService>();
+builder.Services.AddScoped<IRoadmapStagesService, RoadmapStagesService>();
 
 // Student profile & settings
 builder.Services.AddScoped<IStudentProfileService, StudentProfileService>();

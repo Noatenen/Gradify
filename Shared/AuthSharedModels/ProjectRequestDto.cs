@@ -250,6 +250,11 @@ public class ExtensionTargetDto
     /// <summary>Parent milestone title for tasks. Empty for milestone-kind rows.</summary>
     public string?   MilestoneTitle  { get; set; }
     public DateTime? CurrentDueDate  { get; set; }
+    /// <summary>Internal status string (e.g., "Open"/"InProgress" for tasks,
+    /// "NotStarted"/"InProgress" for milestones). Surfaced in the student
+    /// extension-modal details panel so the student can confirm what state
+    /// they're requesting a deadline change for.</summary>
+    public string    Status          { get; set; } = "";
 }
 
 /// <summary>Mentor or lecturer decision payload.</summary>

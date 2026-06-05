@@ -22,8 +22,15 @@ public interface IManagementService
     Task<bool>                        ArchiveYearAsync(int id);
     Task<ApplyTemplatesResultDto?>    ApplyTemplatesAsync(int id);
 
-    // ── Airtable sync ─────────────────────────────────────────────────────────
-    Task<AirtableSyncResultDto?>       SyncAirtableProjectsAsync();
+    // Airtable sync method intentionally removed from this interface.
+    // The only legitimate import path is now:
+    //   IAirtableIntegrationService.PreviewAsync(id)
+    //     ↓ admin reviews + confirms
+    //   IAirtableIntegrationService.ImportAsync(id, skipRecordIds)
+    // Callers that used to invoke ManagementService.SyncAirtableProjectsAsync()
+    // bypassed the preview gate; the catalog button (the only known caller)
+    // now navigates to /management/integrations/airtable?triggerPreviewForActive=1
+    // which routes through the preview→confirm flow.
 }
 
 public class ManagementService : IManagementService
@@ -167,14 +174,5 @@ public class ManagementService : IManagementService
         catch { return null; }
     }
 
-    public async Task<AirtableSyncResultDto?> SyncAirtableProjectsAsync()
-    {
-        try
-        {
-            var resp = await _http.PostAsync("api/airtable/sync-projects", null);
-            if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadFromJsonAsync<AirtableSyncResultDto>();
-        }
-        catch { return null; }
-    }
+    // SyncAirtableProjectsAsync intentionally removed — see interface comment.
 }

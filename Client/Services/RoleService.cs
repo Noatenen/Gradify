@@ -48,8 +48,8 @@ public static class RoleService
         if (UserModeService.IsDualRole(user))
             return UserModeService.DashboardRouteFor(UserModeService.EffectiveMode(user));
 
-        if (IsAdminOrStaff(user)) return "/dashboard/lecturer";
-        if (IsMentor(user))       return "/dashboard/mentor";
+        if (IsAdminOrStaff(user)) return "dashboard/lecturer";
+        if (IsMentor(user))       return "dashboard/mentor";
         return PageRoutes.Dashboard;
     }
 }

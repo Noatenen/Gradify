@@ -1,0 +1,234 @@
+@page "/mentor/roadmap"
+@layout AppLayout
+@attribute [Authorize(Roles = $"{Roles.Mentor},{Roles.Admin},{Roles.Staff}")]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IRoadmapStagesService RoadmapService
+
+@*
+    Mentor-facing overview of every team's roadmap stage. One card per team,
+    one round-trip via /api/roadmap-stages/mentor/projects-progress.
+
+    Drill-down for full milestones lives at /mentor/projects/{id} — this page
+    is the "where does each team stand" surface, not the "what tasks are
+    pending" surface. Clicking a card or button navigates there.
+
+    Empty states surface the two real failure modes:
+      1. No projects assigned   → "אין פרויקטים משויכים"
+      2. Stages configured but no linked milestones in the cycle → banner
+         explaining that the configuration is incomplete on the admin side,
+         plus an inline CTA when the viewer is themselves an admin/lecturer
+         (Lecturer⇒Admin invariant means a Lecturer in mentor view also
+         qualifies for the CTA).
+*@
+
+<div class="mro-page" dir="rtl">
+
+    <div class="mro-topbar">
+        <div class="mro-topbar-start">
+            <div>
+                <div class="mro-breadcrumb">מנחה</div>
+                <h1 class="mro-title">ציר התקדמות פרויקטים</h1>
+                <p class="mro-subtitle">מבט-על על השלב שבו נמצא כל אחד מהצוותים שאני מנחה</p>
+            </div>
+        </div>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="mro-state">
+            <span class="mro-spinner-inline"></span>
+            <span>טוען נתוני התקדמות…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="mro-state mro-state--err">
+            <span class="oi oi-warning" aria-hidden="true"></span>
+            <span>שגיאה בטעינת נתוני ההתקדמות. נסה לרענן.</span>
+        </div>
+    }
+    else if (_entries.Count == 0)
+    {
+        <div class="mro-state mro-state--empty">
+            <span class="oi oi-folder" aria-hidden="true"></span>
+            <span>אין פרויקטים משויכים לחשבון הזה.</span>
+        </div>
+    }
+    else
+    {
+        @* Surface the "stages exist, but no milestones linked anywhere" case
+           explicitly — otherwise the cards look mysteriously empty. *@
+        @if (_noMilestonesLinkedAnywhere)
+        {
+            <div class="mro-banner">
+                <span class="oi oi-info" aria-hidden="true"></span>
+                <div class="mro-banner-body-wrap">
+                    <div class="mro-banner-title">ציר ההתקדמות הוגדר, אך עדיין לא קושרו אבני דרך לשלבים</div>
+                    <div class="mro-banner-body">
+                        מנהל/מרצה יכול להגדיר זאת במסך ניהול שלבי תוכנית.
+                        עד שזה יקרה, ציר ההתקדמות יוצג כללי בלבד.
+                    </div>
+                    @if (RoleService.IsAdminOrStaff(_user))
+                    {
+                        <button type="button"
+                                class="mro-banner-cta"
+                                @onclick="@(() => Nav.NavigateTo("/management/cycles?focus=stages"))">
+                            <span class="oi oi-graph" aria-hidden="true"></span>
+                            מעבר לניהול שלבי תוכנית
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+
+        <div class="mro-grid">
+            @foreach (var e in _entries)
+            {
+                var pr = e.Progress;
+                var currentStage = pr.Stages.FirstOrDefault(s => s.Status == RoadmapStageStatuses.Current);
+                var overallPct   = CalcOverallPct(pr);
+
+                <button class="mro-card mro-card--@pr.ScheduleStatus.ToLower()"
+                        @onclick="@(() => Nav.NavigateTo($"/mentor/projects/{e.ProjectId}"))">
+
+                    <div class="mro-card-head">
+                        <div class="mro-card-head-text">
+                            <span class="mro-proj-num">#@e.ProjectNumber</span>
+                            <h2 class="mro-card-title">@e.ProjectTitle</h2>
+                            @if (!string.IsNullOrWhiteSpace(e.TeamName))
+                            {
+                                <div class="mro-card-team">
+                                    <span class="oi oi-people" aria-hidden="true"></span>
+                                    @e.TeamName
+                                </div>
+                            }
+                        </div>
+                        <span class="mro-schedule-pill mro-schedule-@pr.ScheduleStatus.ToLower()">
+                            @RoadmapScheduleStatuses.Label(pr.ScheduleStatus)
+                        </span>
+                    </div>
+
+                    @if (pr.Stages.Count == 0)
+                    {
+                        <div class="mro-card-empty">
+                            <span class="oi oi-graph" aria-hidden="true"></span>
+                            <span>לא הוגדרו שלבי תוכנית במחזור של צוות זה.</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="mro-current-line">
+                            <span class="mro-current-label">שלב נוכחי:</span>
+                            @if (currentStage is not null)
+                            {
+                                <span class="mro-current-name">@currentStage.Name</span>
+                                @if (currentStage.SuggestedEndDate.HasValue)
+                                {
+                                    <span class="mro-current-date">
+                                        עד @currentStage.SuggestedEndDate.Value.ToString("dd/MM/yyyy")
+                                    </span>
+                                }
+                            }
+                            else
+                            {
+                                <span class="mro-current-name mro-current-name--done">כל השלבים הושלמו</span>
+                            }
+                        </div>
+
+                        <div class="mro-strip" aria-label="ציר שלבי הפרויקט">
+                            @foreach (var st in pr.Stages)
+                            {
+                                <div class="mro-stage mro-stage--@st.Status.ToLower()"
+                                     title="@StageTooltip(st)">
+                                </div>
+                            }
+                        </div>
+
+                        <div class="mro-card-foot">
+                            <div class="mro-prog">
+                                <div class="mro-prog-bar">
+                                    <div class="mro-prog-fill" style="width:@(overallPct)%"></div>
+                                </div>
+                                <span class="mro-prog-pct">@(overallPct)%</span>
+                            </div>
+
+                            @if (pr.Overdue is not null)
+                            {
+                                <span class="mro-mini mro-mini--overdue" title="@pr.Overdue.Title">
+                                    <span class="oi oi-warning" aria-hidden="true"></span>
+                                    איחור: @pr.Overdue.Title
+                                </span>
+                            }
+                            else if (pr.Upcoming is not null)
+                            {
+                                <span class="mro-mini mro-mini--upcoming" title="@pr.Upcoming.Title">
+                                    <span class="oi oi-clock" aria-hidden="true"></span>
+                                    הבא: @pr.Upcoming.Title
+                                </span>
+                            }
+                        </div>
+                    }
+
+                    <div class="mro-card-cta">
+                        <span>צפייה בציר התקדמות</span>
+                        <span class="oi oi-chevron-left" aria-hidden="true"></span>
+                    </div>
+                </button>
+            }
+        </div>
+    }
+
+</div>
+
+@code {
+    /// <summary>Cascaded from the root layout. Drives the "מעבר לניהול
+    /// שלבי תוכנית" CTA inside the empty-state banner.</summary>
+    [CascadingParameter] private User? _user { get; set; }
+
+    private List<MentorRoadmapEntryDto> _entries = new();
+    private bool _isLoading = true;
+    private bool _loadError = false;
+
+    /// <summary>True when every loaded entry has stages configured but
+    /// zero linked milestones across all of them. Drives the explanatory
+    /// banner so the empty cards make sense.</summary>
+    private bool _noMilestonesLinkedAnywhere = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var data = await RoadmapService.GetMentorProjectsProgressAsync();
+        if (data is null)
+        {
+            _loadError = true;
+            _isLoading = false;
+            return;
+        }
+
+        _entries = data;
+        _noMilestonesLinkedAnywhere = data.Count > 0
+            && data.All(e => e.Progress.Stages.Count > 0)
+            && data.All(e => e.Progress.Stages.Sum(s => s.LinkedMilestoneCount) == 0);
+
+        _isLoading = false;
+    }
+
+    private static string StageTooltip(StageProgressDto s) =>
+        s.LinkedMilestoneCount > 0
+            ? $"{s.Name} — {s.CompletedMilestoneCount}/{s.LinkedMilestoneCount}"
+            : $"{s.Name} — ללא אבני דרך";
+
+    private static int CalcOverallPct(ProjectRoadmapProgressDto pr)
+    {
+        // Average across stages that have linked milestones. Stages with no
+        // linked milestones don't contribute — averaging them in would
+        // misleadingly dilute the bar to 0% when only the configuration is
+        // incomplete.
+        var contributing = pr.Stages
+            .Where(s => s.LinkedMilestoneCount > 0)
+            .ToList();
+        if (contributing.Count == 0) return 0;
+        return (int)Math.Round(contributing.Average(s => s.ProgressPct));
+    }
+}
