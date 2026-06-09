@@ -1,0 +1,292 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@* ═══════════════════════════════════════════════════════════════════════════
+   MilestoneDetailModal — student-facing milestone detail view.
+
+   Opened from the progress timeline (ProjectProgressCard). Renders entirely
+   from the MilestoneSummaryDto already held by the dashboard — no extra API
+   call. For full per-submission feedback, a task row defers to the existing
+   TaskDetailModal (OnOpenTask), so we never duplicate that implementation.
+
+   Shows: name · status · open/due/close dates · task list · which tasks are
+   incomplete · which task(s) caused the "דורש תשומת לב" state · per-task
+   submission state.
+   ═══════════════════════════════════════════════════════════════════════════ *@
+
+@if (Milestone is not null)
+{
+    var ms          = Milestone;
+    var hasIssue    = MilestoneHasIssue(ms);
+    var dotClass    = hasIssue ? "attention" : StatusClass(ms.Status);
+    var statusLabel = hasIssue ? "דורש תשומת לב" : StatusLabel(ms.Status);
+    var done        = ms.Tasks.Count(IsTaskComplete);
+    var problematic = ms.Tasks.Where(TaskIsProblematic).ToList();
+
+    <div class="mdm-overlay" @onclick="Close">
+        <div class="mdm-modal" @onclick:stopPropagation="true">
+
+            <!-- ── Header ── -->
+            <div class="mdm-header">
+                <div class="mdm-header-start">
+                    <span class="mdm-dot mdm-dot-@dotClass">
+                        <span class="oi @(hasIssue ? "oi-warning" : StatusIcon(ms.Status))" aria-hidden="true"></span>
+                    </span>
+                    <div class="mdm-header-titles">
+                        <h2 class="mdm-title">@ms.Title</h2>
+                        <span class="mdm-status-pill mdm-sl-@dotClass">@statusLabel</span>
+                    </div>
+                </div>
+                <button class="mdm-close" @onclick="Close" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <!-- ── Dates meta line ── -->
+            @if (ms.OpenDate.HasValue || ms.DueDate.HasValue || ms.CloseDate.HasValue)
+            {
+                <div class="mdm-meta-line">
+                    @if (ms.OpenDate.HasValue)
+                    {
+                        <span class="mdm-meta-item">
+                            <span class="mdm-meta-key">פתיחה:</span>@ms.OpenDate.Value.ToString("dd/MM/yyyy")
+                        </span>
+                    }
+                    @if (ms.DueDate.HasValue)
+                    {
+                        <span class="mdm-meta-item">
+                            <span class="mdm-meta-key">הגשה:</span>@ms.DueDate.Value.ToString("dd/MM/yyyy")
+                        </span>
+                    }
+                    @if (ms.CloseDate.HasValue)
+                    {
+                        <span class="mdm-meta-item">
+                            <span class="mdm-meta-key">סגירה:</span>@ms.CloseDate.Value.ToString("dd/MM/yyyy")
+                        </span>
+                    }
+                </div>
+            }
+
+            <!-- ── Body ── -->
+            <div class="mdm-body">
+
+                <!-- Mini progress -->
+                <div class="mdm-progress-row">
+                    <span class="oi oi-task" aria-hidden="true"></span>
+                    <span class="mdm-progress-text">@done/@ms.Tasks.Count משימות הושלמו</span>
+                </div>
+
+                <!-- Attention banner: exactly which tasks need attention and why -->
+                @if (problematic.Count > 0)
+                {
+                    <div class="mdm-attention-banner">
+                        <div class="mdm-attention-header">
+                            <span class="oi oi-warning" aria-hidden="true"></span>
+                            <strong>משימות הדורשות תשומת לב</strong>
+                        </div>
+                        <ul class="mdm-attention-list">
+                            @foreach (var t in problematic)
+                            {
+                                <li>
+                                    <span class="mdm-attention-task">@t.Title</span>
+                                    <span class="mdm-attention-reason">@AttentionReason(t)</span>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                <!-- Task list -->
+                <h3 class="mdm-section-title">
+                    <span class="oi oi-list" aria-hidden="true"></span>
+                    משימות אבן הדרך
+                </h3>
+
+                @if (ms.Tasks.Count == 0)
+                {
+                    <p class="mdm-empty">אין משימות באבן דרך זו.</p>
+                }
+                else
+                {
+                    <div class="mdm-task-list">
+                        @foreach (var t in ms.Tasks)
+                        {
+                            var resolved = ResolveEffectiveStatus(t);
+                            var overdue  = t.DueDate.HasValue
+                                        && t.DueDate.Value.Date < DateTime.Today
+                                        && resolved is "Open" or "InProgress";
+                            var cls      = overdue ? "overdue" : TaskClass(resolved);
+                            var complete = IsTaskComplete(t);
+
+                            <button class="mdm-task-item mdm-task-@cls"
+                                    title="לחצו לפרטי המשימה"
+                                    @onclick="() => OpenTask(t.Id)">
+                                <span class="mdm-task-status-icon">
+                                    <span class="oi @TaskIcon(resolved, overdue, complete)" aria-hidden="true"></span>
+                                </span>
+                                <span class="mdm-task-main">
+                                    <span class="mdm-task-title @(complete ? "mdm-task-title-done" : "")">@t.Title</span>
+                                    <span class="mdm-task-meta">
+                                        @if (t.DueDate.HasValue)
+                                        {
+                                            <span class="mdm-task-date @(overdue ? "mdm-date-overdue" : "")">
+                                                <span class="oi oi-calendar" aria-hidden="true"></span>
+                                                @t.DueDate.Value.ToString("dd/MM/yy")
+                                            </span>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(SubmissionStateLabel(t)))
+                                        {
+                                            <span class="mdm-task-sub">@SubmissionStateLabel(t)</span>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(t.AssignedToName))
+                                        {
+                                            <span class="mdm-task-assignee">
+                                                <span class="oi oi-person" aria-hidden="true"></span>
+                                                @t.AssignedToName
+                                            </span>
+                                        }
+                                    </span>
+                                </span>
+                                <span class="mdm-task-badge mdm-badge-@cls">@TaskLabel(resolved, overdue)</span>
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+
+            <!-- ── Footer ── -->
+            <div class="mdm-footer">
+                <button class="mdm-btn-ghost" @onclick="Close">סגירה</button>
+            </div>
+
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public MilestoneSummaryDto? Milestone  { get; set; }
+    [Parameter] public EventCallback        OnClose    { get; set; }
+    /// <summary>Bubbles a task-id up so the host (dashboard) can open the
+    /// existing TaskDetailModal — we never re-implement task details here.</summary>
+    [Parameter] public EventCallback<int>   OnOpenTask { get; set; }
+
+    private async Task Close()           => await OnClose.InvokeAsync();
+    private async Task OpenTask(int id)  => await OnOpenTask.InvokeAsync(id);
+
+    // ── Attention logic — mirrors ProjectProgressCard.MilestoneHasProblematicTask,
+    //    but exposed per-task so we can name WHICH task and WHY. ──────────────────
+    private static bool TaskIsProblematic(TaskSummaryDto t)
+    {
+        if (t.LatestMentorStatus == "Returned") return true;
+        if (t.LatestSubmissionStatus == "NeedsRevision") return true;
+        if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today
+            && t.Status is "Open" or "InProgress" or "ReturnedForRevision") return true;
+        return false;
+    }
+
+    private static bool MilestoneHasIssue(MilestoneSummaryDto ms) => ms.Tasks.Any(TaskIsProblematic);
+
+    private static string AttentionReason(TaskSummaryDto t)
+    {
+        if (t.LatestMentorStatus == "Returned")          return "הוחזר ע״י המנחה";
+        if (t.LatestSubmissionStatus == "NeedsRevision") return "הוחזר לתיקון";
+        if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today)
+            return $"באיחור · תאריך הגשה {t.DueDate.Value:dd/MM/yy}";
+        return "דורש טיפול";
+    }
+
+    // ── Full-completion check — mirrors ActiveTasksCard.IsTaskFullyComplete ──────
+    private static bool IsTaskComplete(TaskSummaryDto t) =>
+        t.IsSubmission
+            ? t.LatestSubmissionStatus is not null
+              && t.LatestMentorStatus == "Approved"
+              && t.LatestMoodleConfirmed
+            : ResolveEffectiveStatus(t) == "Done";
+
+    // ── Effective status resolution — mirrors ActiveTasksCard.ResolveEffectiveStatus ─
+    private static string ResolveEffectiveStatus(TaskSummaryDto t)
+    {
+        if (t.LatestSubmissionStatus is null) return t.Status;
+        if (t.LatestMentorStatus == "Returned") return "ReturnedByMentor";
+        if (t.LatestSubmissionStatus == "NeedsRevision") return "ReturnedForRevision";
+        if (t.LatestMentorStatus == "Pending") return "PendingMentorReview";
+        if (t.LatestMentorStatus == "Approved" && t.LatestSubmissionStatus == "Submitted") return "ApprovedByMentor";
+        return t.Status;
+    }
+
+    // ── A short, human submission-state line (no feedback text — that lives in
+    //    TaskDetailModal, reached by clicking the row). ───────────────────────────
+    private static string SubmissionStateLabel(TaskSummaryDto t)
+    {
+        if (t.LatestSubmittedAt is null) return "";
+        var when = t.LatestSubmittedAt.Value.ToString("dd/MM/yy");
+        return t.LatestMentorStatus switch
+        {
+            "Approved" => t.LatestMoodleConfirmed ? $"הוגש במודל · {when}" : $"אושר ע״י מנחה · {when}",
+            "Returned" => $"הוחזר ע״י מנחה · {when}",
+            _          => $"ממתין לאישור מנחה · {when}",
+        };
+    }
+
+    // ── DB string → CSS class / icon / label (consistent with ActiveTasksCard) ──
+    private static string TaskClass(string s) => s switch
+    {
+        "Done"                  => "completed",
+        "InProgress"            => "inprogress",
+        "PendingMentorReview"   => "submitted",
+        "ReturnedForRevision"   => "returned",
+        "ReturnedByMentor"      => "returned",
+        "ApprovedByMentor"      => "approved",
+        _                       => "notstarted",
+    };
+
+    private static string TaskIcon(string s, bool overdue, bool complete)
+    {
+        if (complete) return "oi-check";
+        if (overdue)  return "oi-warning";
+        return s switch
+        {
+            "InProgress"          => "oi-reload",
+            "PendingMentorReview" => "oi-data-transfer-upload",
+            "ReturnedForRevision" => "oi-arrow-circle-left",
+            "ReturnedByMentor"    => "oi-arrow-circle-left",
+            "ApprovedByMentor"    => "oi-circle-check",
+            _                     => "oi-media-record",
+        };
+    }
+
+    private static string TaskLabel(string s, bool overdue) => overdue ? "באיחור" : s switch
+    {
+        "Done"                  => "הושלמה",
+        "InProgress"            => "בעבודה",
+        "PendingMentorReview"   => "ממתין לאישור מנחה",
+        "ReturnedForRevision"   => "הוחזר לתיקון",
+        "ReturnedByMentor"      => "הוחזר ע״י מנחה",
+        "ApprovedByMentor"      => "ממתין לאישור מרצה",
+        _                       => "ממתין לביצוע",
+    };
+
+    // ── Milestone status helpers (same mapping as ProjectProgressCard) ──────────
+    private static string StatusClass(string s) => s switch
+    {
+        "Completed"  => "completed",
+        "InProgress" => "inprogress",
+        "Delayed"    => "delayed",
+        _            => "notstarted",
+    };
+
+    private static string StatusIcon(string s) => s switch
+    {
+        "Completed"  => "oi-check",
+        "InProgress" => "oi-clock",
+        "Delayed"    => "oi-warning",
+        _            => "oi-media-record",
+    };
+
+    private static string StatusLabel(string s) => s switch
+    {
+        "Completed"  => "הושלם",
+        "InProgress" => "בתהליך",
+        "Delayed"    => "באיחור",
+        _            => "טרם החל",
+    };
+}

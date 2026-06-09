@@ -11,7 +11,20 @@ public static class RoleService
     public static bool HasRole(User? user, string role) =>
         user?.Roles?.Contains(role, StringComparer.OrdinalIgnoreCase) ?? false;
 
-    public static bool IsStudent(User? user)      => HasRole(user, Roles.Student);
+    /// <summary>
+    /// A user is a Student if they hold the explicit Student role, OR they are a
+    /// plain "User" with no elevated role. In Gradify a regular account (role
+    /// "User") is a student by default — students are not always tagged with an
+    /// explicit "Student" role, but they always at least have "User". They stop
+    /// being treated as a student only once explicitly elevated to Mentor, Staff
+    /// (lecturer) or Admin.
+    /// </summary>
+    public static bool IsStudent(User? user) =>
+        HasRole(user, Roles.Student)
+        || (HasRole(user, Roles.User)
+            && !HasRole(user, Roles.Mentor)
+            && !HasRole(user, Roles.Staff)
+            && !HasRole(user, Roles.Admin));
     public static bool IsMentor(User? user)       => HasRole(user, Roles.Mentor);
     public static bool IsAdmin(User? user)        => HasRole(user, Roles.Admin);
     public static bool IsStaff(User? user)        => HasRole(user, Roles.Staff);

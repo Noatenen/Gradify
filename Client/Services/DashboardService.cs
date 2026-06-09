@@ -30,10 +30,34 @@ public class DashboardService : IDashboardService
     {
         try
         {
-            return await _http.GetFromJsonAsync<DashboardDto>("api/projects/my-dashboard");
+            // [DashboardDiag] temporary — log the outgoing auth header state so we
+            // can confirm whether the request carries a bearer token at send time.
+            var auth = _http.DefaultRequestHeaders.Authorization;
+            var authPreview = auth is null
+                ? "none"
+                : $"{auth.Scheme} {(auth.Parameter is { Length: > 12 } p ? p[..12] + "…" : auth.Parameter)}";
+            Console.WriteLine($"[DashboardDiag] GET api/projects/my-dashboard (authHeader={authPreview})");
+
+            // Use GetAsync (not GetFromJsonAsync) so we can read the EXACT status
+            // code and body on failure instead of a generic deserialization throw.
+            var resp = await _http.GetAsync("api/projects/my-dashboard");
+            Console.WriteLine($"[DashboardDiag] my-dashboard status={(int)resp.StatusCode} ({resp.StatusCode}) contentType={resp.Content.Headers.ContentType?.MediaType ?? "?"}");
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                if (body.Length > 300) body = body[..300] + "…";
+                Console.WriteLine($"[DashboardDiag] my-dashboard FAILED body: {body}");
+                return null;
+            }
+
+            return await resp.Content.ReadFromJsonAsync<DashboardDto>();
         }
-        catch
+        catch (Exception ex)
         {
+            // [DashboardDiag] temporary — surface the real failure instead of
+            // silently returning null (which the page renders as a generic error).
+            Console.WriteLine($"[DashboardDiag] my-dashboard EXCEPTION: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }

@@ -7,6 +7,7 @@
 @using AuthWithAdmin.Client.Pages.Tasks
 @inject IDashboardService DashboardService
 @inject NavigationManager Nav
+@inject AuthenticationStateProvider AuthStateProvider
 @attribute [Authorize]
 
 <!-- New request modal (hosted at dashboard level) -->
@@ -43,7 +44,8 @@ else
                             TeamMembers="@(_data.TeamMembers ?? new())"
                             Mentors="@(_data.Mentors ?? new())" />
 
-        <ProjectProgressCard Milestones="@(_data.Milestones ?? new())" />
+        <ProjectProgressCard Milestones="@(_data.Milestones ?? new())"
+                             OnSelectMilestone="OpenMilestoneDetail" />
 
         <div class="sdash-lower">
             <ActiveTasksCard        Milestones="@(_data.Milestones ?? new())"
@@ -54,6 +56,10 @@ else
         </div>
     </div>
 }
+
+<MilestoneDetailModal Milestone="@_detailMilestone"
+                      OnClose="CloseMilestoneDetail"
+                      OnOpenTask="OpenTaskFromMilestone" />
 
 <TaskDetailModal TaskId="@_detailTaskId"
                  OnClose="CloseDetail"
@@ -67,6 +73,7 @@ else
     private bool _loadError = false;
     private bool _showNewRequest;
     private int  _detailTaskId;
+    private MilestoneSummaryDto? _detailMilestone;
     private bool _loadStarted;
 
     // The cascading _user is hydrated asynchronously by App.razor, so it can
@@ -74,44 +81,166 @@ else
     // available and use a flag to ensure we only run once.
     protected override async Task OnParametersSetAsync()
     {
-        if (_loadStarted || _user is null) return;
-        _loadStarted = true;
-
-        // Non-students that land on the legacy /dashboard route are bounced
-        // to their dedicated dashboard. Guard against redirecting to the
-        // same route, which would leave the page stuck in the loading state.
-        if (!RoleService.IsStudent(_user))
-        {
-            var landing = RoleService.GetDefaultLandingRoute(_user);
-            if (landing != PageRoutes.Dashboard && landing != "/" + PageRoutes.Dashboard)
-            {
-                Nav.NavigateTo(landing, replace: true);
-                return;
-            }
-            _isLoading = false;
-            _loadError = true;
-            return;
-        }
+        // [DashboardDiag] TEMP build-freshness probe — must appear on every render.
+        Console.WriteLine($"[DashboardDiag] DASHBOARD COMPONENT ENTERED (OnParametersSetAsync) userNull={_user is null} loadStarted={_loadStarted}");
 
         try
         {
-            _data = await DashboardService.GetDashboardAsync();
-            _loadError = _data is null;
+            // [DashboardDiag] before guard
+            Console.WriteLine($"[DashboardDiag] BEFORE GUARD: loadStarted={_loadStarted} userNull={_user is null}");
+
+            if (_loadStarted || _user is null)
+            {
+                Console.WriteLine("[DashboardDiag] GUARD RETURN (loadStarted or user null)");
+                return;
+            }
+            _loadStarted = true;
+
+            // [DashboardDiag] after guard — dump the user identity + roles that drive the role gate.
+            var rolesDump = _user.Roles is null ? "<null>" : "[" + string.Join(",", _user.Roles) + "]";
+            var isStudent = RoleService.IsStudent(_user);
+            Console.WriteLine($"[DashboardDiag] AFTER GUARD: userId={_user.Id} email={_user.Email} roles={rolesDump} IsStudent={isStudent}");
+
+            // Elevated roles (Mentor / Staff / Admin) that land on the legacy
+            // /dashboard route are bounced to their dedicated dashboard. A plain
+            // student (explicit "Student" role OR a "User" account that hasn't
+            // been elevated) falls through and loads the student dashboard.
+            //
+            // NOTE: we intentionally NO LONGER set _loadError for a non-student
+            // whose landing route is /dashboard. That path used to misfire for
+            // ordinary "User" accounts (which ARE students) and showed the
+            // generic error. Role classification is never a reason to error —
+            // worst case we fall through and load the student dashboard.
+            if (!isStudent)
+            {
+                var landing = RoleService.GetDefaultLandingRoute(_user);
+                Console.WriteLine($"[DashboardDiag] NON-STUDENT BRANCH: landing='{landing}' (dashboard='{PageRoutes.Dashboard}')");
+                if (landing != PageRoutes.Dashboard && landing != "/" + PageRoutes.Dashboard)
+                {
+                    Console.WriteLine($"[DashboardDiag] NON-STUDENT → navigating to '{landing}'");
+                    Nav.NavigateTo(landing, replace: true);
+                    return;
+                }
+                // No dedicated landing → treat as student and load the dashboard.
+                Console.WriteLine("[DashboardDiag] NON-STUDENT + landing==dashboard → falling through to load dashboard (no error)");
+            }
+
+            // [DashboardDiag] before LoadDashboardAsync
+            Console.WriteLine("[DashboardDiag] BEFORE LoadDashboardAsync()");
+            await LoadDashboardAsync();
+            // [DashboardDiag] after LoadDashboardAsync
+            Console.WriteLine($"[DashboardDiag] AFTER LoadDashboardAsync(): dataNull={_data is null} loadError={_loadError} isLoading={_isLoading}");
+
+            // [DashboardDiag] before catalog navigation condition
+            Console.WriteLine($"[DashboardDiag] BEFORE CATALOG NAV: dataNull={_data is null} projectNull={_data?.Project is null}");
+
+            // Any student without an assigned project → catalog experience
+            // Covers both: has team but no project, and no team at all.
+            if (_data is not null && _data.Project is null)
+            {
+                Console.WriteLine("[DashboardDiag] navigating to StudentCatalog (no project)");
+                Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            _loadError = true;
-            _data = null;
-        }
-        finally
-        {
+            Console.WriteLine($"[DashboardDiag] OnParametersSetAsync EXCEPTION: {ex.GetType().FullName}: {ex.Message}\n{ex.StackTrace}");
             _isLoading = false;
+            _loadError = true;
+        }
+    }
+
+    // Single load path shared by the initial render and the retry button so the
+    // two can never drift. It always re-establishes a valid Authorization header
+    // (via GetAuthenticationStateAsync) before hitting the API, and it only flags
+    // a load error after a BOUNDED set of attempts has been exhausted — never
+    // merely because auth/user state was not ready yet on the very first tick.
+    //
+    // Rationale: the manual "retry" button reliably fixes the cold-load failure,
+    // which means whatever transient state was missing on the first attempt is
+    // present a moment later. We perform that retry automatically with a small
+    // delay so the user never sees the generic error for a transient hiccup, and
+    // we never leave the page spinning forever (the loop is bounded).
+    private const int MaxLoadAttempts = 5;
+    private const int LoadRetryDelayMs = 300;
+
+    private async Task LoadDashboardAsync()
+    {
+        // [DashboardDiag] first line of method
+        Console.WriteLine("[DashboardDiag] LoadDashboardAsync() FIRST LINE");
+
+        _isLoading = true;
+        _loadError = false;
+
+        for (int attempt = 1; attempt <= MaxLoadAttempts; attempt++)
+        {
+            try
+            {
+                // [DashboardDiag] before GetAuthenticationStateAsync
+                Console.WriteLine($"[DashboardDiag] attempt {attempt}: BEFORE GetAuthenticationStateAsync");
+                // Ensure the Authorization header is set on the shared HttpClient
+                // before the API call fires. GetAuthenticationStateAsync sets the
+                // header as a side-effect.
+                var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+                var isAuthenticated = authState.User?.Identity?.IsAuthenticated == true;
+                var userId = authState.User?.FindFirst("nameid")?.Value;
+
+                // [DashboardDiag] after GetAuthenticationStateAsync
+                Console.WriteLine($"[DashboardDiag] attempt {attempt}/{MaxLoadAttempts}: AFTER GetAuthenticationStateAsync authenticated={isAuthenticated} userId={userId ?? "null"}");
+
+                if (!isAuthenticated)
+                {
+                    // Auth state not ready yet — wait and retry rather than error.
+                    if (attempt < MaxLoadAttempts)
+                    {
+                        await Task.Delay(LoadRetryDelayMs);
+                        continue;
+                    }
+                    Console.WriteLine("[DashboardDiag] auth state never became ready after all attempts — showing error");
+                    _loadError = true;
+                    break;
+                }
+
+                // [DashboardDiag] before DashboardService.GetDashboardAsync
+                Console.WriteLine($"[DashboardDiag] attempt {attempt}: BEFORE DashboardService.GetDashboardAsync");
+                _data = await DashboardService.GetDashboardAsync();
+
+                // [DashboardDiag] after DashboardService.GetDashboardAsync
+                Console.WriteLine($"[DashboardDiag] attempt {attempt}: AFTER GetDashboardAsync dataNull={_data is null} hasTeam={_data?.HasTeam} projectNull={_data?.Project is null}");
+
+                if (_data is not null)
+                {
+                    _loadError = false;
+                    break; // success
+                }
+
+                // Null data => transient request failure (see DashboardService
+                // diagnostics for the exact status/exception). Retry if budget left.
+                if (attempt < MaxLoadAttempts)
+                {
+                    await Task.Delay(LoadRetryDelayMs);
+                    continue;
+                }
+                _loadError = true;
+            }
+            catch (Exception ex)
+            {
+                // [DashboardDiag] temporary
+                Console.WriteLine($"[DashboardDiag] attempt {attempt} EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                if (attempt < MaxLoadAttempts)
+                {
+                    await Task.Delay(LoadRetryDelayMs);
+                    continue;
+                }
+                _loadError = true;
+                _data = null;
+            }
         }
 
-        // Any student without an assigned project → catalog experience
-        // Covers both: has team but no project, and no team at all.
-        if (_data is not null && _data.Project is null)
-            Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
+        _isLoading = false;
+
+        // [DashboardDiag] final state
+        Console.WriteLine($"[DashboardDiag] LoadDashboardAsync() FINAL: dataNull={_data is null} loadError={_loadError} isLoading={_isLoading}");
     }
 
     private void OpenDetail(int taskId)
@@ -122,6 +251,23 @@ else
 
     private void CloseDetail()               => _detailTaskId = 0;
 
+    // ── Milestone detail modal (opened from the progress timeline) ──────────────
+    private void OpenMilestoneDetail(MilestoneSummaryDto ms)
+    {
+        _detailMilestone = ms;
+        StateHasChanged();
+    }
+
+    private void CloseMilestoneDetail()      => _detailMilestone = null;
+
+    // Clicking a task inside the milestone modal reuses the existing
+    // TaskDetailModal: close the milestone modal, then open the task one.
+    private void OpenTaskFromMilestone(int taskId)
+    {
+        _detailMilestone = null;
+        OpenDetail(taskId);
+    }
+
     private void OpenSubmissionFromDetail(int taskId)
     {
         _detailTaskId = 0;
@@ -130,21 +276,11 @@ else
 
     private async Task ReloadDashboard()
     {
-        _isLoading = true;
-        _loadError = false;
-        try
-        {
-            _data = await DashboardService.GetDashboardAsync();
-            _loadError = _data is null;
-        }
-        catch
-        {
-            _loadError = true;
-            _data = null;
-        }
-        finally
-        {
-            _isLoading = false;
-        }
+        await LoadDashboardAsync();
+
+        // Mirror the initial-load behaviour: a student with no assigned project
+        // belongs in the catalog experience, not the empty dashboard state.
+        if (_data is not null && _data.Project is null)
+            Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
     }
 }

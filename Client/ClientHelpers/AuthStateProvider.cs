@@ -30,8 +30,20 @@ namespace AuthWithAdmin.Client
 
             if (string.IsNullOrWhiteSpace(token))
             {
+                _httpClient.DefaultRequestHeaders.Authorization = null;
                 return _anonymous;
             }
+
+            // Attach the current token to the shared HttpClient BEFORE any server
+            // call. The refresh endpoint reads the bearer token from the
+            // Authorization header (AuthRepository.RefreshToken -> GetTokenFromHeader),
+            // so on a cold client the header MUST already be set — otherwise the
+            // refresh request goes out unauthenticated, returns 401, and we wrongly
+            // fall through to _anonymous with the header never set. That race made
+            // the student dashboard's first load fail (then succeed on retry) for
+            // any user whose token was within the 10-minute pre-expiry window.
+            _httpClient.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
             if (IsTokenExpired(token))
             {
@@ -43,13 +55,14 @@ namespace AuthWithAdmin.Client
 
                     await _localStorage.SetItemAsync($"authToken_{GetProjectScope()}", newToken);
                     token = newToken;
+                    _httpClient.DefaultRequestHeaders.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
                 }
                 else
                 {
                     return _anonymous; // אם לא הצליח לרענן - פג התוקף
                 }
             }
-            _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
             return new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(JwtParser.ParseClaimsFromJwt(token), "jwtAuthType")));
         }

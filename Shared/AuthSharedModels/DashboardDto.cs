@@ -76,8 +76,18 @@ public class MilestoneSummaryDto
     public int     OrderIndex         { get; set; }
     /// <summary>"NotStarted" | "InProgress" | "Completed" | "Delayed"</summary>
     public string  Status             { get; set; } = "NotStarted";
+    public DateTime? OpenDate         { get; set; }
     public DateTime? DueDate          { get; set; }
+    public DateTime? CloseDate        { get; set; }
     public DateTime? CompletedAt      { get; set; }
+    /// <summary>
+    /// Server-derived: true when today is inside the milestone's effective
+    /// visibility window (OpenDate/CloseDate, per AcademicYearMilestones).
+    /// Same rule as the Tasks page's IsCurrentlyOpen — the single source of
+    /// truth for "is this milestone active" so the dashboard's Active Tasks
+    /// card and the Tasks tab always agree on which milestones to show.
+    /// </summary>
+    public bool      IsCurrentlyOpen  { get; set; }
     /// <summary>Tasks belonging to this milestone, ordered by DueDate.</summary>
     public List<TaskSummaryDto> Tasks { get; set; } = new();
 }
@@ -90,12 +100,20 @@ public class TaskSummaryDto
     public string  Status         { get; set; } = "Open";
     public DateTime? DueDate      { get; set; }
     public string  AssignedToName { get; set; } = "";
+    /// <summary>True ⇒ this task goes through the mentor-review / Moodle-confirmation
+    /// pipeline (Tasks.IsSubmission). Used to decide how "fully complete" is determined —
+    /// see ActiveTasksCard.IsTaskFullyComplete.</summary>
+    public bool      IsSubmission           { get; set; }
     /// <summary>Reviewer decision on the latest submission. Null if never submitted.</summary>
     public string?   LatestSubmissionStatus { get; set; }
     /// <summary>Mentor decision on the latest submission. Null if never submitted.</summary>
     public string?   LatestMentorStatus     { get; set; }
     /// <summary>When the latest submission was created. Null if never submitted.</summary>
     public DateTime? LatestSubmittedAt      { get; set; }
+    /// <summary>True ⇒ the latest submission has been confirmed as submitted to Moodle
+    /// (TaskSubmissions.MoodleSubmittedAt or legacy CourseSubmittedAt is set). False if
+    /// never submitted or not yet confirmed.</summary>
+    public bool      LatestMoodleConfirmed  { get; set; }
 }
 
 // ── Upcoming deadline ─────────────────────────────────────────────────────────

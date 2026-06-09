@@ -219,6 +219,7 @@
                                     <input class="req-handle-select req-ext-date-input"
                                            type="date"
                                            @bind="_extApprovedDate"
+                                           @bind:format="yyyy-MM-dd"
                                            disabled="@_handling" />
                                     <div class="req-ext-decision-hint">
                                         התאריך יעודכן עבור אבן הדרך של הצוות בלבד.
@@ -445,56 +446,16 @@
                 סמן כטופל
             </button>
 
-            @if (!string.IsNullOrWhiteSpace(_handleError))
-            {
-                <div class="req-drawer-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_handleError
-                </div>
-            }
         </div>
 
         </div>
         <!-- ← closes req-modal-body -->
 
-        <!-- ── Modal footer: reply only ── -->
+        <!-- ── Modal footer: reply row with inline paperclip attachment ── -->
         <div class="req-modal-footer">
-            <div class="req-modal-reply-row">
-                <textarea class="req-handle-textarea req-modal-textarea"
-                          rows="2"
-                          placeholder="הוסף תגובה, הסבר, החלטה או הוראה לסטודנט…"
-                          maxlength="2000"
-                          @bind="_handleComment"
-                          @bind:event="oninput"
-                          disabled="@_handling"></textarea>
-
-                <div class="req-modal-reply-actions">
-                    @if (_handleAttachments.Count < MaxEventAttachments && !_handling)
-                    {
-                        <label class="req-handle-file-zone req-modal-file-zone" title="צרף קובץ (תמונה / PDF / Word)">
-                            <span class="oi oi-cloud-upload" aria-hidden="true"></span>
-                            <InputFile OnChange="OnHandleFilesSelected"
-                                       accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,.jpg,.jpeg,.png,.webp,.docx"
-                                       multiple
-                                       class="req-handle-file-hidden" />
-                        </label>
-                    }
-
-                    <button class="req-save-btn"
-                            disabled="@_handling"
-                            @onclick="SubmitHandle">
-                        @if (_handling)
-                        {
-                            <span class="req-spinner-sm"></span>
-                        }
-                        else
-                        {
-                            <span class="oi oi-check" aria-hidden="true"></span>
-                        }
-                        שמור ושלח
-                    </button>
-                </div>
-            </div>
+            @{
+                bool _canAttachMore = _handleAttachments.Count < MaxEventAttachments && !_handling;
+            }
 
             @if (_handleAttachments.Count > 0)
             {
@@ -520,6 +481,57 @@
                 <div class="req-drawer-error">
                     <span class="oi oi-warning" aria-hidden="true"></span>
                     @_handleFileError
+                </div>
+            }
+
+            <div class="req-modal-reply-row">
+                <label class="req-attach-btn @(!_canAttachMore ? "req-attach-btn--disabled" : "")"
+                       title="@(_canAttachMore ? "צרף קבצים לתגובה" : "הגעת למספר המקסימלי")"
+                       aria-label="צרף קבצים">
+                    <span class="oi oi-paperclip" aria-hidden="true"></span>
+                    @if (_handleAttachments.Count > 0)
+                    {
+                        <span class="req-attach-count">@_handleAttachments.Count</span>
+                    }
+                    @if (_canAttachMore)
+                    {
+                        <InputFile OnChange="OnHandleFilesSelected"
+                                   accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,.jpg,.jpeg,.png,.webp"
+                                   multiple
+                                   class="req-upload-hidden" />
+                    }
+                </label>
+
+                <textarea class="req-handle-textarea req-modal-textarea"
+                          rows="2"
+                          placeholder="הוסף תגובה, הסבר, החלטה או הוראה לסטודנט…"
+                          maxlength="2000"
+                          @bind="_handleComment"
+                          @bind:event="oninput"
+                          disabled="@_handling"></textarea>
+
+                <div class="req-modal-reply-actions">
+                    <button class="req-save-btn"
+                            disabled="@_handling"
+                            @onclick="SubmitHandle">
+                        @if (_handling)
+                        {
+                            <span class="req-spinner-sm"></span>
+                        }
+                        else
+                        {
+                            <span class="oi oi-check" aria-hidden="true"></span>
+                        }
+                        שמור ושלח
+                    </button>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_handleError))
+            {
+                <div class="req-handle-inline-error">
+                    <span class="oi oi-warning" aria-hidden="true"></span>
+                    @_handleError
                 </div>
             }
         </div>
@@ -825,9 +837,7 @@
 
     // Extension-decision form state (only used when the open request is an
     // Extension request whose mentor or lecturer decision is still Pending).
-    // Keeping the ApprovedDueDate as `string` so `<input type="date" @bind=…>`
-    // round-trips cleanly through empty values.
-    private string    _extDecision         = ExtensionDecisionStatuses.Approved;
+    private string    _extDecision  = ExtensionDecisionStatuses.Approved;
     private DateTime? _extApprovedDate;
 
     // The management page is for Admin/Staff only — it surfaces the
@@ -1148,20 +1158,19 @@
         if (stage is not null)
         {
             // Extension decision path
+            if (string.IsNullOrWhiteSpace(_handleComment))
+            {
+                _handleError = "יש להוסיף תגובה לסטודנט לפני אישור או דחיית הבקשה";
+                _handling    = false;
+                return;
+            }
+
             bool hasTarget = _drawer.Extension!.TaskId.HasValue
                           || _drawer.Extension!.ProjectMilestoneId.HasValue;
 
             DateTime? approvedDate = null;
             if (_extDecision == ExtensionDecisionStatuses.Approved && hasTarget)
-            {
-                if (_extApprovedDate is null)
-                {
-                    _handleError = "יש לבחור תאריך חדש לפני אישור הדחייה";
-                    _handling    = false;
-                    return;
-                }
-                approvedDate = _extApprovedDate.Value.Date;
-            }
+                approvedDate = _extApprovedDate?.Date;
 
             var decisionReq = new ExtensionDecisionRequest
             {
@@ -1187,7 +1196,16 @@
             return;
         }
 
-        // ── Non-extension generic path (untouched) ──────────────────────
+        // ── Non-extension generic path ───────────────────────────────────
+        // Require a comment before finalising (Resolved / Closed).
+        if (_handleStatus is RequestStatuses.Resolved or RequestStatuses.Closed
+            && string.IsNullOrWhiteSpace(_handleComment))
+        {
+            _handleError = "יש להוסיף תגובה לסטודנט לפני סגירת הבקשה";
+            _handling    = false;
+            return;
+        }
+
         var req = new HandleProjectRequestRequest
         {
             NewStatus        = _handleStatus,
@@ -1235,9 +1253,9 @@
         foreach (var file in e.GetMultipleFiles(remaining))
         {
             string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
-            if (ext is not ("jpg" or "jpeg" or "png" or "webp" or "pdf" or "docx"))
+            if (ext is not ("jpg" or "jpeg" or "png" or "webp" or "pdf" or "doc" or "docx"))
             {
-                _handleFileError = $"הקובץ \"{file.Name}\" אינו סוג נתמך";
+                _handleFileError = $"הקובץ \"{file.Name}\" אינו סוג נתמך (jpg, png, webp, pdf, doc, docx)";
                 continue;
             }
             if (file.Size > 5 * 1_048_576L)

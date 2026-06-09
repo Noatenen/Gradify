@@ -94,8 +94,11 @@ public class SubmissionHistoryItemDto
 public class UpdateTaskProgressRequest
 {
     /// <summary>
-    /// "Open" | "InProgress" | "SubmittedToMentor" | "ReturnedForRevision" |
-    /// "RevisionSubmitted" | "ApprovedForSubmission" | "Done"
+    /// "Open" | "InProgress" — the only statuses a student may set manually,
+    /// and only before the task has its first mentor submission. All later
+    /// statuses (SubmittedToMentor, ReturnedForRevision, RevisionSubmitted,
+    /// ApprovedForSubmission, Done, Moodle-confirmed) are system/mentor-owned;
+    /// the server rejects attempts to set them here.
     /// </summary>
     public string Status { get; set; } = "";
 }

@@ -17,17 +17,17 @@
     </div>
 
     <!-- ── Milestone accordion list ── -->
-    @if (Milestones.Count == 0)
+    @if (ActiveMilestones.Count == 0)
     {
-        <p class="atc-empty-msg">אין אבני דרך מוגדרות לפרויקט זה.</p>
+        <p class="atc-empty-msg">אין משימות פעילות כרגע בפרויקט זה.</p>
     }
     else
     {
         <div class="atc-milestone-list">
-            @foreach (var ms in Milestones)
+            @foreach (var ms in ActiveMilestones)
             {
                 bool isOpen = _openMilestones.Contains(ms.ProjectMilestoneId);
-                int  done   = ms.Tasks.Count(t => ResolveEffectiveStatus(t) == "Done");
+                int  done   = ms.Tasks.Count(t => IsTaskFullyComplete(t));
 
                 <div class="atc-milestone-group @(isOpen ? "atc-ms-open" : "")">
 
@@ -131,12 +131,26 @@
 
     private readonly HashSet<int> _openMilestones = new();
 
-    private int _totalTasks => Milestones.Sum(m => m.Tasks.Count);
+    // ── Active milestone filtering ────────────────────────────────────────────
+    // Mirrors GetMyTasks (ProjectsController.cs): include a milestone when it is
+    // currently open by date OR when it has at least one incomplete task.
+    // The OR ensures overdue tasks in milestones whose date-window has closed
+    // (CloseDate < today) still surface here, matching what the Tasks tab shows.
+    // Milestones with no tasks at all and whose window is closed are still hidden.
+    private List<MilestoneSummaryDto> ActiveMilestones =>
+        Milestones.Where(ms => (ms.IsCurrentlyOpen || ms.Tasks.Any(t => !IsTaskFullyComplete(t)))
+                            && ms.Tasks.Any())
+                  .ToList();
+
+    private int _totalTasks => ActiveMilestones.Sum(m => m.Tasks.Count);
 
     protected override void OnInitialized()
     {
-        // Default: open the first in-progress milestone
-        var first = Milestones.FirstOrDefault(m => m.Status == "InProgress");
+        // Default: open the first in-progress/delayed milestone, falling back to
+        // the first active one (an open-by-date milestone whose Status hasn't
+        // transitioned to InProgress yet should still auto-expand).
+        var first = ActiveMilestones.FirstOrDefault(m => m.Status is "InProgress" or "Delayed")
+                 ?? ActiveMilestones.FirstOrDefault();
         if (first is not null)
             _openMilestones.Add(first.ProjectMilestoneId);
     }
@@ -166,6 +180,20 @@
             return "ApprovedByMentor";
         return task.Status;
     }
+
+    // ── Full-completion check (drives Active Tasks visibility) ───────────────
+    // A submission task must clear its ENTIRE lifecycle — submitted to mentor,
+    // approved by mentor, AND confirmed in Moodle — before it's considered done.
+    // Relying on Status == "Done" alone (or ResolveEffectiveStatus) hides items
+    // too early / too late depending on stale stored status. Internal/team
+    // subtasks (IsSubmission == false) have no review pipeline, so their stored
+    // "Done" status is the only — and correct — signal.
+    private static bool IsTaskFullyComplete(TaskSummaryDto task) =>
+        task.IsSubmission
+            ? task.LatestSubmissionStatus is not null
+              && task.LatestMentorStatus == "Approved"
+              && task.LatestMoodleConfirmed
+            : ResolveEffectiveStatus(task) == "Done";
 
     // ── Milestone dot class ────────────────────────────────────────────────────
     // Derives the milestone dot color from the actual state of its tasks:
