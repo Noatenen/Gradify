@@ -426,7 +426,7 @@ public class MentorController : ControllerBase
                     ts.MentorStatus,
                     ts.MentorFeedback,
                     ts.MentorReviewedAt,
-                    ts.CourseSubmittedAt,
+                    COALESCE(ts.MoodleSubmittedAt, ts.CourseSubmittedAt) AS CourseSubmittedAt,
                     ts.DriveUrl,
                     COUNT(f.Id)   AS FileCount
             FROM    TaskSubmissions      ts

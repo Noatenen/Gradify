@@ -51,8 +51,15 @@ public class ProjectsController : ControllerBase
               AND   COALESCE(p.AssignmentIsDraft, 0) = 0
             LIMIT 1";
 
+        // GetRecordsAsync swallows transient query failures and returns null —
+        // every result is null-coalesced to an empty sequence below before any
+        // LINQ call touches it, so a single transient hiccup can never bubble up
+        // as an unhandled NullReferenceException (which the client surfaces as
+        // a generic load error). This is what makes the first dashboard load
+        // stable for every student/team, not just on retry.
         var projectRow = (await _db.GetRecordsAsync<ProjectRow>(
-                projectSql, new { UserId = authUserId }))
+                projectSql, new { UserId = authUserId })
+            ?? Enumerable.Empty<ProjectRow>())
             .FirstOrDefault();
 
         // User is not yet assigned to a project — return minimal dashboard with HasTeam flag.
@@ -60,7 +67,8 @@ public class ProjectsController : ControllerBase
         {
             var teamCount = (await _db.GetRecordsAsync<int>(
                 "SELECT COUNT(1) FROM TeamMembers WHERE UserId = @UserId AND IsActive = 1",
-                new { UserId = authUserId })).FirstOrDefault();
+                new { UserId = authUserId })
+                ?? Enumerable.Empty<int>()).FirstOrDefault();
             return Ok(new DashboardDto { HasTeam = teamCount > 0 });
         }
 
@@ -78,7 +86,8 @@ public class ProjectsController : ControllerBase
               AND   tm.IsActive = 1";
 
         var members = await _db.GetRecordsAsync<TeamMemberDto>(
-            membersSql, new { TeamId = teamId });
+            membersSql, new { TeamId = teamId })
+            ?? Enumerable.Empty<TeamMemberDto>();
 
         // ── 3. Mentors ────────────────────────────────────────────────────────
         const string mentorsSql = @"
@@ -91,18 +100,29 @@ public class ProjectsController : ControllerBase
             WHERE   pm.ProjectId = @ProjectId";
 
         var mentors = await _db.GetRecordsAsync<ContactDto>(
-            mentorsSql, new { ProjectId = projectId });
+            mentorsSql, new { ProjectId = projectId })
+            ?? Enumerable.Empty<ContactDto>();
 
         // ── 4. Milestones (3-table flatten) ───────────────────────────────────
         // Merges: MilestoneTemplates → AcademicYearMilestones → ProjectMilestones.
         // Effective DueDate = COALESCE(team milestone override, AYM.DueDate).
+        // IsCurrentlyOpen mirrors GetMyTasks's date-window rule exactly — both
+        // screens must agree on which milestones are "active" so the dashboard's
+        // Active Tasks card and the Tasks tab never disagree on visibility.
         const string milestonesSql = @"
             SELECT  pm.Id          AS ProjectMilestoneId,
                     mt.Title,
                     mt.OrderIndex,
                     pm.Status,
+                    aym.OpenDate   AS OpenDate,
                     COALESCE(mo.OverrideDueDate, aym.DueDate) AS DueDate,
-                    pm.CompletedAt
+                    aym.CloseDate  AS CloseDate,
+                    pm.CompletedAt,
+                    CASE
+                        WHEN (aym.OpenDate  IS NULL OR date(aym.OpenDate)  <= date('now'))
+                         AND (aym.CloseDate IS NULL OR date(aym.CloseDate) >= date('now'))
+                        THEN 1 ELSE 0
+                    END            AS IsCurrentlyOpen
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
@@ -113,7 +133,8 @@ public class ProjectsController : ControllerBase
             ORDER   BY mt.OrderIndex";
 
         var milestoneRows = await _db.GetRecordsAsync<MilestoneRow>(
-            milestonesSql, new { ProjectId = projectId, TeamId = teamId });
+            milestonesSql, new { ProjectId = projectId, TeamId = teamId })
+            ?? Enumerable.Empty<MilestoneRow>();
 
         // ── 5. Tasks (all, grouped into milestones below) ─────────────────────
         // Effective DueDate priority chain (per-team only — globals are never
@@ -140,7 +161,13 @@ public class ProjectsController : ControllerBase
                     (SELECT s.SubmittedAt
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
-                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt,
+                    (SELECT CASE WHEN s.MoodleSubmittedAt IS NOT NULL
+                                   OR s.CourseSubmittedAt IS NOT NULL
+                             THEN 1 ELSE 0 END
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMoodleConfirmed
             FROM    Tasks t
             LEFT JOIN Users u ON t.AssignedToUserId = u.Id
             LEFT JOIN TeamTaskDueDateOverrides tto
@@ -150,8 +177,9 @@ public class ProjectsController : ControllerBase
             WHERE   t.ProjectId = @ProjectId
             ORDER   BY COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate)";
 
-        var taskRows = await _db.GetRecordsAsync<TaskRow>(
-            tasksSql, new { ProjectId = projectId, TeamId = teamId });
+        var taskRows = (await _db.GetRecordsAsync<TaskRow>(
+            tasksSql, new { ProjectId = projectId, TeamId = teamId })
+            ?? Enumerable.Empty<TaskRow>()).ToList();
 
         // ── 6. Open requests ──────────────────────────────────────────────────
         // Reads from ProjectRequests (unified requests module).
@@ -168,7 +196,8 @@ public class ProjectsController : ControllerBase
             ORDER   BY r.CreatedAt DESC";
 
         var requests = await _db.GetRecordsAsync<OpenRequestDto>(
-            requestsSql, new { ProjectId = projectId });
+            requestsSql, new { ProjectId = projectId })
+            ?? Enumerable.Empty<OpenRequestDto>();
 
         // ── Assemble milestones with nested tasks ─────────────────────────────
         var tasksByMilestone = taskRows.ToLookup(t => t.ProjectMilestoneId);
@@ -179,8 +208,11 @@ public class ProjectsController : ControllerBase
             Title              = m.Title,
             OrderIndex         = m.OrderIndex,
             Status             = NormalizeMilestoneStatus(m.Status),
+            OpenDate           = m.OpenDate,
             DueDate            = m.DueDate,
+            CloseDate          = m.CloseDate,
             CompletedAt        = m.CompletedAt,
+            IsCurrentlyOpen    = m.IsCurrentlyOpen == 1,
             Tasks              = tasksByMilestone[m.ProjectMilestoneId]
                 .Select(t => new TaskSummaryDto
                 {
@@ -189,16 +221,18 @@ public class ProjectsController : ControllerBase
                     Status                 = NormalizeTaskStatus(t.Status, t.LatestMentorStatus, t.LatestSubmissionStatus),
                     DueDate                = t.DueDate,
                     AssignedToName         = t.AssignedToName,
+                    IsSubmission           = t.IsSubmission,
                     LatestSubmissionStatus = t.LatestSubmissionStatus,
                     LatestMentorStatus     = t.LatestMentorStatus,
                     LatestSubmittedAt      = t.LatestSubmittedAt,
+                    LatestMoodleConfirmed  = t.LatestMoodleConfirmed,
                 })
                 .ToList(),
         }).ToList();
 
         // ── Derive next deadline ──────────────────────────────────────────────
         // Prefer the nearest incomplete submission task; fall back to nearest milestone.
-        var nearestSubmissionTask = taskRows?
+        var nearestSubmissionTask = taskRows
             .Where(t => t.IsSubmission && t.Status != "Done" && t.DueDate.HasValue)
             .OrderBy(t => t.DueDate)
             .FirstOrDefault();
@@ -831,15 +865,14 @@ public class ProjectsController : ControllerBase
     private static bool IsNeedsAttentionStatus(string status) =>
         status is "ReturnedForRevision" or "SubmittedToMentor" or "RevisionSubmitted";
 
-    // Valid student progress status values (7-step workflow).
-    private static readonly HashSet<string> ValidTaskProgressStatuses =
-        new(StringComparer.Ordinal)
-        {
-            "Open", "InProgress",
-            "SubmittedToMentor", "ReturnedForRevision",
-            "RevisionSubmitted", "ApprovedForSubmission",
-            "Done",
-        };
+    // Statuses a student may set MANUALLY via PATCH /tasks/{id}/progress.
+    // Everything past these two is owned by the mentor-review / Moodle
+    // pipeline (SubmittedToMentor, ReturnedForRevision, RevisionSubmitted,
+    // ApprovedForSubmission, Done, and any Moodle-confirmed state) and may
+    // only be transitioned by TaskSubmissionsController's submit /
+    // mentor-review / Moodle-confirm endpoints — never directly by students.
+    private static readonly HashSet<string> StudentEditableTaskStatuses =
+        new(StringComparer.Ordinal) { "Open", "InProgress" };
 
     // ── Team resolution helper ────────────────────────────────────────────────
     private async Task<int?> GetTeamIdForUserAsync(int userId)
@@ -878,8 +911,11 @@ public class ProjectsController : ControllerBase
         public string    Title              { get; set; } = "";
         public int       OrderIndex         { get; set; }
         public string    Status             { get; set; } = "";
+        public DateTime? OpenDate           { get; set; }
         public DateTime? DueDate            { get; set; }
+        public DateTime? CloseDate          { get; set; }
         public DateTime? CompletedAt        { get; set; }
+        public int       IsCurrentlyOpen    { get; set; }
     }
 
     private sealed class TaskRow
@@ -894,6 +930,7 @@ public class ProjectsController : ControllerBase
         public string?   LatestSubmissionStatus { get; set; }
         public string?   LatestMentorStatus     { get; set; }
         public DateTime? LatestSubmittedAt      { get; set; }
+        public bool      LatestMoodleConfirmed  { get; set; }
     }
 
     // Used only by GetMyTasks — includes StudentName and milestone context per row.
@@ -986,6 +1023,15 @@ public class ProjectsController : ControllerBase
     {
         public int Id     { get; set; }
         public int TeamId { get; set; }
+    }
+
+    // Raw MoodleSubmittedAt stamps for a task's submissions, keyed by
+    // submission Id. Queried separately (not via SQL COALESCE — see comment
+    // at GetTaskDetail) and merged into CourseSubmittedAt in C#.
+    private sealed class MoodleStampRow
+    {
+        public int      Id                { get; set; }
+        public DateTime MoodleSubmittedAt { get; set; }
     }
 
     // Mirrors the columns selected by the "milestones with no tasks" SQL in
@@ -1301,6 +1347,36 @@ public class ProjectsController : ControllerBase
                     subsSql, new { TaskId = taskId }))
                 .ToList();
 
+            if (subs.Count > 0)
+            {
+                // Merge the new MoodleSubmittedAt column (post-2026-05-19
+                // refactor) into the legacy CourseSubmittedAt field so the
+                // client always sees one unified "submitted to Moodle"
+                // timestamp. NOTE: this is intentionally done in C#, not via
+                // SQL COALESCE(s.MoodleSubmittedAt, s.CourseSubmittedAt) — the
+                // Sqlite/Dapper driver loses the DATETIME column-type metadata
+                // for computed expressions, so a COALESCE result gets handed
+                // to Dapper as a raw string and throws
+                // "InvalidCastException: Unable to cast ... String ... to
+                // Nullable<DateTime>" while mapping to DateTime? properties.
+                const string moodleSql = @"
+                    SELECT  Id, MoodleSubmittedAt
+                    FROM    TaskSubmissions
+                    WHERE   TaskId = @TaskId AND MoodleSubmittedAt IS NOT NULL";
+
+                var moodleById = (await _db.GetRecordsAsync<MoodleStampRow>(
+                        moodleSql, new { TaskId = taskId }))
+                    .ToDictionary(r => r.Id, r => r.MoodleSubmittedAt);
+
+                foreach (var sub in subs)
+                    if (moodleById.TryGetValue(sub.Id, out var moodleAt))
+                        sub.CourseSubmittedAt = moodleAt;
+
+                if (task.LatestSubmissionId.HasValue &&
+                    moodleById.TryGetValue(task.LatestSubmissionId.Value, out var latestMoodleAt))
+                    task.LatestCourseSubmittedAt = latestMoodleAt;
+            }
+
             // Attach files to each submission
             if (subs.Count > 0)
             {
@@ -1336,21 +1412,30 @@ public class ProjectsController : ControllerBase
     }
 
     // ── PATCH /api/projects/tasks/{taskId}/progress ──────────────────────────
-    // Allows the authenticated student to update their personal progress status
-    // on any task that belongs to their project.
-    // Valid values: "Open" | "InProgress" | "Done"
-    // Students control their own progress; this endpoint does NOT affect
-    // submission approval statuses (MentorStatus, reviewer Status).
+    // Allows the authenticated student to manually set their personal progress
+    // on a task that belongs to their project — but ONLY between the two
+    // student-owned states "Open" and "InProgress", and only BEFORE the task
+    // has entered the mentor-review pipeline (i.e. before the first
+    // TaskSubmissions row for it exists).
+    //
+    // Once a submission exists, the task's status is owned end-to-end by the
+    // mentor-review / Moodle-confirmation workflow (SubmittedToMentor →
+    // ReturnedForRevision/RevisionSubmitted → ApprovedForSubmission → Done /
+    // Moodle-confirmed) and the student can no longer change it manually —
+    // those transitions happen exclusively inside TaskSubmissionsController.
     // ─────────────────────────────────────────────────────────────────────────
     [HttpPatch("tasks/{taskId:int}/progress")]
     public async Task<IActionResult> UpdateTaskProgress(
         int taskId, [FromBody] UpdateTaskProgressRequest req, int authUserId)
     {
+        // Reject anything other than the two student-owned statuses outright —
+        // this is what stops a direct API call from setting Submitted /
+        // ReturnedByMentor / ApprovedByMentor / Done / Moodle states.
         if (string.IsNullOrWhiteSpace(req.Status) ||
-            !ValidTaskProgressStatuses.Contains(req.Status))
+            !StudentEditableTaskStatuses.Contains(req.Status))
             return BadRequest(
-                "סטטוס לא תקין. ערכים חוקיים: Open, InProgress, SubmittedToMentor, " +
-                "ReturnedForRevision, RevisionSubmitted, ApprovedForSubmission, Done");
+                "סטטוס לא תקין. ניתן לעדכן ידנית רק בין \"ממתין לביצוע\" (Open) ו-\"בעבודה\" " +
+                "(InProgress) — שאר הסטטוסים מנוהלים אוטומטית ע״י תהליך בדיקת המנחה ו-Moodle");
 
         // Verify the task belongs to the student's project
         const string projectSql = @"
@@ -1367,12 +1452,31 @@ public class ProjectsController : ControllerBase
 
         if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
 
+        // Once the student has submitted this task to the mentor at least
+        // once, status ownership passes permanently to the mentor/Moodle
+        // pipeline — block any further manual edits, regardless of the
+        // task's current stored status.
+        const string submissionCountSql =
+            "SELECT COUNT(1) FROM TaskSubmissions WHERE TaskId = @TaskId";
+        int submissionCount = (await _db.GetRecordsAsync<int>(
+                submissionCountSql, new { TaskId = taskId }))
+            .FirstOrDefault();
+
+        if (submissionCount > 0)
+            return Conflict(
+                "המשימה כבר הועברה לבדיקת מנחה — הסטטוס שלה מנוהל כעת אוטומטית " +
+                "ע״י תהליך בדיקת המנחה ואישור ה-Moodle, ולא ניתן לשנותו ידנית");
+
+        // Defense-in-depth: only ever move the task between the two
+        // student-owned statuses — never overwrite a system/mentor-controlled
+        // status that may already be stored (e.g. legacy data).
         const string updateSql = @"
             UPDATE Tasks
             SET    Status   = @Status,
-                   ClosedAt = CASE WHEN @Status = 'Done' THEN datetime('now') ELSE NULL END
+                   ClosedAt = NULL
             WHERE  Id        = @TaskId
-              AND  ProjectId = @ProjectId";
+              AND  ProjectId = @ProjectId
+              AND  (Status IS NULL OR Status IN ('Open', 'InProgress'))";
 
         int affected = await _db.SaveDataAsync(updateSql, new
         {
@@ -1381,7 +1485,10 @@ public class ProjectsController : ControllerBase
             ProjectId = projectIdRow.Id,
         });
 
-        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        if (affected == 0)
+            return Conflict(
+                "לא ניתן לעדכן את הסטטוס באופן ידני עבור משימה זו במצבה הנוכחי");
+
         return Ok();
     }
 

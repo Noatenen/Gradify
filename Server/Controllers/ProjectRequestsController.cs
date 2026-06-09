@@ -40,27 +40,34 @@ public class ProjectRequestsController : ControllerBase
 
     private const string Container = "request-attachments";
 
-    // ── Request-level attachments (images only) ───────────────────────────
-    private static readonly HashSet<string> AllowedImageTypes =
+    // ── Request-level attachments (images + PDF + DOC + DOCX) ────────────
+    private static readonly HashSet<string> AllowedAttachmentMimes =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "image/jpeg", "image/jpg", "image/png", "image/webp"
+            "image/jpeg", "image/jpg", "image/png", "image/webp",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         };
+
+    private static readonly HashSet<string> AllowedAttachmentExts =
+        new(StringComparer.OrdinalIgnoreCase) { "jpg", "jpeg", "png", "webp", "pdf", "doc", "docx" };
 
     private const int  MaxAttachments = 5;
     private const long MaxImageBytes  = 5 * 1_048_576;
 
-    // ── Event-level attachments (images + PDF + docx) ─────────────────────
+    // ── Event-level attachments (images + PDF + DOC + DOCX) ──────────────
     private static readonly HashSet<string> AllowedEventAttachmentMimes =
         new(StringComparer.OrdinalIgnoreCase)
         {
             "image/jpeg", "image/jpg", "image/png", "image/webp",
             "application/pdf",
+            "application/msword",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         };
 
     private static readonly HashSet<string> AllowedEventAttachmentExts =
-        new(StringComparer.OrdinalIgnoreCase) { "jpg", "jpeg", "png", "webp", "pdf", "docx" };
+        new(StringComparer.OrdinalIgnoreCase) { "jpg", "jpeg", "png", "webp", "pdf", "doc", "docx" };
 
     private const int  MaxEventAttachments     = 3;
     private const long MaxEventAttachmentBytes = 5 * 1_048_576;
@@ -649,7 +656,7 @@ public class ProjectRequestsController : ControllerBase
             return BadRequest("סוג בקשה לא תקין");
 
         if (req.Attachments.Count > MaxAttachments)
-            return BadRequest($"ניתן לצרף עד {MaxAttachments} תמונות לבקשה");
+            return BadRequest($"ניתן לצרף עד {MaxAttachments} קבצים לבקשה");
 
         for (int i = 0; i < req.Attachments.Count; i++)
         {
@@ -660,12 +667,9 @@ public class ProjectRequestsController : ControllerBase
                 return BadRequest($"קובץ {i + 1}: חסר תוכן קובץ");
             if (att.SizeBytes > MaxImageBytes)
                 return BadRequest($"קובץ \"{att.OriginalFileName}\" חורג מהגודל המקסימלי (5 MB)");
-            if (!AllowedImageTypes.Contains(att.ContentType ?? ""))
-            {
-                string ext = Path.GetExtension(att.OriginalFileName).TrimStart('.').ToLowerInvariant();
-                if (ext is not ("jpg" or "jpeg" or "png" or "webp"))
-                    return BadRequest($"סוג הקובץ \"{ext}\" אינו נתמך. נתמכים: jpg, png, webp");
-            }
+            string ext = Path.GetExtension(att.OriginalFileName).TrimStart('.').ToLowerInvariant();
+            if (!AllowedAttachmentMimes.Contains(att.ContentType ?? "") && !AllowedAttachmentExts.Contains(ext))
+                return BadRequest($"סוג הקובץ \"{ext}\" אינו נתמך. נתמכים: jpg, png, webp, pdf, doc, docx");
         }
 
         const string checkSql = "SELECT COUNT(1) FROM Projects WHERE Id = @Id";

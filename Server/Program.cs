@@ -57,7 +57,17 @@ var jwtSettings = builder.Configuration.GetSection("JWTSettings");
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = GoogleDefaults.AuthenticationScheme; // Only set one challenge scheme!
+    // Challenge with JWT Bearer (returns 401) — NOT Google. The interactive
+    // Google login is triggered explicitly via UsersController.Google ->
+    // Challenge(GoogleDefaults.AuthenticationScheme), so it does not depend on
+    // this default. Previously the default was Google, which meant any API call
+    // that arrived without a valid Bearer token got a 302 redirect to
+    // accounts.google.com instead of a 401. The Blazor HttpClient silently
+    // followed that cross-origin redirect, GetFromJsonAsync then failed to parse
+    // the Google HTML, and the dashboard surfaced a generic "load failed" error
+    // with NO obvious failed request in the Network tab. A clean 401 makes the
+    // real auth failure explicit (and the client retry/diagnostics can see it).
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
     options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme; // Required for Google sign-in
 })
 .AddCookie() // Required for external authentication like Google
@@ -145,3 +155,4 @@ app.MapFallbackToFile("index.html");
 await DatabaseMigrator.MigrateAsync(app.Configuration);
 
 app.Run();
+

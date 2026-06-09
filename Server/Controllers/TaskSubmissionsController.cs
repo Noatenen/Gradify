@@ -476,8 +476,8 @@ public class TaskSubmissionsController : ControllerBase
 
     private sealed class MoodleMarkResultRow
     {
-        public string? MoodleSubmittedAt     { get; set; }
-        public string  MoodleSubmittedByName { get; set; } = "";
+        public DateTime? MoodleSubmittedAt     { get; set; }
+        public string    MoodleSubmittedByName { get; set; } = "";
     }
 
     // ── POST /api/task-submissions/validate-drive-link ────────────────────
@@ -801,7 +801,7 @@ public class TaskSubmissionsController : ControllerBase
                     s.MentorStatus,
                     s.MentorFeedback,
                     s.MentorReviewedAt,
-                    s.CourseSubmittedAt,
+                    COALESCE(s.MoodleSubmittedAt, s.CourseSubmittedAt) AS CourseSubmittedAt,
                     s.Status,
                     COALESCE(s.ReviewStatus, 'PendingReview') AS ReviewStatus,
                     s.ReviewerFeedback,
@@ -852,7 +852,7 @@ public class TaskSubmissionsController : ControllerBase
                     s.MentorStatus,
                     s.MentorFeedback,
                     s.MentorReviewedAt,
-                    s.CourseSubmittedAt,
+                    COALESCE(s.MoodleSubmittedAt, s.CourseSubmittedAt) AS CourseSubmittedAt,
                     COALESCE(s.ReviewStatus, 'PendingReview') AS ReviewStatus,
                     COALESCE(s.IsFeedbackPublished, 0)        AS IsFeedbackPublished,
                     s.FeedbackPublishedAt
