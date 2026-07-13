@@ -1,4 +1,5 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Pages.Tasks
 
 <div class="tma-section">
     @if (!string.IsNullOrEmpty(SectionTitle) || ShowAddButton)
@@ -89,7 +90,7 @@
                             @foreach (var task in group.Tasks)
                             {
                                 bool isPending = !IsCompletedSection && task.MilestoneStatus == "NotStarted";
-                                string resolvedStatus = ResolveDisplayStatus(task);
+                                string resolvedStatus = TaskStatusHelpers.ResolveDisplayStatus(task);
                                 // A task is overdue when due date passed and it has not been
                                 // touched at all (Open or InProgress).
                                 // Returned tasks already communicate urgency through their own
@@ -98,7 +99,7 @@
                                              && task.DueDate.HasValue
                                              && task.DueDate.Value.Date < DateTime.Today
                                              && resolvedStatus is "Open" or "InProgress";
-                                var (relLabel, absLabel, _, isSoon) = GetDateDisplay(task.DueDate);
+                                var (relLabel, absLabel, _, isSoon) = TaskStatusHelpers.GetDateDisplay(task.DueDate);
                                 string ariaLbl = BuildRowAriaLabel(task, resolvedStatus, isOverdue);
 
                                 <div class="tma-task-row @(isPending ? "tma-task-pending" : "") @RowHighlightClass(resolvedStatus)"
@@ -260,7 +261,7 @@
     // A task is "critical" when it demands the student's attention now.
     private static bool HasCriticalTask(TaskItemDto t)
     {
-        string resolved = ResolveDisplayStatus(t);
+        string resolved = TaskStatusHelpers.ResolveDisplayStatus(t);
         if (resolved is "ReturnedByMentor" or "ReturnedForRevision" or "ApprovedByMentor") return true;
         if (t.Status == "Done" || !t.DueDate.HasValue) return false;
         int days = (t.DueDate.Value.Date - DateTime.Today).Days;
@@ -278,7 +279,7 @@
     // Returns true when a task requires student attention — used to set the milestone dot color.
     private static bool TaskNeedsAttention(TaskItemDto t)
     {
-        string resolved = ResolveDisplayStatus(t);
+        string resolved = TaskStatusHelpers.ResolveDisplayStatus(t);
         if (resolved is "ReturnedByMentor" or "ReturnedForRevision") return true;
         return t.DueDate.HasValue
             && t.DueDate.Value.Date < DateTime.Today
@@ -302,34 +303,10 @@
         _            => "טרם נפתח",
     };
 
-    // ── Effective status resolution ───────────────────────────────────────────
-    // Priority order for submission tasks:
-    //  1. Mentor returned   → "ReturnedByMentor"   (student must fix + resubmit)
-    //  2. Reviewer returned → "ReturnedForRevision" (NeedsRevision from lecturer)
-    //  3. Submission pending mentor review → "PendingMentorReview"
-    //  4. Mentor approved, reviewer pending → "ApprovedByMentor"
-    //  5. Fall back to task.Status (covers Done, InProgress, Open, etc.)
-    private static string ResolveDisplayStatus(TaskItemDto task)
-    {
-        if (!task.IsSubmission || task.LatestSubmissionStatus is null)
-            return task.Status;
-
-        if (task.LatestMentorStatus == "Returned")
-            return "ReturnedByMentor";
-
-        if (task.LatestSubmissionStatus == "NeedsRevision")
-            return "ReturnedForRevision";
-
-        if (task.LatestMentorStatus == "Pending")
-            return "PendingMentorReview";
-
-        if (task.LatestMentorStatus == "Approved" && task.LatestSubmissionStatus == "Submitted")
-            return "ApprovedByMentor";
-
-        return task.Status;
-    }
-
     // ── Task status helpers ───────────────────────────────────────────────────
+    // ResolveDisplayStatus / GetDateDisplay now live in TaskStatusHelpers
+    // (shared with StudentTasksPage and TaskFlatList) — was previously
+    // duplicated verbatim here.
     private static string StatusClass(string status, bool isPending, bool isOverdue)
     {
         if (isOverdue) return "overdue";
@@ -404,19 +381,6 @@
             "ApprovedByMentor"      => "oi-circle-check",
             _                       => "oi-media-record",
         };
-    }
-
-    private static (string RelLabel, string AbsLabel, bool IsOverdue, bool IsSoon)
-        GetDateDisplay(DateTime? dueDate)
-    {
-        if (!dueDate.HasValue) return ("", "", false, false);
-        int    days = (dueDate.Value.Date - DateTime.Today).Days;
-        string abs  = dueDate.Value.ToString("dd/MM/yy");
-        if (days < 0)  return ("באיחור",           abs, true,  false);
-        if (days == 0) return ("היום",              abs, false, true);
-        if (days == 1) return ("מחר",               abs, false, true);
-        if (days <= 7) return ($"בעוד {days} ימים", abs, false, true);
-        return ("", abs, false, false);
     }
 
     private static string BuildRowAriaLabel(TaskItemDto task, string resolved, bool isOverdue)
