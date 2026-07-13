@@ -93,6 +93,8 @@ builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();
 builder.Services.AddScoped<ILocalStorageService, LocalStorageService>();
 builder.Services.AddScoped<UserContextService>();
+builder.Services.AddScoped<IPersonalTasksService, PersonalTasksService>();
+builder.Services.AddScoped<ITeamTasksService, TeamTasksService>();
 
 builder.Services.AddAuthorizationCore(options =>
 {

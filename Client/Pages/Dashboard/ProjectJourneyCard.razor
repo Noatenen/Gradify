@@ -1,0 +1,300 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+<!-- ══════════════════════════════════════════════════════════════
+     ProjectJourneyCard — one component, two zoom levels.
+
+     TOP ZONE  (white)    : timeline of all milestones.
+                            Active dot: ring highlight + accent label.
+                            A small ▾ below the active label guides the eye.
+
+     LOWER ZONE (gradient): the active milestone "expanded".
+                            Starts with the SAME dot icon + SAME name — larger.
+                            The student's brain reads: "I zoomed into that dot."
+
+     One card. One story.
+     ══════════════════════════════════════════════════════════════ -->
+
+<div class="pjc-card">
+
+    <!-- ── Header: project context + journey position ── -->
+    <div class="pjc-header">
+        <div class="pjc-header-start">
+            <span class="oi oi-map pjc-header-icon" aria-hidden="true"></span>
+            <span class="pjc-header-title">מסלול הפרויקט</span>
+            @if (Milestones.Count > 0 && _milestoneIndex > 0)
+            {
+                <span class="pjc-step-counter">שלב @_milestoneIndex מתוך @Milestones.Count</span>
+            }
+        </div>
+        <button class="pjc-project-btn"
+                @onclick="@(() => OnOpenProjectDetails.InvokeAsync())"
+                title="פרטי הפרויקט">
+            <span class="oi oi-briefcase pjc-project-icon" aria-hidden="true"></span>
+            פרויקט @Project.ProjectNumber · @Project.Title
+            <span class="oi oi-chevron-left pjc-project-arrow" aria-hidden="true"></span>
+        </button>
+    </div>
+
+    <!-- ── Timeline: all milestones as clickable steps ── -->
+    @if (Milestones.Count > 0)
+    {
+        var ordered = Milestones.OrderBy(m => m.OrderIndex).ToList();
+
+        <div class="pjc-timeline-zone">
+            <div class="pjc-timeline">
+                @for (int i = 0; i < ordered.Count; i++)
+                {
+                    var ms       = ordered[i];
+                    bool isActive = ms == _current;
+                    bool hasIssue = MilestoneHasIssue(ms);
+                    string dotCls = hasIssue ? "pjc-ms-issue" : MsDotClass(ms.Status);
+                    var msCapture = ms;
+
+                    @if (i > 0)
+                    {
+                        bool prevDone = ordered[i - 1].Status == "Completed";
+                        <div class="pjc-connector @(prevDone ? "pjc-conn-done" : "")"
+                             aria-hidden="true"></div>
+                    }
+
+                    <div class="pjc-step @(isActive ? "pjc-step-active" : "")"
+                         role="button"
+                         tabindex="0"
+                         @onclick="@(() => OnOpenMilestone.InvokeAsync(msCapture))"
+                         @onkeydown="@(e => OnStepKey(e, msCapture))"
+                         aria-label="@StepAriaLabel(ms.Title, isActive)">
+                        <div class="pjc-dot @dotCls">
+                            <span class="oi @(hasIssue ? "oi-warning" : MsIcon(ms.Status))"
+                                  aria-hidden="true"></span>
+                        </div>
+                        <span class="pjc-step-label">@ms.Title</span>
+                        @if (isActive)
+                        {
+                            <span class="pjc-expand-hint" aria-hidden="true">▾</span>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    <!-- ── Expanded zone: active milestone at full detail ── -->
+    @if (_current is not null)
+    {
+        bool activeHasIssue = MilestoneHasIssue(_current);
+        string activeDotCls = activeHasIssue ? "pjc-ms-issue" : MsDotClass(_current.Status);
+
+        <div class="pjc-expanded @ExpandedMod()">
+
+            <!-- Title row: (same dot as timeline, larger) + name + status + days -->
+            <div class="pjc-expanded-head">
+                <div class="pjc-expanded-title-group">
+                    <div class="pjc-expanded-title-row">
+                        <span class="pjc-dot @activeDotCls pjc-dot-md" aria-hidden="true">
+                            <span class="oi @(activeHasIssue ? "oi-warning" : MsIcon(_current.Status))"
+                                  aria-hidden="true"></span>
+                        </span>
+                        <h2 class="pjc-expanded-name">@_current.Title</h2>
+                        <span class="pjc-status-pill pjc-sl-@(activeHasIssue ? "issue" : MsDotClass(_current.Status).Replace("pjc-ms-",""))">
+                            @(activeHasIssue ? "דורש תשומת לב" : MsStatusLabel(_current.Status))
+                        </span>
+                    </div>
+                </div>
+
+                @if (_daysRemaining.HasValue)
+                {
+                    <div class="pjc-days @DaysClass()" aria-label="@DaysAriaLabel()">
+                        @if (_daysRemaining.Value == 0)
+                        {
+                            <span class="pjc-days-today">היום!</span>
+                        }
+                        else if (_daysRemaining.Value < 0)
+                        {
+                            <span class="pjc-days-num">@Math.Abs(_daysRemaining.Value)</span>
+                            <span class="pjc-days-unit">ימים באיחור</span>
+                        }
+                        else
+                        {
+                            <span class="pjc-days-num">@_daysRemaining.Value</span>
+                            <span class="pjc-days-unit">ימים נותרו</span>
+                        }
+                    </div>
+                }
+            </div>
+
+            <!-- Progress bar + task count -->
+            @if (_taskTotal > 0)
+            {
+                <div class="pjc-progress">
+                    <div class="pjc-progress-track"
+                         role="progressbar"
+                         aria-valuenow="@_taskPercent"
+                         aria-valuemin="0"
+                         aria-valuemax="100"
+                         aria-label="התקדמות משימות אבן הדרך הנוכחית">
+                        <div class="pjc-progress-fill" style="width: @_taskPercent%"></div>
+                    </div>
+                    <div class="pjc-progress-meta">
+                        <span class="pjc-progress-text">@_taskDone מתוך @_taskTotal משימות רשמיות הושלמו</span>
+                        <span class="pjc-progress-pct">@_taskPercent%</span>
+                    </div>
+                </div>
+            }
+
+            <!-- Next objective: first incomplete task in current milestone -->
+            @if (_nextTask is not null)
+            {
+                <div class="pjc-next">
+                    <span class="pjc-next-label">יעד הבא</span>
+                    <span class="pjc-next-sep" aria-hidden="true">·</span>
+                    <span class="pjc-next-title">@_nextTask.Title</span>
+                </div>
+            }
+
+            <!-- Primary CTA -->
+            <div class="pjc-cta-row">
+                <button class="pjc-cta"
+                        @onclick="@(() => OnOpenMilestone.InvokeAsync(_current))">
+                    <span class="oi oi-play-circle pjc-cta-icon" aria-hidden="true"></span>
+                    פתיחת אבן הדרך
+                    <span class="oi oi-chevron-left pjc-cta-arrow" aria-hidden="true"></span>
+                </button>
+            </div>
+
+        </div>
+    }
+    else if (Milestones.Count > 0 && Milestones.All(m => m.Status == "Completed"))
+    {
+        <div class="pjc-expanded pjc-expanded-done">
+            <p class="pjc-done-text">כל השלבים הושלמו — הפרויקט הסתיים בהצלחה.</p>
+        </div>
+    }
+    else if (Milestones.Count == 0)
+    {
+        <div class="pjc-no-ms">
+            <p>אבני הדרך טרם הוגדרו לפרויקט זה.</p>
+        </div>
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ProjectInfoDto              Project              { get; set; } = default!;
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto>   Milestones           { get; set; } = default!;
+    [Parameter]                 public EventCallback               OnOpenProjectDetails { get; set; }
+    [Parameter]                 public EventCallback<MilestoneSummaryDto> OnOpenMilestone { get; set; }
+
+    // ── Current milestone — same priority chain used throughout ───────────────
+    private MilestoneSummaryDto? _current =>
+        Milestones.FirstOrDefault(m => m.IsCurrentlyOpen && m.Status == "InProgress")
+        ?? Milestones.FirstOrDefault(m => m.IsCurrentlyOpen)
+        ?? Milestones.FirstOrDefault(m => m.Status == "InProgress")
+        ?? Milestones.FirstOrDefault(m => m.Status != "Completed");
+
+    // 1-based position in the ordered list
+    private int _milestoneIndex =>
+        _current is null ? 0
+        : Milestones.OrderBy(m => m.OrderIndex).ToList().IndexOf(_current) + 1;
+
+    // Deadline: prefer DueDate, fall back to CloseDate
+    private DateTime? _deadline => _current?.DueDate ?? _current?.CloseDate;
+
+    // Signed days (negative = overdue)
+    private int? _daysRemaining =>
+        _deadline.HasValue
+            ? (int)(_deadline.Value.Date - DateTime.Today).TotalDays
+            : null;
+
+    // Task progress for the current milestone only
+    private int _taskTotal   => _current?.Tasks.Count ?? 0;
+    private int _taskDone    => _current?.Tasks.Count(IsComplete) ?? 0;
+    private int _taskPercent =>
+        _taskTotal > 0 ? (int)Math.Round((double)_taskDone / _taskTotal * 100) : 0;
+
+    // First incomplete task = next objective
+    private TaskSummaryDto? _nextTask =>
+        _current?.Tasks.FirstOrDefault(t => !IsComplete(t));
+
+    // ── CSS helpers ──────────────────────────────────────────────────────────
+
+    private string ExpandedMod()
+    {
+        if (MilestoneHasIssue(_current!))            return "pjc-expanded-attention";
+        if (_daysRemaining.HasValue && _daysRemaining.Value < 0) return "pjc-expanded-overdue";
+        return "";
+    }
+
+    private string DaysClass()
+    {
+        if (!_daysRemaining.HasValue) return "";
+        int d = _daysRemaining.Value;
+        if (d < 0)  return "pjc-days-late";
+        if (d <= 3) return "pjc-days-urgent";
+        if (d <= 7) return "pjc-days-soon";
+        return "";
+    }
+
+    private string DaysAriaLabel()
+    {
+        if (!_daysRemaining.HasValue) return "";
+        int d = _daysRemaining.Value;
+        if (d == 0) return "הגשה היום";
+        if (d < 0)  return $"באיחור {Math.Abs(d)} ימים";
+        return $"נותרו {d} ימים להגשה";
+    }
+
+    // ── Milestone helpers (mirrors ProjectProgressCard logic) ────────────────
+
+    private static bool MilestoneHasIssue(MilestoneSummaryDto ms)
+    {
+        foreach (var t in ms.Tasks)
+        {
+            if (t.LatestMentorStatus == "Returned")    return true;
+            if (t.LatestSubmissionStatus == "NeedsRevision") return true;
+            if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today
+                && t.Status is "Open" or "InProgress" or "ReturnedForRevision") return true;
+        }
+        return false;
+    }
+
+    private static string MsDotClass(string s) => s switch
+    {
+        "Completed"  => "pjc-ms-completed",
+        "InProgress" => "pjc-ms-inprogress",
+        "Delayed"    => "pjc-ms-delayed",
+        _            => "pjc-ms-notstarted",
+    };
+
+    private static string MsIcon(string s) => s switch
+    {
+        "Completed"  => "oi-check",
+        "InProgress" => "oi-clock",
+        "Delayed"    => "oi-warning",
+        _            => "oi-media-record",
+    };
+
+    private static string MsStatusLabel(string s) => s switch
+    {
+        "Completed"  => "הושלם",
+        "InProgress" => "בתהליך",
+        "Delayed"    => "באיחור",
+        "Open"       => "פתוח",
+        _            => "טרם החל",
+    };
+
+    private static bool IsComplete(TaskSummaryDto t) =>
+        t.IsSubmission
+            ? t.LatestSubmissionStatus is not null
+              && t.LatestMentorStatus == "Approved"
+              && t.LatestMoodleConfirmed
+            : t.Status == "Done";
+
+    private static string StepAriaLabel(string title, bool isActive) =>
+        isActive ? $"{title} — אבן הדרך הנוכחית" : title;
+
+    private async Task OnStepKey(KeyboardEventArgs e, MilestoneSummaryDto ms)
+    {
+        if (e.Key is "Enter" or " " or "Spacebar")
+            await OnOpenMilestone.InvokeAsync(ms);
+    }
+}

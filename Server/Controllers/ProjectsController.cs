@@ -145,6 +145,7 @@ public class ProjectsController : ControllerBase
         const string tasksSql = @"
             SELECT  t.Id,
                     t.Title,
+                    t.Description,
                     t.Status,
                     COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     t.ProjectMilestoneId,
@@ -218,6 +219,7 @@ public class ProjectsController : ControllerBase
                 {
                     Id                     = t.Id,
                     Title                  = t.Title,
+                    Description            = t.Description,
                     Status                 = NormalizeTaskStatus(t.Status, t.LatestMentorStatus, t.LatestSubmissionStatus),
                     DueDate                = t.DueDate,
                     AssignedToName         = t.AssignedToName,
@@ -874,7 +876,10 @@ public class ProjectsController : ControllerBase
     private static readonly HashSet<string> StudentEditableTaskStatuses =
         new(StringComparer.Ordinal) { "Open", "InProgress" };
 
-    // ── Team resolution helper ────────────────────────────────────────────────
+    // ── Team resolution helpers ───────────────────────────────────────────────
+
+    // Used by StudentSubTasks endpoints: returns the user's team ID (LIMIT 1,
+    // non-project-scoped — kept for backward compat with existing sub-task paths).
     private async Task<int?> GetTeamIdForUserAsync(int userId)
     {
         const string sql = @"
@@ -887,6 +892,26 @@ public class ProjectsController : ControllerBase
         return rows?.FirstOrDefault()?.Id;
     }
     private sealed class SubTeamIdRow { public int Id { get; set; } }
+
+    // Used by TeamTasks endpoints: returns the user's active (non-draft) project
+    // AND team together so all queries are project-scoped, preventing cross-team
+    // access when a user somehow belongs to more than one team.
+    private async Task<ProjectTeamRow?> GetProjectTeamForUserAsync(int userId)
+    {
+        const string sql = @"
+            SELECT p.Id AS ProjectId, t.Id AS TeamId
+            FROM   Projects    p
+            JOIN   Teams       t  ON p.TeamId = t.Id
+            JOIN   TeamMembers tm ON t.Id     = tm.TeamId
+            WHERE  tm.UserId   = @UserId
+              AND  tm.IsActive  = 1
+              AND  COALESCE(p.AssignmentIsDraft, 0) = 0
+            LIMIT  1";
+        var rows = await _db.GetRecordsAsync<ProjectTeamRow>(sql, new { UserId = userId });
+        return rows?.FirstOrDefault();
+    }
+    private sealed class ProjectTeamRow { public int ProjectId { get; set; } public int TeamId { get; set; } }
+    private sealed class AssigneeNameRow { public string Name { get; set; } = ""; }
 
     // ── Private Dapper mapping rows ───────────────────────────────────────────
     // These are intermediate shapes for Dapper to fill from raw SQL results.
@@ -922,6 +947,7 @@ public class ProjectsController : ControllerBase
     {
         public int       Id                 { get; set; }
         public string    Title              { get; set; } = "";
+        public string?   Description        { get; set; }
         public string    Status             { get; set; } = "";
         public DateTime? DueDate            { get; set; }
         public int?      ProjectMilestoneId { get; set; }
@@ -1428,14 +1454,8 @@ public class ProjectsController : ControllerBase
     public async Task<IActionResult> UpdateTaskProgress(
         int taskId, [FromBody] UpdateTaskProgressRequest req, int authUserId)
     {
-        // Reject anything other than the two student-owned statuses outright —
-        // this is what stops a direct API call from setting Submitted /
-        // ReturnedByMentor / ApprovedByMentor / Done / Moodle states.
-        if (string.IsNullOrWhiteSpace(req.Status) ||
-            !StudentEditableTaskStatuses.Contains(req.Status))
-            return BadRequest(
-                "סטטוס לא תקין. ניתן לעדכן ידנית רק בין \"ממתין לביצוע\" (Open) ו-\"בעבודה\" " +
-                "(InProgress) — שאר הסטטוסים מנוהלים אוטומטית ע״י תהליך בדיקת המנחה ו-Moodle");
+        if (string.IsNullOrWhiteSpace(req.Status))
+            return BadRequest("סטטוס לא תקין.");
 
         // Verify the task belongs to the student's project
         const string projectSql = @"
@@ -1452,44 +1472,86 @@ public class ProjectsController : ControllerBase
 
         if (projectIdRow is null) return NotFound("פרויקט לא נמצא");
 
-        // Once the student has submitted this task to the mentor at least
-        // once, status ownership passes permanently to the mentor/Moodle
-        // pipeline — block any further manual edits, regardless of the
-        // task's current stored status.
-        const string submissionCountSql =
-            "SELECT COUNT(1) FROM TaskSubmissions WHERE TaskId = @TaskId";
-        int submissionCount = (await _db.GetRecordsAsync<int>(
-                submissionCountSql, new { TaskId = taskId }))
-            .FirstOrDefault();
+        // Fetch IsSubmission so we can apply different rules per task type.
+        const string taskTypeSql =
+            "SELECT IsSubmission FROM Tasks WHERE Id = @TaskId AND ProjectId = @ProjectId LIMIT 1";
+        var isSubmissionRows = await _db.GetRecordsAsync<bool>(
+            taskTypeSql, new { TaskId = taskId, ProjectId = projectIdRow.Id });
+        if (!isSubmissionRows.Any()) return NotFound("משימה לא נמצאה");
+        bool isSubmission = isSubmissionRows.First();
 
-        if (submissionCount > 0)
-            return Conflict(
-                "המשימה כבר הועברה לבדיקת מנחה — הסטטוס שלה מנוהל כעת אוטומטית " +
-                "ע״י תהליך בדיקת המנחה ואישור ה-Moodle, ולא ניתן לשנותו ידנית");
-
-        // Defense-in-depth: only ever move the task between the two
-        // student-owned statuses — never overwrite a system/mentor-controlled
-        // status that may already be stored (e.g. legacy data).
-        const string updateSql = @"
-            UPDATE Tasks
-            SET    Status   = @Status,
-                   ClosedAt = NULL
-            WHERE  Id        = @TaskId
-              AND  ProjectId = @ProjectId
-              AND  (Status IS NULL OR Status IN ('Open', 'InProgress'))";
-
-        int affected = await _db.SaveDataAsync(updateSql, new
+        if (isSubmission)
         {
-            req.Status,
-            TaskId    = taskId,
-            ProjectId = projectIdRow.Id,
-        });
+            // Submission Tasks: only Open ↔ InProgress, and only before the
+            // mentor pipeline begins (no TaskSubmissions rows yet).
+            if (!StudentEditableTaskStatuses.Contains(req.Status))
+                return BadRequest(
+                    "סטטוס לא תקין. ניתן לעדכן ידנית רק בין \"ממתין לביצוע\" (Open) ו-\"בעבודה\" " +
+                    "(InProgress) — שאר הסטטוסים מנוהלים אוטומטית ע״י תהליך בדיקת המנחה ו-Moodle");
 
-        if (affected == 0)
-            return Conflict(
-                "לא ניתן לעדכן את הסטטוס באופן ידני עבור משימה זו במצבה הנוכחי");
+            const string submissionCountSql =
+                "SELECT COUNT(1) FROM TaskSubmissions WHERE TaskId = @TaskId";
+            int submissionCount = (await _db.GetRecordsAsync<int>(
+                    submissionCountSql, new { TaskId = taskId }))
+                .FirstOrDefault();
 
-        return Ok();
+            if (submissionCount > 0)
+                return Conflict(
+                    "המשימה כבר הועברה לבדיקת מנחה — הסטטוס שלה מנוהל כעת אוטומטית " +
+                    "ע״י תהליך בדיקת המנחה ואישור ה-Moodle, ולא ניתן לשנותו ידנית");
+
+            const string updateSql = @"
+                UPDATE Tasks
+                SET    Status   = @Status,
+                       ClosedAt = NULL
+                WHERE  Id        = @TaskId
+                  AND  ProjectId = @ProjectId
+                  AND  (Status IS NULL OR Status IN ('Open', 'InProgress'))";
+
+            int affected = await _db.SaveDataAsync(updateSql, new
+            {
+                req.Status,
+                TaskId    = taskId,
+                ProjectId = projectIdRow.Id,
+            });
+
+            if (affected == 0)
+                return Conflict("לא ניתן לעדכן את הסטטוס באופן ידני עבור משימה זו במצבה הנוכחי");
+
+            return Ok();
+        }
+        else
+        {
+            // Activity Tasks: students may freely toggle Open / InProgress / Done.
+            // No submission pipeline exists for these tasks.
+            var activityAllowed = new HashSet<string>(StringComparer.Ordinal)
+                { "Open", "InProgress", "Done" };
+
+            if (!activityAllowed.Contains(req.Status))
+                return BadRequest("סטטוס לא תקין עבור משימת פעילות.");
+
+            // No status guard in WHERE — student may transition freely between all three.
+            // ClosedAt is stamped when Done and cleared otherwise.
+            const string updateActivitySql = @"
+                UPDATE Tasks
+                SET    Status   = @Status,
+                       ClosedAt = CASE WHEN @Status = 'Done' THEN datetime('now') ELSE NULL END
+                WHERE  Id           = @TaskId
+                  AND  ProjectId    = @ProjectId
+                  AND  IsSubmission = 0";
+
+            int affected = await _db.SaveDataAsync(updateActivitySql, new
+            {
+                req.Status,
+                TaskId    = taskId,
+                ProjectId = projectIdRow.Id,
+            });
+
+            if (affected == 0)
+                return Conflict("לא ניתן לעדכן את הסטטוס עבור משימה זו");
+
+            return Ok();
+        }
     }
 
     // ── GET /api/projects/tasks/{taskId}/subtasks ────────────────────────────
@@ -1692,5 +1754,254 @@ public class ProjectsController : ControllerBase
 
         if (row is null) return NotFound("פרויקט לא נמצא");
         return Ok(row);
+    }
+
+    // ── GET /api/projects/personal-tasks ─────────────────────────────────────
+    // Returns the authenticated user's personal task list, newest first.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("personal-tasks")]
+    public async Task<IActionResult> GetPersonalTasks(int authUserId)
+    {
+        const string sql = @"
+            SELECT Id, Title, Description, DueDate, IsDone, CreatedAt
+            FROM   PersonalTasks
+            WHERE  UserId = @UserId
+            ORDER  BY CreatedAt DESC";
+
+        var rows = await _db.GetRecordsAsync<PersonalTaskDto>(sql, new { UserId = authUserId });
+        return Ok(rows ?? Enumerable.Empty<PersonalTaskDto>());
+    }
+
+    // ── POST /api/projects/personal-tasks ────────────────────────────────────
+    // Creates a new personal task for the authenticated user.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPost("personal-tasks")]
+    public async Task<IActionResult> CreatePersonalTask(
+        [FromBody] CreatePersonalTaskRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        const string sql = @"
+            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate)
+            VALUES (@UserId, @Title, @Description, @DueDate)";
+
+        int newId = await _db.InsertReturnIdAsync(sql, new
+        {
+            UserId      = authUserId,
+            Title       = req.Title.Trim(),
+            Description = req.Description?.Trim(),
+            DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
+        });
+
+        if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
+
+        return Ok(new PersonalTaskDto
+        {
+            Id          = newId,
+            Title       = req.Title.Trim(),
+            Description = req.Description?.Trim(),
+            DueDate     = req.DueDate,
+            IsDone      = false,
+            CreatedAt   = DateTime.UtcNow,
+        });
+    }
+
+    // ── PATCH /api/projects/personal-tasks/{id}/toggle ───────────────────────
+    // Toggles the IsDone flag. Only the owning user may modify their tasks.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPatch("personal-tasks/{id:int}/toggle")]
+    public async Task<IActionResult> TogglePersonalTask(int id, int authUserId)
+    {
+        const string sql = @"
+            UPDATE PersonalTasks
+            SET    IsDone = CASE WHEN IsDone = 1 THEN 0 ELSE 1 END
+            WHERE  Id     = @Id
+              AND  UserId = @UserId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, UserId = authUserId });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  TEAM TASKS
+    //  Completely separate from official Tasks/TaskSubmissions.
+    //  No milestone, no mentor review, no progress impact.
+    //  All active team members of the project may read and mutate any row.
+    //  Authorization: every query is scoped to (ProjectId, TeamId) derived
+    //  project-scoped from authUserId — cross-team access is structurally impossible.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── GET /api/projects/team-tasks ─────────────────────────────────────────
+    // Returns all team tasks (incomplete first, then complete), newest-first within
+    // each group. Assignee name is resolved server-side so no extra calls are needed.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("team-tasks")]
+    public async Task<IActionResult> GetTeamTasks(int authUserId)
+    {
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return NotFound("לא שויכת לפרויקט פעיל");
+
+        const string sql = @"
+            SELECT  tt.Id,
+                    tt.Title,
+                    tt.Description,
+                    tt.AssignedToUserId,
+                    CASE WHEN tt.AssignedToUserId IS NULL
+                         THEN 'כל הצוות'
+                         ELSE u.FirstName || ' ' || u.LastName
+                    END  AS AssigneeName,
+                    tt.DueDate,
+                    tt.IsDone,
+                    tt.CreatedByUserId,
+                    tt.CreatedAt,
+                    tt.UpdatedAt
+            FROM    TeamTasks tt
+            LEFT JOIN users u ON tt.AssignedToUserId = u.Id
+            WHERE   tt.TeamId    = @TeamId
+              AND   tt.ProjectId = @ProjectId
+            ORDER BY tt.IsDone ASC, tt.CreatedAt DESC";
+
+        var rows = await _db.GetRecordsAsync<TeamTaskDto>(
+            sql, new { pt.TeamId, pt.ProjectId });
+        return Ok(rows ?? Enumerable.Empty<TeamTaskDto>());
+    }
+
+    // ── POST /api/projects/team-tasks ────────────────────────────────────────
+    // Creates a new team task. Returns the full TeamTaskDto for immediate UI update.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPost("team-tasks")]
+    public async Task<IActionResult> CreateTeamTask(
+        [FromBody] CreateTeamTaskRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return NotFound("לא שויכת לפרויקט פעיל");
+
+        const string sql = @"
+            INSERT INTO TeamTasks
+                (ProjectId, TeamId, CreatedByUserId, Title, Description, AssignedToUserId, DueDate)
+            VALUES
+                (@ProjectId, @TeamId, @CreatedByUserId, @Title, @Description, @AssignedToUserId, @DueDate)";
+
+        int newId = await _db.InsertReturnIdAsync(sql, new
+        {
+            pt.ProjectId,
+            pt.TeamId,
+            CreatedByUserId  = authUserId,
+            Title            = req.Title.Trim(),
+            Description      = req.Description?.Trim(),
+            AssignedToUserId = req.AssignedToUserId,
+            DueDate          = req.DueDate?.ToString("yyyy-MM-dd"),
+        });
+
+        if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
+
+        string assigneeName = "כל הצוות";
+        if (req.AssignedToUserId.HasValue)
+        {
+            var nameRow = (await _db.GetRecordsAsync<AssigneeNameRow>(
+                "SELECT FirstName || ' ' || LastName AS Name FROM users WHERE Id = @Id",
+                new { Id = req.AssignedToUserId.Value }))?.FirstOrDefault();
+            if (nameRow is not null) assigneeName = nameRow.Name;
+        }
+
+        return Ok(new TeamTaskDto
+        {
+            Id               = newId,
+            Title            = req.Title.Trim(),
+            Description      = req.Description?.Trim(),
+            AssignedToUserId = req.AssignedToUserId,
+            AssigneeName     = assigneeName,
+            DueDate          = req.DueDate,
+            IsDone           = false,
+            CreatedByUserId  = authUserId,
+            CreatedAt        = DateTime.UtcNow,
+        });
+    }
+
+    // ── PUT /api/projects/team-tasks/{id} ────────────────────────────────────
+    // Updates title, description, assignee and due date.
+    // The WHERE clause enforces TeamId + ProjectId so cross-team writes are blocked.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("team-tasks/{id:int}")]
+    public async Task<IActionResult> UpdateTeamTask(
+        int id, [FromBody] UpdateTeamTaskRequest req, int authUserId)
+    {
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return NotFound("לא שויכת לפרויקט פעיל");
+
+        const string sql = @"
+            UPDATE TeamTasks
+            SET    Title            = @Title,
+                   Description      = @Description,
+                   AssignedToUserId = @AssignedToUserId,
+                   DueDate          = @DueDate,
+                   UpdatedAt        = datetime('now')
+            WHERE  Id        = @Id
+              AND  TeamId    = @TeamId
+              AND  ProjectId = @ProjectId";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            Id               = id,
+            pt.TeamId,
+            pt.ProjectId,
+            Title            = req.Title.Trim(),
+            Description      = req.Description?.Trim(),
+            AssignedToUserId = req.AssignedToUserId,
+            DueDate          = req.DueDate?.ToString("yyyy-MM-dd"),
+        });
+
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── PATCH /api/projects/team-tasks/{id}/toggle ───────────────────────────
+    // Flips IsDone. Any team member may toggle any task.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPatch("team-tasks/{id:int}/toggle")]
+    public async Task<IActionResult> ToggleTeamTask(int id, int authUserId)
+    {
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return NotFound("לא שויכת לפרויקט פעיל");
+
+        const string sql = @"
+            UPDATE TeamTasks
+            SET    IsDone    = CASE WHEN IsDone = 1 THEN 0 ELSE 1 END,
+                   UpdatedAt = datetime('now')
+            WHERE  Id        = @Id
+              AND  TeamId    = @TeamId
+              AND  ProjectId = @ProjectId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, pt.TeamId, pt.ProjectId });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── DELETE /api/projects/team-tasks/{id} ─────────────────────────────────
+    // Permanently deletes a team task. Any team member may delete any task.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("team-tasks/{id:int}")]
+    public async Task<IActionResult> DeleteTeamTask(int id, int authUserId)
+    {
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return NotFound("לא שויכת לפרויקט פעיל");
+
+        const string sql = @"
+            DELETE FROM TeamTasks
+            WHERE  Id        = @Id
+              AND  TeamId    = @TeamId
+              AND  ProjectId = @ProjectId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, pt.TeamId, pt.ProjectId });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
     }
 }

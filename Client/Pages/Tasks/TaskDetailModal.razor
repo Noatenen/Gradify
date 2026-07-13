@@ -53,12 +53,18 @@
                                 @_task.MilestoneTitle
                             </span>
                         }
-                        <span class="tdm-chip tdm-chip-type">@TaskTypeLabel(_task.TaskType)</span>
                         @if (_task.IsSubmission)
                         {
                             <span class="tdm-chip tdm-chip-submission">
                                 <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
-                                משימת הגשה
+                                הגשה
+                            </span>
+                        }
+                        else
+                        {
+                            <span class="tdm-chip tdm-chip-activity">
+                                <span class="oi oi-check" aria-hidden="true"></span>
+                                משימה
                             </span>
                         }
                     </div>
@@ -69,8 +75,16 @@
                 <div class="tdm-header-title-row">
                     <h2 class="tdm-title">@_task.Title</h2>
 
-                    @if (IsStatusEditable)
+                    @if (!_task.IsSubmission)
                     {
+                        @* Activity Task: simple read-only status pill; completion via footer *@
+                        <span class="tdm-status-pill tdm-pill-@ActivityStatusCssClass">
+                            @ActivityStatusLabel
+                        </span>
+                    }
+                    else if (IsStatusEditable)
+                    {
+                        @* Submission Task: editable dropdown before any submission *@
                         <div class="tdm-status-pill-ctrl">
                             <select class="tdm-status-pill-select"
                                     value="@StatusForDisplay"
@@ -87,6 +101,7 @@
                     }
                     else
                     {
+                        @* Submission Task: locked pill showing pipeline state *@
                         var state = CurrentSubmissionState;
                         <span class="tdm-status-pill tdm-pill-@state.CssClass"
                               title="הסטטוס מנוהל אוטומטית על ידי תהליך בדיקת המנחה ואישור ה-Moodle ואינו ניתן לשינוי ידני">
@@ -95,62 +110,30 @@
                         </span>
                     }
                 </div>
-                @if (IsStatusEditable && _statusError)
+                @if (_statusError)
                 {
                     <p class="tdm-inline-error tdm-inline-error-title">שגיאה בעדכון הסטטוס. נסי שנית.</p>
                 }
 
-                <!-- ── Compact meta line: open / due dates in one inline row ── -->
-                @if (_task.OpenDate.HasValue || _task.DueDate.HasValue)
+                <!-- ── Due date ── -->
+                @if (_task.DueDate.HasValue)
                 {
                     <div class="tdm-meta-line">
-                        @if (_task.OpenDate.HasValue)
-                        {
-                            <span class="tdm-meta-item">
-                                <span class="tdm-meta-key">פתיחה:</span>@_task.OpenDate.Value.ToString("dd.MM.yyyy")
-                            </span>
-                        }
-                        @if (_task.DueDate.HasValue)
-                        {
-                            <span class="tdm-meta-item @(IsOverdue ? "tdm-meta-overdue" : "")">
-                                <span class="tdm-meta-key">הגשה:</span>@_task.DueDate.Value.ToString("dd.MM.yyyy")
-                                @if (IsOverdue)
-                                {
-                                    <span class="tdm-overdue-tag">באיחור</span>
-                                }
-                            </span>
-                        }
+                        <span class="tdm-meta-item @(IsOverdue ? "tdm-meta-overdue" : "")">
+                            <span class="tdm-meta-key">@DueDateLabel:</span>
+                            @_task.DueDate.Value.ToString("dd.MM.yyyy")
+                            @if (IsOverdue)
+                            {
+                                <span class="tdm-overdue-tag">באיחור</span>
+                            }
+                        </span>
                     </div>
                 }
 
                 <!-- ── Body ── -->
                 <div class="tdm-body">
 
-                    <!-- ════ Description — full width, the primary content ════ -->
-                    <div class="tdm-section-desc">
-                        <p class="tdm-col-label">תיאור</p>
-                        <div class="tdm-desc-box">
-                            @if (!string.IsNullOrWhiteSpace(_task.Description))
-                            {
-                                @_task.Description
-                            }
-                            else
-                            {
-                                <span class="tdm-desc-empty">אין תיאור למשימה זו.</span>
-                            }
-                        </div>
-
-                        @if (!string.IsNullOrWhiteSpace(_task.SubmissionInstructions))
-                        {
-                            <p class="tdm-col-label tdm-col-label-mt">הוראות הגשה</p>
-                            <div class="tdm-instructions-box">
-                                <span class="oi oi-info" aria-hidden="true"></span>
-                                <p>@_task.SubmissionInstructions</p>
-                            </div>
-                        }
-                    </div>
-
-                    <!-- ════ Submission state (if IsSubmission) ════ -->
+                    <!-- ════ 4-step workflow — visible even before first submission ════ -->
                     @if (_task.IsSubmission)
                     {
                         <div class="tdm-section">
@@ -159,39 +142,31 @@
                                 מצב הגשה
                             </h3>
 
-                            @if (_task.Submissions.Count == 0)
-                            {
-                                <div class="tdm-submission-empty">
-                                    <span class="oi oi-inbox" aria-hidden="true"></span>
-                                    <span>טרם הוגשה משימה</span>
-                                </div>
+                            @{
+                                var wfSteps = BuildWorkflowSteps();
                             }
-                            else
+                            <div class="tdm-timeline">
+                                @for (int i = 0; i < wfSteps.Count; i++)
+                                {
+                                    var step = wfSteps[i];
+                                    <div class="tdm-timeline-step tdm-tl-@TimelineStateClass(step.State)">
+                                        <span class="tdm-timeline-marker">
+                                            <span class="oi @TimelineMarkerIcon(step.State)" aria-hidden="true"></span>
+                                        </span>
+                                        <span class="tdm-timeline-title">@step.Title</span>
+                                        <span class="tdm-timeline-sub">@step.Subtitle</span>
+                                    </div>
+                                    @if (i < wfSteps.Count - 1)
+                                    {
+                                        <div class="tdm-timeline-connector tdm-tl-connector-@TimelineStateClass(step.State)"></div>
+                                    }
+                                }
+                            </div>
+
+                            <!-- Feedback banners — only once a submission exists -->
+                            @if (_task.Submissions.Count > 0)
                             {
                                 var latest = LatestSubmission!;
-                                var steps  = BuildTimelineSteps(latest);
-
-                                <!-- Compact, state-aware timeline: small markers + thin connectors,
-                                     reflecting the submission's ACTUAL state (not 3 fixed green checks). -->
-                                <div class="tdm-timeline">
-                                    @for (int i = 0; i < steps.Count; i++)
-                                    {
-                                        var step = steps[i];
-                                        <div class="tdm-timeline-step tdm-tl-@TimelineStateClass(step.State)">
-                                            <span class="tdm-timeline-marker">
-                                                <span class="oi @TimelineMarkerIcon(step.State)" aria-hidden="true"></span>
-                                            </span>
-                                            <span class="tdm-timeline-title">@step.Title</span>
-                                            <span class="tdm-timeline-sub">@step.Subtitle</span>
-                                        </div>
-                                        @if (i < steps.Count - 1)
-                                        {
-                                            <div class="tdm-timeline-connector tdm-tl-connector-@TimelineStateClass(step.State)"></div>
-                                        }
-                                    }
-                                </div>
-
-                                <!-- Feedback banners -->
                                 @if (latest.MentorStatus == "Returned")
                                 {
                                     <div class="tdm-feedback-banner tdm-feedback-returned">
@@ -226,7 +201,30 @@
                         </div>
                     }
 
-                    <!-- ════ Sub-tasks (team-private internal checklist) ════ -->
+                    <!-- ════ Description — full width, the primary content ════ -->
+                    <div class="tdm-section-desc">
+                        @if (!string.IsNullOrWhiteSpace(_task.Description))
+                        {
+                            <p class="tdm-desc-text">@_task.Description</p>
+                        }
+                        else
+                        {
+                            <p class="tdm-desc-empty">אין תיאור למשימה זו.</p>
+                        }
+
+                        @if (!string.IsNullOrWhiteSpace(_task.SubmissionInstructions))
+                        {
+                            <p class="tdm-col-label tdm-col-label-mt">הוראות הגשה</p>
+                            <div class="tdm-instructions-box">
+                                <span class="oi oi-info" aria-hidden="true"></span>
+                                <p>@_task.SubmissionInstructions</p>
+                            </div>
+                        }
+                    </div>
+
+                    <!-- ════ Sub-tasks (Submission Tasks only) ════ -->
+                    @if (_task.IsSubmission)
+                    {
                     <div class="tdm-section tdm-section-subtasks">
                         <div class="tdm-subtask-header">
                             <h3 class="tdm-section-title">
@@ -390,6 +388,7 @@
                             </div>
                         }
                     </div>
+                    } @* end @if (_task.IsSubmission) — sub-tasks *@
 
                     <!-- ════ Submission history ════ -->
                     @if (_task.IsSubmission && _task.Submissions.Count > 0)
@@ -450,7 +449,7 @@
                                                     <div class="tdm-feedback-banner tdm-feedback-returned">
                                                         <div class="tdm-feedback-header">
                                                             <span class="oi oi-comment-square" aria-hidden="true"></span>
-                                                            <strong>פידבק מנחה</strong>
+                                                            <strong>הערות מנחה</strong>
                                                             @if (sub.MentorReviewedAt.HasValue)
                                                             {
                                                                 <span class="tdm-feedback-date">
@@ -468,7 +467,7 @@
                                                     <div class="tdm-feedback-banner tdm-feedback-returned">
                                                         <div class="tdm-feedback-header">
                                                             <span class="oi oi-comment-square" aria-hidden="true"></span>
-                                                            <strong>פידבק מרצה</strong>
+                                                            <strong>הערות מרצה</strong>
                                                             @if (sub.FeedbackPublishedAt.HasValue)
                                                             {
                                                                 <span class="tdm-feedback-date">
@@ -569,12 +568,39 @@
                 <!-- ── Footer ── -->
                 <div class="tdm-footer">
                     <button class="tdm-btn-ghost" @onclick="Close">סגירה</button>
-                    @* The "submit to course staff" button was retired on
-                       2026-05-17 — the official deliverable now lives in
-                       Moodle (external). Mentor approval reminder is
-                       surfaced inside the body of this modal already. *@
-                    @if (_task.IsSubmission && CanSubmit)
+                    @if (!_task.IsSubmission)
                     {
+                        @* Activity Task: primary completion CTA; reopen when already done *@
+                        @if (_task.Status != "Done")
+                        {
+                            <button class="tdm-btn-primary" @onclick="CompleteActivity"
+                                    disabled="@_updatingStatus">
+                                @if (_updatingStatus)
+                                {
+                                    <div class="tdm-spinner-sm"></div>
+                                }
+                                else
+                                {
+                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
+                                }
+                                סמן כהושלם
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="tdm-btn-ghost" @onclick="ReopenActivity"
+                                    disabled="@_updatingStatus">
+                                @if (_updatingStatus)
+                                {
+                                    <div class="tdm-spinner-sm"></div>
+                                }
+                                פתיחה מחדש
+                            </button>
+                        }
+                    }
+                    else if (CanSubmit)
+                    {
+                        @* Submission Task: submit / resubmit Drive link *@
                         <button class="tdm-btn-primary" @onclick="OpenSubmission">
                             <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
                             @(LatestSubmission is null ? "הגשת משימה" : "הגשה מחדש")
@@ -688,7 +714,7 @@
 
             return sub.CourseSubmittedAt.HasValue
                 ? ("הוגש במודל", "done")
-                : ("אושר להגשה — יש להגיש במודל", "approved");
+                : ("יש להגיש במודל", "approved");
         }
     }
 
@@ -934,12 +960,27 @@
         if (ok) _subTasks.Remove(st);
     }
 
+    // ── Activity Task helpers ──────────────────────────────────────────────────
+
+    // Simple status label for Activity Tasks (no submission pipeline).
+    private string ActivityStatusLabel => _task?.Status switch
+    {
+        "Done"       => "הושלמה",
+        "InProgress" => "בביצוע",
+        _            => "ממתין לביצוע",
+    };
+
+    private string ActivityStatusCssClass => _task?.Status == "Done" ? "done" : "neutral";
+
+    private string DueDateLabel =>
+        _task?.IsSubmission == true ? "מועד הגשה" : "תאריך יעד";
+
+    private async Task CompleteActivity() => await SetProgress("Done");
+
+    private async Task ReopenActivity()   => await SetProgress("InProgress");
+
     // ── Status label/class helpers ─────────────────────────────────────────────
 
-    // Labels for the full 7-step task-status set, used for the read-only
-    // status display once editing is locked (see IsStatusEditable). Mirrors
-    // the option labels previously shown in the (now student-restricted)
-    // status dropdown.
     private static string TaskStatusLabel(string status) => status switch
     {
         "Open"                  => "ממתין לביצוע",
@@ -947,17 +988,9 @@
         "SubmittedToMentor"     => "הועבר לבדיקת מנחה",
         "RevisionSubmitted"     => "הועבר לבדיקת מנחה",
         "ReturnedForRevision"   => "הוחזר לתיקונים",
-        "ApprovedForSubmission" => "אושר להגשה",
-        "Done"                  => "הוגש",
+        "ApprovedForSubmission" => "יש להגיש במודל",
+        "Done"                  => "הושלם",
         _                       => status,
-    };
-
-    private static string TaskTypeLabel(string t) => t switch
-    {
-        "System"   => "משימת מערכת",
-        "Mentor"   => "משימת מנחה",
-        "Personal" => "משימה אישית",
-        _          => t,
     };
 
     private static string SubmissionStatusLabel(string s) => s switch
@@ -974,12 +1007,7 @@
         _          => "ממתין לאישור מנחה",
     };
 
-    // ── Compact submission timeline ────────────────────────────────────────────
-    // Fixed 3-step journey (הוגש לאישור מנחה → אושר ע״י מנחה → הוגש במודל),
-    // but each step's visual STATE is derived from the latest submission —
-    // never three pre-filled green checks. A returned submission shows step 2
-    // as "returned" (red ✕) and locks step 3; a pending review shows step 2 as
-    // the active/current step; Moodle stays locked until the mentor approves.
+    // ── Submission workflow ────────────────────────────────────────────────────
 
     private enum TimelineState { Done, Returned, Active, Locked }
 
@@ -990,6 +1018,100 @@
         public TimelineState State    { get; init; }
     }
 
+    // 4-step workflow shown ABOVE description for all Submission Tasks.
+    // Visible even before the first submission (all steps Locked/○).
+    // Mapping:
+    //   Step 1 הגשה למנחה  : Done=has submission & not returned; Active=returned; Locked=no submissions
+    //   Step 2 בדיקת מנחה  : Done=MentorApproved; Returned=MentorReturned; Active=Pending; Locked=no sub
+    //   Step 3 הגשה במודל  : Done=CourseSubmittedAt set; Active=Approved+no moodle; Locked=not approved yet
+    //   Step 4 הושלם        : Done=CourseSubmittedAt set; Locked=otherwise
+    private List<TimelineStep> BuildWorkflowSteps()
+    {
+        var sub = LatestSubmission;
+
+        bool hasSubmission = sub is not null;
+        bool returned      = hasSubmission && (sub!.MentorStatus == "Returned" || sub.Status == "NeedsRevision");
+        bool mentorApproved = hasSubmission && sub!.MentorStatus == "Approved";
+        bool moodleDone    = mentorApproved && sub!.CourseSubmittedAt.HasValue;
+
+        // Step 1: הגשה למנחה
+        TimelineState step1State;
+        string        step1Sub;
+        if (!hasSubmission)
+        {
+            step1State = TimelineState.Locked;
+            step1Sub   = "טרם הוגש";
+        }
+        else if (returned)
+        {
+            step1State = TimelineState.Active;   // needs resubmission
+            step1Sub   = "נדרשת הגשה מחדש";
+        }
+        else
+        {
+            step1State = TimelineState.Done;
+            step1Sub   = sub!.SubmittedAt != default ? FormatStepStamp(sub.SubmittedAt) : "";
+        }
+
+        // Step 2: בדיקת מנחה
+        TimelineState step2State;
+        string        step2Sub;
+        if (!hasSubmission)
+        {
+            step2State = TimelineState.Locked;
+            step2Sub   = "";
+        }
+        else if (sub!.MentorStatus == "Returned")
+        {
+            step2State = TimelineState.Returned;
+            step2Sub   = sub.MentorReviewedAt.HasValue
+                ? $"הוחזר · {FormatStepStamp(sub.MentorReviewedAt.Value)}"
+                : "הוחזר לתיקון";
+        }
+        else if (mentorApproved)
+        {
+            step2State = TimelineState.Done;
+            step2Sub   = sub.MentorReviewedAt.HasValue ? FormatStepStamp(sub.MentorReviewedAt.Value) : "";
+        }
+        else
+        {
+            step2State = TimelineState.Active;
+            step2Sub   = "ממתין לבדיקת מנחה";
+        }
+
+        // Step 3: הגשה במודל
+        TimelineState step3State;
+        string        step3Sub;
+        if (moodleDone)
+        {
+            step3State = TimelineState.Done;
+            step3Sub   = FormatStepStamp(sub!.CourseSubmittedAt!.Value);
+        }
+        else if (mentorApproved)
+        {
+            step3State = TimelineState.Active;
+            step3Sub   = "יש להגיש במודל";
+        }
+        else
+        {
+            step3State = TimelineState.Locked;
+            step3Sub   = "";
+        }
+
+        // Step 4: הושלם
+        var step4State = moodleDone ? TimelineState.Done : TimelineState.Locked;
+        var step4Sub   = moodleDone ? "המשימה הושלמה" : "";
+
+        return new List<TimelineStep>
+        {
+            new() { Title = "הגשה למנחה",  Subtitle = step1Sub, State = step1State },
+            new() { Title = "בדיקת מנחה",  Subtitle = step2Sub, State = step2State },
+            new() { Title = "הגשה במודל",  Subtitle = step3Sub, State = step3State },
+            new() { Title = "הושלם",        Subtitle = step4Sub, State = step4State },
+        };
+    }
+
+    // 3-step timeline used inside EACH row of the submission history accordion.
     private static List<TimelineStep> BuildTimelineSteps(SubmissionHistoryItemDto sub)
     {
         bool returned = sub.MentorStatus == "Returned" || sub.Status == "NeedsRevision";

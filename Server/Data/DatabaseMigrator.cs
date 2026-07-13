@@ -2458,6 +2458,46 @@ public static class DatabaseMigrator
                     ON DELETE CASCADE ON UPDATE CASCADE
             )");
 
+        // ── PersonalTasks — student-private reminder/checklist items ────────
+        // One row per task, scoped to a single user. Not linked to project
+        // milestones or the shared Tasks table. Created / toggled by the
+        // student via the dashboard Personal Tasks card.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS PersonalTasks (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId      INTEGER NOT NULL,
+                Title       TEXT    NOT NULL,
+                Description TEXT,
+                DueDate     TEXT,
+                IsDone      INTEGER NOT NULL DEFAULT 0,
+                CreatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // ── TeamTasks — student-created work items, team-visible ────────────
+        // Completely separate from the official Tasks table.
+        // No milestone, no mentor review, no Moodle workflow, no progress impact.
+        // All active members of the team (ProjectId + TeamId) can create, edit,
+        // complete and delete any row.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS TeamTasks (
+                Id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                ProjectId        INTEGER NOT NULL,
+                TeamId           INTEGER NOT NULL,
+                CreatedByUserId  INTEGER NOT NULL,
+                Title            TEXT    NOT NULL,
+                Description      TEXT,
+                AssignedToUserId INTEGER,
+                DueDate          TEXT,
+                IsDone           INTEGER NOT NULL DEFAULT 0,
+                CreatedAt        TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt        TEXT,
+                FOREIGN KEY (ProjectId)        REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (TeamId)           REFERENCES Teams(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (CreatedByUserId)  REFERENCES users(Id),
+                FOREIGN KEY (AssignedToUserId) REFERENCES users(Id)
+            )");
+
         // ── Canonical reference-data seeds ──────────────────────────────────
         // The two ProjectTypes rows are referenced by the MilestoneTemplates
         // seed below in the migrator (ProjectTypeId = 1 / 2). On a fresh DB

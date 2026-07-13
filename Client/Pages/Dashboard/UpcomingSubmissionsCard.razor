@@ -1,0 +1,198 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+
+<!-- ══════════════════════════════════════════════════════════════
+     UpcomingSubmissionsCard
+     Shows up to 3 upcoming submission tasks derived client-side
+     from the milestone data (IsSubmission == true, not complete,
+     has a DueDate, ordered soonest first).
+
+     Falls back to NextDeadline when no submission tasks are found
+     in the milestone list (edge case: project with no IsSubmission
+     tasks yet mapped in the current data).
+
+     CTA is "פתיחת משימה" → opens the existing TaskDetailModal via
+     OnOpenTask. No upload actions on the dashboard (those belong
+     in the task/milestone workspace).
+     ══════════════════════════════════════════════════════════════ -->
+
+<div class="usc2-card">
+
+    <div class="usc2-header">
+        <span class="oi oi-calendar usc2-header-icon" aria-hidden="true"></span>
+        <h2 class="usc2-header-title">הגשות קרובות</h2>
+    </div>
+
+    @if (_submissions.Count == 0 && NextDeadline is null)
+    {
+        <div class="usc2-empty">
+            <span class="oi oi-circle-check usc2-empty-icon" aria-hidden="true"></span>
+            <p class="usc2-empty-text">אין הגשות קרובות</p>
+        </div>
+    }
+    else if (_submissions.Count > 0)
+    {
+        <div class="usc2-list">
+            @foreach (var (task, milestoneTitle) in _submissions)
+            {
+                var resolved = ResolveStatus(task);
+                bool overdue = task.DueDate.HasValue
+                            && task.DueDate.Value.Date < DateTime.Today;
+                int  days    = task.DueDate.HasValue
+                            ? (int)(task.DueDate.Value.Date - DateTime.Today).TotalDays
+                            : 0;
+
+                <div class="usc2-item @(overdue ? "usc2-item-overdue" : "")">
+                    <div class="usc2-item-top">
+                        <span class="usc2-task-title">@task.Title</span>
+                        <span class="usc2-days @DaysClass(days, overdue)">@DaysLabel(days, overdue)</span>
+                    </div>
+                    <div class="usc2-item-meta">
+                        <span class="usc2-milestone-name">
+                            <span class="oi oi-map-marker usc2-ms-icon" aria-hidden="true"></span>
+                            @milestoneTitle
+                        </span>
+                        @if (task.DueDate.HasValue)
+                        {
+                            <span class="usc2-date">
+                                <span class="oi oi-calendar usc2-date-icon" aria-hidden="true"></span>
+                                @task.DueDate.Value.ToString("dd/MM/yyyy")
+                            </span>
+                        }
+                    </div>
+                    <div class="usc2-item-footer">
+                        <span class="usc2-status-badge usc2-badge-@TaskClass(resolved, overdue)">
+                            @TaskLabel(resolved, overdue)
+                        </span>
+                        <button class="usc2-open-btn"
+                                @onclick="@(() => OnOpenTask.InvokeAsync(task.Id))">
+                            פתיחת משימה
+                            <span class="oi oi-chevron-left usc2-btn-arrow" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else if (NextDeadline is not null)
+    {
+        <!-- Fallback: show the server-derived next deadline when no
+             IsSubmission tasks are found in the milestone list. -->
+        var fallbackDays = (int)(NextDeadline.DueDate.Date - DateTime.Today).TotalDays;
+        bool fallbackOverdue = fallbackDays < 0;
+
+        <div class="usc2-list">
+            <div class="usc2-item @(fallbackOverdue ? "usc2-item-overdue" : "")">
+                <div class="usc2-item-top">
+                    <span class="usc2-task-title">@NextDeadline.Title</span>
+                    <span class="usc2-days @DaysClass(fallbackDays, fallbackOverdue)">
+                        @DaysLabel(fallbackDays, fallbackOverdue)
+                    </span>
+                </div>
+                <div class="usc2-item-meta">
+                    <span class="usc2-date">
+                        <span class="oi oi-calendar usc2-date-icon" aria-hidden="true"></span>
+                        @NextDeadline.DueDate.ToString("dd/MM/yyyy")
+                    </span>
+                </div>
+                <div class="usc2-item-footer">
+                    @if (NextDeadline.LatestMentorStatus == "Returned")
+                    {
+                        <span class="usc2-status-badge usc2-badge-returned">הוחזר לתיקון</span>
+                    }
+                    else
+                    {
+                        <span class="usc2-status-badge usc2-badge-notstarted">ממתין להגשה</span>
+                    }
+                    @if (NextDeadline.TaskId.HasValue)
+                    {
+                        <button class="usc2-open-btn"
+                                @onclick="@(() => OnOpenTask.InvokeAsync(NextDeadline.TaskId!.Value))">
+                            פתיחת משימה
+                            <span class="oi oi-chevron-left usc2-btn-arrow" aria-hidden="true"></span>
+                        </button>
+                    }
+                    else
+                    {
+                        <button class="usc2-open-btn"
+                                @onclick="@(() => Nav.NavigateTo("/tasks"))">
+                            לכל המשימות
+                            <span class="oi oi-chevron-left usc2-btn-arrow" aria-hidden="true"></span>
+                        </button>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones   { get; set; } = default!;
+    [Parameter]                 public UpcomingDeadlineDto?      NextDeadline { get; set; }
+    [Parameter]                 public EventCallback<int>        OnOpenTask   { get; set; }
+
+    // Up to 2 upcoming IsSubmission tasks, sorted by due date, not yet complete.
+    // Dashboard shows the nearest two — the full list lives in the tasks page.
+    private List<(TaskSummaryDto Task, string MilestoneTitle)> _submissions =>
+        Milestones
+            .SelectMany(ms => ms.Tasks
+                .Where(t => t.IsSubmission && t.DueDate.HasValue && !IsComplete(t))
+                .Select(t => (Task: t, MilestoneTitle: ms.Title)))
+            .OrderBy(x => x.Task.DueDate!.Value)
+            .Take(3)
+            .ToList();
+
+    private static bool IsComplete(TaskSummaryDto t) =>
+        t.IsSubmission
+            ? t.LatestSubmissionStatus is not null
+              && t.LatestMentorStatus == "Approved"
+              && t.LatestMoodleConfirmed
+            : t.Status == "Done";
+
+    private static string ResolveStatus(TaskSummaryDto t)
+    {
+        if (t.LatestSubmissionStatus is null) return t.Status;
+        if (t.LatestMentorStatus == "Returned") return "ReturnedByMentor";
+        if (t.LatestSubmissionStatus == "NeedsRevision") return "ReturnedForRevision";
+        if (t.LatestMentorStatus == "Pending") return "PendingMentorReview";
+        if (t.LatestMentorStatus == "Approved" && t.LatestSubmissionStatus == "Submitted") return "ApprovedByMentor";
+        return t.Status;
+    }
+
+    private static string DaysLabel(int days, bool overdue)
+    {
+        if (overdue) return $"באיחור {Math.Abs(days)} ימים";
+        return days switch { 0 => "היום!", 1 => "מחר", _ => $"נותרו {days} ימים" };
+    }
+
+    private static string DaysClass(int days, bool overdue)
+    {
+        if (overdue || days < 0) return "usc2-days-overdue";
+        if (days <= 3) return "usc2-days-urgent";
+        if (days <= 7) return "usc2-days-soon";
+        return "usc2-days-normal";
+    }
+
+    private static string TaskClass(string s, bool overdue) => overdue ? "overdue" : s switch
+    {
+        "Done"                  => "completed",
+        "InProgress"            => "inprogress",
+        "PendingMentorReview"   => "submitted",
+        "ReturnedForRevision"   => "returned",
+        "ReturnedByMentor"      => "returned",
+        "ApprovedByMentor"      => "approved",
+        _                       => "notstarted",
+    };
+
+    private static string TaskLabel(string s, bool overdue) => overdue ? "באיחור" : s switch
+    {
+        "Done"                  => "הושלמה",
+        "InProgress"            => "בעבודה",
+        "PendingMentorReview"   => "ממתין לאישור מנחה",
+        "ReturnedForRevision"   => "הוחזר לתיקון",
+        "ReturnedByMentor"      => "הוחזר ע״י מנחה",
+        "ApprovedByMentor"      => "אושר — ממתין לאישור מרצה",
+        _                       => "ממתין להגשה",
+    };
+}

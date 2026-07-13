@@ -1,0 +1,185 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+
+<!-- ══════════════════════════════════════════════════════════════
+     ActionCenterCard — "דורש התייחסות"
+     Surfaces EXCEPTIONS only: returned submissions, overdue tasks,
+     tasks pending Moodle confirmation, and open requests.
+
+     Always rendered — shows a positive "all clear" state when
+     there is nothing requiring attention. This keeps the awareness
+     row layout stable regardless of content.
+
+     TODO: Announcements and new learning-material notifications are
+     not yet in DashboardDto — wire them in when that data is added.
+     ══════════════════════════════════════════════════════════════ -->
+
+<div class="ac-card">
+
+    <div class="ac-header">
+        <span class="oi oi-bell ac-header-icon" aria-hidden="true"></span>
+        <h2 class="ac-header-title">דורש התייחסות</h2>
+        @if (_items.Count > 0)
+        {
+            <span class="ac-count-badge">@_items.Count</span>
+        }
+    </div>
+
+    @if (_items.Count > 0)
+    {
+        <div class="ac-list">
+            @foreach (var item in _items)
+            {
+                <div class="ac-item ac-item-@item.CssType">
+                    <span class="ac-item-icon">
+                        <span class="oi @item.Icon" aria-hidden="true"></span>
+                    </span>
+                    <div class="ac-item-body">
+                        <span class="ac-item-title">@item.Title</span>
+                        @if (!string.IsNullOrWhiteSpace(item.SubText))
+                        {
+                            <span class="ac-item-sub">@item.SubText</span>
+                        }
+                    </div>
+                    <button class="ac-item-action" @onclick="@(() => HandleAction(item))">
+                        @item.ActionLabel
+                        <span class="oi oi-chevron-left ac-action-arrow" aria-hidden="true"></span>
+                    </button>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="ac-empty">
+            <span class="oi oi-circle-check ac-empty-icon" aria-hidden="true"></span>
+            <p class="ac-empty-title">הכל תקין!</p>
+            <p class="ac-empty-sub">אין פריטים הדורשים טיפול כרגע</p>
+        </div>
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones    { get; set; } = default!;
+    [Parameter, EditorRequired] public List<OpenRequestDto>      OpenRequests  { get; set; } = default!;
+    [Parameter]                 public EventCallback<int>        OnOpenTask    { get; set; }
+
+    private enum ActionType { Returned, Overdue, PendingMoodle, Request }
+
+    private record ActionItem(
+        ActionType Type,
+        string     Title,
+        string?    SubText,
+        string     CssType,
+        string     Icon,
+        string     ActionLabel,
+        int?       TaskId
+    );
+
+    private List<ActionItem> _items = new();
+
+    protected override void OnParametersSet() => _items = BuildItems();
+
+    private List<ActionItem> BuildItems()
+    {
+        var items = new List<ActionItem>();
+
+        foreach (var ms in Milestones)
+        {
+            foreach (var task in ms.Tasks)
+            {
+                // Returned by mentor — student must revise (highest priority).
+                if (task.LatestMentorStatus == "Returned")
+                {
+                    items.Add(new ActionItem(ActionType.Returned,
+                        task.Title,
+                        $"{ms.Title} — הוחזר ע״י המנחה",
+                        "returned", "oi-arrow-circle-left",
+                        "לתיקון", task.Id));
+                    continue;
+                }
+
+                // Returned for revision (reviewer grade).
+                if (task.LatestSubmissionStatus == "NeedsRevision")
+                {
+                    items.Add(new ActionItem(ActionType.Returned,
+                        task.Title,
+                        $"{ms.Title} — הוחזר לתיקון",
+                        "returned", "oi-arrow-circle-left",
+                        "לתיקון", task.Id));
+                    continue;
+                }
+
+                // Overdue and still open.
+                bool overdue = task.DueDate.HasValue
+                    && task.DueDate.Value.Date < DateTime.Today
+                    && !IsComplete(task)
+                    && task.Status is "Open" or "InProgress" or "ReturnedForRevision";
+                if (overdue)
+                {
+                    var daysLate = (int)(DateTime.Today - task.DueDate!.Value.Date).TotalDays;
+                    var lateStr  = daysLate == 1 ? "יום אחד באיחור" : $"{daysLate} ימים באיחור";
+                    items.Add(new ActionItem(ActionType.Overdue,
+                        task.Title,
+                        $"{ms.Title} — {lateStr}",
+                        "overdue", "oi-warning",
+                        "פתיחה", task.Id));
+                    continue;
+                }
+
+                // Approved by mentor but student hasn't confirmed Moodle submission.
+                if (task.IsSubmission
+                    && task.LatestMentorStatus == "Approved"
+                    && !task.LatestMoodleConfirmed)
+                {
+                    items.Add(new ActionItem(ActionType.PendingMoodle,
+                        task.Title,
+                        $"{ms.Title} — אושר ע״י מנחה, ממתין לאישור במודל",
+                        "moodle", "oi-circle-check",
+                        "לאישור", task.Id));
+                }
+            }
+        }
+
+        // Open requests — informational; student is waiting for a response.
+        foreach (var req in OpenRequests)
+        {
+            items.Add(new ActionItem(ActionType.Request,
+                req.Title,
+                $"{req.RequestType} — ממתין לתגובה",
+                "request", "oi-envelope-closed",
+                "צפייה", null));
+        }
+
+        // Sort: returned → overdue → pending-moodle → request, then cap at 3.
+        // Dashboard surfaces only the highest-priority exceptions; full detail
+        // lives in the dedicated task/submission pages.
+        return items
+            .OrderBy(i => i.Type switch
+            {
+                ActionType.Returned      => 0,
+                ActionType.Overdue       => 1,
+                ActionType.PendingMoodle => 2,
+                ActionType.Request       => 3,
+                _                        => 4,
+            })
+            .Take(3)
+            .ToList();
+    }
+
+    private async Task HandleAction(ActionItem item)
+    {
+        if (item.TaskId.HasValue)
+            await OnOpenTask.InvokeAsync(item.TaskId.Value);
+        else
+            Nav.NavigateTo("/requests");
+    }
+
+    private static bool IsComplete(TaskSummaryDto t) =>
+        t.IsSubmission
+            ? t.LatestSubmissionStatus is not null
+              && t.LatestMentorStatus == "Approved"
+              && t.LatestMoodleConfirmed
+            : t.Status == "Done";
+}

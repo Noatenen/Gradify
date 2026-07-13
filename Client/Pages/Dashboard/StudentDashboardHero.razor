@@ -1,0 +1,248 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@* ─────────────────────────────────────────────────────────────
+   StudentDashboardHero — full-width hero card, two columns.
+
+   RIGHT (RTL start) — Project Journey:
+     • Vertical milestone list: ✓ done | ● active | ○ upcoming
+     • Milestone names visible at all states
+     • Overall project progress bar (RTL fill)
+
+   LEFT (RTL end) — Next Task:
+     • Next upcoming submission title
+     • Milestone context, due date, days remaining
+     • Submission step checklist
+     • Primary CTA: "פתיחת משימה" → opens the exact task
+
+   RTL: first DOM child appears on the RIGHT side.
+   ───────────────────────────────────────────────────────────── *@
+
+@if (_current is null)
+{
+    <div class="sdh-card sdh-empty-card">
+        <span class="oi oi-info sdh-empty-icon" aria-hidden="true"></span>
+        <p class="sdh-empty-text">לא נמצאה אבן דרך פעילה בפרויקט</p>
+    </div>
+}
+else
+{
+    <div class="sdh-card">
+
+        @* ── RIGHT PANEL: Project Journey (first in DOM = right in RTL) ── *@
+        <div class="sdh-journey-panel">
+
+            <!-- Panel header: label + overall progress -->
+            <div class="sdh-journey-header">
+                <span class="sdh-journey-label">מסלול הפרויקט</span>
+                <div class="sdh-journey-progress-row">
+                    <div class="sdh-progress-track">
+                        <div class="sdh-progress-fill" style="width: @_overallPct%"></div>
+                    </div>
+                    <span class="sdh-progress-fraction">@_completedCount/@Milestones.Count</span>
+                </div>
+            </div>
+
+            <!-- Vertical milestone list -->
+            <div class="sdh-ms-list" role="list" aria-label="שלבי הפרויקט">
+                @for (int i = 0; i < Milestones.Count; i++)
+                {
+                    var ms       = Milestones[i];
+                    var isDone   = ms.Status == "Completed";
+                    var isActive = ms == _current;
+                    var isLast   = i == Milestones.Count - 1;
+                    var captured = ms;
+
+                    <div class="sdh-ms-item @(isActive ? "sdh-ms-active" : isDone ? "sdh-ms-done" : "sdh-ms-future")"
+                         role="listitem">
+
+                        <!-- Track column (dot + connector) — appears on RIGHT in RTL -->
+                        <div class="sdh-ms-track" aria-hidden="true">
+                            <button class="sdh-ms-dot"
+                                    @onclick="@(() => OnOpenMilestone.InvokeAsync(captured))"
+                                    title="@ms.Title"
+                                    aria-label="@MsDotLabel(ms.Title, isActive, isDone)">
+                                @if (isDone)
+                                {
+                                    <span class="oi oi-check sdh-ms-dot-icon"></span>
+                                }
+                            </button>
+                            @if (!isLast)
+                            {
+                                <div class="sdh-ms-connector @(isDone ? "sdh-ms-connector-done" : "")"></div>
+                            }
+                        </div>
+
+                        <!-- Content column (title + badge) — appears on LEFT in RTL -->
+                        <div class="sdh-ms-content">
+                            <span class="sdh-ms-title">@ms.Title</span>
+                            @if (isActive)
+                            {
+                                <span class="sdh-ms-active-badge">נוכחי</span>
+                            }
+                        </div>
+
+                    </div>
+                }
+            </div>
+
+        </div>@* /sdh-journey-panel *@
+
+        @* ── LEFT PANEL: Next Task (second in DOM = left in RTL) ── *@
+        <div class="sdh-next-panel">
+
+            @if (_nextSubmission is not null)
+            {
+                var subDays      = _nextSubDays;
+                var subMilestone = _nextSubmissionMilestone;
+
+                <!-- 1. Eyebrow: "הגשה הבאה" + milestone context -->
+                <div class="sdh-next-eyebrow-row">
+                    <span class="sdh-next-eyebrow">הגשה הבאה</span>
+                    @if (subMilestone is not null)
+                    {
+                        <span class="sdh-next-ms-context">
+                            <span class="oi oi-flag sdh-next-ms-icon" aria-hidden="true"></span>
+                            @subMilestone.Title
+                        </span>
+                    }
+                </div>
+
+                <!-- 2. Task title -->
+                <h2 class="sdh-next-title">@_nextSubmission.Title</h2>
+
+                <!-- 3. Short description -->
+                @if (!string.IsNullOrWhiteSpace(_nextSubmission.Description))
+                {
+                    <p class="sdh-next-description">@_nextSubmission.Description</p>
+                }
+
+                <!-- 4. Submission pipeline steps -->
+                <div class="sdh-next-steps-label">כולל הגשה:</div>
+                <div class="sdh-next-steps">
+                    <span class="sdh-step @(_nextSubmission.LatestSubmissionStatus is not null ? "sdh-step-done" : "")">
+                        <span class="oi @(_nextSubmission.LatestSubmissionStatus is not null ? "oi-check" : "oi-circle") sdh-step-icon" aria-hidden="true"></span>
+                        הגשת קובץ
+                    </span>
+                    <span class="sdh-step @(_nextSubmission.LatestMentorStatus == "Approved" ? "sdh-step-done" : "")">
+                        <span class="oi @(_nextSubmission.LatestMentorStatus == "Approved" ? "oi-check" : "oi-circle") sdh-step-icon" aria-hidden="true"></span>
+                        אישור מנחה
+                    </span>
+                    <span class="sdh-step @(_nextSubmission.LatestMoodleConfirmed ? "sdh-step-done" : "")">
+                        <span class="oi @(_nextSubmission.LatestMoodleConfirmed ? "oi-check" : "oi-circle") sdh-step-icon" aria-hidden="true"></span>
+                        אישור מודל
+                    </span>
+                </div>
+
+                <!-- 5 + 6. Due date + days remaining -->
+                @if (_nextSubmission.DueDate.HasValue || subDays.HasValue)
+                {
+                    <div class="sdh-next-date-row">
+                        @if (_nextSubmission.DueDate.HasValue)
+                        {
+                            <span class="sdh-next-date-item">
+                                <span class="oi oi-calendar sdh-next-meta-icon" aria-hidden="true"></span>
+                                @_nextSubmission.DueDate.Value.ToString("dd/MM/yyyy")
+                            </span>
+                        }
+                        @if (subDays.HasValue)
+                        {
+                            <span class="sdh-next-days @DaysClass(subDays.Value)">
+                                @DaysText(subDays.Value)
+                            </span>
+                        }
+                    </div>
+                }
+
+                <!-- 7. CTA -->
+                <div class="sdh-next-footer">
+                    <button class="sdh-cta" @onclick="OpenNextTask">
+                        פתיחת משימה
+                        <span class="oi oi-chevron-left sdh-cta-arrow" aria-hidden="true"></span>
+                    </button>
+                </div>
+            }
+            else
+            {
+                <div class="sdh-next-empty">
+                    <span class="oi oi-circle-check sdh-next-empty-icon" aria-hidden="true"></span>
+                    <p class="sdh-next-empty-title">אין הגשות קרובות</p>
+                    <p class="sdh-next-empty-sub">המשך לעבודה על המשימות</p>
+                </div>
+            }
+
+        </div>@* /sdh-next-panel *@
+
+    </div>@* /sdh-card *@
+}
+
+@code {
+    [Parameter, EditorRequired] public ProjectInfoDto?                    Project              { get; set; }
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto>          Milestones           { get; set; } = default!;
+    [Parameter]                 public EventCallback                       OnOpenProjectDetails { get; set; }
+    [Parameter]                 public EventCallback<MilestoneSummaryDto> OnOpenMilestone      { get; set; }
+    [Parameter]                 public EventCallback<int>                  OnOpenTask           { get; set; }
+
+    // ── Current milestone — same priority chain as ProjectJourneyCard ─────────
+    private MilestoneSummaryDto? _current =>
+        Milestones.FirstOrDefault(m => m.IsCurrentlyOpen && m.Status == "InProgress")
+        ?? Milestones.FirstOrDefault(m => m.IsCurrentlyOpen)
+        ?? Milestones.FirstOrDefault(m => m.Status == "InProgress")
+        ?? Milestones.FirstOrDefault(m => m.Status != "Completed");
+
+    private int _completedCount => Milestones.Count(m => m.Status == "Completed");
+    private int _overallPct     => Milestones.Count == 0 ? 0 : _completedCount * 100 / Milestones.Count;
+
+    // ── Next upcoming submission across all milestones ────────────────────────
+    private TaskSummaryDto? _nextSubmission =>
+        Milestones
+            .SelectMany(m => m.Tasks.Select(t => (Milestone: m, Task: t)))
+            .Where(x => x.Task.IsSubmission && !IsComplete(x.Task) && x.Task.DueDate.HasValue)
+            .OrderBy(x => x.Task.DueDate)
+            .Select(x => x.Task)
+            .FirstOrDefault();
+
+    private MilestoneSummaryDto? _nextSubmissionMilestone =>
+        _nextSubmission is null ? null
+            : Milestones.FirstOrDefault(m => m.Tasks.Any(t => t.Id == _nextSubmission.Id));
+
+    private int? _nextSubDays =>
+        _nextSubmission?.DueDate is { } d ? (int)(d.Date - DateTime.Today).TotalDays : null;
+
+    // First incomplete task in current milestone (CTA fallback)
+    private TaskSummaryDto? _nextActionableTask =>
+        _current?.Tasks.FirstOrDefault(t => !IsComplete(t) && t.IsSubmission)
+        ?? _current?.Tasks.FirstOrDefault(t => !IsComplete(t));
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static bool IsComplete(TaskSummaryDto t) =>
+        t.IsSubmission
+            ? t.LatestSubmissionStatus is not null
+              && t.LatestMentorStatus == "Approved"
+              && t.LatestMoodleConfirmed
+            : t.Status == "Done";
+
+    private static string MsDotLabel(string title, bool isActive, bool isDone) =>
+        isActive ? $"{title} — שלב נוכחי"
+        : isDone ? $"{title} — הושלם"
+        : title;
+
+    private static string DaysClass(int days) =>
+        days < 0 ? "sdh-next-days-overdue"
+        : days <= 3 ? "sdh-next-days-urgent"
+        : days <= 7 ? "sdh-next-days-soon"
+        : "sdh-next-days-normal";
+
+    private static string DaysText(int days) =>
+        days < 0  ? $"{-days} ימים באיחור"
+        : days == 0 ? "היום"
+        : days == 1 ? "מחר"
+        : $"נותרו {days} ימים";
+
+    private async Task OpenNextTask()
+    {
+        var taskId = _nextSubmission?.Id ?? _nextActionableTask?.Id;
+        if (taskId.HasValue)
+            await OnOpenTask.InvokeAsync(taskId.Value);
+    }
+}

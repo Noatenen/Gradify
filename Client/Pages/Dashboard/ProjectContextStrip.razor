@@ -1,0 +1,104 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+<!-- ══════════════════════════════════════════════════════════════
+     ProjectContextStrip
+     Compact always-visible orientation bar. Answers "which project,
+     which phase, how long" at a glance without consuming actionable
+     space. A single "פרטי הפרויקט" CTA opens the full details modal
+     (hosted in Dashboard.razor via the @ref / OpenProjectDetails hook).
+     ══════════════════════════════════════════════════════════════ -->
+
+<div class="pcs-strip">
+
+    <!-- Project identity (right side in RTL) -->
+    <div class="pcs-identity">
+        <span class="oi oi-briefcase pcs-identity-icon" aria-hidden="true"></span>
+        <span class="pcs-project-num">פרויקט @Project.ProjectNumber</span>
+        <span class="pcs-identity-sep" aria-hidden="true">—</span>
+        <span class="pcs-project-name">@Project.Title</span>
+    </div>
+
+    <!-- Contextual metadata (left side in RTL) -->
+    <div class="pcs-meta">
+
+        @if (_currentMilestone is not null)
+        {
+            <span class="pcs-meta-pill">
+                <span class="oi oi-map-marker pcs-pill-icon" aria-hidden="true"></span>
+                @_currentMilestone.Title
+            </span>
+            <span class="pcs-meta-sep" aria-hidden="true"></span>
+        }
+
+        @if (_daysRemaining.HasValue)
+        {
+            <span class="pcs-days-badge @DaysClass()">@DaysLabel()</span>
+            <span class="pcs-meta-sep" aria-hidden="true"></span>
+        }
+
+        @if (_totalTasks > 0)
+        {
+            <span class="pcs-ratio">
+                <span class="pcs-ratio-done">@_completedTasks</span><span class="pcs-ratio-sep">/</span><span class="pcs-ratio-total">@_totalTasks</span>
+                <span class="pcs-ratio-label">משימות</span>
+            </span>
+            <span class="pcs-meta-sep" aria-hidden="true"></span>
+        }
+
+        <button class="pcs-details-btn"
+                @onclick="@(() => OnOpenProjectDetails.InvokeAsync())"
+                title="פרטי הפרויקט המלאים">
+            פרטי הפרויקט
+            <span class="oi oi-chevron-left pcs-btn-arrow" aria-hidden="true"></span>
+        </button>
+
+    </div>
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ProjectInfoDto            Project              { get; set; } = default!;
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones           { get; set; } = default!;
+    [Parameter]                 public EventCallback             OnOpenProjectDetails { get; set; }
+
+    // Current milestone: prefer open+in-progress, fall back through open,
+    // in-progress, and finally first non-completed so there's always context.
+    private MilestoneSummaryDto? _currentMilestone =>
+        Milestones.FirstOrDefault(m => m.IsCurrentlyOpen && m.Status == "InProgress")
+        ?? Milestones.FirstOrDefault(m => m.IsCurrentlyOpen)
+        ?? Milestones.FirstOrDefault(m => m.Status == "InProgress")
+        ?? Milestones.FirstOrDefault(m => m.Status != "Completed");
+
+    private int? _daysRemaining =>
+        _currentMilestone?.DueDate.HasValue == true
+            ? Math.Max(0, (int)(_currentMilestone!.DueDate!.Value.Date - DateTime.Today).TotalDays)
+            : null;
+
+    // Counts across ALL milestones so the ratio reflects whole-project progress.
+    private int _totalTasks     => Milestones.Sum(m => m.Tasks.Count);
+    private int _completedTasks => Milestones.Sum(m => m.Tasks.Count(IsComplete));
+
+    private static bool IsComplete(TaskSummaryDto t) =>
+        t.IsSubmission
+            ? t.LatestSubmissionStatus is not null
+              && t.LatestMentorStatus == "Approved"
+              && t.LatestMoodleConfirmed
+            : t.Status == "Done";
+
+    private string DaysLabel()
+    {
+        if (!_daysRemaining.HasValue) return "";
+        int d = _daysRemaining.Value;
+        return d switch { 0 => "היום!", 1 => "נותר יום", _ => $"נותרו {d} ימים" };
+    }
+
+    private string DaysClass()
+    {
+        if (!_daysRemaining.HasValue) return "pcs-days-normal";
+        int d = _daysRemaining.Value;
+        if (d <= 0) return "pcs-days-overdue";
+        if (d <= 3) return "pcs-days-urgent";
+        if (d <= 7) return "pcs-days-soon";
+        return "pcs-days-normal";
+    }
+}

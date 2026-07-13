@@ -1,16 +1,22 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 
 <div class="tma-section">
-    <div class="tma-section-header-row">
-        <h2 class="tma-section-title">@SectionTitle</h2>
-        @if (ShowAddButton)
-        {
-            <button class="tma-add-btn">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                משימה חדשה
-            </button>
-        }
-    </div>
+    @if (!string.IsNullOrEmpty(SectionTitle) || ShowAddButton)
+    {
+        <div class="tma-section-header-row">
+            @if (!string.IsNullOrEmpty(SectionTitle))
+            {
+                <h2 class="tma-section-title">@SectionTitle</h2>
+            }
+            @if (ShowAddButton)
+            {
+                <button class="tma-add-btn">
+                    <span class="oi oi-plus" aria-hidden="true"></span>
+                    משימה חדשה
+                </button>
+            }
+        </div>
+    }
 
     @if (IsCompletedSection && ProjectTotalCount > 0)
     {
@@ -92,10 +98,15 @@
                                              && task.DueDate.HasValue
                                              && task.DueDate.Value.Date < DateTime.Today
                                              && resolvedStatus is "Open" or "InProgress";
+                                var (relLabel, absLabel, _, isSoon) = GetDateDisplay(task.DueDate);
+                                string ariaLbl = BuildRowAriaLabel(task, resolvedStatus, isOverdue);
 
                                 <div class="tma-task-row @(isPending ? "tma-task-pending" : "") @RowHighlightClass(resolvedStatus)"
-                                     title="לחץ לפרטי המשימה"
-                                     @onclick="() => OnOpenDetail.InvokeAsync(task.Id)">
+                                     role="button"
+                                     tabindex="0"
+                                     aria-label="@ariaLbl"
+                                     @onclick="() => OnOpenDetail.InvokeAsync(task.Id)"
+                                     @onkeydown="@(e => { if (e.Key is "Enter" or " ") OnOpenDetail.InvokeAsync(task.Id); })">
 
                                     <div class="tma-task-icon tma-icon-@TaskIconClass(resolvedStatus, isPending, isOverdue)">
                                         <span class="oi @TaskIcon(resolvedStatus, isPending, isOverdue)"
@@ -103,18 +114,41 @@
                                     </div>
 
                                     <div class="tma-task-body">
-                                        <span class="tma-task-title @(IsCompletedSection ? "tma-task-done-text" : "")">
-                                            @task.Title
-                                        </span>
+                                        <div class="tma-task-title-row">
+                                            <span class="tma-task-title @(IsCompletedSection ? "tma-task-done-text" : "")">
+                                                @task.Title
+                                            </span>
+                                            @if (task.IsSubmission)
+                                            {
+                                                <span class="tma-type-badge tma-type-submission">
+                                                    <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                                    הגשה
+                                                </span>
+                                            }
+                                            else
+                                            {
+                                                <span class="tma-type-badge tma-type-task">
+                                                    <span class="oi oi-check" aria-hidden="true"></span>
+                                                    משימה
+                                                </span>
+                                            }
+                                        </div>
                                         <div class="tma-task-meta">
                                             @if (!IsCompletedSection)
                                             {
                                                 @if (task.DueDate.HasValue)
                                                 {
-                                                    <span class="tma-meta-item @(isOverdue ? "tma-meta-overdue" : "")">
+                                                    <span class="tma-meta-item @(isOverdue ? "tma-meta-overdue" : isSoon ? "tma-meta-soon" : "")">
                                                         <span class="oi oi-calendar" aria-hidden="true"></span>
-                                                        @task.DueDate.Value.ToString("dd/MM/yy")
-                                                        @if (isOverdue) { <span>(באיחור)</span> }
+                                                        @if (!string.IsNullOrEmpty(relLabel))
+                                                        {
+                                                            <strong>@relLabel</strong>
+                                                            <span class="tma-meta-abs">@absLabel</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span>@absLabel</span>
+                                                        }
                                                     </span>
                                                 }
                                                 @if (task.LatestSubmittedAt.HasValue
@@ -149,8 +183,6 @@
 
                                     @if (!IsCompletedSection)
                                     {
-                                        <!-- Status badge comes first so it's visually closest to the icon
-                                             (rightmost in RTL), then the submit action. -->
                                         <div class="tma-task-badges">
                                             <span class="tma-status-badge tma-badge-@StatusClass(resolvedStatus, isPending, isOverdue)">
                                                 @StatusLabel(resolvedStatus, isPending, isOverdue)
@@ -175,6 +207,9 @@
                                     {
                                         <span class="oi oi-circle-check tma-done-check" aria-hidden="true"></span>
                                     }
+
+                                    <!-- Decorative chevron — signals row is interactive -->
+                                    <span class="oi oi-chevron-left tma-row-chevron" aria-hidden="true"></span>
 
                                 </div>
                             }
@@ -202,14 +237,34 @@
 
     protected override void OnInitialized()
     {
-        // Open the first InProgress or Delayed milestone by default in the active section
-        if (!IsCompletedSection)
+        if (IsCompletedSection) return;   // completed-only view: keep all milestones collapsed
+
+        // Open all actively running or delayed milestones
+        foreach (var g in Groups.Where(g => g.MilestoneStatus is "InProgress" or "Delayed"))
+            _openGroups.Add(g.ProjectMilestoneId);
+
+        // Also open milestones that contain a critical task even if not yet InProgress
+        foreach (var g in Groups.Where(g => g.MilestoneStatus is not "Completed" and not "NotStarted"
+                                         && g.Tasks.Any(HasCriticalTask)))
+            _openGroups.Add(g.ProjectMilestoneId);
+
+        // If nothing matched above, fall back to the first non-completed milestone
+        if (_openGroups.Count == 0)
         {
-            var first = Groups.FirstOrDefault(g =>
-                g.MilestoneStatus == "InProgress" || g.MilestoneStatus == "Delayed");
-            first ??= Groups.FirstOrDefault();
+            var first = Groups.FirstOrDefault(g => g.MilestoneStatus is not "Completed")
+                     ?? Groups.FirstOrDefault();
             if (first is not null) _openGroups.Add(first.ProjectMilestoneId);
         }
+    }
+
+    // A task is "critical" when it demands the student's attention now.
+    private static bool HasCriticalTask(TaskItemDto t)
+    {
+        string resolved = ResolveDisplayStatus(t);
+        if (resolved is "ReturnedByMentor" or "ReturnedForRevision" or "ApprovedByMentor") return true;
+        if (t.Status == "Done" || !t.DueDate.HasValue) return false;
+        int days = (t.DueDate.Value.Date - DateTime.Today).Days;
+        return (days < 0 || days <= 3) && resolved is "Open" or "InProgress";
     }
 
     private void Toggle(int id)
@@ -304,11 +359,11 @@
             "SubmittedToMentor"     => "הועבר לבדיקת מנחה",
             "ReturnedForRevision"   => "הוחזר לתיקון",
             "RevisionSubmitted"     => "הועבר לבדיקת מנחה",
-            "ApprovedForSubmission" => "אושר להגשה",
+            "ApprovedForSubmission" => "יש להגיש במודל",
             "Done"                  => "הושלם",
             "PendingMentorReview"   => "ממתין לאישור מנחה",
             "ReturnedByMentor"      => "הוחזר ע״י מנחה",
-            "ApprovedByMentor"      => "ממתין לאישור מרצה",
+            "ApprovedByMentor"      => "יש להגיש במודל",
             _                       => "ממתין לביצוע",
         };
     }
@@ -349,5 +404,34 @@
             "ApprovedByMentor"      => "oi-circle-check",
             _                       => "oi-media-record",
         };
+    }
+
+    private static (string RelLabel, string AbsLabel, bool IsOverdue, bool IsSoon)
+        GetDateDisplay(DateTime? dueDate)
+    {
+        if (!dueDate.HasValue) return ("", "", false, false);
+        int    days = (dueDate.Value.Date - DateTime.Today).Days;
+        string abs  = dueDate.Value.ToString("dd/MM/yy");
+        if (days < 0)  return ("באיחור",           abs, true,  false);
+        if (days == 0) return ("היום",              abs, false, true);
+        if (days == 1) return ("מחר",               abs, false, true);
+        if (days <= 7) return ($"בעוד {days} ימים", abs, false, true);
+        return ("", abs, false, false);
+    }
+
+    private static string BuildRowAriaLabel(TaskItemDto task, string resolved, bool isOverdue)
+    {
+        string type   = task.IsSubmission ? "הגשה" : "משימה";
+        string status = isOverdue ? "באיחור" : resolved switch
+        {
+            "ReturnedByMentor" or "ReturnedForRevision" => "הוחזר לתיקון",
+            "ApprovedByMentor"   => "יש להגיש במודל",
+            "PendingMentorReview"=> "ממתין למנחה",
+            "InProgress"         => "בביצוע",
+            "Done"               => "הושלם",
+            _                    => "ממתין לביצוע",
+        };
+        string due = task.DueDate.HasValue ? $", תאריך {task.DueDate.Value:dd/MM/yy}" : "";
+        return $"פתח {type}: {task.Title}{due}, סטטוס: {status}";
     }
 }

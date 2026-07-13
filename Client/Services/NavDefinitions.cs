@@ -45,22 +45,15 @@ public static class NavDefinitions
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
         new NavItem("דשבורד",          "dashboard",         "oi-dashboard",       NavLinkMatch.All),
-        new NavItem("משימות",          "tasks",             "oi-task",            NavLinkMatch.Prefix),
-        new NavItem("הגשות",           "submissions",       "oi-document",        NavLinkMatch.Prefix),
-        new NavItem("יומן",            "journal",           "oi-calendar",        NavLinkMatch.Prefix),
-        new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("המשימות שלי",     "tasks",             "oi-task",            NavLinkMatch.Prefix),
         new NavItem("צוות חדשנות",     "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
-        new NavItem("אבני דרך",        "milestones",        "oi-flag",            NavLinkMatch.Prefix),
-        new NavItem("חומרי עזר",       "files",             "oi-folder",          NavLinkMatch.Prefix),
-        new NavItem("חומרי למידה",     "learning",          "oi-book",            NavLinkMatch.Prefix),
+        new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("יומן",            "journal",           "oi-calendar",        NavLinkMatch.Prefix),
+        new NavItem("מרכז ידע",        "learning",          "oi-book",            NavLinkMatch.Prefix),
+        new NavItem("פרופיל",          "settings",          "oi-person",          NavLinkMatch.Prefix),
     };
 
-    // Sidebar settings entry — same row position as Mentor / Staff so the
-    // הגדרות nav item appears in a consistent place for every role.
-    private static readonly IReadOnlyList<NavItem> _studentBottom = new[]
-    {
-        new NavItem("הגדרות", "settings", "oi-cog", NavLinkMatch.Prefix),
-    };
+    private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
 
     // ── Mentor ───────────────────────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _mentorMain = new[]

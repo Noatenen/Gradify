@@ -151,3 +151,28 @@ public class MentorReviewRequest
     public string  MentorStatus    { get; set; } = "";
     public string? MentorFeedback  { get; set; }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Personal task DTOs  —  student-private reminder/checklist items
+//  Stored in PersonalTasks table; scoped to a single user.
+//  Not linked to project milestones or the shared Tasks table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>One personal reminder task visible only to the owning student.</summary>
+public class PersonalTaskDto
+{
+    public int       Id          { get; set; }
+    public string    Title       { get; set; } = "";
+    public string?   Description { get; set; }
+    public DateTime? DueDate     { get; set; }
+    public bool      IsDone      { get; set; }
+    public DateTime  CreatedAt   { get; set; }
+}
+
+/// <summary>Payload for POST /api/projects/personal-tasks.</summary>
+public class CreatePersonalTaskRequest
+{
+    public string    Title       { get; set; } = "";
+    public string?   Description { get; set; }
+    public DateTime? DueDate     { get; set; }
+}

@@ -3,8 +3,93 @@
 @using Microsoft.AspNetCore.Authorization
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Submissions
 @inject ITasksService TasksService
+@inject ITaskSubmissionsService SubmissionsService
 @attribute [Authorize]
+
+<!-- ── Task detail modal ── -->
+<TaskDetailModal TaskId="@_detailTaskId"
+                 OnClose="CloseDetail"
+                 OnOpenSubmission="OpenSubmissionFromDetail"
+                 OnEditMySubmission="OnEditFromDetail"
+                 OnDeleteMySubmission="OnDeleteFromDetail"
+                 OnMarkMoodleSubmitted="OnMarkMoodleFromDetail" />
+
+<!-- ── Submission upload / resubmit modal ── -->
+<SubmissionModal TaskId="@_submissionTaskId"
+                 EditSubmissionId="@_editSubmissionId"
+                 InitialDriveUrl="@_editDriveUrl"
+                 InitialNotes="@_editNotes"
+                 OnClose="CloseSubmission" />
+
+<!-- ── Moodle confirmation modal ── -->
+@if (_moodleSubId > 0)
+{
+    <div class="tsk-confirm-overlay" @onclick="CancelMoodle">
+        <div class="tsk-confirm-modal" dir="rtl" @onclick:stopPropagation="true"
+             role="dialog" aria-modal="true" aria-labelledby="tsk-moodle-title">
+            <div class="tsk-confirm-head">
+                <span class="oi oi-question-mark tsk-confirm-icon-ok" aria-hidden="true"></span>
+                <h3 class="tsk-confirm-title" id="tsk-moodle-title">אישור הגשה במודל</h3>
+            </div>
+            <p class="tsk-confirm-body">האם את/ה בטוח/ה שההגשה בוצעה במודל?</p>
+            @if (!string.IsNullOrEmpty(_moodleError))
+            {
+                <div class="tsk-confirm-error">@_moodleError</div>
+            }
+            <div class="tsk-confirm-actions">
+                <button class="tsk-confirm-cancel" @onclick="CancelMoodle" disabled="@_moodleBusy">ביטול</button>
+                <button class="tsk-confirm-ok" @onclick="ConfirmMoodleAsync" disabled="@_moodleBusy">
+                    @if (_moodleBusy)
+                    {
+                        <span class="tsk-spinner-sm"></span>
+                        <span>שומר…</span>
+                    }
+                    else
+                    {
+                        <span class="oi oi-check" aria-hidden="true"></span>
+                        <span>כן, הוגש</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ── Delete confirmation modal ── -->
+@if (_deleteSubId > 0)
+{
+    <div class="tsk-confirm-overlay" @onclick="CancelDelete">
+        <div class="tsk-confirm-modal" dir="rtl" @onclick:stopPropagation="true"
+             role="dialog" aria-modal="true" aria-labelledby="tsk-delete-title">
+            <div class="tsk-confirm-head">
+                <span class="oi oi-warning tsk-confirm-icon-warn" aria-hidden="true"></span>
+                <h3 class="tsk-confirm-title" id="tsk-delete-title">ביטול הגשה</h3>
+            </div>
+            <p class="tsk-confirm-body">האם למחוק את ההגשה? המשימה תחזור למצב פתוח להגשה.</p>
+            @if (!string.IsNullOrEmpty(_deleteError))
+            {
+                <div class="tsk-confirm-error">@_deleteError</div>
+            }
+            <div class="tsk-confirm-actions">
+                <button class="tsk-confirm-cancel" @onclick="CancelDelete" disabled="@_deleteBusy">ביטול</button>
+                <button class="tsk-confirm-delete" @onclick="ConfirmDeleteAsync" disabled="@_deleteBusy">
+                    @if (_deleteBusy)
+                    {
+                        <span class="tsk-spinner-sm"></span>
+                        <span>מוחק…</span>
+                    }
+                    else
+                    {
+                        <span class="oi oi-trash" aria-hidden="true"></span>
+                        <span>מחק</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
 
 @if (_isLoading)
 {
@@ -32,110 +117,230 @@ else
     <div class="tsk-page">
 
         <!-- ── Page header ── -->
-        <div class="tsk-header-card">
-            <div class="tsk-header-start">
-                <div class="tsk-page-icon">
-                    <span class="oi oi-task" aria-hidden="true"></span>
-                </div>
-                <h1 class="tsk-page-title">משימות</h1>
-            </div>
+        <div class="tsk-header">
+            <h1 class="tsk-page-title">משימות הפרויקט</h1>
+            <p class="tsk-page-subtitle">כאן נמצאות כל המשימות וההגשות שהוגדרו עבור הפרויקט.</p>
         </div>
 
-        <!-- ── Summary cards (clickable — act as filters) ── -->
-        <TaskSummaryCards ActiveCount="@_data.ActiveCount"
-                          PendingCount="@_data.PendingCount"
-                          CompletedCount="@_data.CompletedCount"
-                          ActiveFilter="@_summaryFilter"
-                          OnFilterChange="OnSummaryFilterChanged" />
+        <!-- ── Unified filter tabs ── -->
+        <div class="tsk-tabs" role="tablist" aria-label="סינון משימות">
+            <button class="tsk-tab @(_activeFilter == "all"         ? "tsk-tab-active" : "")"
+                    role="tab" aria-selected="@(_activeFilter == "all")"
+                    @onclick='() => SetFilter("all")'>הכול</button>
 
-        <!-- ── Filter bar: status chip filter + reset ── -->
-        <div class="tsk-filter-bar">
-            <!-- Status chips -->
-            <div class="tsk-filter-chips">
-                <span class="tsk-filter-label">
-                    <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
-                    סנן לפי סטטוס:
-                </span>
-                @foreach (var (val, label, color) in StatusFilterOptions)
+            <button class="tsk-tab @(_activeFilter == "submissions" ? "tsk-tab-active" : "")"
+                    role="tab" aria-selected="@(_activeFilter == "submissions")"
+                    @onclick='() => SetFilter("submissions")'>הגשות</button>
+
+            <button class="tsk-tab @(_activeFilter == "tasks"       ? "tsk-tab-active" : "")"
+                    role="tab" aria-selected="@(_activeFilter == "tasks")"
+                    @onclick='() => SetFilter("tasks")'>משימות</button>
+
+            <button class="tsk-tab tsk-tab-action @(_activeFilter == "action" ? "tsk-tab-active" : "")"
+                    role="tab" aria-selected="@(_activeFilter == "action")"
+                    @onclick='() => SetFilter("action")'>
+                דורש פעולה
+                @if (ActionCount > 0 && _activeFilter != "action")
                 {
-                    <button class="tsk-chip @(val == _statusFilter ? "tsk-chip-active" : "") tsk-chip-@color"
-                            @onclick="() => OnStatusChipClicked(val)">
-                        @label
-                    </button>
+                    <span class="tsk-action-badge" aria-label="@ActionCount משימות דורשות פעולה">@ActionCount</span>
                 }
-            </div>
-            <!-- Reset link — only visible when any filter is active -->
-            @if (!string.IsNullOrEmpty(_summaryFilter) || !string.IsNullOrEmpty(_statusFilter))
-            {
-                <button class="tsk-filter-reset" @onclick="ClearAllFilters">
-                    <span class="oi oi-reload" aria-hidden="true"></span>
-                    נקה סינון
-                </button>
-            }
+            </button>
+
+            <button class="tsk-tab @(_activeFilter == "completed"   ? "tsk-tab-active" : "")"
+                    role="tab" aria-selected="@(_activeFilter == "completed")"
+                    @onclick='() => SetFilter("completed")'>הושלמו</button>
         </div>
 
-        <!-- ── Active tasks accordion ── -->
-        @if (_summaryFilter != "completed")
+        <!-- ── Filter: דורש פעולה — flat urgency list ── -->
+        @if (_activeFilter == "action")
         {
-            <TaskMilestoneAccordion SectionTitle="@ActiveSectionTitle"
-                                    Groups="@FilteredActiveGroups"
-                                    IsCompletedSection="false"
-                                    ShowAddButton="true"
-                                    EmptyMessage="@(HasAnyFilter ? "אין משימות התואמות לסינון שנבחר" : "אין משימות פעילות או דורשות תשומת לב בפרויקט זה")"
-                                    OnOpenSubmission="OpenSubmission"
-                                    OnOpenDetail="OpenDetail" />
+            @if (!ActionRequiredTasks.Any())
+            {
+                <div class="tsk-state-msg">
+                    <span class="oi oi-circle-check tsk-state-ok" aria-hidden="true"></span>
+                    <p>כל המשימות בסדר — אין משימות שדורשות פעולה כרגע.</p>
+                </div>
+            }
+            else
+            {
+                <div class="tsk-action-list">
+                    @foreach (var task in ActionRequiredTasks)
+                    {
+                        string resolved    = ResolveDisplayStatus(task);
+                        bool   isOverdue   = task.DueDate.HasValue
+                                          && task.DueDate.Value.Date < DateTime.Today
+                                          && resolved is not ("PendingMentorReview" or "ApprovedByMentor");
+                        var (relLabel, absLabel, _, isSoon) = GetDateDisplay(task.DueDate);
+                        string milestoneTitle = _taskMilestoneMap.GetValueOrDefault(task.Id, "");
+
+                        <button class="tsk-action-row @(resolved is "ReturnedByMentor" or "ReturnedForRevision" ? "tsk-action-row-returned" : "")"
+                                @onclick="() => OpenDetail(task.Id)"
+                                aria-label="@BuildAriaLabel(task.Title, task.IsSubmission, task.DueDate, resolved)">
+                            <!-- Status icon -->
+                            <div class="tsk-ar-icon @ActionIconClass(resolved, isOverdue)">
+                                <span class="oi @ActionIconName(resolved, isOverdue)" aria-hidden="true"></span>
+                            </div>
+                            <!-- Body -->
+                            <div class="tsk-ar-body">
+                                <div class="tsk-ar-title-row">
+                                    <span class="tsk-ar-title">@task.Title</span>
+                                    @if (task.IsSubmission)
+                                    {
+                                        <span class="tsk-ar-type tsk-ar-type-submission">
+                                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                            הגשה
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="tsk-ar-type tsk-ar-type-task">
+                                            <span class="oi oi-check" aria-hidden="true"></span>
+                                            משימה
+                                        </span>
+                                    }
+                                </div>
+                                <div class="tsk-ar-meta">
+                                    @if (!string.IsNullOrEmpty(milestoneTitle))
+                                    {
+                                        <span class="tsk-ar-milestone">
+                                            <span class="oi oi-flag" aria-hidden="true"></span>
+                                            @milestoneTitle
+                                        </span>
+                                    }
+                                    @if (task.DueDate.HasValue)
+                                    {
+                                        <span class="tsk-ar-date @(isOverdue ? "tsk-ar-date-overdue" : isSoon ? "tsk-ar-date-soon" : "")">
+                                            <span class="oi oi-calendar" aria-hidden="true"></span>
+                                            @if (!string.IsNullOrEmpty(relLabel))
+                                            {
+                                                <strong>@relLabel</strong>
+                                                <span class="tsk-ar-date-abs">@absLabel</span>
+                                            }
+                                            else
+                                            {
+                                                <span>@absLabel</span>
+                                            }
+                                        </span>
+                                    }
+                                </div>
+                            </div>
+                            <!-- Status badge -->
+                            <span class="tsk-ar-status @ActionStatusClass(resolved, isOverdue)">
+                                @ActionStatusLabel(resolved, isOverdue)
+                            </span>
+                            <!-- Decorative chevron -->
+                            <span class="oi oi-chevron-left tsk-ar-chevron" aria-hidden="true"></span>
+                        </button>
+                    }
+                </div>
+            }
         }
 
-        <!-- ── Completed tasks accordion ── -->
-        @if (_summaryFilter != "active" && _summaryFilter != "pending")
+        <!-- ── Filter: הושלמו — completed milestones only, no duplicate section title ── -->
+        else if (_activeFilter == "completed")
         {
-            <TaskMilestoneAccordion SectionTitle="משימות שהושלמו"
+            <TaskMilestoneAccordion SectionTitle=""
                                     Groups="@FilteredCompletedGroups"
                                     IsCompletedSection="true"
                                     ProjectCompletedCount="@_data.CompletedCount"
                                     ProjectTotalCount="@(_data.ActiveCount + _data.PendingCount + _data.CompletedCount)"
-                                    EmptyMessage="@(HasAnyFilter ? "אין משימות שהושלמו התואמות לסינון" : "עדיין לא הושלמו משימות בפרויקט זה")"
+                                    EmptyMessage="טרם הושלמו משימות — כשתסמנו פעילות כהושלמה היא תופיע כאן"
+                                    OnOpenDetail="OpenDetail" />
+        }
+
+        <!-- ── Filter: הכול / הגשות / משימות — single unified accordion ── -->
+        else
+        {
+            <TaskMilestoneAccordion SectionTitle=""
+                                    Groups="@FilteredAllGroups"
+                                    IsCompletedSection="false"
+                                    ShowAddButton="false"
+                                    EmptyMessage="@ActiveEmptyMessage"
+                                    OnOpenSubmission="OpenSubmission"
                                     OnOpenDetail="OpenDetail" />
         }
 
     </div>
 }
 
-<!-- ── Task detail modal (hosted at page level so it renders above everything) ── -->
-<TaskDetailModal TaskId="@_detailTaskId"
-                 OnClose="CloseDetail"
-                 OnOpenSubmission="OpenSubmissionFromDetail" />
-
-<!-- ── Submission modal ── -->
-<SubmissionModal TaskId="@_submissionTaskId" OnClose="CloseSubmission" />
-
 @code {
     [CascadingParameter] private User? _user { get; set; }
+    [Parameter, SupplyParameterFromQuery] public int? TaskId { get; set; }
 
-    private TasksPageDto? _data;
-    private bool _isLoading      = true;
-    private bool _loadError       = false;
+    private TasksPageDto?   _data;
+    private bool            _isLoading = true;
+    private bool            _loadError = false;
+    private string          _activeFilter = "all";
 
-    private int  _submissionTaskId = 0;
-    private int  _detailTaskId     = 0;
+    // Milestone title lookup for the action flat list
+    private Dictionary<int, string> _taskMilestoneMap = new();
 
-    // ── Filter state ──────────────────────────────────────────────────────────
-    // _summaryFilter: "" | "active" | "pending" | "completed"
-    // _statusFilter:  "" | specific status string e.g. "InProgress"
-    private string _summaryFilter = "";
-    private string _statusFilter  = "";
+    // ── Task detail modal ────────────────────────────────────────────────────
+    private int _detailTaskId = 0;
+
+    // ── Submission modal ─────────────────────────────────────────────────────
+    private int     _submissionTaskId  = 0;
+    private int     _editSubmissionId  = 0;
+    private string? _editDriveUrl;
+    private string? _editNotes;
+
+    // ── Moodle confirmation ───────────────────────────────────────────────────
+    private int    _moodleSubId  = 0;
+    private bool   _moodleBusy  = false;
+    private string _moodleError = "";
+
+    // ── Delete confirmation ───────────────────────────────────────────────────
+    private int    _deleteSubId  = 0;
+    private bool   _deleteBusy  = false;
+    private string _deleteError = "";
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
+        await LoadDataAsync();
+
+        // Auto-open from ?taskId=N deep link (e.g. from dashboard card or notification)
+        if (TaskId.HasValue && TaskId.Value > 0)
+            _detailTaskId = TaskId.Value;
+    }
+
+    private async Task LoadDataAsync()
+    {
         _data      = await TasksService.GetTasksAsync();
         _loadError = _data is null;
         _isLoading = false;
+        BuildMilestoneMap();
     }
 
-    // ── Submission handlers ───────────────────────────────────────────────────
-    private void OpenSubmission(int taskId)  => _submissionTaskId = taskId;
-    private void CloseSubmission()           => _submissionTaskId = 0;
+    private void BuildMilestoneMap()
+    {
+        _taskMilestoneMap = _data?.ActiveGroups
+            .SelectMany(g => g.Tasks.Select(t => (t.Id, g.MilestoneTitle)))
+            .GroupBy(x => x.Id)
+            .ToDictionary(g => g.Key, g => g.First().MilestoneTitle)
+            ?? new();
+    }
+
+    // ── Filter ────────────────────────────────────────────────────────────────
+    private void SetFilter(string filter) => _activeFilter = filter;
+
+    // ── Submission modal handlers ─────────────────────────────────────────────
+    private void OpenSubmission(int taskId)
+    {
+        _editSubmissionId = 0;
+        _editDriveUrl     = null;
+        _editNotes        = null;
+        _submissionTaskId = taskId;
+    }
+
+    private async Task CloseSubmission()
+    {
+        _submissionTaskId = 0;
+        _editSubmissionId = 0;
+        _editDriveUrl     = null;
+        _editNotes        = null;
+        await LoadDataAsync();
+    }
 
     // ── Detail modal handlers ─────────────────────────────────────────────────
     private void OpenDetail(int taskId)      => _detailTaskId = taskId;
@@ -147,96 +352,124 @@ else
         _submissionTaskId = taskId;
     }
 
-    // ── Filter handlers ───────────────────────────────────────────────────────
-    private void OnSummaryFilterChanged(string filter)
+    private void OnEditFromDetail((int TaskId, int SubmissionId, string? DriveUrl, string? Notes) e)
     {
-        _summaryFilter = filter;
-        // Clear incompatible status filter if switching to completed
-        if (filter == "completed") _statusFilter = "";
+        _editSubmissionId = e.SubmissionId;
+        _editDriveUrl     = e.DriveUrl;
+        _editNotes        = e.Notes;
+        _submissionTaskId = e.TaskId;
     }
 
-    private void OnStatusChipClicked(string status)
+    private void OnDeleteFromDetail(int submissionId)
     {
-        // Toggle: clicking the active chip deactivates it
-        _statusFilter = _statusFilter == status ? "" : status;
+        _deleteSubId  = submissionId;
+        _deleteError  = "";
+        _deleteBusy   = false;
     }
 
-    private void ClearAllFilters()
+    private void OnMarkMoodleFromDetail(int submissionId)
     {
-        _summaryFilter = "";
-        _statusFilter  = "";
+        _moodleSubId  = submissionId;
+        _moodleError  = "";
+        _moodleBusy   = false;
     }
 
-    // ── Computed properties ───────────────────────────────────────────────────
-    private bool HasAnyFilter =>
-        !string.IsNullOrEmpty(_summaryFilter) || !string.IsNullOrEmpty(_statusFilter);
-
-    private string ActiveSectionTitle => _summaryFilter switch
+    // ── Moodle confirmation ───────────────────────────────────────────────────
+    private void CancelMoodle()
     {
-        "active"  => "משימות פעילות",
-        "pending" => "דורשות תשומת לב",
-        _         => "משימות פעילות ודורשות תשומת לב",
+        if (_moodleBusy) return;
+        _moodleSubId  = 0;
+        _moodleError  = "";
+    }
+
+    private async Task ConfirmMoodleAsync()
+    {
+        if (_moodleSubId <= 0) return;
+        _moodleBusy  = true;
+        _moodleError = "";
+        var (ok, _, _, err) = await SubmissionsService.MarkMoodleSubmittedAsync(_moodleSubId);
+        if (!ok)
+        {
+            _moodleError = string.IsNullOrWhiteSpace(err) ? "הסימון נכשל. נסה/י שנית." : err;
+            _moodleBusy  = false;
+            return;
+        }
+        _moodleSubId = 0;
+        _moodleBusy  = false;
+        await LoadDataAsync();
+    }
+
+    // ── Delete confirmation ───────────────────────────────────────────────────
+    private void CancelDelete()
+    {
+        if (_deleteBusy) return;
+        _deleteSubId  = 0;
+        _deleteError  = "";
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_deleteSubId <= 0) return;
+        _deleteBusy  = true;
+        _deleteError = "";
+        var (ok, err) = await SubmissionsService.DeleteMySubmissionAsync(_deleteSubId);
+        if (!ok)
+        {
+            _deleteError = string.IsNullOrWhiteSpace(err) ? "מחיקת ההגשה נכשלה. נסה/י שנית." : err;
+            _deleteBusy  = false;
+            return;
+        }
+        _deleteSubId = 0;
+        _deleteBusy  = false;
+        await LoadDataAsync();
+    }
+
+    // ── Computed: filter content ───────────────────────────────────────────────
+
+    private string ActiveEmptyMessage => _activeFilter switch
+    {
+        "submissions" => "אין משימות הגשה בפרויקט זה",
+        "tasks"       => "אין משימות בפרויקט זה",
+        _             => "אין משימות בפרויקט זה",
     };
 
-    private List<TaskMilestoneGroupDto> FilteredActiveGroups
+    // All milestones: active first, completed at the end.
+    private List<TaskMilestoneGroupDto> AllGroups =>
+        _data is null ? new() : _data.ActiveGroups.Concat(_data.CompletedGroups).ToList();
+
+    // Unified list used by הכול / הגשות / משימות tabs.
+    private List<TaskMilestoneGroupDto> FilteredAllGroups
     {
         get
         {
             if (_data is null) return new();
-
-            if (_summaryFilter == "pending")
+            return _activeFilter switch
             {
-                // Show only tasks that need student action, across all milestone groups
-                return _data.ActiveGroups
-                    .Select(g => new TaskMilestoneGroupDto
-                    {
-                        ProjectMilestoneId = g.ProjectMilestoneId,
-                        MilestoneTitle     = g.MilestoneTitle,
-                        OrderIndex         = g.OrderIndex,
-                        MilestoneStatus    = g.MilestoneStatus,
-                        OpenDate           = g.OpenDate,
-                        DueDate            = g.DueDate,
-                        CloseDate          = g.CloseDate,
-                        IsCurrentlyOpen    = g.IsCurrentlyOpen,
-                        DoneCount          = g.DoneCount,
-                        TotalCount         = g.TotalCount,
-                        Tasks              = g.Tasks.Where(t => IsNeedsAttentionStatus(t.Status)).ToList(),
-                    })
-                    .Where(g => g.Tasks.Count > 0)
-                    .ToList();
-            }
-
-            // Visibility is date-based — a milestone is "active" when today
-            // is inside its OpenDate/CloseDate window (server-derived
-            // IsCurrentlyOpen). Status is just a progress indicator and
-            // does NOT gate visibility, so a NotStarted milestone whose
-            // dates are open is still shown to the team.
-            var groups = _summaryFilter switch
-            {
-                "active" => _data.ActiveGroups.Where(g => g.IsCurrentlyOpen).ToList(),
-                _        => _data.ActiveGroups,
+                "submissions" => FilterByType(AllGroups, isSubmission: true),
+                "tasks"       => FilterByType(AllGroups, isSubmission: false),
+                _             => AllGroups,
             };
-
-            return ApplyStatusFilter(groups);
         }
     }
 
-    private static bool IsNeedsAttentionStatus(string status) =>
-        status is "ReturnedForRevision" or "SubmittedToMentor" or "RevisionSubmitted";
-
+    // Completed-only list used by הושלמו tab.
     private List<TaskMilestoneGroupDto> FilteredCompletedGroups
     {
         get
         {
             if (_data is null) return new();
-            return ApplyStatusFilter(_data.CompletedGroups);
+            return _activeFilter switch
+            {
+                "submissions" => FilterByType(_data.CompletedGroups, isSubmission: true),
+                "tasks"       => FilterByType(_data.CompletedGroups, isSubmission: false),
+                _             => _data.CompletedGroups,
+            };
         }
     }
 
-    private List<TaskMilestoneGroupDto> ApplyStatusFilter(List<TaskMilestoneGroupDto> groups)
+    private static List<TaskMilestoneGroupDto> FilterByType(
+        List<TaskMilestoneGroupDto> groups, bool isSubmission)
     {
-        if (string.IsNullOrEmpty(_statusFilter)) return groups;
-
         return groups
             .Select(g => new TaskMilestoneGroupDto
             {
@@ -250,20 +483,133 @@ else
                 IsCurrentlyOpen    = g.IsCurrentlyOpen,
                 DoneCount          = g.DoneCount,
                 TotalCount         = g.TotalCount,
-                Tasks              = g.Tasks.Where(t => t.Status == _statusFilter).ToList(),
+                Tasks              = g.Tasks.Where(t => t.IsSubmission == isSubmission).ToList(),
             })
             .Where(g => g.Tasks.Count > 0)
             .ToList();
     }
 
-    // Status filter chip definitions: (value, label, color-suffix)
-    private static readonly (string Value, string Label, string Color)[] StatusFilterOptions =
+    // ── "Requires action" logic ────────────────────────────────────────────────
+    private static bool TaskRequiresAction(TaskItemDto t)
     {
-        ("Open",                "ממתין לביצוע",        "gray"),
-        ("InProgress",          "בעבודה",              "blue"),
-        ("SubmittedToMentor",   "הועבר לבדיקת מנחה",   "indigo"),
-        ("ReturnedForRevision", "הוחזר לתיקון",        "orange"),
-        ("ApprovedForSubmission","אושר להגשה",          "teal"),
-        ("Done",                "הושלם",               "green"),
-    };
+        string resolved = ResolveDisplayStatus(t);
+        if (resolved is "ReturnedByMentor" or "ReturnedForRevision") return true;
+        if (resolved == "ApprovedByMentor") return true;         // must confirm Moodle
+        if (resolved == "PendingMentorReview")       return false; // waiting on mentor
+        if (t.Status  == "Done")                     return false;
+        if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today)                                  return true; // overdue
+        if (t.DueDate.HasValue && (t.DueDate.Value.Date - DateTime.Today).TotalDays <= 3)                 return true; // due soon
+        return false;
+    }
+
+    private static string ResolveDisplayStatus(TaskItemDto task)
+    {
+        if (!task.IsSubmission || task.LatestSubmissionStatus is null)
+            return task.Status;
+        if (task.LatestMentorStatus == "Returned")
+            return "ReturnedByMentor";
+        if (task.LatestSubmissionStatus == "NeedsRevision")
+            return "ReturnedForRevision";
+        if (task.LatestMentorStatus == "Pending")
+            return "PendingMentorReview";
+        if (task.LatestMentorStatus == "Approved" && task.LatestSubmissionStatus == "Submitted")
+            return "ApprovedByMentor";
+        return task.Status;
+    }
+
+    private int ActionCount =>
+        _data?.ActiveGroups.SelectMany(g => g.Tasks).Count(TaskRequiresAction) ?? 0;
+
+    private IReadOnlyList<TaskItemDto> ActionRequiredTasks
+    {
+        get
+        {
+            if (_data is null) return Array.Empty<TaskItemDto>();
+
+            return _data.ActiveGroups
+                .SelectMany(g => g.Tasks)
+                .Where(TaskRequiresAction)
+                .OrderBy(t =>
+                {
+                    // Overdue: most overdue first (most negative days = lowest)
+                    if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today)
+                        return (t.DueDate.Value.Date - DateTime.Today).TotalDays;
+                    // Returned/approved: high urgency with no date sort by 0
+                    string r = ResolveDisplayStatus(t);
+                    if (r is "ReturnedByMentor" or "ReturnedForRevision") return 0;
+                    if (r == "ApprovedByMentor") return 0;
+                    // Due soon: sort ascending
+                    return t.DueDate.HasValue ? (t.DueDate.Value.Date - DateTime.Today).TotalDays : 100;
+                })
+                .ToList();
+        }
+    }
+
+    // ── Date display helper ────────────────────────────────────────────────────
+    private static (string RelLabel, string AbsLabel, bool IsOverdue, bool IsSoon)
+        GetDateDisplay(DateTime? dueDate)
+    {
+        if (!dueDate.HasValue) return ("", "", false, false);
+        int    days = (dueDate.Value.Date - DateTime.Today).Days;
+        string abs  = dueDate.Value.ToString("dd/MM/yy");
+        if (days < 0)  return ("באיחור",          abs, true,  false);
+        if (days == 0) return ("היום",             abs, false, true);
+        if (days == 1) return ("מחר",              abs, false, true);
+        if (days <= 7) return ($"בעוד {days} ימים", abs, false, true);
+        return ("", abs, false, false);
+    }
+
+    // ── Action list display helpers ────────────────────────────────────────────
+    private static string ActionIconClass(string resolved, bool isOverdue) =>
+        isOverdue ? "tsk-ar-icon-overdue" : resolved switch
+        {
+            "ReturnedByMentor" or "ReturnedForRevision" => "tsk-ar-icon-returned",
+            "ApprovedByMentor"                          => "tsk-ar-icon-approved",
+            "PendingMentorReview"                       => "tsk-ar-icon-pending",
+            "Done"                                      => "tsk-ar-icon-done",
+            "InProgress"                                => "tsk-ar-icon-inprogress",
+            _                                           => "tsk-ar-icon-open",
+        };
+
+    private static string ActionIconName(string resolved, bool isOverdue) =>
+        isOverdue ? "oi-warning" : resolved switch
+        {
+            "ReturnedByMentor" or "ReturnedForRevision" => "oi-arrow-circle-left",
+            "ApprovedByMentor"                          => "oi-circle-check",
+            "PendingMentorReview"                       => "oi-clock",
+            "Done"                                      => "oi-circle-check",
+            "InProgress"                                => "oi-reload",
+            _                                           => "oi-media-record",
+        };
+
+    private static string ActionStatusClass(string resolved, bool isOverdue) =>
+        isOverdue ? "tsk-ar-status-overdue" : resolved switch
+        {
+            "ReturnedByMentor" or "ReturnedForRevision" => "tsk-ar-status-returned",
+            "ApprovedByMentor"                          => "tsk-ar-status-approved",
+            "PendingMentorReview"                       => "tsk-ar-status-pending",
+            "InProgress"                                => "tsk-ar-status-inprogress",
+            _                                           => "tsk-ar-status-open",
+        };
+
+    private static string ActionStatusLabel(string resolved, bool isOverdue)
+    {
+        if (isOverdue) return "באיחור";
+        return resolved switch
+        {
+            "ReturnedByMentor" or "ReturnedForRevision" => "הוחזר לתיקון",
+            "ApprovedByMentor"                          => "יש להגיש במודל",
+            "PendingMentorReview"                       => "ממתין למנחה",
+            "InProgress"                                => "בביצוע",
+            _                                           => "ממתין לביצוע",
+        };
+    }
+
+    private static string BuildAriaLabel(string title, bool isSubmission, DateTime? dueDate, string resolved)
+    {
+        string type    = isSubmission ? "הגשה" : "משימה";
+        string due     = dueDate.HasValue ? $", תאריך {dueDate.Value:dd/MM/yy}" : "";
+        string status  = ActionStatusLabel(resolved, dueDate.HasValue && dueDate.Value.Date < DateTime.Today);
+        return $"פתח {type}: {title}{due}, סטטוס: {status}";
+    }
 }
