@@ -46,14 +46,16 @@ public static class NavDefinitions
     {
         new NavItem("דשבורד",          "dashboard",         "oi-dashboard",       NavLinkMatch.All),
         new NavItem("המשימות שלי",     "tasks",             "oi-task",            NavLinkMatch.Prefix),
-        new NavItem("צוות חדשנות",     "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
+        new NavItem("התראות ועדכונים", "notifications",     "oi-bell",            NavLinkMatch.Prefix),
+        new NavItem("צוות החדשנות",    "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
         new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
-        new NavItem("יומן",            "journal",           "oi-calendar",        NavLinkMatch.Prefix),
         new NavItem("מרכז ידע",        "learning",          "oi-book",            NavLinkMatch.Prefix),
-        new NavItem("פרופיל",          "settings",          "oi-person",          NavLinkMatch.Prefix),
     };
 
-    private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
+    private static readonly IReadOnlyList<NavItem> _studentBottom = new[]
+    {
+        new NavItem("פרופיל", "settings", "oi-person", NavLinkMatch.Prefix),
+    };
 
     // ── Mentor ───────────────────────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _mentorMain = new[]
