@@ -1,0 +1,251 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    StageJourneyCard — the Project Stages page's main representation.
+
+    Deliberately modeled on Dashboard/ProjectJourneyCard's proven pattern
+    (timeline of dots/connectors + the active one expanded below), adapted
+    from milestone-level to stage-level, per product direction:
+      - Current stage auto-expands with FULL detail (progress, dates,
+        the complete "תוצרים" / Deliverables list).
+      - Every other stage stays visible but compact (StageCard rows) —
+        name, status, deliverable count only, no full list.
+      - Non-clickable in Epic 3 (Stage Workspace doesn't exist until
+        Epic 4) — no CTA button, no onclick anywhere in this component.
+    ══════════════════════════════════════════════════════════════ *@
+
+<div class="stj-card">
+
+    <!-- ── Header ── -->
+    <div class="stj-header">
+        <span class="oi oi-map stj-header-icon" aria-hidden="true"></span>
+        <span class="stj-header-title">מסלול הפרויקט</span>
+        @if (Stages.Count > 0 && _currentIndex > 0)
+        {
+            <span class="stj-step-counter">שלב @_currentIndex מתוך @Stages.Count</span>
+        }
+        @* Whole-roadmap progress — the "52%-style" number. Deliberately a
+           separate, separately-labeled badge from the current-stage
+           percentage below, per the product rule that the two must never
+           be presented as interchangeable. *@
+        <span class="stj-step-counter" title="אחוז ההשלמה של כל שלבי הפרויקט יחד">
+            התקדמות כוללת בפרויקט: @OverallProjectProgressPct%
+        </span>
+    </div>
+
+    @if (Stages.Count == 0)
+    {
+        <div class="stj-no-stages">
+            <p>שלבי המתודולוגיה טרם הוגדרו למחזור הנוכחי.</p>
+        </div>
+    }
+    else
+    {
+        <!-- ── Timeline: every stage as a node, current highlighted ── -->
+        <div class="stj-timeline-zone">
+            <div class="stj-timeline">
+                @for (int i = 0; i < Stages.Count; i++)
+                {
+                    var stage    = Stages[i];
+                    bool isActive = stage == _current;
+
+                    @if (i > 0)
+                    {
+                        bool prevDone = Stages[i - 1].Status == RoadmapStageStatuses.Completed;
+                        <div class="stj-connector @(prevDone ? "stj-conn-done" : "")" aria-hidden="true"></div>
+                    }
+
+                    <div class="stj-step @(isActive ? "stj-step-active" : "")"
+                         aria-label="@StepAriaLabel(stage.Name, isActive)">
+                        <div class="stj-dot @DotClass(stage.Status)">
+                            <span class="oi @DotIcon(stage.Status)" aria-hidden="true"></span>
+                        </div>
+                        <span class="stj-step-label">@stage.Name</span>
+                        @if (isActive)
+                        {
+                            <span class="stj-expand-hint" aria-hidden="true">▾</span>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <!-- ── Expanded zone: current stage, full detail ── -->
+        @if (_current is not null)
+        {
+            <div class="stj-expanded">
+
+                <div class="stj-expanded-head">
+                    <div class="stj-expanded-title-row">
+                        <span class="stj-dot @DotClass(_current.Status) stj-dot-md" aria-hidden="true">
+                            <span class="oi @DotIcon(_current.Status)" aria-hidden="true"></span>
+                        </span>
+                        <h3 class="stj-expanded-name">@_current.Name</h3>
+                        <span class="stj-status-pill">@RoadmapStageStatuses.Label(_current.Status)</span>
+                    </div>
+
+                    @if (_daysRemaining.HasValue)
+                    {
+                        <div class="stj-days @DaysClass()">
+                            @if (_daysRemaining.Value == 0)
+                            {
+                                <span class="stj-days-today">היום!</span>
+                            }
+                            else if (_daysRemaining.Value < 0)
+                            {
+                                <span class="stj-days-num">@Math.Abs(_daysRemaining.Value)</span>
+                                <span class="stj-days-unit">ימים באיחור</span>
+                            }
+                            else
+                            {
+                                <span class="stj-days-num">@_daysRemaining.Value</span>
+                                <span class="stj-days-unit">ימים נותרו</span>
+                            }
+                        </div>
+                    }
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(_current.Description))
+                {
+                    <p class="stj-expanded-desc">@_current.Description</p>
+                }
+
+                @if (_current.LinkedMilestoneCount > 0)
+                {
+                    <div class="stj-progress">
+                        <div class="stj-progress-track"
+                             role="progressbar"
+                             aria-valuenow="@_current.ProgressPct"
+                             aria-valuemin="0"
+                             aria-valuemax="100"
+                             aria-label="התקדמות בשלב הנוכחי: @_current.Name">
+                            <div class="stj-progress-fill" style="width: @_current.ProgressPct%"></div>
+                        </div>
+                        <div class="stj-progress-meta">
+                            @* Current-stage progress — the "62%-style" number. Explicitly
+                               labeled so it can never be read as the overall-project number
+                               in the header above. *@
+                            <span class="stj-progress-text">התקדמות בשלב הנוכחי — @_current.CompletedMilestoneCount מתוך @_current.LinkedMilestoneCount תוצרים הושלמו</span>
+                            <span class="stj-progress-pct">@_current.ProgressPct%</span>
+                        </div>
+                    </div>
+
+                    <div class="stj-deliverables">
+                        <span class="stj-deliverables-label">תוצרים</span>
+                        <ul class="stj-deliverable-list">
+                            @foreach (var m in _current.Milestones.OrderBy(x => x.OrderIndex))
+                            {
+                                <li class="stj-deliverable-row">
+                                    <span class="oi @DeliverableIcon(m.Status) stj-deliverable-icon stj-di-@MapMilestoneStatus(m.Status)" aria-hidden="true"></span>
+                                    <span class="stj-deliverable-title">@m.Title</span>
+                                    @if (m.DueDate.HasValue)
+                                    {
+                                        <span class="stj-deliverable-date">@m.DueDate.Value.ToString("dd/MM/yy")</span>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+                else
+                {
+                    <div class="stj-empty">
+                        <span class="oi oi-info" aria-hidden="true"></span>
+                        <span>אין תוצרים משויכים לשלב זה עדיין</span>
+                    </div>
+                }
+            </div>
+        }
+        else if (Stages.All(s => s.Status is RoadmapStageStatuses.Completed or RoadmapStageStatuses.NotApplicable))
+        {
+            <div class="stj-expanded stj-expanded-done">
+                <p class="stj-done-text">כל השלבים הושלמו — הפרויקט הסתיים בהצלחה.</p>
+            </div>
+        }
+
+        <!-- ── Compact list: every OTHER stage — visible, not hidden ── -->
+        @if (_others.Count > 0)
+        {
+            <div class="stj-others">
+                <span class="stj-others-label">שלבים נוספים</span>
+                <div class="stj-others-list">
+                    @foreach (var (stage, idx) in _others)
+                    {
+                        <StageCard Stage="@stage" Order="@idx" />
+                    }
+                </div>
+            </div>
+        }
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<StageProgressDto> Stages { get; set; } = new();
+
+    /// <summary>Whole-roadmap progress (average across every stage with
+    /// linked milestones) — a distinct number from any single stage's own
+    /// ProgressPct. See ProjectRoadmapProgressDto.OverallProjectProgressPct.</summary>
+    [Parameter] public int OverallProjectProgressPct { get; set; }
+
+    private StageProgressDto? _current =>
+        Stages.FirstOrDefault(s => s.Status == RoadmapStageStatuses.Current);
+
+    private int _currentIndex =>
+        _current is null ? 0 : Stages.IndexOf(_current) + 1;
+
+    private List<(StageProgressDto Stage, int Index)> _others =>
+        Stages.Select((s, i) => (Stage: s, Index: i + 1))
+              .Where(x => x.Stage != _current)
+              .ToList();
+
+    private DateTime? _deadline => _current?.SuggestedEndDate;
+
+    private int? _daysRemaining =>
+        _deadline.HasValue ? (int)(_deadline.Value.Date - DateTime.Today).TotalDays : null;
+
+    private string DaysClass()
+    {
+        if (!_daysRemaining.HasValue) return "";
+        int d = _daysRemaining.Value;
+        if (d < 0)  return "stj-days-late";
+        if (d <= 3) return "stj-days-urgent";
+        if (d <= 7) return "stj-days-soon";
+        return "";
+    }
+
+    private static string DotClass(string s) => s switch
+    {
+        RoadmapStageStatuses.Completed => "stj-dot-completed",
+        RoadmapStageStatuses.Current   => "stj-dot-current",
+        _                               => "stj-dot-future",
+    };
+
+    private static string DotIcon(string s) => s switch
+    {
+        RoadmapStageStatuses.Completed => "oi-check",
+        RoadmapStageStatuses.Current   => "oi-clock",
+        _                               => "oi-media-record",
+    };
+
+    private static string StepAriaLabel(string name, bool isActive) =>
+        isActive ? $"{name} — השלב הנוכחי" : name;
+
+    // Deliverable (ProjectMilestone) status → local vocabulary, only used
+    // for the current stage's full deliverable list.
+    private static string MapMilestoneStatus(string s) => s switch
+    {
+        "Completed"  => "completed",
+        "InProgress" => "current",
+        "Delayed"    => "notapplicable",
+        _            => "future",
+    };
+
+    private static string DeliverableIcon(string s) => s switch
+    {
+        "Completed"  => "oi-circle-check",
+        "InProgress" => "oi-clock",
+        "Delayed"    => "oi-warning",
+        _            => "oi-media-record",
+    };
+}

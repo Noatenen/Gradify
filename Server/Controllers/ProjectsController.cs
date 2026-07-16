@@ -1,5 +1,6 @@
 using AuthWithAdmin.Server.AuthHelpers;
 using AuthWithAdmin.Server.Data;
+using AuthWithAdmin.Server.Services;
 using AuthWithAdmin.Shared.AuthSharedModels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -17,8 +18,13 @@ namespace AuthWithAdmin.Server.Controllers;
 public class ProjectsController : ControllerBase
 {
     private readonly DbRepository _db;
+    private readonly TaskUrgencyService _taskUrgency;
 
-    public ProjectsController(DbRepository db) => _db = db;
+    public ProjectsController(DbRepository db, TaskUrgencyService taskUrgency)
+    {
+        _db = db;
+        _taskUrgency = taskUrgency;
+    }
 
     // ── GET /api/projects/my-dashboard ───────────────────────────────────────
     // Returns the complete dashboard payload for the authenticated student.
@@ -163,6 +169,10 @@ public class ProjectsController : ControllerBase
                      FROM   TaskSubmissions s
                      WHERE  s.TaskId = t.Id
                      ORDER  BY s.Id DESC LIMIT 1) AS LatestSubmittedAt,
+                    (SELECT s.MentorReviewedAt
+                     FROM   TaskSubmissions s
+                     WHERE  s.TaskId = t.Id
+                     ORDER  BY s.Id DESC LIMIT 1) AS LatestMentorReviewedAt,
                     (SELECT CASE WHEN s.MoodleSubmittedAt IS NOT NULL
                                    OR s.CourseSubmittedAt IS NOT NULL
                              THEN 1 ELSE 0 END
@@ -203,6 +213,38 @@ public class ProjectsController : ControllerBase
         // ── Assemble milestones with nested tasks ─────────────────────────────
         var tasksByMilestone = taskRows.ToLookup(t => t.ProjectMilestoneId);
 
+        // Canonical urgency per task (design/business-logic-consolidation-epic.md,
+        // Concept 4) — computed once here by the same service the Home Page's
+        // "מה דורש טיפול" / "העבודה שלי" sections read from, so the Dashboard
+        // never re-derives its own overdue/attention answer from raw fields.
+        var urgencyByTaskId = (await _taskUrgency.GetTaskUrgencyForProjectAsync(projectId))
+            .ToDictionary(u => u.TaskId);
+
+        // Shared by both the milestone-nested tasks below and the orphaned
+        // (no-milestone) team tasks — one mapping, not duplicated per caller.
+        TaskSummaryDto MapTask(TaskRow t)
+        {
+            urgencyByTaskId.TryGetValue(t.Id, out var urgency);
+            return new TaskSummaryDto
+            {
+                Id                     = t.Id,
+                Title                  = t.Title,
+                Description            = t.Description,
+                Status                 = NormalizeTaskStatus(t.Status, t.LatestMentorStatus, t.LatestSubmissionStatus),
+                DueDate                = t.DueDate,
+                AssignedToName         = t.AssignedToName,
+                IsSubmission           = t.IsSubmission,
+                LatestSubmissionStatus = t.LatestSubmissionStatus,
+                LatestMentorStatus     = t.LatestMentorStatus,
+                LatestSubmittedAt      = t.LatestSubmittedAt,
+                LatestMentorReviewedAt = t.LatestMentorReviewedAt,
+                LatestMoodleConfirmed  = t.LatestMoodleConfirmed,
+                IsOverdue              = urgency?.IsOverdue ?? false,
+                AttentionReason        = urgency?.AttentionReason ?? TaskAttentionReasons.None,
+                AttentionRank          = urgency?.AttentionRank ?? int.MaxValue,
+            };
+        }
+
         var milestones = milestoneRows.Select(m => new MilestoneSummaryDto
         {
             ProjectMilestoneId = m.ProjectMilestoneId,
@@ -214,23 +256,15 @@ public class ProjectsController : ControllerBase
             CloseDate          = m.CloseDate,
             CompletedAt        = m.CompletedAt,
             IsCurrentlyOpen    = m.IsCurrentlyOpen == 1,
-            Tasks              = tasksByMilestone[m.ProjectMilestoneId]
-                .Select(t => new TaskSummaryDto
-                {
-                    Id                     = t.Id,
-                    Title                  = t.Title,
-                    Description            = t.Description,
-                    Status                 = NormalizeTaskStatus(t.Status, t.LatestMentorStatus, t.LatestSubmissionStatus),
-                    DueDate                = t.DueDate,
-                    AssignedToName         = t.AssignedToName,
-                    IsSubmission           = t.IsSubmission,
-                    LatestSubmissionStatus = t.LatestSubmissionStatus,
-                    LatestMentorStatus     = t.LatestMentorStatus,
-                    LatestSubmittedAt      = t.LatestSubmittedAt,
-                    LatestMoodleConfirmed  = t.LatestMoodleConfirmed,
-                })
-                .ToList(),
+            Tasks              = tasksByMilestone[m.ProjectMilestoneId].Select(MapTask).ToList(),
         }).ToList();
+
+        // Team-created tasks — no ProjectMilestoneId, so they never belonged
+        // to any milestone's Tasks list above. See DashboardDto.TeamTasks.
+        var teamTasks = taskRows
+            .Where(t => t.ProjectMilestoneId is null)
+            .Select(MapTask)
+            .ToList();
 
         // ── Derive next deadline ──────────────────────────────────────────────
         // Prefer the nearest incomplete submission task; fall back to nearest milestone.
@@ -279,6 +313,7 @@ public class ProjectsController : ControllerBase
             Milestones   = milestones,
             NextDeadline = nextDeadline,
             OpenRequests = requests.ToList(),
+            TeamTasks    = teamTasks,
         };
 
         return Ok(dashboard);
@@ -956,6 +991,7 @@ public class ProjectsController : ControllerBase
         public string?   LatestSubmissionStatus { get; set; }
         public string?   LatestMentorStatus     { get; set; }
         public DateTime? LatestSubmittedAt      { get; set; }
+        public DateTime? LatestMentorReviewedAt { get; set; }
         public bool      LatestMoodleConfirmed  { get; set; }
     }
 

@@ -17,6 +17,9 @@ public interface IRoadmapStagesService
     // Mentor / Admin progress
     Task<ProjectRoadmapProgressDto?>      GetProjectProgressAsync(int projectId);
     Task<List<MentorRoadmapEntryDto>?>    GetMentorProjectsProgressAsync();
+
+    // Student progress (own project)
+    Task<ProjectRoadmapProgressDto?>      GetMyProgressAsync();
 }
 
 /// <summary>Row returned by GET /api/roadmap-stages/cycle/{id}/available-milestones.
@@ -118,6 +121,12 @@ public class RoadmapStagesService : IRoadmapStagesService
     public async Task<List<MentorRoadmapEntryDto>?> GetMentorProjectsProgressAsync()
     {
         try { return await _http.GetFromJsonAsync<List<MentorRoadmapEntryDto>>("api/roadmap-stages/mentor/projects-progress"); }
+        catch { return null; }
+    }
+
+    public async Task<ProjectRoadmapProgressDto?> GetMyProgressAsync()
+    {
+        try { return await _http.GetFromJsonAsync<ProjectRoadmapProgressDto>("api/roadmap-stages/my-progress"); }
         catch { return null; }
     }
 }

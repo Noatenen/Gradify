@@ -1,0 +1,173 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+
+@*
+    HomeWorkspaceList — Home Page Layer D ("העבודה שלי").
+
+    ONE card, two source-based groups — not urgency tiers. The split uses a
+    real field, not title guessing: "משימות מערכת" is every task that arrived
+    nested under a milestone (Milestones[].Tasks[] — by construction tied to
+    the academic process); "משימות צוות" is DashboardDto.TeamTasks, tasks with
+    no ProjectMilestoneId (ad-hoc, team-created). Previously that second group
+    was invisible: GetMyDashboard only ever assembled milestone-linked tasks,
+    so a task like "תיאום ישיבת סטטוס שבועית עם המנחה" (no milestone) was
+    silently dropped. See ProjectsController.GetMyDashboard / DashboardDto.TeamTasks.
+
+    Rows keep their per-task urgency (colored meta text, still from the same
+    canonical AttentionReason HomeFocusCard reads) but are no longer grouped
+    by it — sorted by AttentionRank/DueDate within each source group instead.
+    The task already surfaced in HomeFocusCard is excluded via ExcludeTaskId.
+*@
+
+<section class="hwl">
+    <div class="hwl-label">
+        <span class="oi oi-task" aria-hidden="true"></span>
+        העבודה שלי
+    </div>
+
+    <div class="hwl-card">
+
+        @if (SystemTasks.Count > 0 || NextStagePreview is not null)
+        {
+            <div class="hwl-group">
+                <div class="hwl-group-head">
+                    <span class="hwl-group-name">משימות מערכת</span>
+                    <span class="hwl-group-count">· @(SystemTasks.Count + (NextStagePreview is not null ? 1 : 0))</span>
+                </div>
+                @foreach (var t in SystemTasks)
+                {
+                    <div class="hwl-row" @onclick="@(() => OnOpenTask.InvokeAsync(t.Id))">
+                        <span class="oi @IconFor(t, isTeamTask: false) hwl-row-icon" aria-hidden="true"></span>
+                        <span class="hwl-row-title">@t.Title</span>
+                        <span class="hwl-row-meta @MetaClassFor(t)">@MetaFor(t)</span>
+                    </div>
+                }
+                @if (NextStagePreview is { } preview)
+                {
+                    <div class="hwl-row hwl-row-preview">
+                        <span class="oi oi-flag hwl-row-icon" aria-hidden="true"></span>
+                        <span class="hwl-row-title">@preview.Title</span>
+                        <span class="hwl-row-meta">שלב @preview.StageName הבא</span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (TeamTasksList.Count > 0)
+        {
+            <div class="hwl-group">
+                <div class="hwl-group-head">
+                    <span class="hwl-group-name">משימות צוות</span>
+                    <span class="hwl-group-count">· @TeamTasksList.Count</span>
+                </div>
+                @foreach (var t in TeamTasksList)
+                {
+                    <div class="hwl-row" @onclick="@(() => OnOpenTask.InvokeAsync(t.Id))">
+                        <span class="oi @IconFor(t, isTeamTask: true) hwl-row-icon" aria-hidden="true"></span>
+                        <span class="hwl-row-title">@t.Title</span>
+                        <span class="hwl-row-meta @MetaClassFor(t)">@MetaFor(t)</span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (SystemTasks.Count == 0 && TeamTasksList.Count == 0 && NextStagePreview is null)
+        {
+            <div class="hwl-empty">אין כרגע פריטים פתוחים.</div>
+        }
+
+    </div>
+    <div class="hwl-foot">
+        <span class="hwl-link" @onclick="@(() => Nav.NavigateTo("/tasks"))">לכל המשימות ←</span>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones { get; set; } = default!;
+    [Parameter] public List<TaskSummaryDto> TeamTasks { get; set; } = new();
+    [Parameter] public ProjectRoadmapProgressDto? Progress { get; set; }
+    [Parameter] public int? ExcludeTaskId { get; set; }
+    [Parameter] public EventCallback<int> OnOpenTask { get; set; }
+
+    private static bool IsOpen(TaskSummaryDto t) => t.Status != "Done";
+
+    /// <summary>Milestone-linked tasks — the academic process (submissions,
+    /// evaluation deliverables, mentor-assigned work). Structurally guaranteed:
+    /// every task here arrived nested under a real ProjectMilestone.</summary>
+    private List<TaskSummaryDto> SystemTasks =>
+        Milestones.SelectMany(m => m.Tasks)
+            .Where(t => t.Id != ExcludeTaskId && IsOpen(t))
+            .OrderBy(t => t.AttentionRank)
+            .ThenBy(t => t.DueDate)
+            .ToList();
+
+    /// <summary>Team-created tasks — DashboardDto.TeamTasks (no
+    /// ProjectMilestoneId). Real field, not inferred from the title.</summary>
+    private List<TaskSummaryDto> TeamTasksList =>
+        TeamTasks.Where(t => t.Id != ExcludeTaskId && IsOpen(t))
+            .OrderBy(t => t.AttentionRank)
+            .ThenBy(t => t.DueDate)
+            .ToList();
+
+    /// <summary>Informational preview of the next stage's first milestone —
+    /// real data from the roadmap response, not a task. Null when there is no
+    /// next stage or it has no linked milestones yet.</summary>
+    private (string Title, string StageName)? NextStagePreview
+    {
+        get
+        {
+            if (Progress is null || Progress.CurrentStageCode is null) return null;
+            var next = Progress.Stages.OrderBy(s => s.DisplayOrder)
+                .SkipWhile(s => s.Code != Progress.CurrentStageCode)
+                .Skip(1)
+                .FirstOrDefault(s => s.Milestones.Count > 0);
+            var firstMilestone = next?.Milestones.OrderBy(m => m.OrderIndex).FirstOrDefault();
+            return firstMilestone is null ? null : (firstMilestone.Title, next!.Name);
+        }
+    }
+
+    /// <summary>Icon reflects the task's source/type, per the approved icon
+    /// vocabulary already used elsewhere in the app (TaskDetailModal's chips,
+    /// NotificationBell's icons) — not a new icon set.
+    ///   • team task            → oi-people (source wins over type)
+    ///   • returned for revision → oi-comment-square (feedback needs addressing)
+    ///   • submission            → oi-data-transfer-upload
+    ///   • plain task            → oi-task
+    /// </summary>
+    private static string IconFor(TaskSummaryDto t, bool isTeamTask)
+    {
+        if (isTeamTask) return "oi-people";
+        if (t.AttentionReason == TaskAttentionReasons.ReturnedForRevision) return "oi-comment-square";
+        if (t.IsSubmission) return "oi-data-transfer-upload";
+        return "oi-task";
+    }
+
+    private static string MetaClassFor(TaskSummaryDto t) => t.AttentionReason switch
+    {
+        TaskAttentionReasons.Overdue or TaskAttentionReasons.ReturnedForRevision => "hwl-meta-danger",
+        TaskAttentionReasons.DueSoon => "hwl-meta-waiting",
+        _ => "",
+    };
+
+    private static string MetaFor(TaskSummaryDto t)
+    {
+        var today = DateTime.Today;
+        switch (t.AttentionReason)
+        {
+            case TaskAttentionReasons.Overdue when t.DueDate.HasValue:
+                var lateDays = (today - t.DueDate.Value.Date).Days;
+                return $"באיחור · {lateDays} ימים";
+            case TaskAttentionReasons.DueSoon when t.DueDate.HasValue:
+                var soonDays = (t.DueDate.Value.Date - today).Days;
+                return soonDays <= 0 ? "מועד היום" : soonDays == 1 ? "מועד מחר" : $"מועד בעוד {soonDays} ימים";
+            case TaskAttentionReasons.PendingMentorReview:
+                return "ממתין למנחה";
+            case TaskAttentionReasons.PendingMoodleConfirmation:
+                return "ממתין לאישור מודל";
+            case TaskAttentionReasons.ReturnedForRevision:
+                return "הוחזר לתיקון";
+            default:
+                return t.DueDate.HasValue ? $"מועד {t.DueDate.Value:dd.MM}" : "";
+        }
+    }
+}

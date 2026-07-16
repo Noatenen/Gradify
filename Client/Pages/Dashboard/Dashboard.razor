@@ -6,6 +6,8 @@
 @using AuthWithAdmin.Client.Pages.Requests
 @using AuthWithAdmin.Client.Pages.Tasks
 @inject IDashboardService DashboardService
+@inject IRoadmapStagesService StagesService
+@inject INotificationService NotificationService
 @inject NavigationManager Nav
 @inject AuthenticationStateProvider AuthStateProvider
 @attribute [Authorize]
@@ -39,43 +41,28 @@ else if (_data?.Project is null)
 }
 else
 {
-    <div class="student-dashboard">
+    <!-- Motiva Home Page — story-driven, not a widget dashboard.
+         See design/motiva-home-page-v5.html for the approved reference.
+         Layer A (compact page context) is intentionally absent here: the
+         page title alone, already shown by AppTopBar, is the whole of it —
+         no repeated greeting block. -->
+    <div class="student-home">
 
-        <!-- Hero: current milestone stage + next submission in one unified card -->
-        <StudentDashboardHero Project="@_data.Project"
-                              Milestones="@(_data.Milestones ?? new())"
-                              OnOpenProjectDetails="OpenProjectDetails"
-                              OnOpenMilestone="OpenMilestoneDetail"
-                              OnOpenTask="OpenDetail" />
+        <HomeJourneyStrip Progress="@_progress" />
 
-        <!-- Three information cards: upcoming submissions | requires attention | personal tasks -->
-        <div class="sdash-cards-row">
-            <UpcomingSubmissionsCard Milestones="@(_data.Milestones ?? new())"
-                                     NextDeadline="@_data.NextDeadline"
-                                     OnOpenTask="OpenDetail" />
-            <ActionCenterCard Milestones="@(_data.Milestones ?? new())"
-                              OpenRequests="@(_data.OpenRequests ?? new())"
-                              OnOpenTask="OpenDetail" />
-            <TeamTasksCard TeamMembers="@(_data.TeamMembers ?? new())" />
-        </div>
+        <HomeFocusCard Milestones="@(_data.Milestones ?? new())"
+                       OnOpenTask="OpenDetail" />
+
+        <HomeWorkspaceList Milestones="@(_data.Milestones ?? new())"
+                           TeamTasks="@(_data.TeamTasks ?? new())"
+                           Progress="@_progress"
+                           ExcludeTaskId="@_focusTaskId"
+                           OnOpenTask="OpenDetail" />
+
+        <HomeActivityList Notifications="@_recentNotifications" />
 
     </div>
 }
-
-<!-- Project details modal — ShowCard=false: no banner, modal only.
-     Mounted here so Dashboard.razor can open it via @ref from the context strip. -->
-@if (_data?.Project is not null)
-{
-    <ProjectDetailsCard @ref="_projectCard"
-                        ShowCard="false"
-                        Project="@_data.Project"
-                        TeamMembers="@(_data.TeamMembers ?? new())"
-                        Mentors="@(_data.Mentors ?? new())" />
-}
-
-<MilestoneDetailModal Milestone="@_detailMilestone"
-                      OnClose="CloseMilestoneDetail"
-                      OnOpenTask="OpenTaskFromMilestone" />
 
 <TaskDetailModal TaskId="@_detailTaskId"
                  OnClose="CloseDetail"
@@ -89,11 +76,24 @@ else
     private bool _loadError = false;
     private bool _showNewRequest; // kept — TODO: wire to a dashboard CTA when requests are surfaced
     private int  _detailTaskId;
-    private MilestoneSummaryDto? _detailMilestone;
     private bool _loadStarted;
 
-    // @ref to the project details modal (card surface hidden; modal triggered from the hero).
-    private ProjectDetailsCard? _projectCard;
+    // Home Page — Layer B (journey) and Layer E (activity) data. Fetched
+    // alongside the dashboard payload; both endpoints already exist and are
+    // used elsewhere (StudentStagesPage, NotificationBell) — nothing new here.
+    private ProjectRoadmapProgressDto? _progress;
+    private List<NotificationDto>      _recentNotifications = new();
+
+    /// <summary>The same "top attention task" HomeFocusCard selects, so
+    /// HomeWorkspaceList can exclude it and never show the same task twice.
+    /// Mirrors HomeFocusCard.TopTask — both read the identical canonical
+    /// AttentionRank field, so this is a selection, not a second computation.</summary>
+    private int? _focusTaskId =>
+        (_data?.Milestones ?? new())
+            .SelectMany(m => m.Tasks)
+            .Where(t => t.AttentionReason != TaskAttentionReasons.None)
+            .OrderBy(t => t.AttentionRank)
+            .FirstOrDefault()?.Id;
 
     // The cascading _user is hydrated asynchronously by App.razor, so it can
     // be null on the first parameter-set. We gate the load on _user being
@@ -260,12 +260,33 @@ else
 
         // [DashboardDiag] final state
         Console.WriteLine($"[DashboardDiag] LoadDashboardAsync() FINAL: dataNull={_data is null} loadError={_loadError} isLoading={_isLoading}");
-    }
 
-    private async Task OpenProjectDetails()
-    {
-        if (_projectCard is not null)
-            await _projectCard.OpenModal();
+        // Home Page Layers B + E. Fetched only once _data is confirmed loaded —
+        // the auth-state retry loop above already solved the cold-start problem
+        // for this session, so these two calls don't need their own retries.
+        // Best-effort: a failure here degrades those two sections gracefully
+        // (HomeJourneyStrip/HomeActivityList both render nothing when their
+        // data is null/empty) rather than blocking the whole page.
+        if (_data is not null && _data.Project is not null)
+        {
+            try
+            {
+                _progress = await StagesService.GetMyProgressAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DashboardDiag] roadmap progress fetch failed: {ex.Message}");
+            }
+
+            try
+            {
+                _recentNotifications = await NotificationService.GetRecentAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DashboardDiag] notifications fetch failed: {ex.Message}");
+            }
+        }
     }
 
     private void OpenDetail(int taskId)
@@ -275,23 +296,6 @@ else
     }
 
     private void CloseDetail()               => _detailTaskId = 0;
-
-    // ── Milestone detail modal (opened from the progress timeline) ──────────────
-    private void OpenMilestoneDetail(MilestoneSummaryDto ms)
-    {
-        _detailMilestone = ms;
-        StateHasChanged();
-    }
-
-    private void CloseMilestoneDetail()      => _detailMilestone = null;
-
-    // Clicking a task inside the milestone modal reuses the existing
-    // TaskDetailModal: close the milestone modal, then open the task one.
-    private void OpenTaskFromMilestone(int taskId)
-    {
-        _detailMilestone = null;
-        OpenDetail(taskId);
-    }
 
     private void OpenSubmissionFromDetail(int taskId)
     {

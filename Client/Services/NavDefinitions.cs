@@ -42,19 +42,24 @@ public static class NavDefinitions
     };
 
     // ── Student ──────────────────────────────────────────────────────
+    // Split into two unlabeled visual clusters (spacing + divider only,
+    // per design decision — see motiva_student_nav_redesign memory):
+    // daily working loop, then support/reference destinations. Notifications
+    // moved to the header bell (single persistent entry point, no more
+    // duplicate destination); Profile/Settings lives solely in the footer
+    // avatar card, so it's deliberately absent from both lists here.
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
-        new NavItem("דשבורד",          "dashboard",         "oi-dashboard",       NavLinkMatch.All),
-        new NavItem("המשימות שלי",     "tasks",             "oi-task",            NavLinkMatch.Prefix),
-        new NavItem("התראות ועדכונים", "notifications",     "oi-bell",            NavLinkMatch.Prefix),
-        new NavItem("צוות החדשנות",    "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
-        new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
-        new NavItem("מרכז ידע",        "learning",          "oi-book",            NavLinkMatch.Prefix),
+        new NavItem("דשבורד",          "dashboard",         "oi-dashboard", NavLinkMatch.All),
+        new NavItem("המשימות שלי",     "tasks",             "oi-task",      NavLinkMatch.Prefix),
+        new NavItem("שלבי הפרויקט",    "project-stages",    "oi-map",       NavLinkMatch.Prefix),
     };
 
     private static readonly IReadOnlyList<NavItem> _studentBottom = new[]
     {
-        new NavItem("פרופיל", "settings", "oi-person", NavLinkMatch.Prefix),
+        new NavItem("צוות החדשנות",    "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
+        new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("מרכז ידע",        "learning",          "oi-book",            NavLinkMatch.Prefix),
     };
 
     // ── Mentor ───────────────────────────────────────────────────────
@@ -100,5 +105,27 @@ public static class NavDefinitions
         if (RoleService.IsAdminOrStaff(user)) return (_adminMain,   _adminBottom);
 
         return (_studentMain, _studentBottom); // safe fallback
+    }
+
+    /// <summary>
+    /// Resolves the calm, functional page-context label the header shows
+    /// instead of a repeated greeting (student experience only — see
+    /// AppTopBar). Falls back to a couple of destinations that are reachable
+    /// but deliberately not in either nav list (e.g. Settings via the footer
+    /// avatar card, Notifications via the header bell).
+    /// </summary>
+    public static string GetPageTitle(User? user, string relativePath)
+    {
+        var path = relativePath.TrimStart('/');
+
+        if (path.StartsWith("settings", StringComparison.OrdinalIgnoreCase)) return "הגדרות";
+        if (path.StartsWith("notifications", StringComparison.OrdinalIgnoreCase)) return "התראות";
+
+        var (main, bottom) = GetNavItems(user);
+        var match = main.Concat(bottom)
+            .Where(i => path.StartsWith(i.Href, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(i => i.Href.Length)
+            .FirstOrDefault();
+        return match?.Label ?? "";
     }
 }

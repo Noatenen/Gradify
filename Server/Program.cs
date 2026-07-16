@@ -24,6 +24,15 @@ builder.Services.AddRazorPages();
 
 //DB
 builder.Services.AddScoped<DbRepository>();
+builder.Services.AddScoped<DemoDataSeeder>(); // Development-only demo dataset — see DemoDataController
+
+// Canonical business-logic services — Phase 1 of the consolidation epic
+// (design/business-logic-consolidation-epic.md). Not yet called by any
+// controller; registered here so Phase 2 can inject them without a second
+// wiring step. See each service's file header for what it replaces.
+builder.Services.AddScoped<AuthWithAdmin.Server.Services.ProjectHealthService>();
+builder.Services.AddScoped<AuthWithAdmin.Server.Services.ProjectRoadmapService>();
+builder.Services.AddScoped<AuthWithAdmin.Server.Services.TaskUrgencyService>();
 
 //User management
 builder.Services.AddHttpContextAccessor();
@@ -153,6 +162,17 @@ app.MapControllers();
 app.MapFallbackToFile("index.html");
 
 await DatabaseMigrator.MigrateAsync(app.Configuration);
+
+// Development-only: seed the demo dataset if it isn't already present.
+// Fully idempotent (see DemoDataSeeder.SeedIfMissingAsync) — a no-op on every
+// boot after the first. Never runs outside Development; DemoDataController's
+// manual endpoints carry the same check independently as a second guard.
+if (app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var demoSeeder = scope.ServiceProvider.GetRequiredService<DemoDataSeeder>();
+    await demoSeeder.SeedIfMissingAsync();
+}
 
 app.Run();
 

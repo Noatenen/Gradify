@@ -23,6 +23,13 @@ public class DashboardDto
     public List<MilestoneSummaryDto> Milestones  { get; set; } = new();
     public UpcomingDeadlineDto?     NextDeadline { get; set; }
     public List<OpenRequestDto>     OpenRequests { get; set; } = new();
+    /// <summary>Tasks with no ProjectMilestoneId — not part of the academic
+    /// milestone/submission process, created ad-hoc by a team member (e.g. an
+    /// internal coordination task). Previously silently dropped by this
+    /// endpoint (only milestone-linked tasks were ever assembled); surfaced
+    /// explicitly so the Home Page can distinguish "משימות מערכת" from
+    /// "משימות צוות" using a real field instead of guessing from title text.</summary>
+    public List<TaskSummaryDto>     TeamTasks    { get; set; } = new();
 }
 
 // ── Project ──────────────────────────────────────────────────────────────────
@@ -111,10 +118,25 @@ public class TaskSummaryDto
     public string?   LatestMentorStatus     { get; set; }
     /// <summary>When the latest submission was created. Null if never submitted.</summary>
     public DateTime? LatestSubmittedAt      { get; set; }
+    /// <summary>When the mentor reviewed the latest submission (TaskSubmissions.
+    /// MentorReviewedAt). Null if never reviewed — used for the Home Page's
+    /// "הוחזר לתיקון לפני X ימים" style relative-time status.</summary>
+    public DateTime? LatestMentorReviewedAt { get; set; }
     /// <summary>True ⇒ the latest submission has been confirmed as submitted to Moodle
     /// (TaskSubmissions.MoodleSubmittedAt or legacy CourseSubmittedAt is set). False if
     /// never submitted or not yet confirmed.</summary>
     public bool      LatestMoodleConfirmed  { get; set; }
+
+    /// <summary>PHASE 1 canonical urgency flag — computed by TaskUrgencyService
+    /// (design/business-logic-consolidation-epic.md, Concept 4), not re-derived
+    /// here. Mandatory, no submission yet, past the effective due date.</summary>
+    public bool      IsOverdue       { get; set; }
+    /// <summary>Canonical reason — see TaskAttentionReasons in this namespace.
+    /// "None" when nothing about this task currently needs attention.</summary>
+    public string    AttentionReason { get; set; } = TaskAttentionReasons.None;
+    /// <summary>Canonical priority rank from TaskUrgencyService — lower is more
+    /// urgent; int.MaxValue when AttentionReason is None.</summary>
+    public int       AttentionRank   { get; set; } = int.MaxValue;
 }
 
 // ── Upcoming deadline ─────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IAuthenticationService _Auth
 @inject IProjectContextService _ProjectContext
+@inject IRoadmapStagesService _RoadmapStages
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -10,11 +11,8 @@
     <div class="sidenav-panel">
 
         <!-- ======= Logo ======= -->
-        <!-- To insert the final Motiva logo: replace the <span> below with
-             <img src="/images/motiva-logo.svg" alt="Motiva" class="snav-logo-img" />
-             The asset must live at Client/wwwroot/images/motiva-logo.svg        -->
         <div class="snav-logo">
-            <span class="snav-logo-wordmark">motiva</span>
+            <img src="/images/motiva-logo.png" alt="Motiva" class="snav-logo-img" />
         </div>
 
         <!-- ======= Project workspace (students) / User header (staff + mentors) ======= -->
@@ -29,6 +27,33 @@
                             : _projectCtx.TeamName)
                     </div>
                     <div class="snav-workspace-project">@_projectCtx.ProjectTitle</div>
+
+                    @if (_currentStage is not null)
+                    {
+                        <div class="snav-stage-row">
+                            <span class="snav-stage-name">@_currentStage.Name</span>
+                            <span class="snav-stage-position">שלב @_stagePosition מתוך @_stageTotal</span>
+                        </div>
+                        <div class="snav-stage-track">
+                            <div class="snav-stage-fill" style="width:@(_currentStage.ProgressPct)%"></div>
+                        </div>
+                    }
+                    else if (_allStagesDone)
+                    {
+                        <div class="snav-stage-row-done">
+                            <span class="oi oi-check" aria-hidden="true"></span>
+                            <span>כל שלבי הפרויקט הושלמו</span>
+                        </div>
+                    }
+
+                    @if (NextDeliverable is { } next)
+                    {
+                        <div class="snav-next-row @(next.IsOverdue ? "snav-next-row-overdue" : "")">
+                            <span class="snav-next-label">@(next.Label):</span>
+                            <span class="snav-next-title">@next.Title</span>
+                            <span class="snav-next-due">· @next.DueText</span>
+                        </div>
+                    }
                 </div>
             }
         }
@@ -113,7 +138,7 @@
                 <div class="snav-profile-avatar">@GetInitials()</div>
                 <div class="snav-profile-text">
                     <div class="snav-profile-name">@($"{_user?.FirstName} {_user?.LastName}".Trim())</div>
-                    <div class="snav-profile-action">הצג פרופיל</div>
+                    <div class="snav-profile-action">@(RoleService.IsStudent(_user) ? "הגדרות" : "הצג פרופיל")</div>
                 </div>
             </a>
             <button class="snav-logout-icon-btn" @onclick="HandleLogout" title="התנתקות" aria-label="התנתקות">
@@ -132,10 +157,60 @@
     private IReadOnlyList<NavItem> _navBottom = Array.Empty<NavItem>();
     private ProjectContextDto?     _projectCtx;
 
+    // Persistent "living companion" project-context widget (students only).
+    // Fetched once — this component stays mounted for the whole session.
+    private StageProgressDto? _currentStage;
+    private int  _stagePosition;
+    private int  _stageTotal;
+    private bool _allStagesDone;
+    private ProjectRoadmapProgressDto? _roadmapProgress;
+
     protected override async Task OnInitializedAsync()
     {
         _projectCtx = await _ProjectContext.GetAsync();
+
+        if (RoleService.IsStudent(_user))
+        {
+            _roadmapProgress = await _RoadmapStages.GetMyProgressAsync();
+            if (_roadmapProgress is not null && _roadmapProgress.Stages.Count > 0)
+            {
+                var ordered = _roadmapProgress.Stages.OrderBy(s => s.DisplayOrder).ToList();
+                _stageTotal = ordered.Count;
+                var idx = ordered.FindIndex(s => s.Status == "Current");
+                if (idx >= 0)
+                {
+                    _currentStage  = ordered[idx];
+                    _stagePosition = idx + 1;
+                }
+                else
+                {
+                    _allStagesDone = ordered.All(s => s.Status is "Completed" or "NotApplicable");
+                }
+            }
+        }
+
         UserModeService.CurrentModeChanged += OnModeChanged;
+    }
+
+    private (string Label, string Title, string DueText, bool IsOverdue)? NextDeliverable
+    {
+        get
+        {
+            var m = _roadmapProgress?.Overdue ?? _roadmapProgress?.Upcoming;
+            if (m is null) return null;
+            bool overdue = _roadmapProgress?.Overdue is not null;
+            return (overdue ? "באיחור" : "הבא", m.Title, FormatDue(m.DaysUntilDue, overdue), overdue);
+        }
+    }
+
+    private static string FormatDue(int? days, bool overdue)
+    {
+        if (days is null) return "";
+        var n = Math.Abs(days.Value);
+        if (overdue) return n == 1 ? "יום אחד" : $"{n} ימים";
+        if (n == 0) return "היום";
+        if (n == 1) return "מחר";
+        return $"בעוד {n} ימים";
     }
 
     protected override void OnParametersSet()

@@ -1,5 +1,6 @@
 using AuthWithAdmin.Server.AuthHelpers;
 using AuthWithAdmin.Server.Data;
+using AuthWithAdmin.Server.Services;
 using AuthWithAdmin.Shared.AuthSharedModels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -42,8 +43,13 @@ namespace AuthWithAdmin.Server.Controllers;
 public class RoadmapStagesController : ControllerBase
 {
     private readonly DbRepository _db;
+    private readonly ProjectRoadmapService _roadmapService;
 
-    public RoadmapStagesController(DbRepository db) => _db = db;
+    public RoadmapStagesController(DbRepository db, ProjectRoadmapService roadmapService)
+    {
+        _db = db;
+        _roadmapService = roadmapService;
+    }
 
     // ───── Admin / Lecturer CRUD ────────────────────────────────────────────
 
@@ -304,7 +310,7 @@ public class RoadmapStagesController : ControllerBase
         var result = new List<MentorRoadmapEntryDto>(projects.Count);
         foreach (var p in projects)
         {
-            var progress = await BuildProgressAsync(p.ProjectId, p.AcademicYearId);
+            var progress = await _roadmapService.GetProjectRoadmapAsync(p.ProjectId, p.AcademicYearId);
             result.Add(new MentorRoadmapEntryDto
             {
                 ProjectId     = p.ProjectId,
@@ -342,7 +348,39 @@ public class RoadmapStagesController : ControllerBase
             if (!isMentorOf) return NotFound("הפרויקט לא נמצא");
         }
 
-        var result = await BuildProgressAsync(projectId, ctx.AcademicYearId);
+        var result = await _roadmapService.GetProjectRoadmapAsync(projectId, ctx.AcademicYearId);
+        return Ok(result);
+    }
+
+    // GET /api/roadmap-stages/my-progress
+    // Student-facing: roadmap progress for the CALLER's own project.
+    // Mirrors ProjectsController's "my-*" endpoints — no role restriction
+    // beyond the class-level [Authorize], because the query below already
+    // scopes every result to the caller's own team/project via authUserId.
+    // Reuses the same BuildProgressAsync the mentor/admin endpoint above
+    // uses; that endpoint's own authorization is left untouched.
+    [HttpGet("my-progress")]
+    public async Task<IActionResult> GetMyProgress(int authUserId)
+    {
+        // Draft assignments stay hidden from students, same rule as
+        // ProjectsController.GetMyDashboard.
+        var ctx = (await _db.GetRecordsAsync<ProjectCycleRow>(@"
+            SELECT  p.Id AS ProjectId, p.AcademicYearId
+            FROM    Projects     p
+            JOIN    Teams        t  ON p.TeamId  = t.Id
+            JOIN    TeamMembers  tm ON t.Id       = tm.TeamId
+            WHERE   tm.UserId   = @UserId
+              AND   tm.IsActive = 1
+              AND   COALESCE(p.AssignmentIsDraft, 0) = 0
+            LIMIT 1",
+            new { UserId = authUserId }))?.FirstOrDefault();
+
+        // No assigned project → empty payload (ProjectId = 0), not an error.
+        // The client renders its own "not assigned yet" state, same pattern
+        // as the student tasks/dashboard endpoints.
+        if (ctx is null) return Ok(new ProjectRoadmapProgressDto());
+
+        var result = await _roadmapService.GetProjectRoadmapAsync(ctx.ProjectId, ctx.AcademicYearId);
         return Ok(result);
     }
 
@@ -400,209 +438,10 @@ public class RoadmapStagesController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Calculation logic (per spec §4):
-    ///
-    ///  - A stage is **completed** when every linked ProjectMilestones row
-    ///    has Status = 'Completed'. Stages with no linked milestones are
-    ///    skipped for stage selection (they remain visible but marked
-    ///    NotApplicable).
-    ///  - The **current** stage is the lowest-DisplayOrder active stage that
-    ///    is not fully completed AND has at least one linked milestone.
-    ///  - **Schedule status** compares today's date to the current stage's
-    ///    SuggestedStartDate / SuggestedEndDate:
-    ///       today > SuggestedEndDate                           → Behind
-    ///       today < SuggestedStartDate (stage already current) → Ahead
-    ///       otherwise (or dates missing for the current stage) → OnTrack
-    ///    If no current stage exists OR the current stage has neither
-    ///    suggested date → NoSchedule.
-    ///  - Upcoming = earliest-due, non-completed linked milestone in the
-    ///    current stage (falls back to earliest across all stages).
-    ///  - Overdue  = the most-overdue (lowest-DueDate, before today) non-
-    ///    completed milestone across the whole project.
-    /// </summary>
-    private async Task<ProjectRoadmapProgressDto> BuildProgressAsync(int projectId, int academicYearId)
-    {
-        // Stages for the cycle.
-        var stages = (await _db.GetRecordsAsync<StageRow>(@"
-            SELECT  Id, Code, Name, Description, DisplayOrder, IsActive,
-                    SuggestedStartDate, SuggestedEndDate
-            FROM    RoadmapStages
-            WHERE   AcademicYearId = @YearId
-              AND   IsActive = 1
-            ORDER   BY DisplayOrder, Id",
-            new { YearId = academicYearId }))?.ToList()
-            ?? new List<StageRow>();
-
-        // All linked ProjectMilestones for this project (with their AYM →
-        // stage mapping). Per-team due-date overrides aren't merged here
-        // because the roadmap display is rough by design; the milestone
-        // accordion below it still shows authoritative per-team dates.
-        var milestones = (await _db.GetRecordsAsync<ProjectMilestoneRow>(@"
-            SELECT  pm.Id              AS ProjectMilestoneId,
-                    pm.Status,
-                    aym.RoadmapStageId  AS StageId,
-                    aym.DueDate         AS DueDate,
-                    mt.Title            AS Title,
-                    mt.OrderIndex       AS OrderIndex
-            FROM    ProjectMilestones     pm
-            JOIN    AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
-            JOIN    MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
-            WHERE   pm.ProjectId = @P
-            ORDER   BY mt.OrderIndex, pm.Id",
-            new { P = projectId }))?.ToList()
-            ?? new List<ProjectMilestoneRow>();
-
-        var milestonesByStage = milestones
-            .Where(m => m.StageId.HasValue)
-            .GroupBy(m => m.StageId!.Value)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        var result = new ProjectRoadmapProgressDto
-        {
-            ProjectId       = projectId,
-            AcademicYearId  = academicYearId,
-            ScheduleStatus  = RoadmapScheduleStatuses.NoSchedule,
-        };
-
-        // ── Build per-stage progress ─────────────────────────────────────
-        StageProgressDto? currentStage = null;
-        foreach (var s in stages)
-        {
-            var linked = milestonesByStage.TryGetValue(s.Id, out var ms)
-                ? ms : new List<ProjectMilestoneRow>();
-
-            int total     = linked.Count;
-            int completed = linked.Count(m => string.Equals(m.Status, "Completed", StringComparison.OrdinalIgnoreCase));
-
-            bool noLinkedMilestones = total == 0;
-            bool fullyComplete      = !noLinkedMilestones && completed == total;
-
-            // Stage status assignment — Current is reserved for the first
-            // not-fully-complete stage that has at least one linked
-            // milestone. Subsequent stages are Future regardless of their
-            // own data, to keep the timeline monotonic.
-            string stageStatus;
-            if (noLinkedMilestones)
-            {
-                stageStatus = RoadmapStageStatuses.NotApplicable;
-            }
-            else if (fullyComplete)
-            {
-                stageStatus = RoadmapStageStatuses.Completed;
-            }
-            else if (currentStage is null)
-            {
-                stageStatus = RoadmapStageStatuses.Current;
-            }
-            else
-            {
-                stageStatus = RoadmapStageStatuses.Future;
-            }
-
-            var stageDto = new StageProgressDto
-            {
-                StageId            = s.Id,
-                Code               = s.Code,
-                Name               = s.Name,
-                Description        = s.Description,
-                DisplayOrder       = s.DisplayOrder,
-                SuggestedStartDate = s.SuggestedStartDate,
-                SuggestedEndDate   = s.SuggestedEndDate,
-                Status             = stageStatus,
-                LinkedMilestoneCount    = total,
-                CompletedMilestoneCount = completed,
-                ProgressPct = stageStatus switch
-                {
-                    RoadmapStageStatuses.Completed     => 100,
-                    RoadmapStageStatuses.NotApplicable => 0,
-                    _ when total > 0                    => (int)Math.Round(100.0 * completed / total),
-                    _                                   => 0,
-                },
-                Milestones = linked.Select(m => new StageMilestoneStateDto
-                {
-                    ProjectMilestoneId = m.ProjectMilestoneId,
-                    Title              = m.Title,
-                    Status             = m.Status,
-                    DueDate            = m.DueDate,
-                    OrderIndex         = m.OrderIndex,
-                }).ToList(),
-            };
-
-            if (stageStatus == RoadmapStageStatuses.Current)
-            {
-                currentStage = stageDto;
-                result.CurrentStageCode = s.Code;
-            }
-
-            result.Stages.Add(stageDto);
-        }
-
-        // ── Schedule status ──────────────────────────────────────────────
-        // Compare today to the current stage's suggested window. When the
-        // current stage has no usable dates, fall back to NoSchedule rather
-        // than guessing — the UI can render "ללא לוח זמנים" cleanly.
-        if (currentStage is not null)
-        {
-            var today = DateTime.UtcNow.Date;
-            if (currentStage.SuggestedEndDate is { } end && today > end.Date)
-                result.ScheduleStatus = RoadmapScheduleStatuses.Behind;
-            else if (currentStage.SuggestedStartDate is { } start && today < start.Date)
-                result.ScheduleStatus = RoadmapScheduleStatuses.Ahead;
-            else if (currentStage.SuggestedStartDate is null && currentStage.SuggestedEndDate is null)
-                result.ScheduleStatus = RoadmapScheduleStatuses.NoSchedule;
-            else
-                result.ScheduleStatus = RoadmapScheduleStatuses.OnTrack;
-        }
-        // No current stage → either every linked stage is complete, or no
-        // stages are configured. Either way "ללא לוח זמנים" is honest.
-
-        // ── Upcoming + overdue ───────────────────────────────────────────
-        var nonComplete = milestones
-            .Where(m => !string.Equals(m.Status, "Completed", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        // Upcoming: prefer the earliest-due milestone in the current stage,
-        // fall back to the earliest across the project so the mentor always
-        // has a "what's next" pointer even if the current stage has nothing
-        // dated.
-        var upcomingCandidates = currentStage is not null
-            ? nonComplete.Where(m => m.StageId == currentStage.StageId).ToList()
-            : new();
-        if (upcomingCandidates.Count == 0) upcomingCandidates = nonComplete;
-
-        var upcoming = upcomingCandidates
-            .Where(m => m.DueDate.HasValue)
-            .OrderBy(m => m.DueDate!.Value)
-            .FirstOrDefault();
-        if (upcoming is not null)
-            result.Upcoming = ToUpcoming(upcoming);
-
-        // Overdue: most overdue non-completed milestone (lowest past DueDate).
-        var todayUtc = DateTime.UtcNow.Date;
-        var overdue = nonComplete
-            .Where(m => m.DueDate.HasValue && m.DueDate.Value.Date < todayUtc)
-            .OrderBy(m => m.DueDate!.Value)
-            .FirstOrDefault();
-        if (overdue is not null)
-            result.Overdue = ToUpcoming(overdue);
-
-        return result;
-    }
-
-    private static UpcomingMilestoneDto ToUpcoming(ProjectMilestoneRow m)
-    {
-        int? days = m.DueDate.HasValue
-            ? (int?)(m.DueDate.Value.Date - DateTime.UtcNow.Date).TotalDays
-            : null;
-        return new UpcomingMilestoneDto
-        {
-            ProjectMilestoneId = m.ProjectMilestoneId,
-            Title              = m.Title,
-            DueDate            = m.DueDate,
-            DaysUntilDue       = days,
-        };
-    }
+    // Roadmap/progress computation itself lives in Server/Services/ProjectRoadmapService.cs
+    // (design/business-logic-consolidation-epic.md, Concepts 2 & 3) — this
+    // controller no longer computes it. See that file for the calculation
+    // rules previously documented here.
 
     private static string? ValidateRequest(SaveRoadmapStageRequest req, bool isCreate)
     {
@@ -659,28 +498,6 @@ public class RoadmapStagesController : ControllerBase
         public int    StageId                 { get; set; }
         public string Title                   { get; set; } = "";
         public int    OrderIndex              { get; set; }
-    }
-
-    private sealed class StageRow
-    {
-        public int       Id                 { get; set; }
-        public string    Code               { get; set; } = "";
-        public string    Name               { get; set; } = "";
-        public string    Description        { get; set; } = "";
-        public int       DisplayOrder       { get; set; }
-        public int       IsActive           { get; set; }
-        public DateTime? SuggestedStartDate { get; set; }
-        public DateTime? SuggestedEndDate   { get; set; }
-    }
-
-    private sealed class ProjectMilestoneRow
-    {
-        public int       ProjectMilestoneId { get; set; }
-        public string    Status             { get; set; } = "";
-        public int?      StageId            { get; set; }
-        public DateTime? DueDate            { get; set; }
-        public string    Title              { get; set; } = "";
-        public int       OrderIndex         { get; set; }
     }
 
     private sealed class ProjectCycleRow

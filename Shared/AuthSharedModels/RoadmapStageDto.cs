@@ -86,6 +86,30 @@ public class ProjectRoadmapProgressDto
     /// <summary>Stage code of the current (earliest-incomplete) stage. Empty
     /// when every stage is complete or no stages are configured.</summary>
     public string?                   CurrentStageCode { get; set; }
+    /// <summary>Display name of the current stage, so consumers don't need to
+    /// cross-reference Stages by CurrentStageCode. Null under the same
+    /// conditions as CurrentStageCode.</summary>
+    public string?                   CurrentStageName { get; set; }
+    /// <summary>PHASE 1 — added by the business-logic consolidation epic
+    /// (design/business-logic-consolidation-epic.md, Concept 2). Equal to
+    /// Stages.FirstOrDefault(s =&gt; s.Status == Current)?.ProgressPct — the
+    /// SAME number as that stage's own ProgressPct, exposed at the top level
+    /// so no consumer has to find "the current one" in the list themselves.
+    /// This is the "62%-style" number: how much of the CURRENT STAGE alone is
+    /// done. Null when there is no current stage (all complete / none
+    /// configured). Must always be labeled distinctly from
+    /// OverallProjectProgressPct in any UI — they answer different
+    /// questions and are never interchangeable.</summary>
+    public int?                      CurrentStageProgressPct { get; set; }
+    /// <summary>PHASE 1 — added by the business-logic consolidation epic.
+    /// Average of ProgressPct across every stage with at least one linked
+    /// milestone (stages with none don't contribute, so an unconfigured
+    /// stage never misleadingly drags this toward 0). This is the
+    /// "52%-style" whole-roadmap number — how far along the ENTIRE project
+    /// is, not just the current stage. 0 when no stage has any linked
+    /// milestones. Must always be labeled distinctly from
+    /// CurrentStageProgressPct in any UI.</summary>
+    public int                       OverallProjectProgressPct { get; set; }
     public List<StageProgressDto>    Stages         { get; set; } = new();
     /// <summary>Next milestone the team needs to deliver (earliest due-date
     /// among non-completed linked milestones in the current stage; falls back

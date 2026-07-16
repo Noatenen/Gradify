@@ -1,0 +1,117 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    HomeFocusCard — Home Page Layer C ("מה דורש טיפול").
+
+    Compact action panel, not a hero banner: status chip, task title, one
+    short relative-time status line, two actions. No narrative paragraphs —
+    the Home page points at the next action, it doesn't explain the whole
+    context (that's what opening the task itself is for).
+
+    Data source: DashboardDto.Milestones[].Tasks[] — the IsOverdue/
+    AttentionReason/AttentionRank fields TaskUrgencyService populates (see
+    ProjectsController.GetMyDashboard), plus the real LatestMentorReviewedAt /
+    LatestSubmittedAt / DueDate timestamps for the relative-time text. Nothing
+    here is guessed.
+*@
+
+<section class="hfc">
+    <div class="hfc-label">
+        <span class="oi oi-warning" aria-hidden="true"></span>
+        מה דורש טיפול
+    </div>
+
+    @if (TopTask is null)
+    {
+        <div class="hfc-card hfc-calm">
+            <span class="oi oi-circle-check hfc-calm-icon" aria-hidden="true"></span>
+            <span class="hfc-calm-text">אין כרגע פריטים שדורשים טיפול.</span>
+        </div>
+    }
+    else
+    {
+        <div class="hfc-card">
+            <span class="hfc-chip hfc-chip-@ChipClass">
+                <span class="oi @ChipIcon" aria-hidden="true"></span>
+                @TaskAttentionReasons.Label(TopTask.AttentionReason)
+            </span>
+
+            <div class="hfc-row">
+                <div class="hfc-text">
+                    <span class="hfc-title">@TopTask.Title</span>
+                    <span class="hfc-status">@StatusText</span>
+                </div>
+                <div class="hfc-actions">
+                    <button class="hfc-btn-primary" @onclick="@(() => OnOpenTask.InvokeAsync(TopTask.Id))">פתח משימה</button>
+                    @if (ShowFeedbackLink)
+                    {
+                        <span class="hfc-link" @onclick="@(() => OnOpenTask.InvokeAsync(TopTask.Id))">למשוב</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones { get; set; } = default!;
+    [Parameter] public EventCallback<int> OnOpenTask { get; set; }
+
+    private TaskSummaryDto? TopTask =>
+        Milestones
+            .SelectMany(m => m.Tasks)
+            .Where(t => t.AttentionReason != TaskAttentionReasons.None)
+            .OrderBy(t => t.AttentionRank)
+            .FirstOrDefault();
+
+    private string ChipClass => TopTask?.AttentionReason switch
+    {
+        TaskAttentionReasons.ReturnedForRevision or TaskAttentionReasons.Overdue => "danger",
+        _ => "waiting",
+    };
+
+    private string ChipIcon => ChipClass == "danger" ? "oi-warning" : "oi-clock";
+
+    private bool ShowFeedbackLink => TopTask?.AttentionReason == TaskAttentionReasons.ReturnedForRevision;
+
+    /// <summary>One short, real relative-time status line — e.g. "הוחזר
+    /// לתיקון לפני 3 ימים". Uses actual timestamps already on the DTO
+    /// (LatestMentorReviewedAt / LatestSubmittedAt / DueDate); falls back to
+    /// the plain reason label only when the underlying timestamp is null.</summary>
+    private string StatusText
+    {
+        get
+        {
+            if (TopTask is null) return "";
+            return TopTask.AttentionReason switch
+            {
+                TaskAttentionReasons.ReturnedForRevision => TopTask.LatestMentorReviewedAt is { } reviewedAt
+                    ? $"הוחזר לתיקון {RelativePast(reviewedAt)}"
+                    : "הוחזר לתיקון",
+                TaskAttentionReasons.Overdue => TopTask.DueDate is { } due
+                    ? $"באיחור · {Math.Max(0, (DateTime.Today - due.Date).Days)} ימים"
+                    : "באיחור",
+                TaskAttentionReasons.PendingMentorReview => TopTask.LatestSubmittedAt is { } submitted
+                    ? $"ממתין לבדיקת מנחה · הוגש {RelativePast(submitted)}"
+                    : "ממתין לבדיקת מנחה",
+                TaskAttentionReasons.PendingMoodleConfirmation => "ממתין לאישור מודל",
+                TaskAttentionReasons.DueSoon => TopTask.DueDate is { } soonDue
+                    ? DueSoonText(soonDue)
+                    : "מתקרב למועד",
+                _ => "",
+            };
+        }
+    }
+
+    private static string RelativePast(DateTime dt)
+    {
+        var days = (DateTime.Today - dt.Date).Days;
+        return days <= 0 ? "היום" : days == 1 ? "לפני יום" : $"לפני {days} ימים";
+    }
+
+    private static string DueSoonText(DateTime due)
+    {
+        var days = (due.Date - DateTime.Today).Days;
+        return days <= 0 ? "מועד היום" : days == 1 ? "מועד מחר" : $"מועד בעוד {days} ימים";
+    }
+}
