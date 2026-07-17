@@ -1,0 +1,111 @@
+@namespace AuthWithAdmin.Client.Components
+
+@*
+    Reusable visual/behavioral modal shell. Follows the same overlay +
+    tabindex="-1" + Escape-via-@onkeydown pattern already established by
+    Client/Shared/MentorProfileModal.razor — no new JS interop is
+    introduced. See design/design-system/components/MModal.md for the
+    documented focus-trap limitation.
+*@
+
+@if (IsOpen)
+{
+    <div class="m-modal-overlay"
+         @ref="_overlayRef"
+         tabindex="-1"
+         @onclick="HandleBackdropClickAsync"
+         @onkeydown="HandleKeyDownAsync">
+        <div class="@DialogClass"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="@ResolvedLabelledBy"
+             @onclick:stopPropagation="true">
+
+            @if (!string.IsNullOrWhiteSpace(Title) || ShowCloseButton)
+            {
+                <div class="m-modal-header">
+                    @if (!string.IsNullOrWhiteSpace(Title))
+                    {
+                        <h2 class="m-modal-title" id="@_titleId">@Title</h2>
+                    }
+                    @if (ShowCloseButton)
+                    {
+                        <button type="button" class="m-modal-close" @onclick="RequestCloseAsync" aria-label="סגירה">
+                            <span class="oi oi-x" aria-hidden="true"></span>
+                        </button>
+                    }
+                </div>
+            }
+
+            <div class="m-modal-body">
+                @ChildContent
+            </div>
+
+            @if (FooterContent is not null)
+            {
+                <div class="m-modal-footer">
+                    @FooterContent
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    public enum ModalSize { Small, Medium, Large }
+
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? FooterContent { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public bool CloseOnBackdrop { get; set; } = true;
+    [Parameter] public bool ShowCloseButton { get; set; } = true;
+    [Parameter] public ModalSize Size { get; set; } = ModalSize.Medium;
+
+    /// <summary>Overrides the auto-generated aria-labelledby target. Only
+    /// needed when the caller renders its own heading inside ChildContent
+    /// instead of using the Title parameter.</summary>
+    [Parameter] public string? AriaLabelledBy { get; set; }
+    [Parameter] public string? Class { get; set; }
+
+    private readonly string _titleId = $"m-modal-title-{Guid.NewGuid():N}";
+    private ElementReference _overlayRef;
+    private bool _wasOpen;
+
+    private string? ResolvedLabelledBy =>
+        !string.IsNullOrWhiteSpace(AriaLabelledBy) ? AriaLabelledBy :
+        !string.IsNullOrWhiteSpace(Title) ? _titleId : null;
+
+    private string DialogClass =>
+        $"m-modal-dialog m-modal-{Size.ToString().ToLowerInvariant()}"
+        + (string.IsNullOrWhiteSpace(Class) ? "" : $" {Class}");
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Auto-focus only on the closed→open transition, never on every
+        // re-render, otherwise typing into a field inside the modal body
+        // would keep losing focus back to the overlay.
+        if (IsOpen && !_wasOpen)
+        {
+            try { await _overlayRef.FocusAsync(); }
+            catch { /* element may not be attached yet on prerender */ }
+        }
+        _wasOpen = IsOpen;
+    }
+
+    private async Task HandleBackdropClickAsync()
+    {
+        if (CloseOnBackdrop) await RequestCloseAsync();
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await RequestCloseAsync();
+    }
+
+    private async Task RequestCloseAsync()
+    {
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+}
