@@ -24,6 +24,7 @@ Single shared status→color mapping, replacing ~10 independent badge implementa
 ## Accessibility notes
 
 - Status is always communicated by **text** (`Text`/`ChildContent` is the only content path — there is no color-only rendering mode), per `MOTIVA_FOUNDATIONS.md`'s rule that semantic color must always pair with a non-color signal.
+- **If neither `Text` nor `ChildContent` is set, the component renders nothing** (as of the Phase 3.5 review) rather than an empty colored pill with no accessible name — this was a real gap found during review (a caller mistake used to silently produce a visually-empty badge).
 - `Icon`, when present, is `aria-hidden="true"` — it's decorative reinforcement, not the sole carrier of meaning.
 - Foreground/background pairs are the same pairs already defined in `motiva-tokens.css` (`--motiva-color-info` on `--motiva-color-info-bg`, etc.), which were authored together for contrast — MStatusBadge does not invent new pairings.
 
@@ -46,7 +47,7 @@ Single shared status→color mapping, replacing ~10 independent badge implementa
 ## Do / Don't
 
 - **Do** pick the variant that matches the *semantic* meaning of the status (e.g. "late" → `Danger`), not just whichever color looks closest to what a screen currently uses — the whole point of this component is one consistent status→color mapping app-wide.
-- **Don't** pass only an `Icon` with empty `Text`/`ChildContent` — the component always renders a text node; if you truly need icon-only, use `MButton` with `AriaLabel` instead, badges are not built for that.
+- **Don't** pass only an `Icon` with empty `Text`/`ChildContent` — the component now renders nothing at all in that case (see Accessibility notes); if you truly need icon-only, use `MButton` with `AriaLabel` instead, badges are not built for that.
 - **Don't** re-derive per-screen badge colors once this component is adopted (Phase 5) — route the status string through a single label/variant mapping function per domain instead of hand-picking a `Variant` ad hoc at each call site.
 
 ## Known limitations / approved exceptions
