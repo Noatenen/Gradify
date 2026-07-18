@@ -1,7 +1,45 @@
 # Motiva Design System — Changelog
 
 Dates are taken from Git history (`git log --date=short`) where the relevant
-commit exists; all Phase 1–4.3 work landed on 2026-07-18.
+commit exists; all Phase 1–4.4 work landed on 2026-07-18.
+
+## Phase 4.4 — MCard full-bleed padding (2026-07-18)
+
+Architectural follow-up from migrating `ActionCenterCard` (the first Phase 5
+production slice): that migration needed hand-derived padding compensation
+(`24px - 8px = 16px`, etc.) on every section, plus a `border-top` divider
+recreation, because `MCard.Padding` had no zero option. A review before
+continuing to the next card confirmed this wasn't a one-off — three of the
+four remaining `MCard`-bound dashboard cards (`UpcomingSubmissionsCard`,
+`TeamTasksCard`, `StudentDashboardHero`) share the identical zero-outer-
+padding, section-managed-padding, edge-to-edge-divider architecture
+`ActionCenterCard` had, so the same compensation would have repeated at
+least twice more with different numbers each time.
+
+- Added `MCard.CardPadding.None` (maps to `padding: 0`) alongside the
+  existing `Small`/`Medium`/`Large` — fully backward compatible, default
+  stays `Medium`.
+- The optional header (`Icon`/`Title`/`Subtitle`/`TrailingContent`) keeps a
+  fixed, token-driven inset (`padding-inline`/`padding-block-start:
+  var(--motiva-space-lg)`) even when `Padding="None"`, via a rule scoped to
+  `.m-card-padding-none .m-card-header` — it can only ever match under
+  `None`, so `Small`/`Medium`/`Large` are structurally incapable of
+  receiving double padding from this change.
+- `ActionCenterCard` migrated to `Padding="None"`; every padding
+  compensation introduced during its original migration was reverted to the
+  section's original, unmodified value (`.ac-item`, `.ac-empty`, and the
+  responsive breakpoint all restored). The `border-top` divider recreation
+  on `.ac-list`/`.ac-empty` was kept — `MCard`'s header still has no border
+  of its own regardless of `Padding`, so that recreation is unrelated to
+  this fix and remains structurally necessary.
+- Two new gallery examples at `/motiva/components/card` under a new
+  "Full-bleed body (Padding=None)" section: a body-only full-bleed example,
+  and a header + full-bleed body example matching `ActionCenterCard`'s real
+  shape. The existing `Medium`-padding header example was re-verified
+  unaffected, not re-authored.
+- `MCard.md` documents `CardPadding.None`, when to reach for it, and that
+  section-level padding inside `ChildContent` remains the consumer's own
+  responsibility in every `Padding` mode, `None` included.
 
 ## Phase 4.3 — MCard header extension (2026-07-18)
 

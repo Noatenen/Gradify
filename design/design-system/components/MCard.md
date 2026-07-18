@@ -24,7 +24,7 @@ Single shared surface primitive replacing the ~15+ independent card-shell reimpl
 | `ChildContent` | `RenderFragment?` | — | Card body |
 | `Variant` | `MCard.CardVariant` | `Default` | `Default` / `Elevated` / `Ambient` — visual style only |
 | `Interactive` | `bool` | `false` | Makes the whole card a click/keyboard target, independent of `Variant` |
-| `Padding` | `MCard.CardPadding` | `Medium` | `Small` / `Medium` / `Large` — maps to `--motiva-space-sm/lg/xl` |
+| `Padding` | `MCard.CardPadding` | `Medium` | `Small` / `Medium` / `Large` / `None` — maps to `--motiva-space-sm/lg/xl` / `0` |
 | `Class` | `string?` | `null` | |
 | `OnClick` | `EventCallback<MouseEventArgs>` | — | Only wired when `Interactive="true"` |
 | `Icon` | `RenderFragment?` | — | Optional leading icon area in the header row. Caller-supplied markup (e.g. an `oi` glyph span) — MCard only sizes/positions it, no forced icon font or circle/badge treatment |
@@ -55,6 +55,25 @@ This exists because the Phase 1 audit found the same icon+title(+trailing) heade
 - **A different heading level is required.** `Title` always renders as `<h3>`. If a card's position in the page's document outline calls for `<h2>` or `<h4>`, skip `Title` and put your own heading in `ChildContent` — matches the pre-existing "MCard has no opinion on heading level in `ChildContent`" rule.
 - **The header needs more than one trailing element competing for space**, or a layout `TrailingContent`'s single flex slot doesn't fit (e.g. two independent action buttons with their own spacing rules) — compose it by hand in `ChildContent` instead of fighting the slot.
 - **The "icon" is actually a colored circle/badge wrapper** (e.g. `ProjectDetailsCard`'s `pdc-icon` circle vs. `ActionCenterCard`'s bare glyph) — both are supported today, since `Icon` accepts arbitrary markup: pass the whole wrapped-circle markup as the `Icon` fragment. MCard does not impose one treatment over the other.
+
+## Full-bleed body (`Padding="None"`)
+
+`CardPadding.None` maps to `padding: 0` on the card itself, so `ChildContent` can run edge-to-edge — item-list dividers, a colored left-border indicator, or side-by-side panels that should touch the card's true outer edge, exactly the layout `ActionCenterCard`'s exception list and `TeamTasksCard`'s task list both need.
+
+When the optional header (`Icon`/`Title`/`Subtitle`/`TrailingContent`) is also used, it keeps its own token-driven inset (`padding-inline`/`padding-block-start: var(--motiva-space-lg)`) regardless of `Padding`, via a CSS rule scoped to `.m-card-padding-none .m-card-header` — this rule only ever matches under `Padding="None"`, so `Small`/`Medium`/`Large` never receive it and never get doubled padding; the header there continues to rely purely on `.m-card`'s own (unchanged) padding, exactly as before this addition.
+
+```razor
+<MCard Padding="MCard.CardPadding.None" Title="דורש התייחסות">
+    <Icon><span class="oi oi-bell" aria-hidden="true"></span></Icon>
+    <ChildContent>
+        <div class="ac-list">...</div> <!-- runs flush to the card's edges -->
+    </ChildContent>
+</MCard>
+```
+
+**When to use `None`:** whenever the card's own sections (list rows, panels) already manage their own padding and expect to reach the card's true edge — i.e. whenever adopting `MCard` would otherwise force hand-derived "outer padding minus inner padding" compensation math in the consumer's own CSS. That compensation is exactly what `None` exists to remove: a consumer picks `None` and keeps its section padding values completely unchanged, with no arithmetic tied to `--motiva-space-sm`'s current value.
+
+**Section-level padding remains the consumer's responsibility.** `None` (like `Small`/`Medium`/`Large`) only controls the card shell's own padding — it says nothing about spacing *inside* `ChildContent`. A full-bleed card's list rows, item padding, and any divider between the header and the body (`MCard`'s header has no border of its own, only a margin gap) are, and remain, the consuming component's own CSS to define — see `ActionCenterCard.razor.css`'s `.ac-list`/`.ac-item` for a real example.
 
 ## Accessibility notes
 
@@ -110,6 +129,14 @@ The header row is built the same way: `gap` (logical by nature in flex) between 
 <MCard Title="פרטי הפרויקט" Subtitle="פרויקט 214 – מערכת ניהול מלאי">
     <p>...</p>
 </MCard>
+
+<!-- Padding=None: header keeps its own inset, ChildContent runs edge-to-edge -->
+<MCard Padding="MCard.CardPadding.None" Title="דורש התייחסות">
+    <Icon><span class="oi oi-bell" aria-hidden="true"></span></Icon>
+    <ChildContent>
+        <div class="ac-list">...</div>
+    </ChildContent>
+</MCard>
 ```
 
 ## Do / Don't
@@ -117,9 +144,11 @@ The header row is built the same way: `gap` (logical by nature in flex) between 
 - **Do** set `Interactive="true"` whenever the whole card is meant to be clickable — don't put a nested `<button>`/`<a>` that duplicates the same action as the card itself.
 - **Do** reserve `Ambient` for a single hero/summary element per screen, per the foundations gradient-usage rule — not for repeated list/row cards.
 - **Do** use `Title`/`Subtitle` (strings) for plain-text headers — reach for a custom heading in `ChildContent` only when the header truly needs something the slot can't express (see above).
+- **Do** use `Padding="None"` for cards whose sections already manage their own padding and need to reach the card's true edge — never hand-compensate `Small`/`Medium`/`Large`'s padding value in the consumer's own CSS instead.
 - **Don't** pass `OnClick` without also setting `Interactive="true"` — the callback is silently ignored otherwise (no compile-time or run-time warning), matching the Phase 3.5 review's documented API decision.
 - **Don't** nest another interactive `MCard` or a focusable control that itself needs the whole-card click behavior — pick one interactive target per card to avoid overlapping hit areas/keyboard traps.
 - **Don't** put a primary call-to-action in `TrailingContent` — it's sized and positioned for compact content (a badge, a small secondary button), not for the card's main action.
+- **Don't** derive a section's padding from `--motiva-space-sm`'s current value to "cancel out" `MCard`'s own padding (e.g. `24px - 8px = 16px`) — that arithmetic silently breaks if the token's value ever changes. Use `Padding="None"` instead and keep the section's original padding untouched.
 
 ## Known limitations / approved exceptions
 
@@ -127,3 +156,4 @@ The header row is built the same way: `gap` (logical by nature in flex) between 
 - `Interactive`'s keydown handler does not call `preventDefault()` on Space, so a focused card may also scroll the page slightly on Space press — this matches the existing, already-shipped pattern in `TaskMilestoneAccordion.razor` and was not solved there either. Flagged here rather than silently fixed with new behavior, since a real fix would require `@onkeydown:preventDefault` scoped per-key, which Blazor doesn't support cleanly without also breaking Tab navigation on the same element.
 - The header row only supports one `TrailingContent` slot — if a card needs two independent trailing elements (e.g. a badge *and* a button, each with its own spacing rule), compose them by hand in `ChildContent` instead; the slot was sized for the single-element case found in every dashboard card surveyed for this extension.
 - `Title` is fixed at `h3`; there is no `TitleTag`/heading-level parameter. This was a deliberate choice to keep the API small — see "When to keep custom content inside `ChildContent` instead" above for the escape hatch.
+- `Padding="None"`'s header inset (`--motiva-space-lg`) is fixed and not independently configurable — it deliberately matches `Medium`'s own padding value so a full-bleed card's header reads the same as a normally-padded card's, rather than introducing a fifth "header-only" spacing knob.
