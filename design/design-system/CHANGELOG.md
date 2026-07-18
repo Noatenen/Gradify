@@ -1,7 +1,45 @@
 # Motiva Design System — Changelog
 
 Dates are taken from Git history (`git log --date=short`) where the relevant
-commit exists; all Phase 1–4.2 work landed on 2026-07-18.
+commit exists; all Phase 1–4.3 work landed on 2026-07-18.
+
+## Phase 4.3 — MCard header extension (2026-07-18)
+
+Pre-migration readiness fix identified during Phase 5 planning: a design-
+system readiness review found the same icon+title(+trailing) header row
+hand-rolled independently in the large majority of dashboard cards
+(`ActionCenterCard`, `UpcomingSubmissionsCard`, `TeamTasksCard`,
+`ProjectDetailsCard`, `StudentDashboardHero`), and `MCard` had no slot for
+it — only bare `ChildContent`. Migrating any of those cards as-is would have
+relocated that duplication inside `MCard` instead of removing it.
+
+- Added four new optional `MCard` parameters: `Icon` (`RenderFragment?`),
+  `Title` (`string?`, renders as `<h3>`), `Subtitle` (`string?`), and
+  `TrailingContent` (`RenderFragment?`, pinned to the end of the header row).
+  The header block only renders when at least one is set — fully backward
+  compatible, verified against every existing gallery usage (none of which
+  use the new parameters) with no changes required.
+- Header layout uses `align-items: flex-start` so `Icon`/`TrailingContent`
+  stay pinned to the first line of `Title` even when it wraps to two lines,
+  and `margin-inline-start: auto` (never `left`/`right`) to pin
+  `TrailingContent` to the row's end under both RTL and LTR.
+- 100% token-driven, no new hardcoded values (`--motiva-font-size-h3` for
+  `Title`, `--motiva-font-size-sm`/`--motiva-text-secondary` for `Subtitle`,
+  `--motiva-font-size-lg` for the icon area, `--motiva-space-sm`/`-xs`/`-md`
+  for gaps/margins).
+- Five new gallery examples added to `/motiva/components/card` (body-only,
+  icon+title, icon+title+trailing, title+subtitle, wrapping-title case) plus
+  updated anatomy/accessibility/Do-Don't/limitations copy and a Razor code
+  sample. `MCard.md` documents the new parameters, when to fall back to
+  `ChildContent` instead, and the RTL/accessibility behavior of the header
+  row.
+- Deliberately out of scope (per the readiness review): no chip/count-badge
+  primitive, no `MButton` icon-only mode, no `MStatusBadge` variant changes,
+  no `MModal` accessibility fixes — none of those block adopting this
+  extension, and none were needed to solve the specific header-duplication
+  gap this phase targets.
+- No production dashboard page was touched — `MCard` still has zero
+  production adoption; this only prepares its API ahead of Phase 5.
 
 ## Phase 4.2 — Production polish (2026-07-18)
 
