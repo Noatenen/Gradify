@@ -6,7 +6,6 @@
 @using AuthWithAdmin.Client.Pages.Submissions
 @inject ITasksService TasksService
 @inject ITaskSubmissionsService SubmissionsService
-@inject IProjectContextService ProjectContext
 @attribute [Authorize]
 
 <!-- ── Task detail modal ── -->
@@ -117,73 +116,90 @@ else
 {
     <div class="tsk-page">
 
-        <!-- ── Page header ── -->
-        <div class="tsk-header">
-            <h1 class="tsk-page-title">המשימות שלי</h1>
-        </div>
+        <!-- ── One continuous ambient canvas — summary, toolbar and the
+             workflow sections are zones of the SAME surface (thin seams
+             between them), not separate stacked components. The ambient
+             gradient carries through the whole canvas, fading naturally
+             into the task rows below rather than stopping at the summary. ── -->
+        <div class="tsk-canvas">
 
-        <!-- ── Persistent "where am I" context — stays visible while scrolling ── -->
-        <CurrentProgressStrip Context="@_projectCtx" />
+            <div class="tsk-zone tsk-zone-summary">
+                <TaskStatusOverview NeedsActionCount="@NeedsActionTasks.Count"
+                                    ReadyToSubmitCount="@ReadyToSubmitTasks.Count"
+                                    TeamCount="@TeamTasks.Count"
+                                    CompletedCount="@CompletedTasks.Count"
+                                    ActiveFilter="@_statusFilter"
+                                    OnSelectFilter="SetStatusFilter" />
+            </div>
 
-        <!-- ── 1. דורש ממני טיפול — the page's primary focus ── -->
-        <TaskFlatList SectionTitle="דורש ממני טיפול"
-                      Subtitle="@HeroSummary"
-                      Tasks="@ActionRequiredTasks"
-                      MilestoneTitleLookup="@_taskMilestoneMap"
-                      EmptyMessage="כל המשימות בסדר — אין משימות שדורשות פעולה כרגע."
-                      EmptyIsPositive="true"
-                      IsUrgent="true"
-                      IsHero="true"
-                      OnOpenDetail="OpenDetail" />
-
-        <!-- ── 2. ממתין לאחרים — visually secondary look-ahead context ── -->
-        <TaskFlatList SectionTitle="ממתין לאחרים"
-                      Tasks="@WaitingOnOthersTasks"
-                      MilestoneTitleLookup="@_taskMilestoneMap"
-                      EmptyMessage="אין כרגע משימות שממתינות למישהו אחר."
-                      IsMuted="true"
-                      OnOpenDetail="OpenDetail" />
-
-        <!-- ── 3. המשימות הקרובות — visually secondary look-ahead context ── -->
-        <TaskFlatList SectionTitle="המשימות הקרובות"
-                      Tasks="@UpcomingTasks"
-                      MilestoneTitleLookup="@_taskMilestoneMap"
-                      EmptyMessage="אין משימות קרובות נוספות כרגע."
-                      IsMuted="true"
-                      OnOpenDetail="OpenDetail" />
-
-        <!-- ── 4. כל המשימות — reference catalogue, collapsed by default ── -->
-        <div class="tsk-all-section">
-            <button class="tsk-all-toggle" @onclick="ToggleAllTasks" aria-expanded="@_showAllTasks">
-                <span class="oi @(_showAllTasks ? "oi-chevron-top" : "oi-chevron-bottom")" aria-hidden="true"></span>
-                <span class="tsk-all-title">כל המשימות</span>
-                <span class="tsk-all-hint">קטלוג מלא לעיון</span>
-            </button>
-
-            @if (_showAllTasks)
-            {
-                <div class="tsk-tabs" role="tablist" aria-label="סינון כל המשימות">
-                    <button class="tsk-tab @(_activeFilter == "all" ? "tsk-tab-active" : "")"
-                            role="tab" aria-selected="@(_activeFilter == "all")"
-                            @onclick='() => SetFilter("all")'>הכול</button>
-
-                    <button class="tsk-tab @(_activeFilter == "submissions" ? "tsk-tab-active" : "")"
-                            role="tab" aria-selected="@(_activeFilter == "submissions")"
-                            @onclick='() => SetFilter("submissions")'>הגשות</button>
-
-                    <button class="tsk-tab @(_activeFilter == "tasks" ? "tsk-tab-active" : "")"
-                            role="tab" aria-selected="@(_activeFilter == "tasks")"
-                            @onclick='() => SetFilter("tasks")'>משימות</button>
+            <div class="tsk-zone tsk-zone-toolbar">
+                <div class="tsk-toolbar">
+                    <div class="tsk-search">
+                        <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
+                        <input type="text"
+                               class="tsk-search-input"
+                               placeholder="חיפוש משימות..."
+                               value="@_searchText"
+                               @oninput="OnSearchChanged" />
+                    </div>
+                    <TaskFilterPopover ActiveFilter="@_statusFilter" OnSelectFilter="SetStatusFilter" />
+                    <select class="tsk-sort-select" value="@_sortKey" @onchange="OnSortChanged">
+                        <option value="due">לפי תאריך יעד</option>
+                        <option value="priority">לפי עדיפות</option>
+                        <option value="updated">לפי עדכון אחרון</option>
+                    </select>
                 </div>
+            </div>
 
-                <TaskMilestoneAccordion SectionTitle=""
-                                        Groups="@FilteredAllGroups"
-                                        IsCompletedSection="false"
-                                        ShowAddButton="false"
-                                        EmptyMessage="@ActiveEmptyMessage"
-                                        OnOpenSubmission="OpenSubmission"
-                                        OnOpenDetail="OpenDetail" />
-            }
+            <div class="tsk-zone tsk-zone-sections">
+                @if (_statusFilter == "all")
+                {
+                    <TaskWorkflowSection Title="דורש ממני פעולה" Icon="oi-bolt" Count="@NeedsActionTasks.Count">
+                        <TaskCompactList Tasks="@DisplayedNeedsAction"
+                                          MilestoneTitleLookup="@_taskMilestoneMap"
+                                          StudentName="@_data?.StudentName"
+                                          EmptyMessage='@EmptyMessageFor("action")'
+                                          EmptyIsPositive='@EmptyIsPositiveFor("action")'
+                                          OnOpenDetail="OpenDetail" />
+                    </TaskWorkflowSection>
+
+                    <TaskWorkflowSection Title="מוכן להגשה" Icon="oi-circle-check" Count="@ReadyToSubmitTasks.Count">
+                        <TaskCompactList Tasks="@DisplayedReadyToSubmit"
+                                          MilestoneTitleLookup="@_taskMilestoneMap"
+                                          StudentName="@_data?.StudentName"
+                                          EmptyMessage='@EmptyMessageFor("submit")'
+                                          OnOpenDetail="OpenDetail" />
+                    </TaskWorkflowSection>
+
+                    <TaskWorkflowSection Title="משימות צוות" Icon="oi-people" Count="@TeamTasks.Count">
+                        <TaskCompactList Tasks="@DisplayedTeam"
+                                          MilestoneTitleLookup="@_taskMilestoneMap"
+                                          StudentName="@_data?.StudentName"
+                                          EmptyMessage='@EmptyMessageFor("team")'
+                                          OnOpenDetail="OpenDetail" />
+                    </TaskWorkflowSection>
+
+                    <TaskWorkflowSection Title="הושלמו" Icon="oi-task" Count="@CompletedTasks.Count" Collapsible="true">
+                        <TaskCompactList Tasks="@DisplayedCompleted"
+                                          MilestoneTitleLookup="@_taskMilestoneMap"
+                                          StudentName="@_data?.StudentName"
+                                          EmptyMessage='@EmptyMessageFor("done")'
+                                          OnOpenDetail="OpenDetail" />
+                    </TaskWorkflowSection>
+                }
+                else
+                {
+                    <TaskWorkflowSection Title="@ActiveFilterTitle" Icon="@ActiveFilterIcon" Count="@DisplayedFlatList.Count">
+                        <TaskCompactList Tasks="@DisplayedFlatList"
+                                          MilestoneTitleLookup="@_taskMilestoneMap"
+                                          StudentName="@_data?.StudentName"
+                                          EmptyMessage="@EmptyMessageFor(_statusFilter)"
+                                          EmptyIsPositive="@EmptyIsPositiveFor(_statusFilter)"
+                                          OnOpenDetail="OpenDetail" />
+                    </TaskWorkflowSection>
+                }
+            </div>
+
         </div>
 
     </div>
@@ -194,20 +210,17 @@ else
     [Parameter, SupplyParameterFromQuery] public int? TaskId { get; set; }
 
     private TasksPageDto?      _data;
-    private ProjectContextDto? _projectCtx;
     private bool               _isLoading = true;
     private bool               _loadError = false;
 
-    /// <summary>Scopes only the "כל המשימות" catalog section (all / הגשות / משימות).
-    /// The three primary urgency sections above are never filtered by this.</summary>
-    private string          _activeFilter = "all";
+    // ── Unified workflow filter (synced with the summary/overview) ─────────────
+    // "all" | "action" | "submit" | "team" | "done"
+    private string _statusFilter = "all";
+    private string _searchText   = "";
+    // "due" | "priority" | "updated"
+    private string _sortKey = "due";
 
-    /// <summary>"כל המשימות" is a reference catalogue, not a daily-priority
-    /// section — collapsed by default so it never competes visually with
-    /// the actionable sections above it.</summary>
-    private bool             _showAllTasks = false;
-
-    // Milestone title lookup shared by every flat-list section + the catalog accordion.
+    // Milestone title lookup shared by the task list.
     private Dictionary<int, string> _taskMilestoneMap = new();
 
     // ── Task detail modal ────────────────────────────────────────────────────
@@ -232,12 +245,7 @@ else
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
-        // ProjectContextService caches after its first call, so this costs no
-        // extra round trip if the sidebar has already fetched it this session.
-        var contextTask = ProjectContext.GetAsync();
-
         await LoadDataAsync();
-        _projectCtx = await contextTask;
 
         // Auto-open from ?taskId=N deep link (e.g. from dashboard card or notification)
         if (TaskId.HasValue && TaskId.Value > 0)
@@ -254,37 +262,20 @@ else
 
     private void BuildMilestoneMap()
     {
-        _taskMilestoneMap = _data?.ActiveGroups
+        _taskMilestoneMap = AllTasksGroups
             .SelectMany(g => g.Tasks.Select(t => (t.Id, g.MilestoneTitle)))
             .GroupBy(x => x.Id)
-            .ToDictionary(g => g.Key, g => g.First().MilestoneTitle)
-            ?? new();
+            .ToDictionary(g => g.Key, g => g.First().MilestoneTitle);
     }
 
-    // ── "כל המשימות" catalog filter + collapse toggle ──────────────────────────
-    private void SetFilter(string filter) => _activeFilter = filter;
-    private void ToggleAllTasks() => _showAllTasks = !_showAllTasks;
+    // ── Unified status filter / search / sort ──────────────────────────────────
+    private void SetStatusFilter(string filter) => _statusFilter = filter;
 
-    // ── Hero summary — answers "what should I do now" before the list itself ──
-    // TODO (future sprint, not Sprint 1): evolve from a task-count summary
-    // into a recommendation engine that names the single next best action,
-    // rather than only reporting how many items need attention.
-    private string HeroSummary => ActionRequiredTasks.Count switch
-    {
-        0 => "הכול בסדר — אין כרגע משימות שדורשות ממך טיפול.",
-        1 => "יש לך משימה אחת שדורשת טיפול.",
-        _ => $"יש לך {ActionRequiredTasks.Count} משימות שדורשות טיפול.",
-    };
+    private void OnSearchChanged(ChangeEventArgs e) => _searchText = e.Value?.ToString() ?? "";
+
+    private void OnSortChanged(ChangeEventArgs e) => _sortKey = e.Value?.ToString() ?? "due";
 
     // ── Submission modal handlers ─────────────────────────────────────────────
-    private void OpenSubmission(int taskId)
-    {
-        _editSubmissionId = 0;
-        _editDriveUrl     = null;
-        _editNotes        = null;
-        _submissionTaskId = taskId;
-    }
-
     private async Task CloseSubmission()
     {
         _submissionTaskId = 0;
@@ -376,120 +367,100 @@ else
         await LoadDataAsync();
     }
 
-    // ── Computed: "כל המשימות" catalog filter content ──────────────────────────
-
-    private string ActiveEmptyMessage => _activeFilter switch
-    {
-        "submissions" => "אין משימות הגשה בפרויקט זה",
-        "tasks"       => "אין משימות בפרויקט זה",
-        _             => "אין משימות בפרויקט זה",
-    };
-
-    // All milestones: active first, completed at the end — never the other way around.
-    private List<TaskMilestoneGroupDto> AllGroups =>
+    // ── Base data pool ──────────────────────────────────────────────────────────
+    // Every group (including הושלמו) must be filterable/countable, so unlike
+    // the pre-Sprint-1 page this reads BOTH ActiveGroups and CompletedGroups —
+    // not just ActiveGroups (which the server already excludes Done tasks from).
+    private List<TaskMilestoneGroupDto> AllTasksGroups =>
         _data is null ? new() : _data.ActiveGroups.Concat(_data.CompletedGroups).ToList();
 
-    private List<TaskMilestoneGroupDto> FilteredAllGroups
+    private List<TaskItemDto> AllTasks =>
+        AllTasksGroups.SelectMany(g => g.Tasks).ToList();
+
+    // ── Workflow buckets — the page's primary organizing axis. Mutually
+    // exclusive by construction (TaskStatusHelpers.GetWorkflowSection), so a
+    // summary tile's count always equals what that bucket's section shows.
+    private List<TaskItemDto> NeedsActionTasks =>
+        AllTasks.Where(t => TaskStatusHelpers.GetWorkflowSection(t, _data?.StudentName) == TaskStatusHelpers.WorkflowSection.NeedsAction).ToList();
+
+    private List<TaskItemDto> ReadyToSubmitTasks =>
+        AllTasks.Where(t => TaskStatusHelpers.GetWorkflowSection(t, _data?.StudentName) == TaskStatusHelpers.WorkflowSection.ReadyToSubmit).ToList();
+
+    private List<TaskItemDto> TeamTasks =>
+        AllTasks.Where(t => TaskStatusHelpers.GetWorkflowSection(t, _data?.StudentName) == TaskStatusHelpers.WorkflowSection.Team).ToList();
+
+    private List<TaskItemDto> CompletedTasks =>
+        AllTasks.Where(t => TaskStatusHelpers.GetWorkflowSection(t, _data?.StudentName) == TaskStatusHelpers.WorkflowSection.Completed).ToList();
+
+    // ── Search + sort — applied uniformly whether a bucket is being shown as
+    // its own section (browse mode) or as the single flat list (filtered
+    // mode), so typing a search term or changing sort never resets which
+    // bucket/filter is active. "לפי עדכון אחרון" approximates "last updated"
+    // from the closest available signal (last submission time, else
+    // completion time) since TaskItemDto has no stored UpdatedAt column.
+    private List<TaskItemDto> ApplySearchSort(IEnumerable<TaskItemDto> tasks)
     {
-        get
+        var filtered = string.IsNullOrWhiteSpace(_searchText)
+            ? tasks
+            : tasks.Where(t => t.Title.Contains(_searchText, StringComparison.OrdinalIgnoreCase));
+
+        return _sortKey switch
         {
-            if (_data is null) return new();
-            return _activeFilter switch
-            {
-                "submissions" => FilterByType(AllGroups, isSubmission: true),
-                "tasks"       => FilterByType(AllGroups, isSubmission: false),
-                _             => AllGroups,
-            };
-        }
+            "priority" => filtered.OrderByDescending(t => t.IsMandatory)
+                                  .ThenBy(t => t.DueDate ?? DateTime.MaxValue)
+                                  .ToList(),
+            "updated"  => filtered.OrderByDescending(t => t.LatestSubmittedAt ?? t.CompletedAt ?? DateTime.MinValue)
+                                  .ThenByDescending(t => t.Id)
+                                  .ToList(),
+            _          => filtered.OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
+        };
     }
 
-    private static List<TaskMilestoneGroupDto> FilterByType(
-        List<TaskMilestoneGroupDto> groups, bool isSubmission)
-    {
-        return groups
-            .Select(g => new TaskMilestoneGroupDto
-            {
-                ProjectMilestoneId = g.ProjectMilestoneId,
-                MilestoneTitle     = g.MilestoneTitle,
-                OrderIndex         = g.OrderIndex,
-                MilestoneStatus    = g.MilestoneStatus,
-                OpenDate           = g.OpenDate,
-                DueDate            = g.DueDate,
-                CloseDate          = g.CloseDate,
-                IsCurrentlyOpen    = g.IsCurrentlyOpen,
-                DoneCount          = g.DoneCount,
-                TotalCount         = g.TotalCount,
-                Tasks              = g.Tasks.Where(t => t.IsSubmission == isSubmission).ToList(),
-            })
-            .Where(g => g.Tasks.Count > 0)
-            .ToList();
-    }
+    private List<TaskItemDto> DisplayedNeedsAction   => ApplySearchSort(NeedsActionTasks);
+    private List<TaskItemDto> DisplayedReadyToSubmit => ApplySearchSort(ReadyToSubmitTasks);
+    private List<TaskItemDto> DisplayedTeam          => ApplySearchSort(TeamTasks);
+    private List<TaskItemDto> DisplayedCompleted     => ApplySearchSort(CompletedTasks);
 
-    // ── Computed: the three primary urgency buckets ────────────────────────────
-    // All three read from ActiveGroups only (server already excludes Done tasks
-    // there) and are mutually exclusive by construction: TaskRequiresAction
-    // already returns false for "PendingMentorReview" and for "Done", so a task
-    // lands in exactly one of the three buckets below. None of them group by
-    // milestone — milestone still shows as an inline meta chip per row via
-    // _taskMilestoneMap, for orientation only, not as a sort/grouping axis.
-
-    // 1. דורש ממני טיפול — returned/needs-revision, approved-pending-Moodle,
-    //    overdue, or due within 3 days.
-    private IReadOnlyList<TaskItemDto> ActionRequiredTasks
+    // ── Flat filtered mode (a specific bucket selected via summary/popover) ──
+    private List<TaskItemDto> DisplayedFlatList => _statusFilter switch
     {
-        get
+        "action" => DisplayedNeedsAction,
+        "submit" => DisplayedReadyToSubmit,
+        "team"   => DisplayedTeam,
+        "done"   => DisplayedCompleted,
+        _        => ApplySearchSort(AllTasks),
+    };
+
+    private string ActiveFilterTitle => _statusFilter switch
+    {
+        "action" => "דורש ממני פעולה",
+        "submit" => "מוכן להגשה",
+        "team"   => "משימות צוות",
+        "done"   => "הושלמו",
+        _        => "כל המשימות",
+    };
+
+    private string ActiveFilterIcon => _statusFilter switch
+    {
+        "action" => "oi-bolt",
+        "submit" => "oi-circle-check",
+        "team"   => "oi-people",
+        "done"   => "oi-task",
+        _        => "oi-list",
+    };
+
+    // ── Contextual empty state, per bucket ──────────────────────────────────────
+    private string EmptyMessageFor(string bucket) => !string.IsNullOrWhiteSpace(_searchText)
+        ? "לא נמצאו משימות התואמות את החיפוש."
+        : bucket switch
         {
-            if (_data is null) return Array.Empty<TaskItemDto>();
+            "action" => "אין כרגע משימות שדורשות ממך פעולה.",
+            "submit" => "אין כרגע משימות שמוכנות להגשה.",
+            "team"   => "אין כרגע משימות שמטופלות על ידי הצוות.",
+            "done"   => "עדיין לא הושלמו משימות.",
+            _        => "אין משימות בפרויקט זה.",
+        };
 
-            return _data.ActiveGroups
-                .SelectMany(g => g.Tasks)
-                .Where(TaskStatusHelpers.TaskRequiresAction)
-                .OrderBy(t =>
-                {
-                    // Overdue: most overdue first (most negative days = lowest)
-                    if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today)
-                        return (t.DueDate.Value.Date - DateTime.Today).TotalDays;
-                    // Returned/approved: high urgency with no date sort by 0
-                    string r = TaskStatusHelpers.ResolveDisplayStatus(t);
-                    if (r is "ReturnedByMentor" or "ReturnedForRevision") return 0;
-                    if (r == "ApprovedByMentor") return 0;
-                    // Due soon: sort ascending
-                    return t.DueDate.HasValue ? (t.DueDate.Value.Date - DateTime.Today).TotalDays : 100;
-                })
-                .ToList();
-        }
-    }
-
-    // 2. ממתין לאחרים — submitted, sitting with the mentor for review.
-    //    Longest-waiting first, since that's the one most worth surfacing.
-    private IReadOnlyList<TaskItemDto> WaitingOnOthersTasks
-    {
-        get
-        {
-            if (_data is null) return Array.Empty<TaskItemDto>();
-
-            return _data.ActiveGroups
-                .SelectMany(g => g.Tasks)
-                .Where(t => TaskStatusHelpers.ResolveDisplayStatus(t) == "PendingMentorReview")
-                .OrderBy(t => t.LatestSubmittedAt ?? DateTime.MaxValue)
-                .ToList();
-        }
-    }
-
-    // 3. המשימות הקרובות — everything left: plain Open/InProgress work that
-    //    isn't yet urgent. Soonest-due first; no-due-date tasks sort last.
-    private IReadOnlyList<TaskItemDto> UpcomingTasks
-    {
-        get
-        {
-            if (_data is null) return Array.Empty<TaskItemDto>();
-
-            return _data.ActiveGroups
-                .SelectMany(g => g.Tasks)
-                .Where(t => !TaskStatusHelpers.TaskRequiresAction(t)
-                         && TaskStatusHelpers.ResolveDisplayStatus(t) != "PendingMentorReview")
-                .OrderBy(t => t.DueDate ?? DateTime.MaxValue)
-                .ToList();
-        }
-    }
+    private bool EmptyIsPositiveFor(string bucket) =>
+        string.IsNullOrWhiteSpace(_searchText) && bucket == "action";
 }
