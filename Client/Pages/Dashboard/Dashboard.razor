@@ -44,19 +44,39 @@ else
         <!-- Hero: current milestone stage + next submission in one unified card -->
         <StudentDashboardHero Project="@_data.Project"
                               Milestones="@(_data.Milestones ?? new())"
+                              OpenRequests="@(_data.OpenRequests ?? new())"
                               OnOpenProjectDetails="OpenProjectDetails"
                               OnOpenMilestone="OpenMilestoneDetail"
                               OnOpenTask="OpenDetail" />
 
-        <!-- Three information cards: upcoming submissions | requires attention | personal tasks -->
-        <div class="sdash-cards-row">
-            <UpcomingSubmissionsCard Milestones="@(_data.Milestones ?? new())"
-                                     NextDeadline="@_data.NextDeadline"
-                                     OnOpenTask="OpenDetail" />
-            <ActionCenterCard Milestones="@(_data.Milestones ?? new())"
-                              OpenRequests="@(_data.OpenRequests ?? new())"
-                              OnOpenTask="OpenDetail" />
-            <TeamTasksCard TeamMembers="@(_data.TeamMembers ?? new())" />
+        <!-- Dashboard workspace: ONE surface, three zones — not three
+             independent cards, and deliberately not a second "elevated
+             card" sitting under the Hero either. A plain panel (background
+             + radius only, no shadow/border — the same move already made
+             for the Hero's own outer shell) so the page reads as one
+             continuous canvas with the Hero's action card as the single
+             elevated focal point, not a stack of boxes. Main column (needs
+             attention, then what's coming next) and a visibly narrower,
+             secondary Team Tasks column share this one panel, separated by
+             a quiet vertical divider. Team Tasks stays narrower
+             deliberately: it's an informal, student-created list with no
+             milestone, no mentor review, and no effect on project
+             progress, so it doesn't belong at equal visual weight with the
+             project's actual status. -->
+        <div class="sdash-workspace">
+            <div class="sdash-workspace-main">
+                <ActionCenterCard Embedded="true"
+                                  Milestones="@(_data.Milestones ?? new())"
+                                  OpenRequests="@(_data.OpenRequests ?? new())"
+                                  OnOpenTask="OpenDetail" />
+                <UpcomingSubmissionsCard Embedded="true"
+                                         Milestones="@(_data.Milestones ?? new())"
+                                         NextDeadline="@_data.NextDeadline"
+                                         OnOpenTask="OpenDetail" />
+            </div>
+            <div class="sdash-workspace-aside">
+                <TeamTasksCard Embedded="true" TeamMembers="@(_data.TeamMembers ?? new())" />
+            </div>
         </div>
 
     </div>
@@ -100,70 +120,41 @@ else
     // available and use a flag to ensure we only run once.
     protected override async Task OnParametersSetAsync()
     {
-        // [DashboardDiag] TEMP build-freshness probe — must appear on every render.
-        Console.WriteLine($"[DashboardDiag] DASHBOARD COMPONENT ENTERED (OnParametersSetAsync) userNull={_user is null} loadStarted={_loadStarted}");
-
         try
         {
-            // [DashboardDiag] before guard
-            Console.WriteLine($"[DashboardDiag] BEFORE GUARD: loadStarted={_loadStarted} userNull={_user is null}");
-
             if (_loadStarted || _user is null)
-            {
-                Console.WriteLine("[DashboardDiag] GUARD RETURN (loadStarted or user null)");
                 return;
-            }
             _loadStarted = true;
 
-            // [DashboardDiag] after guard — dump the user identity + roles that drive the role gate.
-            var rolesDump = _user.Roles is null ? "<null>" : "[" + string.Join(",", _user.Roles) + "]";
             var isStudent = RoleService.IsStudent(_user);
-            Console.WriteLine($"[DashboardDiag] AFTER GUARD: userId={_user.Id} email={_user.Email} roles={rolesDump} IsStudent={isStudent}");
 
             // Elevated roles (Mentor / Staff / Admin) that land on the legacy
             // /dashboard route are bounced to their dedicated dashboard. A plain
             // student (explicit "Student" role OR a "User" account that hasn't
             // been elevated) falls through and loads the student dashboard.
             //
-            // NOTE: we intentionally NO LONGER set _loadError for a non-student
-            // whose landing route is /dashboard. That path used to misfire for
-            // ordinary "User" accounts (which ARE students) and showed the
-            // generic error. Role classification is never a reason to error —
-            // worst case we fall through and load the student dashboard.
+            // Role classification is never a reason to error — a non-student
+            // with no dedicated landing route simply falls through and loads
+            // the student dashboard rather than showing the generic error.
             if (!isStudent)
             {
                 var landing = RoleService.GetDefaultLandingRoute(_user);
-                Console.WriteLine($"[DashboardDiag] NON-STUDENT BRANCH: landing='{landing}' (dashboard='{PageRoutes.Dashboard}')");
                 if (landing != PageRoutes.Dashboard && landing != "/" + PageRoutes.Dashboard)
                 {
-                    Console.WriteLine($"[DashboardDiag] NON-STUDENT → navigating to '{landing}'");
                     Nav.NavigateTo(landing, replace: true);
                     return;
                 }
-                // No dedicated landing → treat as student and load the dashboard.
-                Console.WriteLine("[DashboardDiag] NON-STUDENT + landing==dashboard → falling through to load dashboard (no error)");
             }
 
-            // [DashboardDiag] before LoadDashboardAsync
-            Console.WriteLine("[DashboardDiag] BEFORE LoadDashboardAsync()");
             await LoadDashboardAsync();
-            // [DashboardDiag] after LoadDashboardAsync
-            Console.WriteLine($"[DashboardDiag] AFTER LoadDashboardAsync(): dataNull={_data is null} loadError={_loadError} isLoading={_isLoading}");
-
-            // [DashboardDiag] before catalog navigation condition
-            Console.WriteLine($"[DashboardDiag] BEFORE CATALOG NAV: dataNull={_data is null} projectNull={_data?.Project is null}");
 
             // Any student without an assigned project → catalog experience
             // Covers both: has team but no project, and no team at all.
             if (_data is not null && _data.Project is null)
-            {
-                Console.WriteLine("[DashboardDiag] navigating to StudentCatalog (no project)");
                 Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
-            }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            Console.WriteLine($"[DashboardDiag] OnParametersSetAsync EXCEPTION: {ex.GetType().FullName}: {ex.Message}\n{ex.StackTrace}");
             _isLoading = false;
             _loadError = true;
         }

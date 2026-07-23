@@ -52,10 +52,10 @@ public static class NavDefinitions
         new NavItem("מרכז ידע",        "learning",          "oi-book",            NavLinkMatch.Prefix),
     };
 
-    private static readonly IReadOnlyList<NavItem> _studentBottom = new[]
-    {
-        new NavItem("פרופיל", "settings", "oi-person", NavLinkMatch.Prefix),
-    };
+    // Empty: students reach /settings via the profile card at the bottom
+    // of the sidebar (AppSideNav's .snav-profile-footer), so a duplicate
+    // nav row here would be redundant.
+    private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
 
     // ── Mentor ───────────────────────────────────────────────────────
     private static readonly IReadOnlyList<NavItem> _mentorMain = new[]
