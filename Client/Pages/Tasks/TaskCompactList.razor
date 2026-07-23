@@ -1,0 +1,190 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Pages.Tasks
+
+@*
+    TaskCompactList — the tasks workspace's single filtered/sorted/searched
+    task list. StudentTasksPage supplies the already-filtered Tasks list;
+    this component only renders rows + the contextual empty state.
+
+    Each row is deliberately lean: one colored dot, the title, ONE muted
+    secondary line (milestone · source · next-action hint) on the right, and
+    a status badge + date on the left — no repeated chips/pills for the same
+    piece of information.
+
+    Status chip text/color always matches exactly one of the 4 primary
+    categories from TaskStatusHelpers.GetCategory (פתוחה / הוחזרה לתיקון /
+    מאושרת להגשה / הושלמה) — overdue is never allowed to override or hide
+    that chip; it only adds a red due-date treatment alongside it, so a
+    returned-and-overdue task still reads as "הוחזרה לתיקון", not "באיחור".
+    A completed task is never marked overdue (see TaskStatusHelpers.IsOverdue).
+*@
+
+@if (Tasks.Count == 0)
+{
+    <div class="tcl-empty">
+        <span class="oi @(EmptyIsPositive ? "oi-circle-check tcl-empty-ok" : "oi-info")" aria-hidden="true"></span>
+        <p>@EmptyMessage</p>
+    </div>
+}
+else
+{
+    <div class="tcl-list">
+        @foreach (var task in Tasks)
+        {
+            var category         = TaskStatusHelpers.GetCategory(task);
+            string resolved       = TaskStatusHelpers.ResolveDisplayStatus(task);
+            bool   isOverdue      = TaskStatusHelpers.IsOverdue(task);
+            bool   isCompleted    = category == TaskStatusHelpers.TaskCategory.Completed;
+            // GetDateDisplay's relative label ("באיחור"/"בעוד X ימים") only makes
+            // sense for a due date that's still pending — a completed task's due
+            // date having passed is expected, not "overdue".
+            var (relLabel, absLabel, _, isSoon) = isCompleted
+                ? ("", "", false, false)
+                : TaskStatusHelpers.GetDateDisplay(task.DueDate);
+            string milestoneTitle = MilestoneTitleLookup.GetValueOrDefault(task.Id, "");
+            string metaLine       = BuildMetaLine(milestoneTitle, task, resolved, category, StudentName);
+
+            <button class="tcl-row @CategoryRowClass(category)"
+                    @onclick="() => OnOpenDetail.InvokeAsync(task.Id)"
+                    aria-label="@BuildAriaLabel(task.Title, task.IsSubmission, task.DueDate, category, isOverdue)">
+
+                <span class="tcl-dot @CategoryDotClass(category)" aria-hidden="true"></span>
+
+                <div class="tcl-body">
+                    <span class="tcl-title">@task.Title</span>
+                    @if (!string.IsNullOrEmpty(metaLine))
+                    {
+                        <span class="tcl-meta-line">@metaLine</span>
+                    }
+                </div>
+
+                <div class="tcl-end">
+                    <span class="tcl-status @CategoryStatusClass(category)">
+                        @CategoryStatusLabel(category)
+                    </span>
+
+                    @if (isCompleted)
+                    {
+                        @if (task.CompletedAt.HasValue)
+                        {
+                            <span class="tcl-date">הושלמה ב-@task.CompletedAt.Value.ToString("dd/MM/yy")</span>
+                        }
+                    }
+                    else if (task.DueDate.HasValue)
+                    {
+                        <span class="tcl-date @(isOverdue ? "tcl-date-overdue" : isSoon ? "tcl-date-soon" : "")">
+                            @if (isOverdue)
+                            {
+                                <span class="oi oi-warning" aria-hidden="true"></span>
+                            }
+                            @if (!string.IsNullOrEmpty(relLabel))
+                            {
+                                @relLabel
+                            }
+                            else
+                            {
+                                @absLabel
+                            }
+                        </span>
+                    }
+                </div>
+
+                <span class="oi oi-chevron-left tcl-chevron" aria-hidden="true"></span>
+            </button>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TaskItemDto> Tasks { get; set; } = Array.Empty<TaskItemDto>();
+    [Parameter] public Dictionary<int, string> MilestoneTitleLookup { get; set; } = new();
+    [Parameter, EditorRequired] public string EmptyMessage { get; set; } = "";
+    [Parameter] public bool EmptyIsPositive { get; set; }
+    /// <summary>The viewing student's own display name — used only to show
+    /// "באחריות &lt;name&gt;" instead of the generic source label when a row
+    /// is a teammate's task (see TaskStatusHelpers.IsMine).</summary>
+    [Parameter] public string? StudentName { get; set; }
+    [Parameter] public EventCallback<int> OnOpenDetail { get; set; }
+
+    private static string CategoryRowClass(TaskStatusHelpers.TaskCategory c) => c switch
+    {
+        TaskStatusHelpers.TaskCategory.Returned => "tcl-row-returned",
+        _                                        => "",
+    };
+
+    private static string CategoryDotClass(TaskStatusHelpers.TaskCategory c) => c switch
+    {
+        TaskStatusHelpers.TaskCategory.Returned              => "tcl-dot-returned",
+        TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "tcl-dot-approved",
+        TaskStatusHelpers.TaskCategory.Completed             => "tcl-dot-completed",
+        _                                                     => "tcl-dot-open",
+    };
+
+    private static string CategoryStatusClass(TaskStatusHelpers.TaskCategory c) => c switch
+    {
+        TaskStatusHelpers.TaskCategory.Returned              => "tcl-status-returned",
+        TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "tcl-status-approved",
+        TaskStatusHelpers.TaskCategory.Completed             => "tcl-status-completed",
+        _                                                     => "tcl-status-open",
+    };
+
+    private static string CategoryStatusLabel(TaskStatusHelpers.TaskCategory c) => c switch
+    {
+        TaskStatusHelpers.TaskCategory.Returned              => "הוחזרה לתיקון",
+        TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "מאושרת להגשה",
+        TaskStatusHelpers.TaskCategory.Completed             => "הושלמה",
+        _                                                     => "פתוחה",
+    };
+
+    private static string SourceLabel(string taskType) => taskType switch
+    {
+        "Mentor" => "מנחה",
+        "System" => "מערכת",
+        _        => "אישית",
+    };
+
+    /// <summary>Nuance for statuses folded into "Open" (e.g. PendingMentorReview)
+    /// or plain "InProgress" — communicated here rather than in the status
+    /// chip, which must always match exactly one of the 4 summary/filter
+    /// categories.</summary>
+    private static string NextActionText(string resolved) => resolved switch
+    {
+        "PendingMentorReview"                       => "ממתין לתגובת המנחה",
+        "ReturnedByMentor" or "ReturnedForRevision"  => "יש לתקן ולהגיש מחדש",
+        "ApprovedByMentor"                           => "יש לאשר הגשה במודל",
+        _                                             => "",
+    };
+
+    /// <summary>One restrained secondary line: milestone · source/assignee ·
+    /// next-action hint — replaces the old separate milestone pill / source
+    /// chip / next action line with a single piece of muted text. Shows
+    /// "באחריות &lt;name&gt;" instead of the generic source label whenever the
+    /// task belongs to a teammate rather than the viewing student.</summary>
+    private static string BuildMetaLine(string milestoneTitle, TaskItemDto task, string resolved,
+        TaskStatusHelpers.TaskCategory category, string? studentName)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrEmpty(milestoneTitle)) parts.Add(milestoneTitle);
+
+        if (!TaskStatusHelpers.IsMine(task, studentName))
+            parts.Add($"באחריות {task.AssignedToName}");
+        else
+            parts.Add(SourceLabel(task.TaskType));
+
+        if (category != TaskStatusHelpers.TaskCategory.Completed)
+        {
+            string next = NextActionText(resolved);
+            if (!string.IsNullOrEmpty(next)) parts.Add(next);
+        }
+        return string.Join(" · ", parts);
+    }
+
+    private static string BuildAriaLabel(string title, bool isSubmission, DateTime? dueDate,
+        TaskStatusHelpers.TaskCategory category, bool isOverdue)
+    {
+        string type   = isSubmission ? "הגשה" : "משימה";
+        string due    = dueDate.HasValue ? $", תאריך {dueDate.Value:dd/MM/yy}" : "";
+        string status = CategoryStatusLabel(category) + (isOverdue ? ", באיחור" : "");
+        return $"פתח {type}: {title}{due}, סטטוס: {status}";
+    }
+}

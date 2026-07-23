@@ -40,20 +40,52 @@ public static class TaskStatusHelpers
         return task.Status;
     }
 
-    /// <summary>True when the task requires the student's own action right now:
-    /// returned/needs-revision (must resubmit), approved-but-unconfirmed
-    /// (must confirm Moodle), overdue, or due within 3 days. False for tasks
-    /// waiting on the mentor (PendingMentorReview) or already Done.</summary>
-    public static bool TaskRequiresAction(TaskItemDto t)
+    /// <summary>
+    /// The 5 user-facing status categories shown across the tasks page's
+    /// summary cards, filter chips, and per-row status badges. This is the
+    /// single grouping axis — every task falls into exactly one of these,
+    /// mutually exclusive by construction (see <see cref="GetCategory"/>).
+    /// Overdue is intentionally NOT a member here — it is a separate,
+    /// orthogonal date-based flag (see <see cref="IsOverdue"/>) that can
+    /// overlap with Open or Returned.
+    /// </summary>
+    public enum TaskCategory { Open, Returned, ApprovedForSubmission, Completed }
+
+    /// <summary>
+    /// Maps a task's resolved display status onto one of the 4 primary
+    /// categories (פתוחות / הוחזרו לתיקון / מאושרות להגשה / הושלמו).
+    /// "PendingMentorReview" (submitted, awaiting the mentor's decision) has
+    /// no dedicated category in the new status model — it is mapped to
+    /// <see cref="TaskCategory.Open"/> as the closest fit (it is still an
+    /// active, non-terminal, non-returned, non-approved task), same as any
+    /// other legacy raw status string that isn't Done/Returned/Approved.
+    /// </summary>
+    public static TaskCategory GetCategory(TaskItemDto t)
     {
         string resolved = ResolveDisplayStatus(t);
-        if (resolved is "ReturnedByMentor" or "ReturnedForRevision") return true;
-        if (resolved == "ApprovedByMentor") return true;            // must confirm Moodle
-        if (resolved == "PendingMentorReview")       return false;  // waiting on mentor
-        if (t.Status  == "Done")                     return false;
-        if (t.DueDate.HasValue && t.DueDate.Value.Date < DateTime.Today)                    return true; // overdue
-        if (t.DueDate.HasValue && (t.DueDate.Value.Date - DateTime.Today).TotalDays <= 3)   return true; // due soon
-        return false;
+        if (resolved == "Done") return TaskCategory.Completed;
+        if (resolved is "ReturnedByMentor" or "ReturnedForRevision") return TaskCategory.Returned;
+        if (resolved == "ApprovedByMentor") return TaskCategory.ApprovedForSubmission;
+        return TaskCategory.Open;
+    }
+
+    /// <summary>
+    /// Overdue counting rule (documented per the tasks-page redesign spec):
+    /// a task is overdue when it is not completed, its due date has passed,
+    /// and it isn't currently sitting with the mentor/reviewer for a decision
+    /// (PendingMentorReview) or awaiting only a Moodle confirmation
+    /// (ApprovedByMentor) — in both of those cases the delay is not the
+    /// student's to resolve, so flagging them "overdue" would be misleading.
+    /// Overdue overlaps with Open and Returned by design (a returned task
+    /// past its due date is both) — it is never summed into a grand total
+    /// alongside the 4 primary categories above.
+    /// </summary>
+    public static bool IsOverdue(TaskItemDto t)
+    {
+        if (GetCategory(t) == TaskCategory.Completed) return false;
+        if (!t.DueDate.HasValue || t.DueDate.Value.Date >= DateTime.Today) return false;
+        string resolved = ResolveDisplayStatus(t);
+        return resolved is not ("PendingMentorReview" or "ApprovedByMentor");
     }
 
     public static (string RelLabel, string AbsLabel, bool IsOverdue, bool IsSoon)
@@ -67,5 +99,46 @@ public static class TaskStatusHelpers
         if (days == 1) return ("מחר",               abs, false, true);
         if (days <= 7) return ($"בעוד {days} ימים", abs, false, true);
         return ("", abs, false, false);
+    }
+
+    /// <summary>
+    /// The 4 workflow groups the tasks page is organized around (replacing
+    /// the earlier flat 5-status filter as the PRIMARY organizing axis — the
+    /// finer statuses still show on each row's badge, they just aren't
+    /// top-level navigable groups anymore). Mutually exclusive, priority
+    /// ordered: Completed &gt; Returned &gt; ApprovedForSubmission &gt;
+    /// (mentor/teammate's court) &gt; the student's own open work.
+    /// </summary>
+    public enum WorkflowSection { NeedsAction, ReadyToSubmit, Team, Completed }
+
+    /// <summary>
+    /// True when a task belongs to the viewing student rather than a
+    /// teammate. `GetMyTasks` returns the whole team's tasks (filtered by
+    /// project, not by assignee), so `AssignedToName` can legitimately be a
+    /// teammate's name — compared here against `TasksPageDto.StudentName`.
+    /// An unassigned task (empty name) is treated as the student's own,
+    /// since there's no evidence otherwise.
+    /// </summary>
+    public static bool IsMine(TaskItemDto t, string? studentName) =>
+        string.IsNullOrWhiteSpace(t.AssignedToName)
+        || string.IsNullOrWhiteSpace(studentName)
+        || string.Equals(t.AssignedToName.Trim(), studentName.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Maps a task onto one of the 4 workflow sections. "PendingMentorReview"
+    /// and any task assigned to a teammate both land in Team — in both cases
+    /// the next move isn't the viewing student's to make.
+    /// </summary>
+    public static WorkflowSection GetWorkflowSection(TaskItemDto t, string? studentName)
+    {
+        var category = GetCategory(t);
+        if (category == TaskCategory.Completed)             return WorkflowSection.Completed;
+        if (category == TaskCategory.Returned)               return WorkflowSection.NeedsAction;
+        if (category == TaskCategory.ApprovedForSubmission)  return WorkflowSection.ReadyToSubmit;
+
+        if (ResolveDisplayStatus(t) == "PendingMentorReview") return WorkflowSection.Team;
+        if (!IsMine(t, studentName))                          return WorkflowSection.Team;
+
+        return WorkflowSection.NeedsAction;
     }
 }
