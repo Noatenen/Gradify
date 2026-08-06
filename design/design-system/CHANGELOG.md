@@ -3,6 +3,61 @@
 Dates are taken from Git history (`git log --date=short`) where the relevant
 commit exists; all Phase 1–4.4 work landed on 2026-07-18.
 
+## System Master Phase 1 — foundations rebase, student scope (2026-08-06)
+
+Foundations-only rebase of the design-token layer onto the approved
+**Motiva System Master**, which is now the visual source of truth (superseding
+`motiva-ui-library-v01.html`). An implementation audit found three token
+systems live at once: the legacy `--g-*` palette, the `--motiva-*` layer that
+aliases it, and the Master's own `motiva-student.css` — which the app matched
+in neither typeface (Assistant vs Heebo), scale (20px vs 13.5px body), nor hue
+family (cool slate vs warm paper/ink).
+
+- **Student-scoped, not forked.** Every Master value lives in a new
+  `.motiva-student` block in `motiva-tokens.css`; the `:root` blocks are
+  byte-identical to before. Re-pointing in `:root` would have restyled every
+  Mentor/Lecturer/Staff/Admin surface — `--motiva-color-indigo` has 137
+  references, `--motiva-shadow-sm` 72, `--motiva-gradient-signature` 56,
+  `--motiva-radius-lg` 48. Same firewall pattern as `AppSideNav`'s existing
+  `.snav-motiva` student-only layer.
+- **One live palette preserved.** The scope overrides the `--g-*` variables
+  themselves, so the ~40 `--motiva-*` tokens that alias them resolve to Master
+  values automatically with no second definition to drift. Thirteen genuinely
+  net-new tokens get their own literals (rose, rose-ink, the 4th ink step, the
+  middle line step, edge-violet, item size, two tracking values, four
+  gradients, one easing).
+- **Rebased:** typeface (Heebo, Assistant retained as fallback); 4-step warm
+  ink ramp; warm paper surfaces (`#FAF9F7`); 3-step line ramp; violet/teal/rose
+  with info+warning folded onto the permitted three; the full type scale
+  (page 25 / section 18 / card 15 / sub 13 / body 13.5 / meta 12); radii
+  10/14/18/24; shadows reassigned (rest `none`, md popover, lg modal); five
+  gradient definitions including both ambient intensities the Master uses; two
+  easings.
+- **Dark mode preserved, not redesigned.** Because `.motiva-student` sits on a
+  descendant of `<html>`, its light values would shadow the `:root` dark blocks
+  regardless of specificity — so every colour/shadow/gradient token is restated
+  under `[data-theme="dark"] .motiva-student` and a `prefers-color-scheme`
+  twin. Existing slate dark neutrals carry through unchanged; only accents get
+  dark-legible variants. The Master's warm-charcoal `oklch()` dark palette is
+  explicitly *not* adopted — its own audit marks it "a palette reference, not a
+  second screen" — and is recorded in `MOTIVA_FOUNDATIONS.md` as an open
+  decision.
+- **The Master's component stylesheet was NOT ported.** No `.kpi`, `.kpi-grid`,
+  `.row`, `.dot`, `.navi`, `.catcard`, `.amb`, `.amb-active` or `.t-*`; no
+  `@keyframes`. Gradients are stored as token values only, with no rule
+  applying them. Phase 3 builds real Blazor components rather than copying
+  prototype CSS into production.
+- **Zero visual change shipped.** Nothing carries `.motiva-student` yet; the
+  class is attached to the student shell in Phase 2. Exactly one
+  non-custom-property declaration was introduced app-wide —
+  `.motiva-student { font-family: var(--motiva-font-family); }` in
+  `motiva-base.css` — needed because `app.css` sets `font-family` on
+  `html, body` with a literal, so re-pointing `--g-font-base` alone would never
+  reach the page.
+- No `.razor` or `.razor.css` file changed. No navigation, route, service,
+  auth, data-model or backend change. Layout tokens (`--g-sidebar-width`,
+  `--g-shell-padding`, `--motiva-space-*`) deliberately untouched — Phase 2/3.
+
 ## Phase 4.4 — MCard full-bleed padding (2026-07-18)
 
 Architectural follow-up from migrating `ActionCenterCard` (the first Phase 5
