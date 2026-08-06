@@ -3,6 +3,61 @@
 Dates are taken from Git history (`git log --date=short`) where the relevant
 commit exists; all Phase 1–4.4 work landed on 2026-07-18.
 
+## System Master Phase 2 — student shell activation (2026-08-06)
+
+Turns Phase 1's foundations on for the Student experience and aligns the shared
+student shell/chrome to the Master. Shell only — no page was redesigned.
+
+- **Scope activated at one point.** `AppLayout.razor` puts `motiva-student` on
+  its `.app-shell` root when `RoleService.IsStudent(_user)` — the same predicate
+  `AppSideNav` already uses for `.snav-motiva`. Sidebar and page content
+  inherit the token rebase together; nothing outside that element can reach it.
+- **Shell geometry is token-driven.** Four tokens added to the `.motiva-student`
+  block: `--g-sidebar-width: 248px`, `--g-shell-padding: 0px`, and
+  `--motiva-content-padding-inline/-block-end` (40px / 60px). Overriding the two
+  *existing* `--g-*` layout tokens resizes the rail and removes the floating gap
+  with **no rule changes** — `.sidenav-wrapper`, `.app-shell` and
+  `.sidenav-panel` (including its sticky `top` and `calc(100vh - …)` height)
+  already read them. `gradify-theme.css` is untouched: 280px / 12px everywhere
+  else.
+- **Content padding on `.app-main`, not `.app-content`** — deliberately. The bar
+  and the page body are siblings there, so padding the shared parent keeps them
+  on one left/right boundary, preserving the existing
+  `.atb-dash-merge` ↔ `.sdh-hero` alignment on /dashboard. Interim: the Master
+  gives each *section* its own inset so an ambient header can bleed to the shell
+  edge, which needs real page headers (Phase 3/4).
+- **Sidebar is now the Master's flat rail:** white surface, no radius, no
+  shadow, one hairline `border-inline-end`; the ambient-gradient/radius/shadow
+  treatment was replaced outright. Internal borders under the wordmark and
+  project line removed, and the redundant `.snav-divider` hidden — the Master's
+  only divider is the one above the profile footer, which the base rule already
+  provides.
+- **Active nav item** switched from brand-tint + elevation + a 3px signature bar
+  to the Master's `--motiva-gradient-wash` fill with ink label at semibold; the
+  bar and shadow are removed, not restyled. Nav typography moved to
+  `--motiva-font-size-item` (14px) with the muted-ink label the Master uses. The
+  48px item height was left alone — layout, not typography.
+- **NotificationBell relocated, not rebuilt.** Rendered in the sidebar header
+  beside the wordmark for students; still in `AppTopBar` for every other role,
+  behind an `@if` so the two never mount simultaneously and double-poll.
+  `NotificationBell.razor` / `.razor.css` were **not touched** — student styling
+  is applied from `AppSideNav.razor.css` via `::deep`, which compiles to
+  `.snav-motiva[b-…] .nbell-*` (0,3,0) and deterministically outranks the
+  component's own `(0,2,0)` rules instead of relying on bundle order. Badge now
+  uses the Master's violet, explicitly — not `--motiva-color-danger`, which
+  resolves to rose inside the scope.
+- **AppTopBar workarounds deliberately preserved:** `.atb-dash-merge`,
+  the `/tasks` title swap, and the calendar button are all still load-bearing
+  (squared hero corners, the Tasks page heading, and the only student route to
+  `/milestones` respectively). Retired in Phase 4. Only the bell moved.
+- Navigation items, order, labels, routes and `NavDefinitions` unchanged;
+  `/notifications` and `/external-requests` intact; Mentor/Lecturer navigation
+  untouched. No page content, cards, KPI, lists, filters, accordions or progress
+  components touched. No icon-system change. No service, auth, API or data-model
+  change.
+- Every added CSS rule is prefixed `.motiva-student` or `.snav-motiva` —
+  verified; there are no ungated additions.
+
 ## System Master Phase 1 — foundations rebase, student scope (2026-08-06)
 
 Foundations-only rebase of the design-token layer onto the approved
