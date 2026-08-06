@@ -3,6 +3,61 @@
 Dates are taken from Git history (`git log --date=short`) where the relevant
 commit exists; all Phase 1–4.4 work landed on 2026-07-18.
 
+## System Master Phase 3 — shared UI primitives (2026-08-06)
+
+Builds the reusable Blazor primitives that the later Student page migrations
+will consume. **No production page was migrated, and no page-specific UI was
+touched** — Phase 3 adds components and a gallery page, nothing else.
+
+- **Eight new primitives**, all `@namespace AuthWithAdmin.Client.Components`,
+  each with its own isolated `.razor.css`: `MPageHeader` (Hero/Compact ambient
+  band), `MKpiGrid` + `MKpiCard`, `MStatusDot`, `MRowList` + `MRow`,
+  `MEmptyState`, `MScrollArea`. Each has a doc under
+  `design/design-system/components/`.
+- **One KPI component, not four.** The Master's implementation reference is
+  explicit ("KpiCard / KpiGrid … supports link, button, and pressed/filter
+  states"), so there is no TasksKpiCard / RequestsKpiCard / DashboardKpiCard.
+  The grid uses `minmax(0, 1fr)` with no max-width — the fixed 208px per-card
+  cap is the exact bug the Master's own audit closed, and it is not
+  reintroduced. Breakpoints are the Master's: 4 → 2 → 1 at 1060px / 520px,
+  never 3+1.
+- **MStatusBadge evolved, not duplicated.** `Violet`/`Teal`/`Rose` were
+  **appended** to `BadgeVariant` (no existing ordinal moved); the five legacy
+  members stay because they are live in every role, and Phase 1's token folding
+  already renders them correctly inside the scope. Master chip metrics (600
+  weight, 6/10 padding) are applied under `.motiva-student` only — the base
+  rules are byte-identical, so Mentor/Lecturer/Staff/Admin are unchanged.
+- **Closed semantic sets.** `MStatusDot.DotTone` and `MKpiCard.KpiAccent` have
+  exactly violet/teal/rose (+`None`) — the Master's "never a fourth" rule is
+  enforced by the API rather than by review.
+- **Prototype CSS was translated, not copied.** Values come from
+  `--motiva-*` tokens; the handful with no token peer (KPI 22px number, row
+  14/2px padding, 12px grid gap, header 40/38px bands) stay literal *with a
+  comment saying why*, rather than being snapped onto a token that would change
+  the Master's spacing. Accent rings and the scrollbar thumb use
+  `color-mix()` over the semantic/ink tokens so they follow dark mode, each
+  with a preceding `rgba()` fallback declaration.
+- **Outside-scope safety.** Every student-only token (`--motiva-color-violet`,
+  `-rose`, `-rose-ink`, `--motiva-border-card`, `--motiva-gradient-ambient-hero`,
+  `--motiva-text-subtle`, `--motiva-font-size-item`, `--motiva-letter-spacing-page`)
+  is read with a `var(…, <:root peer>)` fallback, so the primitives render
+  correctly outside `.motiva-student` — which the gallery is.
+- **Accessibility.** No click-only divs: `MKpiCard` and `MRow` render `<a>`
+  with `Href`, `<button>` with `OnClick`, and an inert `<div>` otherwise.
+  `aria-pressed` is emitted only for real toggles (`Pressed` is `bool?`).
+  `MScrollArea` is keyboard-focusable (WCAG 2.1.1) and takes `role="region"`
+  only when named. Colour is never alone — a label-less `MStatusDot` is
+  `aria-hidden`, and `MStatusBadge` still renders nothing without text. All
+  motion is disabled under `prefers-reduced-motion`.
+- **RTL.** Logical properties throughout. `MScrollArea` deliberately does *not*
+  port the prototype's `direction: ltr` + `direction: rtl`-on-children hack
+  (it breaks direction inheritance for anything that is not a direct element
+  child); the scrollbar sits on the inline-start edge in RTL, natively.
+- **Gallery:** new page `/motiva/components/student-primitives` with live
+  examples of all eight, one sidebar entry, and the component count on the
+  index updated 5 → 13. Every demo stage is wrapped in `.motiva-student` so
+  the preview shows real System Master values.
+
 ## System Master Phase 2 — student shell activation (2026-08-06)
 
 Turns Phase 1's foundations on for the Student experience and aligns the shared
