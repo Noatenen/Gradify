@@ -1,0 +1,109 @@
+@namespace AuthWithAdmin.Client.Pages.Learning
+
+@*
+    KnowledgeResourceRow — the Design's .resrow (Motiva Resources.dc.html:18-22,
+    rendered at :221-259), composed over the shared MRow rather than rebuilt.
+
+    Design child order (inline-start first, i.e. right in RTL):
+        arrow mark -> 36px icon tile -> title -> [type pill · milestone · date]
+
+    Both the mark and the tile go in MRow's Leading slot, because in RTL that
+    slot IS the row's start edge — which is where the Design puts them. There is
+    no end block: the Design's row has nothing on its trailing edge, and the
+    arrow doubles as the affordance.
+
+    The element MRow renders follows the row's real action — an <a download> for
+    a file, an <a target="_blank"> for an external resource, a <button> for the
+    video modal, a plain <div> when there is no usable target. That is why the
+    row does not hardcode one of them.
+*@
+
+<MRow Class="kc-row"
+      Href="@Href"
+      Download="@DownloadAttr"
+      Target="@TargetAttr"
+      OnClick="@ClickHandler"
+      AriaLabel="@AriaLabel">
+    <Leading>
+        <span class="kc-row-mark" aria-hidden="true">@Resource.Mark</span>
+        <span class="kc-row-icon" style="--kc-accent:@Resource.Accent">
+            <KnowledgeIcon Category="Resource.Category" Size="16" />
+        </span>
+    </Leading>
+
+    <ChildContent>
+        <span class="kc-row-body">
+            <span class="kc-row-title">@Resource.Title</span>
+
+            @*
+                Meta line. Every part is a real field, so nothing here renders a
+                placeholder: Description is empty on every row in the database
+                and is deliberately not given reserved space.
+            *@
+            <span class="kc-row-meta">
+                <span class="kc-row-pill" style="--kc-accent:@Resource.Accent">@Resource.TypeLabel</span>
+
+                @if (ShowCategory)
+                {
+                    <span class="kc-row-sep" aria-hidden="true">·</span>
+                    <span class="kc-row-meta-text">@KnowledgeCenterModel.LabelFor(Resource.Category)</span>
+                }
+
+                <span class="kc-row-sep" aria-hidden="true">·</span>
+                <span class="kc-row-meta-text">@Resource.MilestoneLabel</span>
+
+                <span class="kc-row-sep" aria-hidden="true">·</span>
+                <span class="kc-row-meta-text">@Resource.UploadedLabel</span>
+            </span>
+        </span>
+    </ChildContent>
+</MRow>
+
+@code {
+    [Parameter, EditorRequired] public KnowledgeResource Resource { get; set; } = default!;
+
+    /// <summary>Adds the category name to the meta line. On in search results,
+    /// which are flat and cross-category (the Design's `withSection` variant);
+    /// off inside an expanded category panel, where it would repeat the panel's
+    /// own heading on every row.</summary>
+    [Parameter] public bool ShowCategory { get; set; }
+
+    /// <summary>Raised for a video row — the page owns the modal.</summary>
+    [Parameter] public EventCallback<KnowledgeResource> OnPlay { get; set; }
+
+    private string? Href => Resource.Action switch
+    {
+        KnowledgeResourceAction.Download => Resource.Href,
+        KnowledgeResourceAction.External => Resource.Href,
+        _                                => null,
+    };
+
+    private string? DownloadAttr =>
+        Resource.Action == KnowledgeResourceAction.Download ? Resource.DownloadName : null;
+
+    private string? TargetAttr =>
+        Resource.Action == KnowledgeResourceAction.External ? "_blank" : null;
+
+    // Only the video row is a button. Passing a delegate for the others would
+    // make MRow render a <button> even though Href is set.
+    private EventCallback<MouseEventArgs> ClickHandler =>
+        Resource.Action == KnowledgeResourceAction.PlayVideo
+            ? EventCallback.Factory.Create<MouseEventArgs>(this, PlayAsync)
+            : default;
+
+    // The visible row text is title + pill + milestone + date, read in that
+    // order. What it does not say is what activating it will do, which is the
+    // one thing a link's accessible name should carry.
+    private string AriaLabel => Resource.Action switch
+    {
+        KnowledgeResourceAction.Download  => $"הורדת {Resource.Title}",
+        KnowledgeResourceAction.PlayVideo => $"צפייה בסרטון {Resource.Title}",
+        KnowledgeResourceAction.External  => $"פתיחת {Resource.Title} בכרטיסייה חדשה",
+        _                                 => Resource.Title,
+    };
+
+    private async Task PlayAsync()
+    {
+        if (OnPlay.HasDelegate) await OnPlay.InvokeAsync(Resource);
+    }
+}
