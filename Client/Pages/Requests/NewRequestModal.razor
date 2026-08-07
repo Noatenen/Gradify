@@ -5,395 +5,402 @@
 @inject IProjectContextService  ProjectContext
 @inject IRequestTypesService    RequestTypesService
 
+@*
+    NewRequestModal — the finalized design's create sheet
+    (Motiva Requests.dc.html, the createOpen overlay).
+
+    Four steps: type → details → review → sent. The previous version was one
+    long scrolling form; the Design splits it so choosing a type can shape the
+    fields that follow, and so the student sees a summary before submitting.
+
+    WHY THIS OWNS ITS OWN SHEET RATHER THAN USING MModal
+    MModal's structure (overlay / header / scrolling body / footer) is exactly
+    right, but three things here are outside its API: the Design's 470px width,
+    its max-height of min(86vh, 660px), and the mobile bottom-sheet form. Those
+    could only be applied from outside via a class on MModal's root, which
+    Blazor CSS isolation cannot reach. Rather than widen a shared primitive for
+    one screen or move page rules into the global foundations layer, the sheet
+    is local — which is also what the audit reserved "Requests-specific" for.
+    Everything inside it that has a shared primitive (MButton) uses it.
+
+    NOTHING about validation changed: the required fields, the extension target
+    rules, the attachment limits and the server's Hebrew errors (including the
+    409 duplicate-extension guard) all behave exactly as before.
+*@
+
 @if (IsOpen)
 {
     <div class="nrm-overlay" @onclick="TryClose">
-        <div class="nrm-box" @onclick:stopPropagation="true">
+        <div class="nrm-sheet"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="nrm-title"
+             @onclick:stopPropagation="true">
 
-            @if (_phase == Phase.Success)
+            <!-- ── Header ── -->
+            <div class="nrm-head">
+                <div>
+                    <strong class="nrm-title" id="nrm-title">בקשה חדשה</strong>
+                    @if (!string.IsNullOrEmpty(StepLabel))
+                    {
+                        <p class="nrm-step">@StepLabel</p>
+                    }
+                </div>
+                <button type="button" class="nrm-x" aria-label="סגירה"
+                        disabled="@(_phase == Phase.Submitting)"
+                        @onclick="TryClose">×</button>
+            </div>
+
+            @* ─────────────── STEP 1 — type ─────────────── *@
+            @if (_step == Step.Type)
             {
-                <!-- ── Success state ── -->
-                <div class="nrm-success">
-                    <div class="nrm-success-icon">
-                        <span class="oi oi-circle-check" aria-hidden="true"></span>
-                    </div>
-                    <h2 class="nrm-success-title">הבקשה נשלחה בהצלחה!</h2>
-                    <p class="nrm-success-body">
-                        הבקשה שלך התקבלה ותטופל על ידי הצוות האקדמי.
-                        תוכל לעקוב אחרי הסטטוס בדף הבקשות שלך.
-                    </p>
-                    <div class="nrm-success-actions">
-                        <button class="nrm-primary-btn" @onclick="SuccessClose">סגירה</button>
-                        <button class="nrm-ghost-btn" @onclick="ResetForm">הגשת בקשה נוספת</button>
-                    </div>
+                <div class="nrm-body nrm-body-types">
+                    @if (!_typesLoaded)
+                    {
+                        <p class="nrm-hint"><span class="nrm-spinner-sm"></span> טוען סוגי בקשה…</p>
+                    }
+                    else if (_availableTypes.Count == 0)
+                    {
+                        <MEmptyState Title="אין סוגי בקשה פעילים"
+                                     Description="פני למרצה כדי שיפעיל סוגי בקשה במערכת." />
+                    }
+                    else
+                    {
+                        @foreach (var t in _availableTypes)
+                        {
+                            var captured = t;
+                            var on = _requestType == captured.Code;
+
+                            <button type="button"
+                                    class="nrm-type @(on ? "nrm-type-on" : "")"
+                                    aria-pressed="@(on ? "true" : "false")"
+                                    @onclick="@(() => PickType(captured.Code))">
+                                <span class="nrm-type-top">
+                                    <span class="nrm-type-name">@captured.Name</span>
+                                    @if (on)
+                                    {
+                                        <span class="nrm-type-check" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="m5 12.5 4.5 4.5L19 7.5"></path>
+                                            </svg>
+                                        </span>
+                                    }
+                                </span>
+                                @if (!string.IsNullOrWhiteSpace(captured.Description))
+                                {
+                                    <span class="nrm-type-hint">@captured.Description</span>
+                                }
+                            </button>
+                        }
+                    }
+                </div>
+                <div class="nrm-foot nrm-foot-end">
+                    @*
+                        Every step's forward action is the same solid violet
+                        primary, and every back action stays ghost — so one
+                        button per step reads as "continue" and the flow's
+                        progression is legible without reading the labels.
+                    *@
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             Class="m-btn-primary-solid"
+                             Disabled="@string.IsNullOrEmpty(_requestType)"
+                             OnClick="GoToForm">המשך</MButton>
                 </div>
             }
-            else
+
+            else if (_step == Step.Form)
             {
-                <!-- ── Header ── -->
-                <div class="nrm-header">
-                    <div class="nrm-header-start">
-                        <div class="nrm-icon">
-                            <span class="oi oi-envelope-closed" aria-hidden="true"></span>
-                        </div>
-                        <div>
-                            <h2 class="nrm-title">פתיחת בקשה חדשה</h2>
-                            <p class="nrm-subtitle">הגש בקשה לצוות האקדמי</p>
-                        </div>
-                    </div>
-                    <button class="nrm-close-btn" @onclick="TryClose" title="סגירה"
-                            disabled="@(_phase == Phase.Submitting)">
-                        <span class="oi oi-x" aria-hidden="true"></span>
-                    </button>
-                </div>
+                @* ─────────────── STEP 2 — details ─────────────── *@
+                <div class="nrm-body">
 
-                <!-- ── Form ── -->
-                <div class="nrm-form">
-
-                    <!-- Request type -->
                     <div class="nrm-field">
-                        <label class="nrm-label">
-                            סוג הבקשה <span class="nrm-required">*</span>
-                        </label>
-                        <select class="nrm-select @(_touched && string.IsNullOrEmpty(_requestType) ? "nrm-input-error" : "")"
-                                @bind="_requestType"
-                                disabled="@(_phase == Phase.Submitting)">
-                            <option value="">— בחר סוג בקשה —</option>
-                            @foreach (var t in _availableTypes)
-                            {
-                                <option value="@t.Code">@t.Name</option>
-                            }
-                        </select>
-                        @if (_touched && string.IsNullOrEmpty(_requestType))
-                        {
-                            <div class="nrm-field-error">יש לבחור סוג בקשה</div>
-                        }
+                        <p class="nrm-label">סוג הבקשה</p>
+                        <p class="nrm-readonly">@SelectedTypeName</p>
                     </div>
 
-                    <!-- Title -->
                     <div class="nrm-field">
-                        <label class="nrm-label">
-                            כותרת <span class="nrm-required">*</span>
-                        </label>
-                        <input type="text"
-                               class="nrm-input @(_touched && string.IsNullOrWhiteSpace(_title) ? "nrm-input-error" : "")"
-                               placeholder="תאר בקצרה את הבקשה…"
+                        <label class="nrm-label" for="nrm-title-input">נושא הבקשה</label>
+                        <input id="nrm-title-input"
+                               class="nrm-input @(TitleInvalid ? "nrm-invalid" : "")"
+                               type="text"
+                               placeholder="נושא קצר וברור"
                                maxlength="200"
                                @bind="_title"
                                @bind:event="oninput"
                                disabled="@(_phase == Phase.Submitting)" />
-                        @if (_touched && string.IsNullOrWhiteSpace(_title))
+                        @if (TitleInvalid)
                         {
-                            <div class="nrm-field-error">כותרת הבקשה היא שדה חובה</div>
+                            <p class="nrm-err">יש להזין נושא לבקשה</p>
                         }
                     </div>
 
-                    <!-- Description -->
                     <div class="nrm-field">
-                        <label class="nrm-label">
-                            פירוט <span class="nrm-required">*</span>
-                        </label>
-                        <textarea class="nrm-textarea @(_touched && string.IsNullOrWhiteSpace(_description) ? "nrm-input-error" : "")"
-                                  rows="4"
-                                  placeholder="פרט את הבקשה, הסיבה, ומה הסיוע הנדרש…"
+                        <label class="nrm-label" for="nrm-desc">תוכן הבקשה</label>
+                        <textarea id="nrm-desc"
+                                  class="nrm-textarea @(DescriptionInvalid ? "nrm-invalid" : "")"
+                                  rows="3"
+                                  placeholder="מה הבקשה ומה הרקע לה"
                                   maxlength="2000"
                                   @bind="_description"
                                   @bind:event="oninput"
                                   disabled="@(_phase == Phase.Submitting)"></textarea>
-                        @if (_touched && string.IsNullOrWhiteSpace(_description))
+                        @if (DescriptionInvalid)
                         {
-                            <div class="nrm-field-error">פירוט הבקשה הוא שדה חובה</div>
+                            <p class="nrm-err">יש להזין תוכן לבקשה</p>
                         }
                     </div>
 
-                    <!-- Postponement (Extension) details — visible only for Extension requests -->
+                    @*
+                        Extension block. The Design draws a milestone picker and
+                        a task picker in sequence; the domain treats task and
+                        milestone as MUTUALLY EXCLUSIVE targets, not parent and
+                        child, so the existing single grouped picker is kept —
+                        a cascade would misrepresent the model. The details
+                        panel and the overdue banner are existing behaviour and
+                        stay, restyled.
+                    *@
                     @if (_requestType == RequestTypes.Extension)
                     {
-                        <div class="nrm-section">
-                            <div class="nrm-section-title">פרטי הדחייה</div>
-
-                            <div class="nrm-field">
-                                <label class="nrm-label">
-                                    בחר משימה / אבן דרך <span class="nrm-required">*</span>
-                                </label>
-                                @if (_targetsLoading)
+                        <div class="nrm-field">
+                            <label class="nrm-label" for="nrm-target">משימה או אבן דרך</label>
+                            @if (_targetsLoading)
+                            {
+                                <p class="nrm-hint"><span class="nrm-spinner-sm"></span> טוען רשימה…</p>
+                            }
+                            else
+                            {
+                                <select id="nrm-target"
+                                        class="nrm-input @(TargetInvalid ? "nrm-invalid" : "")"
+                                        @bind="_extTargetKey"
+                                        disabled="@(_phase == Phase.Submitting)">
+                                    <option value="">בחירת משימה / אבן דרך</option>
+                                    @if (_extTargets.Any(t => t.Kind == "Task"))
+                                    {
+                                        <optgroup label="משימות הגשה">
+                                            @foreach (var t in _extTargets.Where(x => x.Kind == "Task"))
+                                            {
+                                                <option value="@($"Task:{t.Id}")">@OptionLabel(t)</option>
+                                            }
+                                        </optgroup>
+                                    }
+                                    @if (_extTargets.Any(t => t.Kind == "Milestone"))
+                                    {
+                                        <optgroup label="אבני דרך">
+                                            @foreach (var t in _extTargets.Where(x => x.Kind == "Milestone"))
+                                            {
+                                                <option value="@($"Milestone:{t.Id}")">@OptionLabel(t)</option>
+                                            }
+                                        </optgroup>
+                                    }
+                                </select>
+                                @if (TargetInvalid)
                                 {
-                                    <div class="nrm-hint">
-                                        <span class="nrm-spinner-sm"></span> טוען רשימה…
+                                    <p class="nrm-err">יש לבחור משימה או אבן דרך</p>
+                                }
+                            }
+                        </div>
+
+                        var sel = SelectedTarget;
+                        int? overdue = OverdueDays(sel);
+
+                        @if (sel is not null)
+                        {
+                            <div class="nrm-target-info">
+                                <div class="nrm-info-row">
+                                    <span class="nrm-info-k">פריט נבחר</span>
+                                    <span class="nrm-info-v">
+                                        @(sel.Kind == "Task" ? "משימה" : "אבן דרך") · @sel.Title
+                                    </span>
+                                </div>
+                                @if (sel.Kind == "Task" && !string.IsNullOrWhiteSpace(sel.MilestoneTitle))
+                                {
+                                    <div class="nrm-info-row">
+                                        <span class="nrm-info-k">אבן דרך משויכת</span>
+                                        <span class="nrm-info-v">@sel.MilestoneTitle</span>
                                     </div>
                                 }
-                                else
+                                @if (!string.IsNullOrWhiteSpace(_projectTitle))
                                 {
-                                    <select class="nrm-select @(_touched && string.IsNullOrEmpty(_extTargetKey) ? "nrm-input-error" : "")"
-                                            @bind="_extTargetKey"
-                                            disabled="@(_phase == Phase.Submitting)">
-                                        <option value="">— בחר משימה / אבן דרך —</option>
-                                        @if (_extTargets.Any(t => t.Kind == "Task"))
-                                        {
-                                            <optgroup label="משימות הגשה">
-                                                @foreach (var t in _extTargets.Where(x => x.Kind == "Task"))
-                                                {
-                                                    <option value="@($"Task:{t.Id}")">@OptionLabel(t)</option>
-                                                }
-                                            </optgroup>
-                                        }
-                                        @if (_extTargets.Any(t => t.Kind == "Milestone"))
-                                        {
-                                            <optgroup label="אבני דרך">
-                                                @foreach (var t in _extTargets.Where(x => x.Kind == "Milestone"))
-                                                {
-                                                    <option value="@($"Milestone:{t.Id}")">@OptionLabel(t)</option>
-                                                }
-                                            </optgroup>
-                                        }
-                                    </select>
-                                    @if (_touched && string.IsNullOrEmpty(_extTargetKey))
-                                    {
-                                        <div class="nrm-field-error">יש לבחור משימה או אבן דרך</div>
-                                    }
-                                }
-                            </div>
-
-                            @{
-                                var selected   = SelectedTarget;
-                                int? overdueDays = OverdueDays(selected);
-                                bool hasDueDate  = selected?.CurrentDueDate is not null;
-                            }
-
-                            @if (selected is not null)
-                            {
-                                @* Details panel — surfaces the full context of
-                                   the selected target so the student knows
-                                   what they're asking to defer. Conditional
-                                   sub-blocks below cover the three states
-                                   (overdue / has-date / no-date). *@
-                                <div class="nrm-ext-details">
-                                    <div class="nrm-ext-row">
-                                        <span class="nrm-ext-label">פריט נבחר</span>
-                                        <span class="nrm-ext-value nrm-ext-value-strong">
-                                            <span class="nrm-ext-kind">
-                                                @(selected.Kind == "Task" ? "משימה" : "אבן דרך")
-                                            </span>
-                                            @selected.Title
+                                    <div class="nrm-info-row">
+                                        <span class="nrm-info-k">פרויקט / צוות</span>
+                                        <span class="nrm-info-v">
+                                            @_projectTitle@(string.IsNullOrWhiteSpace(_teamName) ? "" : $" — {_teamName}")
                                         </span>
                                     </div>
-
-                                    @if (selected.Kind == "Task" && !string.IsNullOrWhiteSpace(selected.MilestoneTitle))
-                                    {
-                                        <div class="nrm-ext-row">
-                                            <span class="nrm-ext-label">אבן דרך משויכת</span>
-                                            <span class="nrm-ext-value">@selected.MilestoneTitle</span>
-                                        </div>
-                                    }
-
-                                    @if (!string.IsNullOrWhiteSpace(_projectTitle))
-                                    {
-                                        <div class="nrm-ext-row">
-                                            <span class="nrm-ext-label">פרויקט / צוות</span>
-                                            <span class="nrm-ext-value">
-                                                @_projectTitle
-                                                @if (!string.IsNullOrWhiteSpace(_teamName))
-                                                {
-                                                    <span class="nrm-ext-muted"> — @_teamName</span>
-                                                }
-                                            </span>
-                                        </div>
-                                    }
-
-                                    @if (!string.IsNullOrWhiteSpace(selected.Status))
-                                    {
-                                        <div class="nrm-ext-row">
-                                            <span class="nrm-ext-label">סטטוס נוכחי</span>
-                                            <span class="nrm-ext-value">@StatusLabel(selected.Status)</span>
-                                        </div>
-                                    }
-
-                                    @if (hasDueDate)
-                                    {
-                                        <div class="nrm-ext-row">
-                                            <span class="nrm-ext-label">תאריך יעד נוכחי</span>
-                                            <span class="nrm-ext-value nrm-ext-value-strong">
-                                                @selected.CurrentDueDate!.Value.ToString("dd.MM.yyyy")
-                                            </span>
-                                        </div>
-
-                                        @if (overdueDays is > 0)
-                                        {
-                                            <div class="nrm-ext-banner nrm-ext-banner-overdue">
-                                                <span class="oi oi-warning" aria-hidden="true"></span>
-                                                <div>
-                                                    <div class="nrm-ext-banner-title">
-                                                        הפריט כבר באיחור של @overdueDays.Value ימים
-                                                    </div>
-                                                    <div class="nrm-ext-banner-body">
-                                                        בקשת הדחייה תועבר לבדיקה ביחס לתאריך היעד הנוכחי.
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        }
-                                        else
-                                        {
-                                            <div class="nrm-ext-banner nrm-ext-banner-ok">
-                                                <span class="oi oi-info" aria-hidden="true"></span>
-                                                <span>
-                                                    תאריך היעד הנוכחי: @selected.CurrentDueDate.Value.ToString("dd.MM.yyyy")
-                                                </span>
-                                            </div>
-                                        }
-                                    }
-                                    else
-                                    {
-                                        <div class="nrm-ext-banner nrm-ext-banner-warn">
-                                            <span class="oi oi-warning" aria-hidden="true"></span>
-                                            <span>לא מוגדר תאריך יעד לפריט זה</span>
-                                        </div>
-                                    }
-                                </div>
-                            }
-
-                            <div class="nrm-field">
-                                <label class="nrm-label">
-                                    תאריך מבוקש חדש <span class="nrm-required">*</span>
-                                </label>
-                                <input class="nrm-input @(_touched && _extRequestedDate is null ? "nrm-input-error" : "")"
-                                       type="date"
-                                       @bind="_extRequestedDate"
-                                       disabled="@(_phase == Phase.Submitting)" />
-                                @if (_touched && _extRequestedDate is null)
-                                {
-                                    <div class="nrm-field-error">יש לבחור תאריך מבוקש חדש</div>
                                 }
-                                else if (_touched && selected?.CurrentDueDate is not null
-                                                  && _extRequestedDate is not null
-                                                  && _extRequestedDate.Value.Date <= selected.CurrentDueDate.Value.Date)
+                                @if (!string.IsNullOrWhiteSpace(sel.Status))
                                 {
-                                    <div class="nrm-field-error">התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי</div>
+                                    <div class="nrm-info-row">
+                                        <span class="nrm-info-k">סטטוס נוכחי</span>
+                                        <span class="nrm-info-v">@StatusLabel(sel.Status)</span>
+                                    </div>
+                                }
+                                <div class="nrm-info-row">
+                                    <span class="nrm-info-k">מועד נוכחי</span>
+                                    <span class="nrm-info-v">@CurrentDueText(sel)</span>
+                                </div>
+
+                                @if (overdue is > 0)
+                                {
+                                    <p class="nrm-banner nrm-banner-warn">
+                                        הפריט כבר באיחור של @overdue.Value ימים · הבקשה תיבחן ביחס לתאריך היעד הנוכחי
+                                    </p>
+                                }
+                                else if (sel.CurrentDueDate is null)
+                                {
+                                    <p class="nrm-banner nrm-banner-warn">לא מוגדר תאריך יעד לפריט זה</p>
                                 }
                             </div>
+                        }
+
+                        <div class="nrm-field">
+                            <label class="nrm-label" for="nrm-date">תאריך חדש מבוקש</label>
+                            <input id="nrm-date"
+                                   class="nrm-input @(DateInvalid ? "nrm-invalid" : "")"
+                                   type="date"
+                                   @bind="_extRequestedDate"
+                                   disabled="@(_phase == Phase.Submitting)" />
+                            @if (DateInvalid)
+                            {
+                                <p class="nrm-err">@DateErrorText</p>
+                            }
                         </div>
                     }
 
-                    <!-- File attachments -->
                     <div class="nrm-field">
-                        <label class="nrm-label">צירוף קבצים (אופציונלי)</label>
+                        <p class="nrm-label">מסמכים תומכים</p>
+                        <div class="nrm-files">
+                            @foreach (var att in _attachments)
+                            {
+                                var captured = att;
+                                <span class="nrm-chip">
+                                    📎 @captured.Name
+                                    <span class="nrm-chip-size">@FormatBytes(captured.Size)</span>
+                                    <button type="button" class="nrm-chip-x"
+                                            aria-label="@($"הסרת הקובץ {captured.Name}")"
+                                            disabled="@(_phase == Phase.Submitting)"
+                                            @onclick="@(() => RemoveAttachment(captured))">×</button>
+                                </span>
+                            }
 
-                        @{
-                            bool canAddMore = _attachments.Count < MaxAttachments && _phase != Phase.Submitting;
-                        }
-
-                        <div class="nrm-uploader @(canAddMore ? "" : "nrm-uploader--full")">
-                            @* The wrapping <label> turns the entire block into
-                               a click target for the hidden <input type="file">.
-                               Disabled when at-limit / submitting. *@
-                            <label class="nrm-uploader-row @(canAddMore ? "" : "nrm-uploader-row--disabled")">
-                                <span class="nrm-uploader-icon" aria-hidden="true">
-                                    <span class="oi oi-cloud-upload"></span>
-                                </span>
-                                <span class="nrm-uploader-text">
-                                    <span class="nrm-uploader-title">
-                                        @(canAddMore ? "בחירת קבצים" : "הגעת/ ה למספר המקסימלי")
-                                    </span>
-                                    @if (_attachments.Count == 0)
-                                    {
-                                        <span class="nrm-uploader-empty">לא נבחרו קבצים</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="nrm-uploader-count">
-                                            נבחרו @_attachments.Count מתוך @MaxAttachments
-                                        </span>
-                                    }
-                                </span>
-                                <span class="nrm-uploader-action">
-                                    <span class="oi oi-plus" aria-hidden="true"></span>
-                                    <span>הוסף</span>
-                                </span>
-                                @if (canAddMore)
+                            <label class="nrm-attach @(CanAddMore ? "" : "nrm-attach-off")">
+                                📎 <span>@(CanAddMore ? "צירוף קובץ" : "הגעת למספר המרבי")</span>
+                                @if (CanAddMore)
                                 {
-                                    <InputFile OnChange="OnFilesSelected"
-                                               accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
-                                               multiple
-                                               class="nrm-file-hidden" />
+                                    @* Wrapper, not the InputFile itself — see RequestThreadRow. *@
+                                    <span class="nrm-file-hidden">
+                                        <InputFile multiple
+                                                   accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
+                                                   OnChange="OnFilesSelected" />
+                                    </span>
                                 }
                             </label>
-                            <p class="nrm-uploader-hint">
-                                jpg, png, webp, pdf, doc, docx · עד @MaxAttachments קבצים · עד 5MB לכל קובץ
-                            </p>
                         </div>
-
+                        <p class="nrm-hint">jpg, png, webp, pdf, doc, docx · עד @MaxAttachments קבצים · עד 5MB לכל קובץ</p>
                         @if (!string.IsNullOrEmpty(_fileError))
                         {
-                            <div class="nrm-field-error">@_fileError</div>
-                        }
-
-                        @if (_attachments.Count > 0)
-                        {
-                            <ul class="nrm-file-list">
-                                @foreach (var att in _attachments)
-                                {
-                                    <li class="nrm-file-item">
-                                        @if (!string.IsNullOrWhiteSpace(att.Base64) && IsImageContentType(att.ContentType))
-                                        {
-                                            <img class="nrm-file-thumb"
-                                                 src="data:@att.ContentType;base64,@att.Base64"
-                                                 alt="@att.Name" />
-                                        }
-                                        else
-                                        {
-                                            <span class="nrm-file-thumb-fallback" aria-hidden="true">
-                                                <span class="oi oi-image"></span>
-                                            </span>
-                                        }
-                                        <span class="nrm-file-name">@att.Name</span>
-                                        <span class="nrm-file-size">@FormatBytes(att.Size)</span>
-                                        <button type="button"
-                                                class="nrm-file-remove"
-                                                title="הסר תמונה"
-                                                disabled="@(_phase == Phase.Submitting)"
-                                                @onclick="@(() => RemoveAttachment(att))">
-                                            <span class="oi oi-x" aria-hidden="true"></span>
-                                        </button>
-                                    </li>
-                                }
-                            </ul>
+                            <p class="nrm-err">@_fileError</p>
                         }
                     </div>
-
-                    <!-- Error banner -->
-                    @if (!string.IsNullOrWhiteSpace(_submitError))
-                    {
-                        <div class="nrm-error-banner">
-                            <span class="oi oi-warning" aria-hidden="true"></span>
-                            @_submitError
-                        </div>
-                    }
-
                 </div>
 
-                <!-- ── Footer ── -->
-                <div class="nrm-footer">
-                    <button class="nrm-ghost-btn"
-                            @onclick="TryClose"
-                            disabled="@(_phase == Phase.Submitting)">
-                        ביטול
-                    </button>
-                    <button class="nrm-primary-btn"
-                            @onclick="Submit"
-                            disabled="@(_phase == Phase.Submitting)">
-                        @if (_phase == Phase.Submitting)
-                        {
-                            <span class="nrm-spinner-sm"></span>
-                            <span>שולח…</span>
-                        }
-                        else
-                        {
-                            <span class="oi oi-envelope-closed" aria-hidden="true"></span>
-                            <span>שליחת בקשה</span>
-                        }
-                    </button>
+                <div class="nrm-foot">
+                    <MButton Variant="MButton.ButtonVariant.Ghost" OnClick="@(() => _step = Step.Type)">חזרה</MButton>
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             Class="m-btn-primary-solid"
+                             OnClick="GoToReview">המשך לסיכום</MButton>
                 </div>
             }
 
+            else if (_step == Step.Review)
+            {
+                @* ─────────────── STEP 3 — review ─────────────── *@
+                <div class="nrm-body">
+                    <div class="nrm-sum-row">
+                        <span class="nrm-sum-k">סוג הבקשה</span>
+                        <span class="nrm-sum-v">@SelectedTypeName</span>
+                    </div>
+                    <div class="nrm-sum-row">
+                        <span class="nrm-sum-k">נושא</span>
+                        <span class="nrm-sum-v">@_title</span>
+                    </div>
+                    <div class="nrm-sum-block">
+                        <p class="nrm-sum-k">תוכן הבקשה</p>
+                        <p class="nrm-sum-body">@_description</p>
+                    </div>
+
+                    @if (_requestType == RequestTypes.Extension)
+                    {
+                        var sel = SelectedTarget;
+                        <div class="nrm-sum-group">
+                            <div class="nrm-sum-row">
+                                <span class="nrm-sum-k">@(sel?.Kind == "Task" ? "משימה" : "אבן דרך")</span>
+                                <span class="nrm-sum-v">@(sel?.Title ?? "—")</span>
+                            </div>
+                            <div class="nrm-sum-row">
+                                <span class="nrm-sum-k">מועד נוכחי</span>
+                                <span class="nrm-sum-v">@CurrentDueText(sel)</span>
+                            </div>
+                            <div class="nrm-sum-row">
+                                <span class="nrm-sum-k">תאריך חדש מבוקש</span>
+                                <span class="nrm-sum-v">@(_extRequestedDate?.ToString("dd.MM.yyyy") ?? "—")</span>
+                            </div>
+                        </div>
+                    }
+
+                    @if (_attachments.Count > 0)
+                    {
+                        <div class="nrm-files">
+                            @foreach (var att in _attachments)
+                            {
+                                <span class="nrm-chip nrm-chip-static">📎 @att.Name</span>
+                            }
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(_submitError))
+                    {
+                        <p class="nrm-err nrm-err-banner">@_submitError</p>
+                    }
+                </div>
+
+                <div class="nrm-foot">
+                    <MButton Variant="MButton.ButtonVariant.Ghost"
+                             Disabled="@(_phase == Phase.Submitting)"
+                             OnClick="@(() => _step = Step.Form)">חזרה לעריכה</MButton>
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             Class="m-btn-primary-solid"
+                             Loading="@(_phase == Phase.Submitting)"
+                             LoadingText="שולח…"
+                             Disabled="@(_phase == Phase.Submitting)"
+                             OnClick="Submit">שליחת בקשה</MButton>
+                </div>
+            }
+
+            else
+            {
+                @* ─────────────── STEP 4 — sent ─────────────── *@
+                <div class="nrm-done">
+                    <span class="nrm-done-ic" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="m5 12.5 4.5 4.5L19 7.5"></path>
+                        </svg>
+                    </span>
+                    <strong class="nrm-done-title">הבקשה נשלחה</strong>
+                    <p class="nrm-done-body">הבקשה נוספה לרשימה ומחכה לבדיקת @SubmittedChannel.</p>
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             Class="m-btn-primary-solid"
+                             OnClick="SuccessClose">חזרה לבקשות</MButton>
+                    @*
+                        Not in the Design's done step, kept because it is
+                        existing behaviour: filing two requests in a row is a
+                        real flow and losing it would be a regression.
+                    *@
+                    <MButton Variant="MButton.ButtonVariant.Ghost" OnClick="ResetForm">הגשת בקשה נוספת</MButton>
+                </div>
+            }
         </div>
     </div>
 }
@@ -403,8 +410,11 @@
     [Parameter] public EventCallback OnClose   { get; set; }
     [Parameter] public EventCallback OnSuccess { get; set; }
 
-    private enum Phase { Form, Submitting, Success }
-    private Phase  _phase = Phase.Form;
+    private enum Phase { Form, Submitting }
+    private enum Step  { Type, Form, Review, Done }
+
+    private Phase _phase = Phase.Form;
+    private Step  _step  = Step.Type;
 
     // Form fields
     private string _requestType = "";
@@ -415,37 +425,83 @@
     private record PendingAttachment(string Name, string Base64, string ContentType, long Size);
     private List<PendingAttachment> _attachments = new();
     private string _fileError = "";
-    private const int  MaxAttachments   = 5;
+    private const int  MaxAttachments     = 5;
     private const long MaxAttachmentBytes = 5 * 1_048_576L; // 5 MB
 
     // Validation / error
-    private bool   _touched     = false;
+    private bool   _touched;
     private string _submitError = "";
 
     // Resolved on first open
     private int    _projectId;
-    /// <summary>Surfaced in the extension-request details panel so the
-    /// student can confirm which project the deferral targets.</summary>
     private string _projectTitle = "";
     private string _teamName     = "";
 
-    // Active request types loaded from /api/request-types/active. Falls back
-    // to the legacy hard-coded constants if the catalogue is empty or the
-    // fetch fails, so the picker never goes silent on the student.
     private List<RequestTypeDefinitionDto> _availableTypes = new();
     private bool _typesLoaded;
 
-    // Extension-only state — populated when the student opens the modal and
-    // selects type=Extension. The picker source is fetched once per modal open
-    // so the student doesn't pay the cost when they choose a different type.
-    private List<ExtensionTargetDto> _extTargets       = new();
-    private bool                     _extTargetsLoaded;
-    private bool                     _targetsLoading;
-    /// <summary>"Task:{id}" or "Milestone:{id}" — keys the dropdown.</summary>
-    private string                   _extTargetKey = "";
-    private DateTime?                _extRequestedDate;
+    // Extension-only state
+    private List<ExtensionTargetDto> _extTargets = new();
+    private bool      _extTargetsLoaded;
+    private bool      _targetsLoading;
+    private string    _extTargetKey = "";
+    private DateTime? _extRequestedDate;
 
-    /// <summary>The chosen target row (or null when nothing selected).</summary>
+    // ── Step chrome ───────────────────────────────────────────────────────
+    private string StepLabel => _step switch
+    {
+        Step.Type   => "בחירת סוג בקשה",
+        Step.Form   => "פרטי הבקשה",
+        Step.Review => "סיכום ושליחה",
+        _           => "",
+    };
+
+    private RequestTypeDefinitionDto? SelectedType =>
+        _availableTypes.FirstOrDefault(t => t.Code == _requestType);
+
+    private string SelectedTypeName =>
+        SelectedType?.Name is { Length: > 0 } n ? n : RequestTypes.Label(_requestType);
+
+    /// <summary>Who the student is told to expect a response from, taken from
+    /// the type's own HandlerRole in the admin catalogue. Falls back to the
+    /// generic wording when a type has no handler recorded (the legacy static
+    /// constants have none).</summary>
+    private string SubmittedChannel
+    {
+        get
+        {
+            var roles = (SelectedType?.HandlerRole ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(RequestTypeHandlerRoles.Label)
+                .ToList();
+            return roles.Count == 0 ? "הצוות האקדמי" : string.Join(" / ", roles);
+        }
+    }
+
+    private bool CanAddMore => _attachments.Count < MaxAttachments && _phase != Phase.Submitting;
+
+    // ── Validation surface ────────────────────────────────────────────────
+    private bool TitleInvalid       => _touched && string.IsNullOrWhiteSpace(_title);
+    private bool DescriptionInvalid => _touched && string.IsNullOrWhiteSpace(_description);
+    private bool TargetInvalid      => _touched && _requestType == RequestTypes.Extension && SelectedTarget is null;
+
+    private bool DateInvalid
+    {
+        get
+        {
+            if (!_touched || _requestType != RequestTypes.Extension) return false;
+            if (_extRequestedDate is null) return true;
+            var sel = SelectedTarget;
+            return sel?.CurrentDueDate is not null
+                   && _extRequestedDate.Value.Date <= sel.CurrentDueDate.Value.Date;
+        }
+    }
+
+    private string DateErrorText =>
+        _extRequestedDate is null
+            ? "יש לבחור תאריך חדש מבוקש"
+            : "התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי";
+
     private ExtensionTargetDto? SelectedTarget
     {
         get
@@ -458,6 +514,7 @@
         }
     }
 
+    // ── Lifecycle ─────────────────────────────────────────────────────────
     protected override async Task OnParametersSetAsync()
     {
         if (IsOpen && _projectId == 0)
@@ -468,21 +525,15 @@
             _teamName     = ctx?.TeamName ?? "";
         }
 
-        // Load the active request types catalogue once per modal lifetime.
-        // Disabled types are filtered server-side so the student never sees
-        // them. If the fetch fails or returns empty (e.g. fresh deploy before
-        // the migrator runs on a hosted env), fall back to the legacy static
-        // constants so the picker never goes silent.
+        // Active request types, once per modal lifetime. If the fetch fails or
+        // returns empty (e.g. a fresh deploy before the migrator runs), fall
+        // back to the legacy static constants so the picker never goes silent.
         if (IsOpen && !_typesLoaded)
         {
             var list = await RequestTypesService.GetActiveAsync();
-            if (list is { Count: > 0 })
-            {
-                _availableTypes = list;
-            }
-            else
-            {
-                _availableTypes = RequestTypes.All
+            _availableTypes = list is { Count: > 0 }
+                ? list
+                : RequestTypes.All
                     .Select(code => new RequestTypeDefinitionDto
                     {
                         Code = code,
@@ -490,12 +541,10 @@
                         IsActive = true,
                     })
                     .ToList();
-            }
             _typesLoaded = true;
         }
 
-        // Load extension picker targets the first time the modal opens.
-        // Targets are project-scoped, so they're cached per modal lifetime.
+        // Extension picker targets, once per modal lifetime (project-scoped).
         if (IsOpen && !_extTargetsLoaded && !_targetsLoading)
         {
             _targetsLoading = true;
@@ -506,6 +555,34 @@
         }
     }
 
+    // ── Navigation ────────────────────────────────────────────────────────
+    private void PickType(string code)
+    {
+        _requestType = code;
+        _touched     = false;
+        _submitError = "";
+    }
+
+    private void GoToForm()
+    {
+        if (string.IsNullOrEmpty(_requestType)) return;
+        _step = Step.Form;
+    }
+
+    /// <summary>Gate into the review step. Runs exactly the checks the previous
+    /// Submit ran, so nothing can reach the summary that the server would
+    /// reject on a rule the client already knows about.</summary>
+    private void GoToReview()
+    {
+        _touched     = true;
+        _submitError = "";
+
+        if (TitleInvalid || DescriptionInvalid || TargetInvalid || DateInvalid) return;
+
+        _step = Step.Review;
+    }
+
+    // ── Files ─────────────────────────────────────────────────────────────
     private async Task OnFilesSelected(InputFileChangeEventArgs e)
     {
         _fileError = "";
@@ -515,7 +592,6 @@
 
         foreach (var file in e.GetMultipleFiles(remaining))
         {
-            // Validate type by extension
             string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
             if (ext is not ("jpg" or "jpeg" or "png" or "webp" or "pdf" or "doc" or "docx"))
             {
@@ -536,11 +612,7 @@
                 await stream.CopyToAsync(ms);
                 string base64 = Convert.ToBase64String(ms.ToArray());
 
-                _attachments.Add(new PendingAttachment(
-                    Name:        file.Name,
-                    Base64:      base64,
-                    ContentType: file.ContentType,
-                    Size:        file.Size));
+                _attachments.Add(new PendingAttachment(file.Name, base64, file.ContentType, file.Size));
             }
             catch
             {
@@ -555,15 +627,25 @@
         _fileError = "";
     }
 
+    // ── Submit ────────────────────────────────────────────────────────────
     private async Task Submit()
     {
-        _touched = true;
+        _touched     = true;
         _submitError = "";
 
-        if (string.IsNullOrEmpty(_requestType)      ||
-            string.IsNullOrWhiteSpace(_title)        ||
-            string.IsNullOrWhiteSpace(_description))
+        // Re-validated here as well as at the review gate: the student can go
+        // back, edit, and return, and the server is the only other check.
+        if (TitleInvalid || DescriptionInvalid || TargetInvalid || DateInvalid)
+        {
+            _step = Step.Form;
             return;
+        }
+
+        if (string.IsNullOrEmpty(_requestType))
+        {
+            _step = Step.Type;
+            return;
+        }
 
         if (_projectId <= 0)
         {
@@ -571,28 +653,11 @@
             return;
         }
 
-        // Extension-specific validation — runs only when type=Extension.
-        int?      extTaskId      = null;
-        int?      extMilestoneId = null;
+        int? extTaskId      = null;
+        int? extMilestoneId = null;
         if (_requestType == RequestTypes.Extension)
         {
-            var sel = SelectedTarget;
-            if (sel is null)
-            {
-                _submitError = "יש לבחור משימה או אבן דרך";
-                return;
-            }
-            if (_extRequestedDate is null)
-            {
-                _submitError = "יש לבחור תאריך מבוקש חדש";
-                return;
-            }
-            if (sel.CurrentDueDate is not null
-                && _extRequestedDate.Value.Date <= sel.CurrentDueDate.Value.Date)
-            {
-                _submitError = "התאריך המבוקש חייב להיות אחרי תאריך ההגשה הנוכחי";
-                return;
-            }
+            var sel = SelectedTarget!;
             if (sel.Kind == "Task")           extTaskId      = sel.Id;
             else if (sel.Kind == "Milestone") extMilestoneId = sel.Id;
         }
@@ -613,30 +678,36 @@
                 SizeBytes        = a.Size,
             }).ToList(),
 
-            // Extension fields — silently ignored server-side for non-Extension types.
-            TargetTaskId       = extTaskId,
-            TargetMilestoneId  = extMilestoneId,
-            RequestedDueDate   = _requestType == RequestTypes.Extension ? _extRequestedDate : null,
+            // Silently ignored server-side for non-Extension types.
+            TargetTaskId      = extTaskId,
+            TargetMilestoneId = extMilestoneId,
+            RequestedDueDate  = _requestType == RequestTypes.Extension ? _extRequestedDate : null,
         };
 
         var (newId, error) = await RequestsService.CreateAsync(req);
 
+        _phase = Phase.Form;
+
         if (newId is null)
         {
-            _phase       = Phase.Form;
+            // Surfaced in place on the review step — this is where the server's
+            // 409 duplicate-extension message ("כבר קיימת בקשת דחייה פתוחה…")
+            // reaches the student.
             _submitError = string.IsNullOrWhiteSpace(error)
                 ? "אירעה שגיאה בשליחת הבקשה. נסה שנית."
                 : error;
             return;
         }
 
-        _phase = Phase.Success;
+        _step = Step.Done;
         await OnSuccess.InvokeAsync();
     }
 
+    // ── Reset / close ─────────────────────────────────────────────────────
     private void ResetForm()
     {
         _phase       = Phase.Form;
+        _step        = Step.Type;
         _requestType = "";
         _title       = "";
         _description = "";
@@ -645,7 +716,6 @@
         _touched     = false;
         _submitError = "";
 
-        // Extension-only state
         _extTargetKey     = "";
         _extRequestedDate = null;
     }
@@ -663,33 +733,17 @@
         await OnClose.InvokeAsync();
     }
 
+    // ── Helpers (unchanged) ───────────────────────────────────────────────
     private static string FormatBytes(long bytes)
     {
-        if (bytes < 1024)       return $"{bytes} B";
-        if (bytes < 1_048_576)  return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024)      return $"{bytes} B";
+        if (bytes < 1_048_576) return $"{bytes / 1024.0:F1} KB";
         return $"{bytes / 1_048_576.0:F1} MB";
     }
 
-    /// <summary>True for image MIME types we render as inline thumbnails.
-    /// Mirrors the accept list on the InputFile element.</summary>
-    private static bool IsImageContentType(string? ct)
-    {
-        if (string.IsNullOrWhiteSpace(ct)) return false;
-        var c = ct.Trim().ToLowerInvariant();
-        return c is "image/jpeg" or "image/jpg" or "image/png" or "image/webp";
-    }
-
-    // ── Extension-target helpers ─────────────────────────────────────────
-    //
-    // Used by the deadline-extension request flow. These are pure
-    // functions on the ExtensionTargetDto / DateTime values; no state
-    // mutation, no I/O. The dropdown label and the details-panel banner
-    // both share the same OverdueDays computation so they can never
-    // disagree on whether a target is late.
-
     /// <summary>Days past the current due date, or null when the item has no
-    /// due date. Negative values are clamped to null so we never call the
-    /// banner "overdue by -3 days" for a future deadline.</summary>
+    /// due date. Negative values clamp to null so a future deadline is never
+    /// called "overdue by -3 days".</summary>
     private static int? OverdueDays(ExtensionTargetDto? t)
     {
         if (t?.CurrentDueDate is null) return null;
@@ -697,10 +751,9 @@
         return days > 0 ? days : null;
     }
 
-    /// <summary>Dropdown-option text: "Title — יעד: dd.MM.yyyy — באיחור N ימים"
-    /// when the item is overdue, "Title — יעד: dd.MM.yyyy" when on time, and
-    /// "Title — ללא תאריך יעד" when no date is set. The same Title is the
-    /// only thing the legacy UI showed.</summary>
+    private static string CurrentDueText(ExtensionTargetDto? t) =>
+        t?.CurrentDueDate is null ? "—" : t.CurrentDueDate.Value.ToString("dd.MM.yyyy");
+
     private static string OptionLabel(ExtensionTargetDto t)
     {
         if (t.CurrentDueDate is null) return $"{t.Title} — ללא תאריך יעד";
@@ -711,17 +764,14 @@
             : $"{t.Title} — יעד: {dueStr}";
     }
 
-    /// <summary>Hebrew label for the raw Status string. Falls back to the
-    /// raw value when an unknown code is encountered so the student still
-    /// sees something useful rather than a blank.</summary>
     private static string StatusLabel(string raw) => raw switch
     {
-        "Open"               => "פתוח",
-        "InProgress"         => "בביצוע",
-        "Done"               => "הושלם",
-        "Completed"          => "הושלם",
-        "SubmittedToMentor"  => "הוגש למנחה",
-        "NotStarted"         => "טרם החל",
-        _                    => raw,
+        "Open"              => "פתוח",
+        "InProgress"        => "בביצוע",
+        "Done"              => "הושלם",
+        "Completed"         => "הושלם",
+        "SubmittedToMentor" => "הוגש למנחה",
+        "NotStarted"        => "טרם החל",
+        _                   => raw,
     };
 }
