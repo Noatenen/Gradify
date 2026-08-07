@@ -27,7 +27,7 @@ Responsive: 4 → 2 → 1 columns at 1060px / 520px, exactly as the Master speci
 |---|---|---|---|
 | `Value` | `string?` | `null` | String, not int — "12", "3/8" and "—" are all valid; formatting stays with the caller |
 | `Label` | `string?` | `null` | Always visible; colour is never the sole carrier of meaning |
-| `Accent` | `MKpiCard.KpiAccent` | `None` | `None` / `Violet` / `Teal` / `Rose` — the Master's closed set |
+| `Accent` | `MKpiCard.KpiAccent` | `None` | `None` / `Violet` / `Teal` / `Rose` / `Periwinkle` / `Cobalt` |
 | `Icon` | `RenderFragment?` | `null` | Rendered in a tinted 30px chip, always `aria-hidden` |
 | `ChildContent` | `RenderFragment?` | `null` | Optional supporting fact under the label |
 | `Href` | `string?` | `null` | Renders `<a>`; takes precedence over `OnClick` |
@@ -46,3 +46,10 @@ Native `<a>` / `<button>` for the interactive forms (keyboard activation and foc
 
 - The accent ring is `color-mix(in srgb, <token> 45%, transparent)` so it follows the token into dark mode, with a static `rgba()` **preceding** declaration as the fallback (a `var()` fallback covers a missing value, not an invalid one).
 - Hover and pressed thicken an `inset` ring rather than the border width — no layout shift.
+- **`Accent="None"` rings in violet, not neutral** (added in Phase 4A, when Tasks became the first production consumer). An uncoloured card has no accent to ring with, and the neutral fallback (`--motiva-border-strong`) is one hairline step from its own resting border — a selected neutral card looked identical to an unselected one. It now uses the Master's focus/action violet for hover and pressed only; the resting border stays neutral, so an unselected uncoloured card is still visibly the uncoloured one. No API change.
+
+## Accents are presentation, not status (Phase 4B)
+
+`Periwinkle` (`#6E62B8`) and `Cobalt` (`#1D36E3`) were added when the finalized Tasks screen turned out to draw its four KPIs in four distinct hues. This does **not** loosen the three-semantic rule: the System Master scopes "three semantic colors only — violet / teal / rose — never introduce a fourth" to *StatusChip/StatusDot*, and `MStatusDot.DotTone` / `MStatusBadge` are unchanged and still closed to three.
+
+Members are named for the hue, like the three before them, rather than for the metric using them — a `Scheduled` or `Team` member would bake one page's meaning into a shared component. New members are appended, never inserted, so no existing ordinal moved.

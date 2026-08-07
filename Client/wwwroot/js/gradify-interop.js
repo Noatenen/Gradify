@@ -29,6 +29,16 @@ window.gradify = {
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     },
 
+    // Jump to a page anchor — block:'start', unlike scrollIntoView above, which
+    // uses 'nearest' and therefore does nothing while any part of the target is
+    // still on screen. That is right for "reveal this row" and wrong for "jump
+    // to this section", which is what a fragment link promises. The target's own
+    // CSS scroll-margin-top supplies the offset.
+    scrollToAnchor: function (id) {
+        var el = document.getElementById(id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+
     focusElement: function (el) {
         if (el) el.focus();
     },

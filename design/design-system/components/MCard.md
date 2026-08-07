@@ -14,6 +14,9 @@ Single shared surface primitive replacing the ~15+ independent card-shell reimpl
 | `Default` | Standard surface, subtle border, soft shadow |
 | `Elevated` | Same surface, raised shadow (`--motiva-shadow-md`) |
 | `Ambient` | Background is `--motiva-gradient-ambient` — reserved for hero/summary cards, kept subtle per `MOTIVA_FOUNDATIONS.md` |
+| `AmbientEdge` | A 1px `--motiva-gradient-edge` rule (violet→transparent→teal) around a white card — the System Master's highest-emphasis surface |
+
+**`Ambient` vs `AmbientEdge`** are different treatments, not two names for one thing: the first is a background *wash*, the second a gradient *border*. `AmbientEdge` was added in Phase 4B, when the finalized Tasks screen used it on three sections at once; before that the treatment existed only as a token with nothing consuming it. It renders one extra element (`.m-card-inner`) to lay the real surface over the gradient — every other variant's markup is unchanged. Its padding is applied to that inner surface, so the `Padding` steps behave exactly as they do elsewhere.
 
 `Variant` is purely visual. Whether the card is clickable is a separate, orthogonal `Interactive` flag (see below) — as of the Phase 3.5 review, an `Interactive` **variant** no longer exists so that visual style and interaction mode can be combined freely (e.g. an `Ambient` hero card that is also clickable).
 
@@ -22,7 +25,8 @@ Single shared surface primitive replacing the ~15+ independent card-shell reimpl
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `ChildContent` | `RenderFragment?` | — | Card body |
-| `Variant` | `MCard.CardVariant` | `Default` | `Default` / `Elevated` / `Ambient` — visual style only |
+| `Variant` | `MCard.CardVariant` | `Default` | `Default` / `Elevated` / `Ambient` / `AmbientEdge` — visual style only |
+| `Fill` | `bool` | `false` | Card fills its parent's height and lays content out as a column, so a scroll region inside can take the remaining space |
 | `Interactive` | `bool` | `false` | Makes the whole card a click/keyboard target, independent of `Variant` |
 | `Padding` | `MCard.CardPadding` | `Medium` | `Small` / `Medium` / `Large` / `None` — maps to `--motiva-space-sm/lg/xl` / `0` |
 | `Class` | `string?` | `null` | |

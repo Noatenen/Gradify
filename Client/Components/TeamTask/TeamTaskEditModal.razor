@@ -1,0 +1,244 @@
+@namespace AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject ITeamTasksService TeamTasksService
+
+@*
+    TeamTaskEditModal — create/edit a team task.
+
+    Extracted verbatim from Dashboard/TeamTasksCard in Phase 4B, when the
+    finalized Tasks screen needed the same create/edit affordance. The markup,
+    field order, validation, service calls and local-state mirroring are the
+    Dashboard's working behaviour moved, not reimplemented — so both callers run
+    one implementation and the Dashboard renders exactly as it did before.
+
+    The component owns its own form state and talks to ITeamTasksService itself;
+    callers pass the task to edit (or null to create) and react to the result.
+*@
+
+@if (IsOpen)
+{
+    <div class="ttm-overlay" @onclick="CloseAsync">
+        <div class="ttm-modal" @onclick:stopPropagation="true" dir="rtl"
+             role="dialog" aria-modal="true"
+             aria-label="@(EditingTask is null ? "משימת צוות חדשה" : "עריכת משימת צוות")">
+
+            <div class="ttm-modal-header">
+                <div class="ttm-modal-title-row">
+                    <span class="oi oi-people ttm-modal-icon" aria-hidden="true"></span>
+                    <h2 class="ttm-modal-title">@(EditingTask is null ? "משימת צוות חדשה" : "עריכת משימה")</h2>
+                </div>
+                <button class="ttm-modal-close" @onclick="CloseAsync"
+                        title="סגירה" aria-label="סגירה"
+                        disabled="@_isSaving">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="ttm-modal-body">
+
+                <div class="ttm-field">
+                    <label class="ttm-label">
+                        כותרת <span class="ttm-required" aria-hidden="true">*</span>
+                    </label>
+                    <input class="@TitleInputClass()"
+                           type="text"
+                           placeholder="שם המשימה..."
+                           @bind="_newTitle"
+                           @bind:event="oninput"
+                           disabled="@_isSaving" />
+                    @if (_touched && string.IsNullOrWhiteSpace(_newTitle))
+                    {
+                        <div class="ttm-field-error">כותרת המשימה היא שדה חובה</div>
+                    }
+                </div>
+
+                <div class="ttm-field">
+                    <label class="ttm-label">תיאור (אופציונלי)</label>
+                    <textarea class="ttm-textarea"
+                              placeholder="פרטים נוספים..."
+                              @bind="_newDescription"
+                              rows="2"
+                              disabled="@_isSaving"></textarea>
+                </div>
+
+                <div class="ttm-field">
+                    <label class="ttm-label">משויך/ת ל</label>
+                    <select class="ttm-select" @bind="_newAssignedToUserId" disabled="@_isSaving">
+                        <option value="0">כל הצוות</option>
+                        @foreach (var member in TeamMembers)
+                        {
+                            <option value="@member.UserId">@member.FullName</option>
+                        }
+                        @*
+                            A caller that has no team roster to hand (the Tasks page
+                            does not load one) would otherwise silently reassign the
+                            task to "כל הצוות" on save, because the current assignee
+                            has no matching option. Keeping the existing assignee as
+                            an option preserves it.
+                        *@
+                        @if (EditingTask?.AssignedToUserId is int assignedId
+                             && !TeamMembers.Any(m => m.UserId == assignedId))
+                        {
+                            <option value="@assignedId">@EditingTask.AssigneeName</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="ttm-field">
+                    <label class="ttm-label">תאריך יעד (אופציונלי)</label>
+                    <input class="ttm-input"
+                           type="date"
+                           value="@_newDueDateStr"
+                           @onchange="@(e => _newDueDateStr = e.Value?.ToString() ?? "")"
+                           disabled="@_isSaving" />
+                </div>
+
+                @if (_saveError is not null)
+                {
+                    <div class="ttm-save-error">@_saveError</div>
+                }
+
+            </div>
+
+            <div class="ttm-modal-footer">
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_isSaving">
+                    ביטול
+                </MButton>
+                <MButton Variant="MButton.ButtonVariant.Primary" OnClick="SaveAsync" Loading="@_isSaving" LoadingText="שומר...">
+                    שמירה
+                </MButton>
+            </div>
+
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>The task being edited, or null to create a new one.</summary>
+    [Parameter] public TeamTaskDto? EditingTask { get; set; }
+
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Roster for the assignee dropdown. May be empty — the modal still
+    /// creates ("כל הצוות") and still preserves an existing assignee on edit.</summary>
+    [Parameter] public List<TeamMemberDto> TeamMembers { get; set; } = new();
+
+    /// <summary>Raised when the modal should close, whether it saved or not.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised with the server's new task after a successful create.</summary>
+    [Parameter] public EventCallback<TeamTaskDto> OnCreated { get; set; }
+
+    /// <summary>Raised after a successful update. The <see cref="EditingTask"/>
+    /// instance has already been mirrored in place, matching the Dashboard's
+    /// original no-reload behaviour.</summary>
+    [Parameter] public EventCallback OnUpdated { get; set; }
+
+    private bool    _touched;
+    private bool    _isSaving;
+    private string? _saveError;
+
+    private string  _newTitle            = "";
+    private string? _newDescription;
+    private int     _newAssignedToUserId;
+    private string  _newDueDateStr       = "";
+
+    // The open transition is what seeds the form — re-seeding on every render
+    // would wipe whatever the user has typed.
+    private bool _wasOpen;
+
+    protected override void OnParametersSet()
+    {
+        if (IsOpen && !_wasOpen) ResetForm();
+        _wasOpen = IsOpen;
+    }
+
+    private void ResetForm()
+    {
+        _newTitle            = EditingTask?.Title ?? "";
+        _newDescription      = EditingTask?.Description;
+        _newAssignedToUserId = EditingTask?.AssignedToUserId ?? 0;
+        _newDueDateStr       = EditingTask?.DueDate?.ToString("yyyy-MM-dd") ?? "";
+        _touched             = false;
+        _saveError           = null;
+        _isSaving            = false;
+    }
+
+    private DateTime? ParsedDueDate =>
+        string.IsNullOrEmpty(_newDueDateStr) ? null
+        : DateTime.TryParse(_newDueDateStr, out var d) ? d : (DateTime?)null;
+
+    private string TitleInputClass() =>
+        _touched && string.IsNullOrWhiteSpace(_newTitle)
+            ? "ttm-input ttm-input-error"
+            : "ttm-input";
+
+    private async Task CloseAsync()
+    {
+        if (_isSaving) return;
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        _touched = true;
+        if (string.IsNullOrWhiteSpace(_newTitle)) return;
+
+        _isSaving  = true;
+        _saveError = null;
+
+        if (EditingTask is null)
+        {
+            var (created, error) = await TeamTasksService.CreateAsync(new CreateTeamTaskRequest
+            {
+                Title            = _newTitle.Trim(),
+                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
+                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
+                DueDate          = ParsedDueDate,
+            });
+            _isSaving = false;
+
+            if (created is not null)
+            {
+                await OnCreated.InvokeAsync(created);
+                await OnClose.InvokeAsync();
+            }
+            else
+            {
+                _saveError = error ?? "שגיאה ביצירת המשימה";
+            }
+        }
+        else
+        {
+            var error = await TeamTasksService.UpdateAsync(EditingTask.Id, new UpdateTeamTaskRequest
+            {
+                Title            = _newTitle.Trim(),
+                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
+                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
+                DueDate          = ParsedDueDate,
+            });
+            _isSaving = false;
+
+            if (error is null)
+            {
+                // Mirror the update locally so callers refresh without a reload.
+                EditingTask.Title            = _newTitle.Trim();
+                EditingTask.Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim();
+                EditingTask.AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId;
+                EditingTask.DueDate          = ParsedDueDate;
+                EditingTask.AssigneeName     = _newAssignedToUserId == 0
+                    ? "כל הצוות"
+                    : TeamMembers.FirstOrDefault(m => m.UserId == _newAssignedToUserId)?.FullName
+                      ?? EditingTask.AssigneeName;
+
+                await OnUpdated.InvokeAsync();
+                await OnClose.InvokeAsync();
+            }
+            else
+            {
+                _saveError = error;
+            }
+        }
+    }
+}

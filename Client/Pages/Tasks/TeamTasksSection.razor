@@ -1,0 +1,173 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject ITeamTasksService TeamTasksService
+
+@*
+    TeamTasksSection — the finalized design's "משימות צוות" panel
+    (Motiva Tasks.dc.html, #team-tasks, the 1fr track).
+
+    This is the TeamTask entity — the student-created, team-visible checklist
+    with a single IsDone concept — not the old board column, which showed
+    teammates' official workflow tasks and had neither a checkbox nor a create
+    action. The Design's checkbox, due date, "+" and "ראה הכל" all map onto
+    ITeamTasksService's existing Get/Create/Update/Toggle endpoints.
+
+    Design behaviour reproduced here: collapsed shows the first 7 open items;
+    expanded shows every open item followed by the completed ones.
+*@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Fill="true">
+    <div id="team-tasks" class="tts-body">
+        <div class="tts-header">
+            <p class="tts-title">משימות צוות</p>
+            <button type="button" class="tts-add"
+                    @onclick="OpenCreate"
+                    title="הוספת משימת צוות" aria-label="הוספת משימת צוות">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+            </button>
+        </div>
+
+        <MScrollArea Tabbable="false">
+            @if (VisibleTasks.Count == 0)
+            {
+                <MEmptyState Title="@EmptyTitle" Live="true" />
+            }
+            else
+            {
+                @foreach (var task in VisibleTasks)
+                {
+                    var captured = task;
+                    <div class="tts-row @(task.IsDone ? "tts-row-done" : "")"
+                         role="button" tabindex="0"
+                         @onclick="@(() => OpenEdit(captured))"
+                         @onkeydown="@(e => OnRowKeyDown(e, captured))"
+                         aria-label="@($"עריכת {task.Title}")">
+                        <span class="tts-row-main">
+                            <span class="tts-check @(task.IsDone ? "tts-check-on" : "")"
+                                  role="checkbox" tabindex="0"
+                                  aria-checked="@(task.IsDone ? "true" : "false")"
+                                  aria-label="@(task.IsDone ? "ביטול סימון" : "סימון כהושלם")"
+                                  @onclick="@(() => Toggle(captured))"
+                                  @onclick:stopPropagation="true"
+                                  @onkeydown="@(e => OnCheckKeyDown(e, captured))"
+                                  @onkeydown:stopPropagation="true">
+                                @if (task.IsDone)
+                                {
+                                    <span class="tts-check-mark" aria-hidden="true">✓</span>
+                                }
+                            </span>
+                            <span class="tts-row-title">@task.Title</span>
+                        </span>
+                        <span class="tts-row-due">@DueLabel(task)</span>
+                    </div>
+                }
+            }
+        </MScrollArea>
+
+        @if (HasMore)
+        {
+            <div class="tts-footer">
+                <button type="button" class="tts-expand" @onclick="ToggleExpand" aria-expanded="@(_expanded ? "true" : "false")">
+                    <span>@(_expanded ? "הסתר" : "ראה הכל")</span>
+                    <span class="tts-expand-chevron @(_expanded ? "tts-expand-chevron-open" : "")" aria-hidden="true">⌄</span>
+                </button>
+            </div>
+        }
+    </div>
+</MCard>
+
+<TeamTaskEditModal IsOpen="@_showModal"
+                   EditingTask="@_editingTask"
+                   TeamMembers="@TeamMembers"
+                   OnClose="CloseModal"
+                   OnCreated="OnCreated"
+                   OnUpdated="StateHasChanged" />
+
+@code {
+    /// <summary>All team tasks, owned by the page so its KPI count and this list
+    /// can never disagree.</summary>
+    [Parameter, EditorRequired] public List<TeamTaskDto> Tasks { get; set; } = new();
+
+    /// <summary>Roster for the edit modal's assignee dropdown. Empty is valid —
+    /// see TeamTaskEditModal.</summary>
+    [Parameter] public List<TeamMemberDto> TeamMembers { get; set; } = new();
+
+    /// <summary>Restricts the visible rows without changing <see cref="Tasks"/>,
+    /// so the page's KPI filter reaches this panel too.</summary>
+    [Parameter] public Func<TeamTaskDto, bool>? Filter { get; set; }
+
+    [Parameter] public string EmptyTitle { get; set; } = "אין עדיין משימות צוות";
+
+    /// <summary>Raised whenever the list changed (toggle, create, edit) so the
+    /// page can refresh the KPI counts.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    // The Design's collapsed length.
+    private const int CollapsedCount = 7;
+
+    private bool         _expanded;
+    private bool         _showModal;
+    private TeamTaskDto? _editingTask;
+
+    private IEnumerable<TeamTaskDto> Filtered =>
+        Filter is null ? Tasks : Tasks.Where(Filter);
+
+    private List<TeamTaskDto> OpenTasks => Filtered.Where(t => !t.IsDone).ToList();
+    private List<TeamTaskDto> DoneTasks => Filtered.Where(t => t.IsDone).ToList();
+
+    /// <summary>Design: collapsed = the first 7 OPEN items; expanded = every open
+    /// item followed by the completed ones.</summary>
+    private List<TeamTaskDto> VisibleTasks =>
+        _expanded
+            ? OpenTasks.Concat(DoneTasks).ToList()
+            : OpenTasks.Take(CollapsedCount).ToList();
+
+    private bool HasMore => OpenTasks.Count > CollapsedCount || DoneTasks.Count > 0;
+
+    private void ToggleExpand() => _expanded = !_expanded;
+
+    private static string DueLabel(TeamTaskDto t) =>
+        t.DueDate.HasValue ? t.DueDate.Value.ToString("dd.MM") : "";
+
+    private async Task Toggle(TeamTaskDto task)
+    {
+        var ok = await TeamTasksService.ToggleAsync(task.Id);
+        if (!ok) return;
+        task.IsDone = !task.IsDone;
+        await OnChanged.InvokeAsync();
+    }
+
+    private void OnRowKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, TeamTaskDto task)
+    {
+        if (e.Key is "Enter" or " ") OpenEdit(task);
+    }
+
+    private async Task OnCheckKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, TeamTaskDto task)
+    {
+        if (e.Key is "Enter" or " ") await Toggle(task);
+    }
+
+    private void OpenCreate()
+    {
+        _editingTask = null;
+        _showModal   = true;
+    }
+
+    private void OpenEdit(TeamTaskDto task)
+    {
+        _editingTask = task;
+        _showModal   = true;
+    }
+
+    private void CloseModal()
+    {
+        _showModal   = false;
+        _editingTask = null;
+    }
+
+    private async Task OnCreated(TeamTaskDto created)
+    {
+        Tasks.Insert(0, created);
+        await OnChanged.InvokeAsync();
+    }
+}

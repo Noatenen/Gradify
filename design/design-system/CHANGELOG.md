@@ -3,6 +3,40 @@
 Dates are taken from Git history (`git log --date=short`) where the relevant
 commit exists; all Phase 1–4.4 work landed on 2026-07-18.
 
+## System Master Phase 4A.1 — foundation token fix (2026-08-06)
+
+Corrects a Phase 1 defect that had been silently neutralising most of the
+System Master rebase. **One file changed in the token layer; no component,
+page, or API touched.**
+
+- **The bug.** A custom property whose value contains `var()` is substituted
+  at computed-value time **on the element where it is declared**, and
+  descendants inherit the already-resolved result. Phase 1 declared 37
+  `--motiva-*` tokens at `:root` as `var(--g-*)` and then re-pointed the
+  `--g-*` variables inside `.motiva-student`, on the documented assumption
+  that the aliases would follow. They could not: each alias had already
+  frozen its `:root` value.
+- **Impact, measured live on `/tasks`.** 29 of the 37 aliases resolved to
+  legacy values inside the student scope — page title 32px (Master: 25px),
+  ink `#1e293b` (Master: `#1A1820`), surfaces on the cool slate ramp instead
+  of warm Paper, card radius 12px (Master: 14px), `--motiva-shadow-sm` a real
+  shadow instead of `none`, and a split typeface (components setting
+  `font-family: var(--motiva-font-family)` rendered Assistant while the shell
+  rendered Heebo).
+- **The fix.** All 37 aliases are re-declared at the end of the
+  `.motiva-student` block, each still written as `var(--g-*)` and never as a
+  literal — so the single-live-palette property is preserved and only the
+  declaration site moves. The 8 that are no-ops today are included so the
+  invariant is mechanically checkable.
+- **Dark mode needs no duplication.** With the alias and its `--g-*` source on
+  the same element, the student dark blocks feed it automatically.
+- **Nothing outside the scope moves.** Every `:root` block is byte-identical;
+  `.motiva-student` is applied only by `AppLayout` for students (and by the
+  dev-only `/motiva` gallery's demo stages). Mentor/Lecturer/Staff/Admin and
+  the auth pages (`BlankLayout`) are unaffected.
+- `MOTIVA_FOUNDATIONS.md` and the `motiva-tokens.css` header are corrected —
+  both previously asserted the "resolves automatically" behaviour.
+
 ## System Master Phase 3 — shared UI primitives (2026-08-06)
 
 Builds the reusable Blazor primitives that the later Student page migrations

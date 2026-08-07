@@ -155,9 +155,17 @@ This is the same firewall `AppSideNav` already uses for its `.snav-motiva` stude
 
 ## Why the palette is not forked
 
-The scope overrides the **`--g-*` variables themselves**. The ~40 `--motiva-*` tokens that alias them (surfaces, text, borders, danger, `radius-sm`/`md`, shadows, font family and sizes) therefore resolve to Master values automatically, with no second definition to drift. Only genuinely net-new concepts get their own literal:
+The scope overrides the **`--g-*` variables themselves**. The 37 `--motiva-*` tokens that alias them (surfaces, text, borders, danger, `radius-sm`/`md`, shadows, font family and sizes) therefore carry Master values, with no second definition to drift. Only genuinely net-new concepts get their own literal:
 
 `--motiva-text-subtle` · `--motiva-border-card` · `--motiva-color-rose` · `--motiva-color-rose-ink` · `--motiva-color-edge-violet` · `--motiva-font-size-item` · `--motiva-letter-spacing-page` · `--motiva-letter-spacing-section` · `--motiva-gradient-ambient-hero` · `--motiva-gradient-edge` · `--motiva-gradient-edge-active` · `--motiva-gradient-wash` · `--motiva-motion-easing-emphasized`
+
+> **Correction — Phase 4A.1.** The paragraph above originally claimed the aliases resolve to Master values *automatically*. **They do not.** A custom property whose value contains `var()` is substituted **at computed-value time on the element where it is declared**; descendants inherit the already-substituted result. `:root { --motiva-text-primary: var(--g-text-primary) }` therefore froze `#1e293b` into the computed property, and re-pointing `--g-text-primary` inside `.motiva-student` could never reach it.
+>
+> Measured live on `/tasks`: **29 of the 37 aliases** were resolving to legacy values inside the student scope — page title 32px instead of 25px, ink `#1e293b` instead of `#1A1820`, card radius 12px instead of 14px, `--motiva-shadow-sm` a real shadow instead of `none`, and the type scale running at roughly 1.8× throughout.
+>
+> **Fix:** all 37 aliases are re-declared inside `.motiva-student`, each still written as `var(--g-*)` — never as a literal — so the "one live palette" property is preserved and only the *declaration site* moves. Because the alias and its `--g-*` source now sit on the same element, the student **dark** blocks feed it correctly too, with no duplication. See the `ALIAS RE-DECLARATION` section at the end of the `.motiva-student` block in `motiva-tokens.css`.
+>
+> **Rule for future tokens:** any new `--motiva-*` token declared at `:root` as `var(--g-*)` must also be listed in that section. A `--motiva-*` alias of another `--motiva-*` token has the same hazard and must be re-declared in any scope that overrides its source.
 
 ## Final token values (light)
 

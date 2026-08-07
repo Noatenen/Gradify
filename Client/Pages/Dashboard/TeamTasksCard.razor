@@ -125,99 +125,18 @@ else
     </MCard>
 }
 
-@* ── Create / Edit modal ── *@
-@if (_showModal)
-{
-    <div class="ttc-overlay" @onclick="CloseModal">
-        <div class="ttc-modal" @onclick:stopPropagation="true" dir="rtl"
-             role="dialog" aria-modal="true"
-             aria-label="@ModalAriaLabel(_editingTask)">
-
-            <!-- Modal header -->
-            <div class="ttc-modal-header">
-                <div class="ttc-modal-title-row">
-                    <span class="oi oi-people ttc-modal-icon" aria-hidden="true"></span>
-                    <h2 class="ttc-modal-title">@(_editingTask is null ? "משימת צוות חדשה" : "עריכת משימה")</h2>
-                </div>
-                <button class="ttc-modal-close" @onclick="CloseModal"
-                        title="סגירה" aria-label="סגירה"
-                        disabled="@_isSaving">
-                    <span class="oi oi-x" aria-hidden="true"></span>
-                </button>
-            </div>
-
-            <!-- Modal body -->
-            <div class="ttc-modal-body">
-
-                <!-- Title (required) -->
-                <div class="ttc-field">
-                    <label class="ttc-label">
-                        כותרת <span class="ttc-required" aria-hidden="true">*</span>
-                    </label>
-                    <input class="@TitleInputClass()"
-                           type="text"
-                           placeholder="שם המשימה..."
-                           @bind="_newTitle"
-                           @bind:event="oninput"
-                           disabled="@_isSaving" />
-                    @if (_touched && string.IsNullOrWhiteSpace(_newTitle))
-                    {
-                        <div class="ttc-field-error">כותרת המשימה היא שדה חובה</div>
-                    }
-                </div>
-
-                <!-- Description (optional) -->
-                <div class="ttc-field">
-                    <label class="ttc-label">תיאור (אופציונלי)</label>
-                    <textarea class="ttc-textarea"
-                              placeholder="פרטים נוספים..."
-                              @bind="_newDescription"
-                              rows="2"
-                              disabled="@_isSaving"></textarea>
-                </div>
-
-                <!-- Assigned to -->
-                <div class="ttc-field">
-                    <label class="ttc-label">משויך/ת ל</label>
-                    <select class="ttc-select" @bind="_newAssignedToUserId" disabled="@_isSaving">
-                        <option value="0">כל הצוות</option>
-                        @foreach (var member in TeamMembers)
-                        {
-                            <option value="@member.UserId">@member.FullName</option>
-                        }
-                    </select>
-                </div>
-
-                <!-- Due date (optional) -->
-                <div class="ttc-field">
-                    <label class="ttc-label">תאריך יעד (אופציונלי)</label>
-                    <input class="ttc-input"
-                           type="date"
-                           value="@_newDueDateStr"
-                           @onchange="@(e => _newDueDateStr = e.Value?.ToString() ?? "")"
-                           disabled="@_isSaving" />
-                </div>
-
-                @if (_saveError is not null)
-                {
-                    <div class="ttc-save-error">@_saveError</div>
-                }
-
-            </div><!-- /ttc-modal-body -->
-
-            <!-- Modal footer -->
-            <div class="ttc-modal-footer">
-                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseModal" Disabled="@_isSaving">
-                    ביטול
-                </MButton>
-                <MButton Variant="MButton.ButtonVariant.Primary" OnClick="SaveTask" Loading="@_isSaving" LoadingText="שומר...">
-                    שמירה
-                </MButton>
-            </div>
-
-        </div><!-- /ttc-modal -->
-    </div><!-- /ttc-overlay -->
-}
+@*
+    Create / Edit modal — the shared TeamTaskEditModal. Phase 4B moved this
+    card's own modal markup, form state and save logic into that component
+    unchanged, so the Tasks page could reuse the same behaviour instead of a
+    second copy. Nothing about how this card looks or behaves changed.
+*@
+<TeamTaskEditModal IsOpen="@_showModal"
+                   EditingTask="@_editingTask"
+                   TeamMembers="@TeamMembers"
+                   OnClose="CloseModal"
+                   OnCreated="OnTaskCreated"
+                   OnUpdated="StateHasChanged" />
 
 @code {
     /// <summary>Team member list passed from the parent dashboard (already loaded
@@ -228,37 +147,16 @@ else
     private List<TeamTaskDto> _tasks     = new();
     private bool              _loading   = true;
     private bool              _showModal;
-    private bool              _touched;
-    private bool              _isSaving;
-    private string?           _saveError;
     private TeamTaskDto?      _editingTask;
     private int               _pendingDeleteId;
-
-    // Form fields
-    private string  _newTitle            = "";
-    private string? _newDescription;
-    private int     _newAssignedToUserId = 0; // 0 = כל הצוות; otherwise UserId
-    private string  _newDueDateStr       = "";
 
     // Show only incomplete tasks, up to 4 (matches product spec)
     private List<TeamTaskDto> _incompleteTasks =>
         _tasks.Where(t => !t.IsDone).Take(4).ToList();
 
-    private DateTime? ParsedDueDate =>
-        string.IsNullOrEmpty(_newDueDateStr) ? null
-        : DateTime.TryParse(_newDueDateStr, out var d) ? d : (DateTime?)null;
-
     // Helpers: avoid double-quote conflicts inside HTML attribute strings
     private static string ToggleLabel(bool isDone) =>
         isDone ? "ביטול סימון" : "סימון כהושלם";
-
-    private static string ModalAriaLabel(TeamTaskDto? editing) =>
-        editing is null ? "משימת צוות חדשה" : "עריכת משימת צוות";
-
-    private string TitleInputClass() =>
-        _touched && string.IsNullOrWhiteSpace(_newTitle)
-            ? "ttc-input ttc-input-error"
-            : "ttc-input";
 
     private void OnItemKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, TeamTaskDto task)
     {
@@ -273,94 +171,23 @@ else
 
     private void OpenCreateModal()
     {
-        _editingTask         = null;
-        _newTitle            = "";
-        _newDescription      = null;
-        _newAssignedToUserId = 0;
-        _newDueDateStr       = "";
-        _touched             = false;
-        _saveError           = null;
-        _showModal           = true;
+        _editingTask = null;
+        _showModal   = true;
     }
 
     private void OpenEditModal(TeamTaskDto task)
     {
-        _editingTask         = task;
-        _newTitle            = task.Title;
-        _newDescription      = task.Description;
-        _newAssignedToUserId = task.AssignedToUserId ?? 0;
-        _newDueDateStr       = task.DueDate.HasValue
-                               ? task.DueDate.Value.ToString("yyyy-MM-dd")
-                               : "";
-        _touched             = false;
-        _saveError           = null;
-        _showModal           = true;
+        _editingTask = task;
+        _showModal   = true;
     }
 
     private void CloseModal()
     {
-        if (!_isSaving) { _showModal = false; _editingTask = null; }
+        _showModal   = false;
+        _editingTask = null;
     }
 
-    private async Task SaveTask()
-    {
-        _touched = true;
-        if (string.IsNullOrWhiteSpace(_newTitle)) return;
-
-        _isSaving  = true;
-        _saveError = null;
-
-        if (_editingTask is null)
-        {
-            // ── Create ──
-            var (created, error) = await TeamTasksService.CreateAsync(new CreateTeamTaskRequest
-            {
-                Title            = _newTitle.Trim(),
-                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
-                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
-                DueDate          = ParsedDueDate,
-            });
-            _isSaving = false;
-            if (created is not null)
-            {
-                _tasks.Insert(0, created);
-                _showModal = false;
-            }
-            else
-            {
-                _saveError = error ?? "שגיאה ביצירת המשימה";
-            }
-        }
-        else
-        {
-            // ── Update ──
-            var error = await TeamTasksService.UpdateAsync(_editingTask.Id, new UpdateTeamTaskRequest
-            {
-                Title            = _newTitle.Trim(),
-                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
-                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
-                DueDate          = ParsedDueDate,
-            });
-            _isSaving = false;
-            if (error is null)
-            {
-                // Mirror the update in local state so the card refreshes without a reload
-                _editingTask.Title            = _newTitle.Trim();
-                _editingTask.Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim();
-                _editingTask.AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId;
-                _editingTask.DueDate          = ParsedDueDate;
-                _editingTask.AssigneeName     = _newAssignedToUserId == 0
-                    ? "כל הצוות"
-                    : TeamMembers.FirstOrDefault(m => m.UserId == _newAssignedToUserId)?.FullName ?? "כל הצוות";
-                _showModal   = false;
-                _editingTask = null;
-            }
-            else
-            {
-                _saveError = error;
-            }
-        }
-    }
+    private void OnTaskCreated(TeamTaskDto created) => _tasks.Insert(0, created);
 
     private async Task ToggleTask(TeamTaskDto task)
     {
