@@ -3,94 +3,100 @@
 @using Microsoft.AspNetCore.Authorization
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
-@using AuthWithAdmin.Client.Pages.Requests
 @using AuthWithAdmin.Client.Pages.Tasks
 @inject IDashboardService DashboardService
 @inject NavigationManager Nav
 @inject AuthenticationStateProvider AuthStateProvider
 @attribute [Authorize]
 
-<!-- New request modal (hosted at dashboard level) -->
-<NewRequestModal IsOpen="@_showNewRequest"
-                 OnClose="@(() => _showNewRequest = false)"
-                 OnSuccess="ReloadDashboard" />
+@*
+    ── Student Dashboard ────────────────────────────────────────────────────
+    Visual source of truth: design-reference/motiva/project/
+                            Motiva Student Dashboard V4.dc.html
+    Data source of truth:   GET api/projects/my-dashboard  (DashboardDto)
+                          + GET api/notifications          (recent updates)
+                          + GET api/student/resources      (milestone material)
+                          + GET api/projects/team-tasks    (team tasks)
+
+    V4's hierarchy, top to bottom, is reproduced exactly:
+
+        1. ambient hero      — greeting, current milestone ⟷ progress,
+                               milestone stepper with an expandable
+                               read-only checklist
+        2. focus card        — the single recommended next action
+        3. attention band    — only when something needs it (see M.1)
+        4. recommendations   — material attached to the current milestone
+        5. activity row      — recent updates | upcoming deadlines
+        6. team tasks        — full width
+
+    The one addition to V4 is (3). The Design collapses every exception
+    into the focus card's flag; the application has a real exception engine
+    whose output a student can see nowhere else on this page, so it is kept
+    as a compact rose band that renders only when it has something to say.
+    ─────────────────────────────────────────────────────────────────────── *@
 
 @if (_isLoading)
 {
-    <div class="sdash-loading">
-        <div class="sdash-spinner"></div>
+    <div class="sdash-loading" role="status" aria-live="polite">
+        <span class="sdash-spinner" aria-hidden="true"></span>
         <span>טוענת נתונים…</span>
     </div>
 }
 else if (_loadError)
 {
-    <div class="sdash-error">
-        <span class="oi oi-warning" aria-hidden="true"></span>
-        <p>אירעה שגיאה בטעינת הדשבורד. נסי לרענן את הדף.</p>
-        <button class="btn btn-primary" @onclick="ReloadDashboard">נסי שוב</button>
-    </div>
+    <MEmptyState Title="אירעה שגיאה בטעינת הדשבורד"
+                 Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+        <Action>
+            <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ReloadDashboard">
+                נסי שוב
+            </MButton>
+        </Action>
+    </MEmptyState>
 }
 else if (_data?.Project is null)
 {
-    <div class="sdash-empty">
-        <span class="oi oi-info" aria-hidden="true"></span>
-        <p>לא שויכת לפרויקט עדיין. פני למנחה שלך להשמת הצוות.</p>
-    </div>
+    <MEmptyState Title="לא שויכת לפרויקט עדיין"
+                 Description="פני למנחה שלך להשמת הצוות." />
 }
 else
 {
-    <div class="student-dashboard">
+    <div class="sdash-page">
 
-        <!-- Hero: current milestone stage + next submission in one unified card -->
-        <StudentDashboardHero Project="@_data.Project"
-                              Milestones="@(_data.Milestones ?? new())"
+        @* 1 · HERO *@
+        <StudentDashboardHero Milestones="@_milestones"
+                              FirstName="@_user?.FirstName"
+                              OnOpenMilestone="OpenMilestoneDetail" />
+
+        <div class="sdash-stack">
+
+            @* 2 · FOCUS — the one recommended action *@
+            <DashboardFocusCard Milestones="@_milestones"
+                                OnOpenTask="OpenDetail"
+                                OnOpenLearning="@(() => Nav.NavigateTo("/learning"))" />
+
+            @* 3 · ATTENTION — renders nothing when there is nothing to flag *@
+            <ActionCenterCard Milestones="@_milestones"
                               OpenRequests="@(_data.OpenRequests ?? new())"
-                              OnOpenProjectDetails="OpenProjectDetails"
-                              OnOpenMilestone="OpenMilestoneDetail"
+                              ExcludeTaskId="@_focusTaskId"
                               OnOpenTask="OpenDetail" />
 
-        <!-- Dashboard workspace: ONE surface, three zones — not three
-             independent cards, and deliberately not a second "elevated
-             card" sitting under the Hero either. A plain panel (background
-             + radius only, no shadow/border — the same move already made
-             for the Hero's own outer shell) so the page reads as one
-             continuous canvas with the Hero's action card as the single
-             elevated focal point, not a stack of boxes. Main column (needs
-             attention, then what's coming next) and a visibly narrower,
-             secondary Team Tasks column share this one panel, separated by
-             a quiet vertical divider. Team Tasks stays narrower
-             deliberately: it's an informal, student-created list with no
-             milestone, no mentor review, and no effect on project
-             progress, so it doesn't belong at equal visual weight with the
-             project's actual status. -->
-        <div class="sdash-workspace">
-            <div class="sdash-workspace-main">
-                <ActionCenterCard Embedded="true"
-                                  Milestones="@(_data.Milestones ?? new())"
-                                  OpenRequests="@(_data.OpenRequests ?? new())"
-                                  OnOpenTask="OpenDetail" />
-                <UpcomingSubmissionsCard Embedded="true"
-                                         Milestones="@(_data.Milestones ?? new())"
+            @* 4 · RECOMMENDED MATERIAL for the current milestone *@
+            <DashboardResourcesSection MilestoneTitle="@_currentMilestoneTitle" />
+
+            @* 5 · ACTIVITY — two equal columns, stacking at 900px *@
+            <div class="sdash-activity">
+                <RecentUpdatesSection />
+                <UpcomingSubmissionsCard Milestones="@_milestones"
                                          NextDeadline="@_data.NextDeadline"
+                                         ExcludeTaskId="@_focusTaskId"
                                          OnOpenTask="OpenDetail" />
             </div>
-            <div class="sdash-workspace-aside">
-                <TeamTasksCard Embedded="true" TeamMembers="@(_data.TeamMembers ?? new())" />
-            </div>
+
+            @* 6 · TEAM TASKS *@
+            <TeamTasksCard TeamMembers="@(_data.TeamMembers ?? new())" />
+
         </div>
-
     </div>
-}
-
-<!-- Project details modal — ShowCard=false: no banner, modal only.
-     Mounted here so Dashboard.razor can open it via @ref from the context strip. -->
-@if (_data?.Project is not null)
-{
-    <ProjectDetailsCard @ref="_projectCard"
-                        ShowCard="false"
-                        Project="@_data.Project"
-                        TeamMembers="@(_data.TeamMembers ?? new())"
-                        Mentors="@(_data.Mentors ?? new())" />
 }
 
 <MilestoneDetailModal Milestone="@_detailMilestone"
@@ -104,20 +110,27 @@ else
 @code {
     [CascadingParameter] private User? _user { get; set; }
 
-    private DashboardDto? _data;
-    private bool _isLoading = true;
-    private bool _loadError = false;
-    private bool _showNewRequest; // kept — TODO: wire to a dashboard CTA when requests are surfaced
-    private int  _detailTaskId;
-    private MilestoneSummaryDto? _detailMilestone;
-    private bool _loadStarted;
+    private DashboardDto?         _data;
+    private bool                  _isLoading = true;
+    private bool                  _loadError;
+    private int                   _detailTaskId;
+    private MilestoneSummaryDto?  _detailMilestone;
+    private bool                  _loadStarted;
 
-    // @ref to the project details modal (card surface hidden; modal triggered from the hero).
-    private ProjectDetailsCard? _projectCard;
+    private List<MilestoneSummaryDto> _milestones => _data?.Milestones ?? new();
 
-    // The cascading _user is hydrated asynchronously by App.razor, so it can
-    // be null on the first parameter-set. We gate the load on _user being
-    // available and use a flag to ensure we only run once.
+    private string? _currentMilestoneTitle =>
+        StudentDashboardModel.CurrentMilestone(_milestones)?.Title;
+
+    // The task the focus card shows in full. Passed to the attention band and
+    // the deadline list so the same task is never stated twice on one screen —
+    // by identity, not by list position, because the focus pick is very often
+    // the same task the attention rules flag.
+    private int? _focusTaskId => StudentDashboardModel.FocusTask(_milestones)?.Id;
+
+    // The cascading _user is hydrated asynchronously by App.razor, so it can be
+    // null on the first parameter-set. The load is gated on _user being
+    // available and a flag ensures it only runs once.
     protected override async Task OnParametersSetAsync()
     {
         try
@@ -126,17 +139,15 @@ else
                 return;
             _loadStarted = true;
 
-            var isStudent = RoleService.IsStudent(_user);
-
             // Elevated roles (Mentor / Staff / Admin) that land on the legacy
             // /dashboard route are bounced to their dedicated dashboard. A plain
             // student (explicit "Student" role OR a "User" account that hasn't
             // been elevated) falls through and loads the student dashboard.
             //
             // Role classification is never a reason to error — a non-student
-            // with no dedicated landing route simply falls through and loads
-            // the student dashboard rather than showing the generic error.
-            if (!isStudent)
+            // with no dedicated landing route simply falls through rather than
+            // showing the generic error.
+            if (!RoleService.IsStudent(_user))
             {
                 var landing = RoleService.GetDefaultLandingRoute(_user);
                 if (landing != PageRoutes.Dashboard && landing != "/" + PageRoutes.Dashboard)
@@ -148,7 +159,7 @@ else
 
             await LoadDashboardAsync();
 
-            // Any student without an assigned project → catalog experience
+            // Any student without an assigned project → catalog experience.
             // Covers both: has team but no project, and no team at all.
             if (_data is not null && _data.Project is null)
                 Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
@@ -176,9 +187,6 @@ else
 
     private async Task LoadDashboardAsync()
     {
-        // [DashboardDiag] first line of method
-        Console.WriteLine("[DashboardDiag] LoadDashboardAsync() FIRST LINE");
-
         _isLoading = true;
         _loadError = false;
 
@@ -186,17 +194,11 @@ else
         {
             try
             {
-                // [DashboardDiag] before GetAuthenticationStateAsync
-                Console.WriteLine($"[DashboardDiag] attempt {attempt}: BEFORE GetAuthenticationStateAsync");
                 // Ensure the Authorization header is set on the shared HttpClient
                 // before the API call fires. GetAuthenticationStateAsync sets the
                 // header as a side-effect.
                 var authState = await AuthStateProvider.GetAuthenticationStateAsync();
                 var isAuthenticated = authState.User?.Identity?.IsAuthenticated == true;
-                var userId = authState.User?.FindFirst("nameid")?.Value;
-
-                // [DashboardDiag] after GetAuthenticationStateAsync
-                Console.WriteLine($"[DashboardDiag] attempt {attempt}/{MaxLoadAttempts}: AFTER GetAuthenticationStateAsync authenticated={isAuthenticated} userId={userId ?? "null"}");
 
                 if (!isAuthenticated)
                 {
@@ -206,17 +208,11 @@ else
                         await Task.Delay(LoadRetryDelayMs);
                         continue;
                     }
-                    Console.WriteLine("[DashboardDiag] auth state never became ready after all attempts — showing error");
                     _loadError = true;
                     break;
                 }
 
-                // [DashboardDiag] before DashboardService.GetDashboardAsync
-                Console.WriteLine($"[DashboardDiag] attempt {attempt}: BEFORE DashboardService.GetDashboardAsync");
                 _data = await DashboardService.GetDashboardAsync();
-
-                // [DashboardDiag] after DashboardService.GetDashboardAsync
-                Console.WriteLine($"[DashboardDiag] attempt {attempt}: AFTER GetDashboardAsync dataNull={_data is null} hasTeam={_data?.HasTeam} projectNull={_data?.Project is null}");
 
                 if (_data is not null)
                 {
@@ -224,8 +220,7 @@ else
                     break; // success
                 }
 
-                // Null data => transient request failure (see DashboardService
-                // diagnostics for the exact status/exception). Retry if budget left.
+                // Null data => transient request failure. Retry if budget left.
                 if (attempt < MaxLoadAttempts)
                 {
                     await Task.Delay(LoadRetryDelayMs);
@@ -233,10 +228,8 @@ else
                 }
                 _loadError = true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                // [DashboardDiag] temporary
-                Console.WriteLine($"[DashboardDiag] attempt {attempt} EXCEPTION: {ex.GetType().Name}: {ex.Message}");
                 if (attempt < MaxLoadAttempts)
                 {
                     await Task.Delay(LoadRetryDelayMs);
@@ -248,15 +241,6 @@ else
         }
 
         _isLoading = false;
-
-        // [DashboardDiag] final state
-        Console.WriteLine($"[DashboardDiag] LoadDashboardAsync() FINAL: dataNull={_data is null} loadError={_loadError} isLoading={_isLoading}");
-    }
-
-    private async Task OpenProjectDetails()
-    {
-        if (_projectCard is not null)
-            await _projectCard.OpenModal();
     }
 
     private void OpenDetail(int taskId)
@@ -265,16 +249,20 @@ else
         StateHasChanged();
     }
 
-    private void CloseDetail()               => _detailTaskId = 0;
+    private void CloseDetail() => _detailTaskId = 0;
 
-    // ── Milestone detail modal (opened from the progress timeline) ──────────────
+    // ── Milestone detail modal (opened from a stepper dot) ───────────────────
+    // The hero's inline checklist answers "which tasks are in this stage, and
+    // which are done". This modal is still the way to the richer view — dates,
+    // per-task submission state, what caused an attention flag — so the two do
+    // not duplicate each other.
     private void OpenMilestoneDetail(MilestoneSummaryDto ms)
     {
         _detailMilestone = ms;
         StateHasChanged();
     }
 
-    private void CloseMilestoneDetail()      => _detailMilestone = null;
+    private void CloseMilestoneDetail() => _detailMilestone = null;
 
     // Clicking a task inside the milestone modal reuses the existing
     // TaskDetailModal: close the milestone modal, then open the task one.

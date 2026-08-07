@@ -1,113 +1,92 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject NavigationManager Nav
 
-<!-- ══════════════════════════════════════════════════════════════
-     ActionCenterCard — "דורש התייחסות"
-     Surfaces EXCEPTIONS only: returned submissions, overdue tasks,
-     tasks pending Moodle confirmation, and open requests.
+@* ─────────────────────────────────────────────────────────────
+   ActionCenterCard — the compact "דורש התייחסות" attention band.
 
-     Always rendered — shows a positive "all clear" state when
-     there is nothing requiring attention.
+   PHASE 4D (decision M.1, option A). The finalized Dashboard V4 has no
+   attention list at all: it compresses every exception into one boolean
+   flag on the focus card. The application, however, has a real, working
+   exception engine — returned submissions, overdue tasks, submissions
+   approved but not yet confirmed in Moodle, and open requests — that a
+   student cannot see anywhere else on this page. Dropping it would be
+   simplifying away real functionality.
 
-     Embedded (default): rendered as the first zone of the shared
-     "Project Signal" panel in Dashboard.razor, alongside
-     UpcomingSubmissionsCard — one continuous surface for "what's
-     happening in your project" rather than two separate boxes that
-     duplicate each other's card chrome. Embedded=false keeps the
-     original standalone MCard for reuse elsewhere if ever needed.
+   So the LOGIC is preserved verbatim (it now lives in
+   StudentDashboardModel, shared with the focus card and the deadline
+   list) and the PRESENTATION is rebuilt in the System Master's own rose
+   alert language — §3 "Alert / filtered-state message: rose-tinted panel,
+   always paired with one direct action" — which is exactly the treatment
+   the already-approved Tasks screen uses for its own attention band.
 
-     TODO: Announcements and new learning-material notifications are
-     not yet in DashboardDto — wire them in when that data is added.
-     ══════════════════════════════════════════════════════════════ -->
+   It is deliberately NOT a card: no ambient edge, no header chrome, no
+   count badge, no empty state. It is one rose-tinted strip of rows that
+   is not rendered at all when nothing needs attention, so it stays
+   visually secondary to the focus card above it and can never grow into
+   a second dashboard section.
+   ───────────────────────────────────────────────────────────── *@
 
-@{
-    RenderFragment body = @<text>
-        @if (_items.Count > 0)
-        {
-            <div class="ac-list">
-                @foreach (var item in _items)
-                {
-                    <div class="ac-item ac-item-@item.CssType">
-                        <span class="ac-item-icon">
-                            <span class="oi @item.Icon" aria-hidden="true"></span>
-                        </span>
-                        <div class="ac-item-body">
-                            <span class="ac-item-title">@item.Title</span>
-                            @if (!string.IsNullOrWhiteSpace(item.SubText))
-                            {
-                                <span class="ac-item-sub">@item.SubText</span>
-                            }
-                        </div>
-                        <button class="ac-item-action" @onclick="@(() => HandleAction(item))">
-                            @item.ActionLabel
-                            <span class="oi oi-chevron-left ac-action-arrow" aria-hidden="true"></span>
-                        </button>
-                    </div>
-                }
-            </div>
-        }
-        else
-        {
-            <div class="ac-empty">
-                <span class="oi oi-circle-check ac-empty-icon" aria-hidden="true"></span>
-                <p class="ac-empty-title">הכל תקין!</p>
-                <p class="ac-empty-sub">אין פריטים הדורשים טיפול כרגע</p>
-            </div>
-        }
-    </text>;
-}
-
-@if (Embedded)
+@if (_items.Count > 0)
 {
-    <div class="ac-embedded">
-        <div class="ac-embedded-header">
-            <span class="oi oi-bell ac-header-icon" aria-hidden="true"></span>
-            <h3 class="ac-embedded-title">דורש התייחסות</h3>
-            @if (_items.Count > 0)
+    <section class="acc-band" aria-labelledby="acc-heading">
+        <div class="acc-head">
+            <MStatusDot Tone="MStatusDot.DotTone.Rose" Pulse="true" />
+            <h2 class="acc-title" id="acc-heading">דורש התייחסות</h2>
+            @if (_overflow > 0)
             {
-                <span class="ac-count-badge">@_items.Count</span>
+                <a class="acc-more" href="/tasks">עוד @_overflow</a>
             }
         </div>
-        @body
-    </div>
-}
-else
-{
-    <MCard Class="ac-card" Padding="MCard.CardPadding.None" Title="דורש התייחסות"
-           Variant="@(_items.Count > 0 ? MCard.CardVariant.Elevated : MCard.CardVariant.Default)">
-        <Icon><span class="oi oi-bell ac-header-icon" aria-hidden="true"></span></Icon>
-        <TrailingContent>
-            @if (_items.Count > 0)
+
+        <div class="acc-rows">
+            @foreach (var item in _items)
             {
-                <span class="ac-count-badge">@_items.Count</span>
+                var captured = item;
+                <div class="acc-row">
+                    <div class="acc-row-main">
+                        <span class="acc-row-title">@item.Title</span>
+                        <span class="acc-row-meta">@item.SubText</span>
+                    </div>
+                    <button type="button" class="acc-row-action"
+                            @onclick="@(() => HandleAction(captured))"
+                            aria-label="@($"{item.ActionLabel} — {item.Title}")">
+                        @item.ActionLabel
+                        <span class="oi oi-chevron-left acc-row-arrow" aria-hidden="true"></span>
+                    </button>
+                </div>
             }
-        </TrailingContent>
-        <ChildContent>@body</ChildContent>
-    </MCard>
+        </div>
+    </section>
 }
 
 @code {
-    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones    { get; set; } = default!;
-    [Parameter, EditorRequired] public List<OpenRequestDto>      OpenRequests  { get; set; } = default!;
-    [Parameter]                 public EventCallback<int>        OnOpenTask    { get; set; }
-    [Parameter]                 public bool                      Embedded      { get; set; }
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones   { get; set; } = new();
+    [Parameter, EditorRequired] public List<OpenRequestDto>      OpenRequests { get; set; } = new();
+    [Parameter]                 public EventCallback<int>        OnOpenTask   { get; set; }
 
-    private enum ActionType { Returned, Overdue, PendingMoodle, Request }
+    /// <summary>Task the focus card already shows in full. Excluded here so the
+    /// same exception is not stated twice on one screen — the focus card
+    /// already carries its own "דורש תשומת לב" flag for it.</summary>
+    [Parameter] public int? ExcludeTaskId { get; set; }
 
-    private record ActionItem(
-        ActionType Type,
-        string     Title,
-        string?    SubText,
-        string     CssType,
-        string     Icon,
-        string     ActionLabel,
-        int?       TaskId
-    );
+    private sealed record ActionItem(int Order, string Title, string SubText, string ActionLabel, int? TaskId);
 
-    private List<ActionItem> _items = new();
+    private List<ActionItem> _items    = new();
+    private int              _overflow;
 
-    protected override void OnParametersSet() => _items = BuildItems();
+    protected override void OnParametersSet()
+    {
+        var all = BuildItems();
 
+        // Bounded on purpose (density requirement): the dashboard shows the
+        // three highest-priority exceptions and points at /tasks for the rest,
+        // rather than growing without limit.
+        _items    = all.Take(3).ToList();
+        _overflow = Math.Max(0, all.Count - _items.Count);
+    }
+
+    // Unchanged ruleset — the same conditions, the same precedence and the
+    // same copy the pre-4D card used; only the item shape is flatter.
     private List<ActionItem> BuildItems()
     {
         var items = new List<ActionItem>();
@@ -116,83 +95,40 @@ else
         {
             foreach (var task in ms.Tasks)
             {
-                // Returned by mentor — student must revise (highest priority).
-                if (task.LatestMentorStatus == "Returned")
-                {
-                    items.Add(new ActionItem(ActionType.Returned,
-                        task.Title,
-                        $"{ms.Title} — הוחזר ע״י המנחה",
-                        "returned", "oi-arrow-circle-left",
-                        "לתיקון", task.Id));
-                    continue;
-                }
+                if (task.Id == ExcludeTaskId) continue;
 
-                // Returned for revision (reviewer grade).
-                if (task.LatestSubmissionStatus == "NeedsRevision")
+                switch (StudentDashboardModel.KindOf(task))
                 {
-                    items.Add(new ActionItem(ActionType.Returned,
-                        task.Title,
-                        $"{ms.Title} — הוחזר לתיקון",
-                        "returned", "oi-arrow-circle-left",
-                        "לתיקון", task.Id));
-                    continue;
-                }
+                    case StudentDashboardModel.AttentionKind.Returned:
+                        items.Add(new ActionItem(0, task.Title,
+                            $"{ms.Title} — הוחזר לתיקון", "לתיקון", task.Id));
+                        break;
 
-                // Overdue and still open.
-                bool overdue = task.DueDate.HasValue
-                    && task.DueDate.Value.Date < DateTime.Today
-                    && !IsComplete(task)
-                    && task.Status is "Open" or "InProgress" or "ReturnedForRevision";
-                if (overdue)
-                {
-                    var daysLate = (int)(DateTime.Today - task.DueDate!.Value.Date).TotalDays;
-                    var lateStr  = daysLate == 1 ? "יום אחד באיחור" : $"{daysLate} ימים באיחור";
-                    items.Add(new ActionItem(ActionType.Overdue,
-                        task.Title,
-                        $"{ms.Title} — {lateStr}",
-                        "overdue", "oi-warning",
-                        "פתיחה", task.Id));
-                    continue;
-                }
+                    case StudentDashboardModel.AttentionKind.Overdue:
+                        var daysLate = (int)(DateTime.Today - task.DueDate!.Value.Date).TotalDays;
+                        var lateStr  = daysLate == 1 ? "יום אחד באיחור" : $"{daysLate} ימים באיחור";
+                        items.Add(new ActionItem(1, task.Title,
+                            $"{ms.Title} — {lateStr}", "פתיחה", task.Id));
+                        break;
 
-                // Approved by mentor but student hasn't confirmed Moodle submission.
-                if (task.IsSubmission
-                    && task.LatestMentorStatus == "Approved"
-                    && !task.LatestMoodleConfirmed)
-                {
-                    items.Add(new ActionItem(ActionType.PendingMoodle,
-                        task.Title,
-                        $"{ms.Title} — אושר ע״י מנחה, ממתין לאישור במודל",
-                        "moodle", "oi-circle-check",
-                        "לאישור", task.Id));
+                    case StudentDashboardModel.AttentionKind.PendingMoodle:
+                        items.Add(new ActionItem(2, task.Title,
+                            $"{ms.Title} — אושר ע״י מנחה, ממתין לאישור במודל", "לאישור", task.Id));
+                        break;
                 }
             }
         }
 
-        // Open requests — informational; student is waiting for a response.
+        // Open requests — the student is waiting on someone else, so this is
+        // the lowest-priority signal, but it is the only place the dashboard
+        // surfaces requests at all.
         foreach (var req in OpenRequests)
         {
-            items.Add(new ActionItem(ActionType.Request,
-                req.Title,
-                $"{req.RequestType} — ממתין לתגובה",
-                "request", "oi-envelope-closed",
-                "צפייה", null));
+            items.Add(new ActionItem(3, req.Title,
+                $"{req.RequestType} — ממתין לתגובה", "צפייה", null));
         }
 
-        // Sort: returned → overdue → pending-moodle → request, then cap at 3.
-        // Dashboard surfaces only the highest-priority exceptions; full detail
-        // lives in the dedicated task/submission pages.
-        return items
-            .OrderBy(i => i.Type switch
-            {
-                ActionType.Returned      => 0,
-                ActionType.Overdue       => 1,
-                ActionType.PendingMoodle => 2,
-                ActionType.Request       => 3,
-                _                        => 4,
-            })
-            .Take(3)
-            .ToList();
+        return items.OrderBy(i => i.Order).ToList();
     }
 
     private async Task HandleAction(ActionItem item)
@@ -202,11 +138,4 @@ else
         else
             Nav.NavigateTo("/requests");
     }
-
-    private static bool IsComplete(TaskSummaryDto t) =>
-        t.IsSubmission
-            ? t.LatestSubmissionStatus is not null
-              && t.LatestMentorStatus == "Approved"
-              && t.LatestMoodleConfirmed
-            : t.Status == "Done";
 }

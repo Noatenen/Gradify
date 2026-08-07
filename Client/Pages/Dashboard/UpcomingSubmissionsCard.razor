@@ -1,268 +1,133 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
-@inject NavigationManager Nav
 
-<!-- ══════════════════════════════════════════════════════════════
-     UpcomingSubmissionsCard
-     Shows up to 3 upcoming submission tasks derived client-side
-     from the milestone data (IsSubmission == true, not complete,
-     has a DueDate, ordered soonest first).
+@* ─────────────────────────────────────────────────────────────
+   UpcomingSubmissionsCard — "הגשות ומועדים קרובים"
+   Visual source: Motiva Student Dashboard V4.dc.html:217-234.
 
-     Falls back to NextDeadline when no submission tasks are found
-     in the milestone list (edge case: project with no IsSubmission
-     tasks yet mapped in the current data).
+   V4 draws this as the Master's row list, not as a stack of detail
+   blocks: title + one quiet subtitle at the reading start, the due
+   label at the reading end (rose/600 when urgent, muted/400 when not),
+   hairline dividers, and a single centred "לכל המשימות" link at the
+   bottom. That is the whole card.
 
-     CTA is "פתיחת משימה" → opens the existing TaskDetailModal via
-     OnOpenTask. No upload actions on the dashboard (those belong
-     in the task/milestone workspace).
+   The SELECTION rule is unchanged from before the rebuild: incomplete
+   submissions with a due date, sorted soonest first, minus the one the
+   focus card already shows in full, minus anything the attention band
+   already flags — so the same task is never stated twice on one screen.
+   It still falls back to the server-derived NextDeadline when the
+   milestone data contains no IsSubmission task at all.
 
-     Embedded (default): rendered as the second zone of the shared
-     "Project Signal" panel in Dashboard.razor, directly below
-     ActionCenterCard — one continuous surface instead of two
-     separate boxes with duplicated chrome. Embedded=false keeps the
-     original standalone MCard for reuse elsewhere if ever needed.
-     ══════════════════════════════════════════════════════════════ -->
+   DECISION M.4: V4's prototype opens a small popup whose category and
+   status chips are sample-only fields that do not exist in the domain.
+   That popup is not built. A row opens the real TaskDetailModal, which
+   already carries the true submission workflow and status semantics.
+   ───────────────────────────────────────────────────────────── *@
 
-@{
-    RenderFragment body = @<text>
-        @if (_submissions.Count == 0 && (_allUpcoming.Count == 0 ? NextDeadline is null : true))
-        {
-            <div class="usc2-empty">
-                <span class="oi oi-circle-check usc2-empty-icon" aria-hidden="true"></span>
-                <p class="usc2-empty-text">
-                    @(_allUpcoming.Count == 0 ? "אין הגשות קרובות" : "כל ההגשות הקרובות מוצגות למעלה")
-                </p>
-            </div>
-        }
-        else if (_submissions.Count > 0)
-        {
-            <div class="usc2-list">
-                @foreach (var (task, milestoneTitle) in _submissions)
-                {
-                    var resolved = ResolveStatus(task);
-                    // A task only reaches this list once IsActionCenterItem has
-                    // ruled out every "student still owes action" overdue case,
-                    // so a passed due date here always means the task is already
-                    // submitted and sitting with someone else (mentor/Moodle) —
-                    // never a lateness the student caused. The red "overdue"
-                    // treatment is reserved for that genuine case, i.e. a
-                    // submission that was never made at all.
-                    bool overdue = task.DueDate.HasValue
-                                && task.DueDate.Value.Date < DateTime.Today
-                                && task.LatestSubmissionStatus is null;
-                    int  days    = task.DueDate.HasValue
-                                ? (int)(task.DueDate.Value.Date - DateTime.Today).TotalDays
-                                : 0;
-
-                    <div class="usc2-item @(overdue ? "usc2-item-overdue" : "")">
-                        <div class="usc2-item-top">
-                            <span class="usc2-task-title">@task.Title</span>
-                            @if (days >= 0 || overdue)
-                            {
-                                <span class="usc2-days @DaysClass(days, overdue)">@DaysLabel(days, overdue)</span>
-                            }
-                        </div>
-                        <div class="usc2-item-meta">
-                            <span class="usc2-milestone-name">
-                                <span class="oi oi-map-marker usc2-ms-icon" aria-hidden="true"></span>
-                                @milestoneTitle
-                            </span>
-                            @if (task.DueDate.HasValue)
-                            {
-                                <span class="usc2-date">
-                                    <span class="oi oi-calendar usc2-date-icon" aria-hidden="true"></span>
-                                    @task.DueDate.Value.ToString("dd/MM/yyyy")
-                                </span>
-                            }
-                        </div>
-                        <div class="usc2-item-footer">
-                            <MStatusBadge Text="@TaskLabel(resolved, overdue)" Variant="TaskVariant(resolved, overdue)" />
-                            <button class="usc2-open-btn"
-                                    @onclick="@(() => OnOpenTask.InvokeAsync(task.Id))">
-                                פתיחת משימה
-                                <span class="oi oi-chevron-left usc2-btn-arrow" aria-hidden="true"></span>
-                            </button>
-                        </div>
-                    </div>
-                }
-            </div>
-        }
-        else if (NextDeadline is not null)
-        {
-            <!-- Fallback: show the server-derived next deadline when no
-                 IsSubmission tasks are found in the milestone list. -->
-            var fallbackDays = (int)(NextDeadline.DueDate.Date - DateTime.Today).TotalDays;
-            bool fallbackOverdue = fallbackDays < 0;
-
-            <div class="usc2-list">
-                <div class="usc2-item @(fallbackOverdue ? "usc2-item-overdue" : "")">
-                    <div class="usc2-item-top">
-                        <span class="usc2-task-title">@NextDeadline.Title</span>
-                        <span class="usc2-days @DaysClass(fallbackDays, fallbackOverdue)">
-                            @DaysLabel(fallbackDays, fallbackOverdue)
-                        </span>
-                    </div>
-                    <div class="usc2-item-meta">
-                        <span class="usc2-date">
-                            <span class="oi oi-calendar usc2-date-icon" aria-hidden="true"></span>
-                            @NextDeadline.DueDate.ToString("dd/MM/yyyy")
-                        </span>
-                    </div>
-                    <div class="usc2-item-footer">
-                        @if (NextDeadline.LatestMentorStatus == "Returned")
-                        {
-                            <MStatusBadge Text="הוחזר לתיקון" Variant="MStatusBadge.BadgeVariant.Warning" />
-                        }
-                        else
-                        {
-                            <MStatusBadge Text="ממתין להגשה" Variant="MStatusBadge.BadgeVariant.Neutral" />
-                        }
-                        @if (NextDeadline.TaskId.HasValue)
-                        {
-                            <button class="usc2-open-btn"
-                                    @onclick="@(() => OnOpenTask.InvokeAsync(NextDeadline.TaskId!.Value))">
-                                פתיחת משימה
-                                <span class="oi oi-chevron-left usc2-btn-arrow" aria-hidden="true"></span>
-                            </button>
-                        }
-                        else
-                        {
-                            <button class="usc2-open-btn"
-                                    @onclick="@(() => Nav.NavigateTo("/tasks"))">
-                                לכל המשימות
-                                <span class="oi oi-chevron-left usc2-btn-arrow" aria-hidden="true"></span>
-                            </button>
-                        }
-                    </div>
-                </div>
-            </div>
-        }
-    </text>;
-}
-
-@if (Embedded)
-{
-    <div class="usc2-embedded">
-        <div class="usc2-embedded-header">
-            <span class="oi oi-calendar usc2-header-icon" aria-hidden="true"></span>
-            <h3 class="usc2-embedded-title">הגשות קרובות</h3>
+<MCard Variant="MCard.CardVariant.AmbientEdge"
+       Padding="MCard.CardPadding.None"
+       Class="usc-card"
+       Fill="true">
+    <div class="usc-body">
+        <div class="usc-head">
+            <h2 class="usc-title">הגשות ומועדים קרובים</h2>
         </div>
-        @body
+
+        @if (_rows.Count == 0)
+        {
+            <MEmptyState Title="אין הגשות קרובות"
+                         Description="כשתיפתח הגשה חדשה עם מועד יעד, היא תופיע כאן." />
+        }
+        else
+        {
+            <MRowList Class="usc-list" AriaLabel="הגשות ומועדים קרובים">
+                @foreach (var row in _rows)
+                {
+                    var captured = row;
+                    <MRow Class="usc-row"
+                          Primary="@row.Title"
+                          Secondary="@row.Subtitle"
+                          Meta="@row.DueLabel"
+                          MetaTone="@row.Tone"
+                          OnClick="@(() => Open(captured))"
+                          AriaLabel="@($"פתיחת {row.Title}")" />
+                }
+            </MRowList>
+        }
+
+        <div class="usc-foot">
+            <a class="usc-all" href="/tasks">לכל המשימות</a>
+        </div>
     </div>
-}
-else
-{
-    <MCard Class="usc2-card" Padding="MCard.CardPadding.None" Title="הגשות קרובות">
-        <Icon><span class="oi oi-calendar usc2-header-icon" aria-hidden="true"></span></Icon>
-        <ChildContent>@body</ChildContent>
-    </MCard>
-}
+</MCard>
 
 @code {
-    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones   { get; set; } = default!;
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones   { get; set; } = new();
     [Parameter]                 public UpcomingDeadlineDto?      NextDeadline { get; set; }
     [Parameter]                 public EventCallback<int>        OnOpenTask   { get; set; }
-    [Parameter]                 public bool                      Embedded     { get; set; }
 
-    // The single nearest-due submission across the whole project — computed
-    // with the exact same rule as StudentDashboardHero._nextSubmission (earliest
-    // due date, incomplete, regardless of exception status) so we can exclude
-    // precisely the task the hero already shows in full detail, by identity
-    // rather than by list position. Position-based skipping broke once
-    // exception items were filtered out below: the hero's pick is very often
-    // the same task ActionCenterCard flags (the most overdue thing usually has
-    // the earliest due date), so a plain Skip(1) would silently drop the next
-    // legitimate calm item instead of the one already shown elsewhere.
-    private TaskSummaryDto? _heroNextSubmission =>
-        Milestones
-            .SelectMany(ms => ms.Tasks)
-            .Where(t => t.IsSubmission && t.DueDate.HasValue && !IsComplete(t))
-            .OrderBy(t => t.DueDate)
-            .FirstOrDefault();
+    /// <summary>Task the focus card shows in full — excluded by identity, not
+    /// by list position, because the focus pick is very often the same task the
+    /// attention band flags.</summary>
+    [Parameter] public int? ExcludeTaskId { get; set; }
 
-    // All upcoming IsSubmission tasks, sorted by due date, not yet complete,
-    // excluding the hero's own pick and anything ActionCenterCard already
-    // surfaces (returned / overdue / pending Moodle) — that card owns the
-    // "needs attention" signal; repeating the same task here would make the
-    // same exception look duplicated rather than urgent.
-    // Used only to decide whether the NextDeadline fallback below applies.
-    private List<(TaskSummaryDto Task, string MilestoneTitle)> _allUpcoming =>
-        Milestones
+    private const int MaxRows = 3;
+
+    private sealed record Row(string Title, string Subtitle, string DueLabel, MRow.RowMetaTone Tone, int? TaskId);
+
+    private List<Row> _rows => BuildRows();
+
+    private List<Row> BuildRows()
+    {
+        var rows = Milestones
             .SelectMany(ms => ms.Tasks
-                .Where(t => t.IsSubmission && t.DueDate.HasValue && !IsComplete(t)
-                            && t.Id != _heroNextSubmission?.Id
-                            && !IsActionCenterItem(t))
+                .Where(t => t.IsSubmission
+                            && t.DueDate.HasValue
+                            && !StudentDashboardModel.IsComplete(t)
+                            && t.Id != ExcludeTaskId
+                            && !StudentDashboardModel.IsAttentionItem(t))
                 .Select(t => (Task: t, MilestoneTitle: ms.Title)))
             .OrderBy(x => x.Task.DueDate!.Value)
+            .Take(MaxRows)
+            .Select(x => ToRow(x.Task.Title, x.MilestoneTitle, x.Task.DueDate!.Value, x.Task.Id,
+                               submitted: x.Task.LatestSubmissionStatus is not null))
             .ToList();
 
-    private List<(TaskSummaryDto Task, string MilestoneTitle)> _submissions =>
-        _allUpcoming.Take(2).ToList();
+        // Fallback: the server's own nearest deadline, for a project whose
+        // milestone data carries no IsSubmission task yet. UpcomingDeadlineDto
+        // carries no submission status, so it is treated as not-yet-submitted.
+        if (rows.Count == 0 && NextDeadline is not null)
+        {
+            rows.Add(ToRow(NextDeadline.Title, "מועד קרוב", NextDeadline.DueDate, NextDeadline.TaskId,
+                           submitted: false));
+        }
 
-    private static bool IsComplete(TaskSummaryDto t) =>
-        t.IsSubmission
-            ? t.LatestSubmissionStatus is not null
-              && t.LatestMentorStatus == "Approved"
-              && t.LatestMoodleConfirmed
-            : t.Status == "Done";
-
-    // Mirrors ActionCenterCard.BuildItems' exception conditions exactly, so a
-    // task is never shown as both a calm "upcoming" item here and an urgent
-    // exception there.
-    private static bool IsActionCenterItem(TaskSummaryDto t)
-    {
-        if (t.LatestMentorStatus == "Returned") return true;
-        if (t.LatestSubmissionStatus == "NeedsRevision") return true;
-        if (t.DueDate.HasValue
-            && t.DueDate.Value.Date < DateTime.Today
-            && !IsComplete(t)
-            && t.Status is "Open" or "InProgress" or "ReturnedForRevision") return true;
-        if (t.IsSubmission && t.LatestMentorStatus == "Approved" && !t.LatestMoodleConfirmed) return true;
-        return false;
+        return rows;
     }
 
-    private static string ResolveStatus(TaskSummaryDto t)
+    // A task only reaches this list after the attention rules have ruled out
+    // every "the student still owes something" case, so a passed due date here
+    // means the work is already submitted and sitting with the mentor or with
+    // Moodle — never a lateness the student caused. Saying "23 ימים באיחור"
+    // about it would be wrong, so a submitted-but-past-due row shows the date
+    // alone and rose is reserved for a deadline that is genuinely pressing.
+    private static Row ToRow(string title, string subtitle, DateTime due, int? taskId, bool submitted)
     {
-        if (t.LatestSubmissionStatus is null) return t.Status;
-        if (t.LatestMentorStatus == "Returned") return "ReturnedByMentor";
-        if (t.LatestSubmissionStatus == "NeedsRevision") return "ReturnedForRevision";
-        if (t.LatestMentorStatus == "Pending") return "PendingMentorReview";
-        if (t.LatestMentorStatus == "Approved" && t.LatestSubmissionStatus == "Submitted") return "ApprovedByMentor";
-        return t.Status;
+        var days       = StudentDashboardModel.DaysUntil(due) ?? 0;
+        var studentLate = days < 0 && !submitted;
+
+        var meta = days < 0 && submitted
+            ? $"{due:dd.MM}"
+            : $"{due:dd.MM} · {StudentDashboardModel.DaysText(days)}";
+
+        var tone = studentLate || (days >= 0 && days <= 3)
+            ? MRow.RowMetaTone.Rose
+            : MRow.RowMetaTone.Default;
+
+        return new Row(title, subtitle, meta, tone, taskId);
     }
 
-    private static string DaysLabel(int days, bool overdue)
+    private async Task Open(Row row)
     {
-        if (overdue) return $"באיחור {Math.Abs(days)} ימים";
-        return days switch { 0 => "היום!", 1 => "מחר", _ => $"נותרו {days} ימים" };
+        if (row.TaskId.HasValue) await OnOpenTask.InvokeAsync(row.TaskId.Value);
     }
-
-    private static string DaysClass(int days, bool overdue)
-    {
-        if (overdue || days < 0) return "usc2-days-overdue";
-        if (days <= 3) return "usc2-days-urgent";
-        if (days <= 7) return "usc2-days-soon";
-        return "usc2-days-normal";
-    }
-
-    private static MStatusBadge.BadgeVariant TaskVariant(string s, bool overdue) => overdue ? MStatusBadge.BadgeVariant.Danger : s switch
-    {
-        "Done"                  => MStatusBadge.BadgeVariant.Success,
-        "InProgress"            => MStatusBadge.BadgeVariant.Success,
-        "PendingMentorReview"   => MStatusBadge.BadgeVariant.Info,
-        "ReturnedForRevision"   => MStatusBadge.BadgeVariant.Warning,
-        "ReturnedByMentor"      => MStatusBadge.BadgeVariant.Warning,
-        "ApprovedByMentor"      => MStatusBadge.BadgeVariant.Success,
-        _                       => MStatusBadge.BadgeVariant.Neutral,
-    };
-
-    private static string TaskLabel(string s, bool overdue) => overdue ? "באיחור" : s switch
-    {
-        "Done"                  => "הושלמה",
-        "InProgress"            => "בעבודה",
-        "PendingMentorReview"   => "ממתין לאישור מנחה",
-        "ReturnedForRevision"   => "הוחזר לתיקון",
-        "ReturnedByMentor"      => "הוחזר ע״י מנחה",
-        "ApprovedByMentor"      => "אושר — ממתין לאישור מרצה",
-        _                       => "ממתין להגשה",
-    };
 }

@@ -1,0 +1,160 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject INotificationService NotificationService
+@inject NavigationManager Nav
+
+@* ─────────────────────────────────────────────────────────────
+   RecentUpdatesSection — "עדכונים אחרונים"
+   Visual source: Motiva Student Dashboard V4.dc.html:199-216.
+
+   This is V4's answer to "what has changed?", and it is the one part of
+   the finalized Dashboard the application had nowhere on this page.
+
+   The data is real: GET api/notifications, the same feed the sidebar's
+   notification bell already reads. Row treatment follows V4 exactly —
+   an unread row gets the violet-tinted fill and a violet dot, a read row
+   is plain with a muted title — because that maps one-to-one onto
+   NotificationDto.IsRead.
+
+   Clicking a row marks it read and routes exactly where the bell would
+   send it, by reusing the bell's own role-aware routing rules rather
+   than inventing a second, divergent map.
+
+   Bounded to three rows (density requirement), which is what V4 shows.
+   No "see all" link, also matching V4: the sidebar bell is already the
+   full-feed surface, and /notifications is a self-declared placeholder
+   page whose nav entry was withdrawn in this same phase.
+   ───────────────────────────────────────────────────────────── *@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge"
+       Padding="MCard.CardPadding.None"
+       Class="rus-card"
+       Fill="true">
+    <div class="rus-body">
+        <div class="rus-head">
+            <h2 class="rus-title">עדכונים אחרונים</h2>
+        </div>
+
+        @if (_loading)
+        {
+            <div class="rus-loading" role="status" aria-live="polite">
+                <span class="rus-spinner" aria-hidden="true"></span>
+                <span>טוענת עדכונים…</span>
+            </div>
+        }
+        else if (_items.Count == 0)
+        {
+            <MEmptyState Title="אין עדכונים חדשים"
+                         Description="כשתתקבל תגובה, משוב או הודעה חדשה, היא תופיע כאן." />
+        }
+        else
+        {
+            <div class="rus-list">
+                @foreach (var n in _items)
+                {
+                    var captured = n;
+                    <button type="button"
+                            class="rus-row @(n.IsRead ? "" : "rus-row-unread")"
+                            @onclick="@(() => OpenAsync(captured))">
+                        <span class="rus-dot @(n.IsRead ? "" : "rus-dot-unread")" aria-hidden="true"></span>
+                        <span class="rus-row-body">
+                            <span class="rus-row-title">@n.Title</span>
+                            <span class="rus-row-time">@FormatTime(n.CreatedAt)</span>
+                        </span>
+                        @if (!n.IsRead)
+                        {
+                            <span class="rus-sr-only">לא נקרא</span>
+                        }
+                    </button>
+                }
+            </div>
+        }
+    </div>
+</MCard>
+
+@code {
+    private const int MaxItems = 3;
+
+    private List<NotificationDto> _items = new();
+    private bool                  _loading = true;
+
+    [CascadingParameter] private User? _user { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var all = await NotificationService.GetRecentAsync();
+
+        // Unread first, then newest — the dashboard's three slots should go to
+        // what the student has not seen, not merely to what is newest.
+        _items = all
+            .OrderBy(n => n.IsRead)
+            .ThenByDescending(n => n.CreatedAt)
+            .Take(MaxItems)
+            .ToList();
+
+        _loading = false;
+    }
+
+    private async Task OpenAsync(NotificationDto n)
+    {
+        if (!n.IsRead)
+        {
+            await NotificationService.MarkReadAsync(n.Id);
+            n.IsRead = true;
+            n.ReadAt = DateTime.Now;
+        }
+
+        var url = TargetUrl(n);
+        if (!string.IsNullOrEmpty(url)) Nav.NavigateTo(url);
+    }
+
+    // Mirrors NotificationBell.GetTargetUrl / BuildRequestUrl. Duplicated
+    // rather than shared because folding the two together means editing
+    // NotificationBell, which is shell code this phase is scoped out of; the
+    // duplication is recorded here so a later pass can collapse it.
+    private string? TargetUrl(NotificationDto n)
+    {
+        if (n.Type == "SubmissionReceived") return "mentor/submissions";
+        if (n.Type == "SubmissionReturned")
+            return n.RelatedEntityId.HasValue ? $"tasks?taskId={n.RelatedEntityId}" : "tasks";
+
+        bool isProjectRequest =
+            n.RelatedEntityType == "ProjectRequest"
+            || n.Type == "RequestReturned"
+            || n.Type == NotificationTypes.RequestCreated
+            || n.Type == NotificationTypes.RequestStatusChanged
+            || n.Type == NotificationTypes.RequestCommentAdded;
+
+        if (isProjectRequest) return RequestUrl(n.RelatedEntityId);
+
+        return n.RelatedEntityType switch
+        {
+            "TaskSubmission" => "submissions",
+            "ProjectRequest" => RequestUrl(n.RelatedEntityId),
+            _ => null,
+        };
+    }
+
+    private string RequestUrl(int? requestId)
+    {
+        var basePath =
+            RoleService.IsAdminOrStaff(_user) ? "management/requests"
+            : RoleService.IsMentor(_user)     ? "mentor-requests"
+            : "requests";
+
+        return requestId.HasValue ? $"{basePath}?requestId={requestId.Value}" : basePath;
+    }
+
+    // Same UTC-safe relative phrasing NotificationBell uses, so the bell and
+    // this card never disagree about how old an update is.
+    private static string FormatTime(DateTime dt)
+    {
+        var utc  = dt.Kind == DateTimeKind.Utc ? dt : DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+        var diff = DateTime.UtcNow - utc;
+        if (diff.TotalMinutes < 1)  return "הרגע";
+        if (diff.TotalMinutes < 60) return $"לפני {(int)diff.TotalMinutes} דקות";
+        if (diff.TotalHours   < 24) return $"לפני {(int)diff.TotalHours} שעות";
+        if (diff.TotalDays    < 7)  return $"לפני {(int)diff.TotalDays} ימים";
+        return dt.IsraelFormat("dd/MM/yy");
+    }
+}

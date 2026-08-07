@@ -42,14 +42,33 @@ public static class NavDefinitions
     };
 
     // ── Student ──────────────────────────────────────────────────────
+    // Aligned in Phase 4D with the System Master's student nav, which lists
+    // exactly five destinations (Motiva Student Dashboard V4.dc.html:68-72):
+    // דשבורד · המשימות שלי · יומן ותכנון · בקשות · מרכז ידע.
+    //
+    // Removed here (routes, pages, services and APIs all left intact):
+    //   • "התראות ועדכונים" (/notifications) — the notification bell in the
+    //     sidebar header is the live notifications surface; the page it
+    //     pointed at is a self-declared placeholder, so this was a duplicate
+    //     destination for something the bell already owns.
+    //   • "צוות החדשנות" (/external-requests) — not in the Master's nav. The
+    //     page, its webhook integration and api/external-requests stay exactly
+    //     as they are; only this entry point is withdrawn, to be re-surfaced
+    //     from the Requests experience in a later phase.
+    //
+    // Added: "יומן ותכנון" → the EXISTING /milestones page. This is a nav
+    // entry for a route that already shipped, not a new screen. It also
+    // replaces the calendar shortcut that AppTopBar used to provide, which
+    // disappears for students now that the bar is hidden on /dashboard.
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
-        new NavItem("דשבורד",          "dashboard",         "oi-dashboard",       NavLinkMatch.All),
-        new NavItem("המשימות שלי",     "tasks",             "oi-task",            NavLinkMatch.Prefix),
-        new NavItem("התראות ועדכונים", "notifications",     "oi-bell",            NavLinkMatch.Prefix),
-        new NavItem("צוות החדשנות",    "external-requests", "oi-lightbulb",       NavLinkMatch.Prefix),
-        new NavItem("בקשות",           "requests",          "oi-envelope-closed", NavLinkMatch.Prefix),
-        new NavItem("מרכז ידע",        "learning",          "oi-book",            NavLinkMatch.Prefix),
+        new NavItem("דשבורד",      "dashboard",  "oi-dashboard",       NavLinkMatch.All),
+        new NavItem("המשימות שלי", "tasks",      "oi-task",            NavLinkMatch.Prefix),
+        // Match.All, not Prefix: the admin/mentor "milestones-overview" route
+        // would otherwise light this item up as active under a prefix match.
+        new NavItem("יומן ותכנון", "milestones", "oi-calendar",        NavLinkMatch.All),
+        new NavItem("בקשות",       "requests",   "oi-envelope-closed", NavLinkMatch.Prefix),
+        new NavItem("מרכז ידע",    "learning",   "oi-book",            NavLinkMatch.Prefix),
     };
 
     // Empty: students reach /settings via the profile card at the bottom
