@@ -1,0 +1,140 @@
+@namespace AuthWithAdmin.Client.Pages.Planning
+
+@*
+    PlanningMonthGrid — the Design's month view (Motiva Calendar.dc.html:144–171).
+
+    Preserved as drawn: 7-column grid, day-name header row, 104px cells,
+    leading/trailing days from the neighbouring months dimmed, today's number
+    as a filled indigo disc, a two-chip cap with "+N נוספים" that expands the
+    day in place.
+
+    The Design's per-cell "+" add-hint is NOT carried over. It opened the event
+    form, which no longer exists; a hover affordance that creates a team task
+    on an arbitrary day would be a different promise than the one drawn.
+*@
+
+@*
+    MCard/AmbientEdge IS the Design's `.amb > .paper` pair — a 1px
+    violet→teal gradient rule around a white surface. .pl-clip re-establishes
+    the Design's `overflow:hidden` so the grid's own cell borders clip to the
+    card's radius; MCard's inner radius is not reachable from here because CSS
+    isolation scopes it to MCard.
+*@
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+    <div class="pl-clip">
+
+        <div class="pl-month-head">
+            @foreach (var name in DayNames)
+            {
+                <div class="pl-month-dayname">@name</div>
+            }
+        </div>
+
+        <div class="pl-month-body">
+            @foreach (var cell in Cells)
+            {
+                var expanded = _expandedDay == cell.Date;
+                var shown    = cell.InMonth && !expanded && cell.Items.Count > Cap
+                    ? cell.Items.Take(Cap).ToList()
+                    : cell.Items;
+                var hidden   = cell.Items.Count - shown.Count;
+
+                <div class="pl-daycell @(cell.InMonth ? "" : "pl-daycell-dim") @(cell.IsToday ? "pl-daycell-today" : "")">
+                    <span class="pl-daynum @(cell.IsToday ? "pl-daynum-today" : "")">@cell.Date.Day</span>
+
+                    @foreach (var item in shown)
+                    {
+                        <PlanningItemChip Item="@item" OnOpen="OnOpenItem" />
+                    }
+
+                    @if (hidden > 0)
+                    {
+                        <button type="button" class="pl-more"
+                                @onclick="() => _expandedDay = cell.Date">
+                            +@hidden נוספים
+                        </button>
+                    }
+                    else if (expanded && cell.Items.Count > Cap)
+                    {
+                        <button type="button" class="pl-more" @onclick="() => _expandedDay = null">
+                            הצג פחות
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+
+    </div>
+</MCard>
+
+@code {
+    /// <summary>Any date inside the month being shown.</summary>
+    [Parameter, EditorRequired] public DateTime Anchor { get; set; }
+
+    /// <summary>Already filtered by the page — this component never filters.</summary>
+    [Parameter] public IReadOnlyList<PlanningItem> Items { get; set; } = Array.Empty<PlanningItem>();
+
+    [Parameter] public EventCallback<PlanningItem> OnOpenItem { get; set; }
+
+    /// <summary>Design: MONTH_CAP = 2 (Motiva Calendar.dc.html:452).</summary>
+    private const int Cap = 2;
+
+    private DateTime? _expandedDay;
+
+    private static readonly string[] DayNames =
+        { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
+
+    /// <summary>Reset the expanded day whenever the month changes — an expanded
+    /// cell from August should not stay expanded after stepping to September.</summary>
+    private DateTime _lastAnchorMonth;
+
+    protected override void OnParametersSet()
+    {
+        var month = new DateTime(Anchor.Year, Anchor.Month, 1);
+        if (month != _lastAnchorMonth)
+        {
+            _lastAnchorMonth = month;
+            _expandedDay     = null;
+        }
+    }
+
+    private sealed record Cell(DateTime Date, bool InMonth, bool IsToday, List<PlanningItem> Items);
+
+    private List<Cell> Cells
+    {
+        get
+        {
+            var first = new DateTime(Anchor.Year, Anchor.Month, 1);
+
+            // Sunday-first, matching the Design's ראשון…שבת header.
+            // DayOfWeek.Sunday == 0, so the leading offset is the raw value.
+            var gridStart = first.AddDays(-(int)first.DayOfWeek);
+
+            // Whole weeks until the month is covered — 5 rows most months,
+            // 6 when the month overflows. The Design draws 6; deriving it
+            // avoids a permanently empty trailing row in shorter months.
+            var last      = first.AddMonths(1).AddDays(-1);
+            var gridEnd   = last.AddDays(6 - (int)last.DayOfWeek);
+            var total     = (gridEnd - gridStart).Days + 1;
+
+            var byDate = Items
+                .GroupBy(i => i.Date)
+                .ToDictionary(g => g.Key, g => g.OrderBy(i => i.IsDone)
+                                                .ThenBy(i => (int)i.Kind)
+                                                .ToList());
+
+            var cells = new List<Cell>(total);
+            for (int k = 0; k < total; k++)
+            {
+                var d = gridStart.AddDays(k);
+                bool inMonth = d.Month == first.Month && d.Year == first.Year;
+                cells.Add(new Cell(
+                    d,
+                    inMonth,
+                    d.Date == DateTime.Today,
+                    inMonth && byDate.TryGetValue(d.Date, out var list) ? list : new List<PlanningItem>()));
+            }
+            return cells;
+        }
+    }
+}

@@ -1,0 +1,338 @@
+@namespace AuthWithAdmin.Client.Pages.Planning
+
+@*
+    PlanningTimeline — "ציר זמן", the Design's Gantt composition
+    (Motiva Calendar.dc.html:224–293) bound to real data.
+
+    PRESERVED FROM THE DESIGN
+      • sticky 230px label rail over a scrolling track
+      • two-tier header (period labels over tick numbers)
+      • milestone GROUP rows carrying a gradient band with a range caption
+      • item rows carrying markers: a rotated square for הגשה, a hollow ring
+        for everything else
+      • the bottom legend
+
+    CHANGED, AND WHY
+      • Scale. The Design hardcodes 31 columns of August 2026. Milestones are
+        year-scoped, so a fixed month window clips any milestone crossing a
+        boundary and cannot answer "איפה אני נמצאת בציר הזמן של הפרויקט".
+        Positioning is therefore percentage-of-span, and the span is supplied
+        by the page (whole project, or one month).
+      • Team tasks are MARKERS, not bars. The Design draws them as duration
+        bars from `i.start`; TeamTasks has no start column. The Design's own
+        "משימה עם משך" legend entry is dropped with them — no fabricated
+        durations, and no legend for a thing that never renders.
+      • Team and personal tasks sit in their own ungrouped sections. Neither
+        has a milestone relationship in the schema, and nesting them under a
+        band would assert one that does not exist.
+      • A "today" rule is added. The Design tints its day number instead, which
+        does not survive a multi-month span.
+*@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+    <div class="pl-clip">
+        <div class="pl-tl-scroll">
+            <div class="pl-tl-inner" style="@TrackSizing">
+
+                @* ── Header ── *@
+                <div class="pl-tl-row pl-tl-headrow">
+                    <div class="pl-tl-rail pl-tl-rail-head">אבני דרך ומשימות</div>
+                    <div class="pl-tl-track pl-tl-track-head">
+                        @foreach (var tick in Ticks)
+                        {
+                            <div class="pl-tl-tick" style="inset-inline-start:@Pct(tick.Date)">
+                                <span class="pl-tl-ticklabel">@tick.Label</span>
+                            </div>
+                        }
+                        @if (TodayVisible)
+                        {
+                            <div class="pl-tl-today" style="inset-inline-start:@Pct(DateTime.Today)">
+                                <span class="pl-tl-todaydot"></span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                @* ── Milestone groups ── *@
+                @foreach (var g in Groups)
+                {
+                    <div class="pl-tl-row pl-tl-grouprow">
+                        <button type="button" class="pl-tl-rail pl-tl-rail-group"
+                                @onclick="() => OnOpenMilestone.InvokeAsync(g.Milestone)">
+                            <span class="pl-tl-gdot pl-tl-st-@StatusSlug(g.Milestone!.Status)"></span>
+                            <span class="pl-tl-gtitle">@g.Milestone.Title</span>
+                            @* IsCurrent, not IsCurrentlyOpen. IsCurrentlyOpen is a
+                               date-window test that goes false for EVERY milestone
+                               once the project's last CloseDate passes, leaving no
+                               "you are here" marker at all. IsCurrent is the
+                               server's single current-milestone pick — the same one
+                               the hero names — so the two always agree. *@
+                            @if (g.Milestone.IsCurrent)
+                            {
+                                <span class="pl-tl-nowtag">נוכחית</span>
+                            }
+                        </button>
+                        <div class="pl-tl-track">
+                            @RenderGridlines
+                            @if (g.Milestone.HasBand)
+                            {
+                                <button type="button"
+                                        class="pl-tl-band pl-tl-st-@StatusSlug(g.Milestone.Status)"
+                                        style="inset-inline-start:@Pct(g.Milestone.Start!.Value);inline-size:@Width(g.Milestone.Start.Value, g.Milestone.Due!.Value)"
+                                        title="@g.Milestone.Title · @g.Milestone.Start.Value.ToString("dd.MM.yy") – @g.Milestone.Due.Value.ToString("dd.MM.yy")"
+                                        @onclick="() => OnOpenMilestone.InvokeAsync(g.Milestone)">
+                                    <span class="pl-tl-bandfill" style="inline-size:@(g.Milestone.ProgressPct)%"></span>
+                                    <span class="pl-tl-bandcap">@g.Milestone.ProgressPct%</span>
+                                </button>
+                            }
+                            else if (g.Milestone.Due.HasValue)
+                            {
+                                @* No OpenDate — degrade to a marker rather than
+                                   invent a start. This is the documented fallback. *@
+                                <button type="button"
+                                        class="pl-tl-marker pl-tl-marker-ring pl-tl-st-@StatusSlug(g.Milestone.Status)"
+                                        style="inset-inline-start:@Pct(g.Milestone.Due.Value)"
+                                        title="@g.Milestone.Title · יעד @g.Milestone.Due.Value.ToString("dd.MM.yy") · ללא תאריך פתיחה"
+                                        @onclick="() => OnOpenMilestone.InvokeAsync(g.Milestone)">
+                                </button>
+                            }
+                        </div>
+                    </div>
+
+                    @foreach (var item in g.Items)
+                    {
+                        @RenderItemRow(item)
+                    }
+                }
+
+                @* ── Ungrouped sections ──
+                   Team and personal tasks have no milestone in the data model.
+                   They get their own headed sections so the Timeline never
+                   implies a relationship the schema does not carry. *@
+                @foreach (var loose in LooseSections)
+                {
+                    <div class="pl-tl-row pl-tl-grouprow pl-tl-looserow">
+                        <div class="pl-tl-rail pl-tl-rail-group">
+                            <span class="pl-tl-gdot" style="@PlanningKinds.PaletteStyle(loose.Kind) background:var(--pl-ink)"></span>
+                            <span class="pl-tl-gtitle">@loose.Title</span>
+                            <span class="pl-tl-loosenote">ללא שיוך לאבן דרך</span>
+                        </div>
+                        <div class="pl-tl-track">@RenderGridlines</div>
+                    </div>
+
+                    @foreach (var item in loose.Items)
+                    {
+                        @RenderItemRow(item)
+                    }
+                }
+
+                @if (Groups.Count == 0 && LooseSections.Count == 0)
+                {
+                    <div class="pl-tl-empty">
+                        <MEmptyState Title="אין תוכן להצגה בציר הזמן"
+                                     Description="נסי לשנות את הסינון או להרחיב את הטווח לכל הפרויקט."
+                                     Live="true" />
+                    </div>
+                }
+
+            </div>
+        </div>
+    </div>
+</MCard>
+
+@* ── Legend ──
+   The Design's four entries minus "משימה עם משך" (no task durations exist)
+   and minus "פגישות ואירועים אינם מוצגים בגאנט" (no events exist at all). *@
+<div class="pl-tl-legend">
+    <span class="pl-tl-lg"><span class="pl-tl-lg-diamond"></span>הגשה · מועד רשמי</span>
+    <span class="pl-tl-lg"><span class="pl-tl-lg-ring"></span>יעד משימה</span>
+    <span class="pl-tl-lg"><span class="pl-tl-lg-band"></span>אבן דרך · מתאריך פתיחה עד יעד</span>
+    <span class="pl-tl-lg-note">משימות מוצגות כמועדי יעד בלבד — המערכת אינה מנהלת משכי משימות או תלויות ביניהן.</span>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public DateTime RangeStart { get; set; }
+    [Parameter, EditorRequired] public DateTime RangeEnd   { get; set; }
+
+    [Parameter] public IReadOnlyList<PlanningMilestone> Milestones { get; set; } = Array.Empty<PlanningMilestone>();
+    [Parameter] public IReadOnlyList<PlanningItem>      Items      { get; set; } = Array.Empty<PlanningItem>();
+
+    [Parameter] public EventCallback<PlanningItem>      OnOpenItem      { get; set; }
+    [Parameter] public EventCallback<PlanningMilestone> OnOpenMilestone { get; set; }
+
+    // ── Geometry ──────────────────────────────────────────────────────────────
+    // Everything is a percentage of the visible span, which is what lets one
+    // component render both a 31-day month and a 300-day project.
+
+    private int SpanDays => Math.Max(1, (RangeEnd.Date - RangeStart.Date).Days);
+
+    /// <summary>
+    /// FitToWidth (the "כל הפרויקט" scope) makes the track exactly as wide as
+    /// the card, so the whole project is legible without scrolling.
+    ///
+    /// This is not a cosmetic choice. Under RTL the track's origin is its right
+    /// edge, so a scrollable full-project track opens parked on the EARLIEST
+    /// date — a student clicking ציר זמן landed on October of last year and had
+    /// to drag to find themselves. Fitting the span answers
+    /// "איפה אני נמצאת בציר הזמן של הפרויקט" on sight, which is the whole point
+    /// of the view. A ~9-month project across ~1000px is ~3.5px/day: milestone
+    /// bands stay 100–250px wide and every marker stays hittable.
+    ///
+    /// The month scope keeps the Design's scrolling track (~7px/day, 900px
+    /// floor), where horizontal scroll is expected and the span is short.
+    /// </summary>
+    private string TrackSizing => FitToWidth
+        ? "inline-size:100%"
+        : $"min-inline-size:{Math.Clamp(SpanDays * 7, 900, 4200) + RailPx}px";
+
+    /// <summary>True for the whole-project scope. Set by the page.</summary>
+    [Parameter] public bool FitToWidth { get; set; }
+
+    private const int RailPx = 230;
+
+    private string Pct(DateTime d)
+    {
+        double p = (d.Date - RangeStart.Date).TotalDays / SpanDays * 100.0;
+        return Math.Clamp(p, 0, 100).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "%";
+    }
+
+    private string Width(DateTime from, DateTime to)
+    {
+        double a = Math.Clamp((from.Date - RangeStart.Date).TotalDays / SpanDays * 100.0, 0, 100);
+        double b = Math.Clamp((to.Date   - RangeStart.Date).TotalDays / SpanDays * 100.0, 0, 100);
+        // Floor at a visible sliver so a one-day milestone still draws as a band.
+        double w = Math.Max(b - a, 0.6);
+        return w.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "%";
+    }
+
+    private bool TodayVisible =>
+        DateTime.Today >= RangeStart.Date && DateTime.Today <= RangeEnd.Date;
+
+    private bool InRange(DateTime d) => d.Date >= RangeStart.Date && d.Date <= RangeEnd.Date;
+
+    // ── Header ticks ──────────────────────────────────────────────────────────
+    // Month starts for a long span, week starts for a short one — the Design's
+    // two-tier header collapsed to whichever tier is legible at this scale.
+
+    private sealed record Tick(DateTime Date, string Label);
+
+    private static readonly string[] MonthNames =
+    {
+        "ינו", "פבר", "מרץ", "אפר", "מאי", "יוני",
+        "יולי", "אוג", "ספט", "אוק", "נוב", "דצמ"
+    };
+
+    private List<Tick> Ticks
+    {
+        get
+        {
+            var ticks = new List<Tick>();
+
+            if (SpanDays > 70)
+            {
+                var d = new DateTime(RangeStart.Year, RangeStart.Month, 1);
+                if (d < RangeStart.Date) d = d.AddMonths(1);
+                while (d <= RangeEnd.Date)
+                {
+                    ticks.Add(new Tick(d, $"{MonthNames[d.Month - 1]} {d:yy}"));
+                    d = d.AddMonths(1);
+                }
+            }
+            else
+            {
+                var d = PlanningWeekView.StartOfWeek(RangeStart);
+                if (d < RangeStart.Date) d = d.AddDays(7);
+                while (d <= RangeEnd.Date)
+                {
+                    ticks.Add(new Tick(d, d.ToString("dd.MM")));
+                    d = d.AddDays(7);
+                }
+            }
+
+            return ticks;
+        }
+    }
+
+    private RenderFragment RenderGridlines => @<text>
+        @foreach (var tick in Ticks)
+        {
+            <span class="pl-tl-gridline" style="inset-inline-start:@Pct(tick.Date)"></span>
+        }
+        @if (TodayVisible)
+        {
+            <span class="pl-tl-todayline" style="inset-inline-start:@Pct(DateTime.Today)"></span>
+        }
+    </text>;
+
+    // ── Rows ──────────────────────────────────────────────────────────────────
+
+    private RenderFragment RenderItemRow(PlanningItem item) => @<div class="pl-tl-row pl-tl-itemrow">
+        <button type="button" class="pl-tl-rail pl-tl-rail-item"
+                style="@PlanningKinds.PaletteStyle(item.Kind)"
+                @onclick="() => OnOpenItem.InvokeAsync(item)">
+            <svg class="pl-tl-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="@PlanningKinds.IconPath(item.Kind)"></path>
+            </svg>
+            <span class="pl-tl-ititle @(item.IsDone ? "pl-tl-ititle-done" : "")">@item.Title</span>
+        </button>
+        <div class="pl-tl-track">
+            @RenderGridlines
+            <button type="button"
+                    class="pl-tl-marker @(item.Kind == PlanningKind.Submission ? "pl-tl-marker-diamond" : "pl-tl-marker-ring") @(item.IsDone ? "pl-tl-marker-done" : "") @(item.IsOverdue ? "pl-tl-marker-late" : "")"
+                    style="@PlanningKinds.PaletteStyle(item.Kind) inset-inline-start:@Pct(item.Date)"
+                    title="@PlanningKinds.Label(item.Kind) · @item.Title · @item.Date.ToString("dd.MM.yy") · @item.StatusLabel"
+                    @onclick="() => OnOpenItem.InvokeAsync(item)">
+            </button>
+        </div>
+    </div>;
+
+    private sealed record Group(PlanningMilestone? Milestone, List<PlanningItem> Items);
+    private sealed record Loose(PlanningKind Kind, string Title, List<PlanningItem> Items);
+
+    /// <summary>Milestones that fall inside the window, each with its own items.
+    /// A milestone with no dates at all is dropped — it cannot be placed.</summary>
+    private List<Group> Groups =>
+        Milestones
+            .Where(m => (m.HasBand && m.Due!.Value >= RangeStart.Date && m.Start!.Value <= RangeEnd.Date)
+                        || (!m.HasBand && m.Due.HasValue && InRange(m.Due.Value)))
+            .OrderBy(m => m.OrderIndex)
+            .Select(m => new Group(
+                m,
+                Items.Where(i => i.MilestoneId == m.ProjectMilestoneId && InRange(i.Date))
+                     .OrderBy(i => i.Date)
+                     .ToList()))
+            .ToList();
+
+    private List<Loose> LooseSections
+    {
+        get
+        {
+            var result = new List<Loose>();
+
+            foreach (var (kind, title) in new[]
+            {
+                (PlanningKind.Team,     "משימות צוות"),
+                (PlanningKind.Personal, "אישי")
+            })
+            {
+                var list = Items
+                    .Where(i => i.Kind == kind && i.MilestoneId is null && InRange(i.Date))
+                    .OrderBy(i => i.Date)
+                    .ToList();
+
+                if (list.Count > 0) result.Add(new Loose(kind, title, list));
+            }
+
+            return result;
+        }
+    }
+
+    private static string StatusSlug(string s) => s switch
+    {
+        "Completed"  => "done",
+        "InProgress" => "active",
+        "Delayed"    => "late",
+        _            => "pending"
+    };
+}

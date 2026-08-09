@@ -7,6 +7,7 @@
 @inject ITasksService TasksService
 @inject ITaskSubmissionsService SubmissionsService
 @inject ITeamTasksService TeamTasksService
+@inject IProjectContextService ProjectContext
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @implements IDisposable
@@ -108,14 +109,27 @@
 *@
 <div class="tsk-header-bleed">
     <MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="המשימות שלי">
+        @*
+            The hero reads the CANONICAL current milestone from
+            IProjectContextService — the same value the dashboard hero, the
+            sidebar widget and the planning workspace show.
+
+            It deliberately does NOT use the local `CurrentMilestone` below.
+            That one is derived from ActiveGroups (milestones that still have an
+            unfinished task), which is the right input for ordering/highlighting
+            the task list but the wrong answer for "which milestone am I on":
+            with every task in פיתוח finished, ActiveGroups no longer contains
+            it, so this hero announced הערכה while every other student page said
+            פיתוח. `CurrentMilestone` is left untouched for the list.
+        *@
         <SubtitleContent>
-            @if (CurrentMilestone is not null)
+            @if (!string.IsNullOrWhiteSpace(_context?.CurrentMilestoneTitle))
             {
                 @:אבן דרך נוכחית:
-                <strong class="tsk-milestone-name">@CurrentMilestone.MilestoneTitle</strong>
-                @if (CurrentMilestone.DueDate.HasValue)
+                <strong class="tsk-milestone-name">@_context!.CurrentMilestoneTitle</strong>
+                @if (_context.CurrentMilestoneDueDate.HasValue)
                 {
-                    @($" · יעד {CurrentMilestone.DueDate.Value:dd.MM}")
+                    @($" · יעד {_context.CurrentMilestoneDueDate.Value:dd.MM}")
                 }
             }
         </SubtitleContent>
@@ -205,6 +219,10 @@ else
     [Parameter, SupplyParameterFromQuery] public int? TaskId { get; set; }
 
     private TasksPageDto?      _data;
+    /// <summary>Canonical project context for the hero's current-milestone
+    /// line. Cached per browser tab by ProjectContextService, so this is a
+    /// cache hit — the sidebar has already fetched it.</summary>
+    private ProjectContextDto? _context;
     private bool               _isLoading = true;
     private bool               _loadError = false;
 
@@ -301,11 +319,13 @@ else
     {
         // Both calls hit existing endpoints; team tasks were already being
         // served to the dashboard, this page simply never asked for them.
-        var tasksTask = TasksService.GetTasksAsync();
-        var teamTask  = TeamTasksService.GetAsync();
+        var tasksTask   = TasksService.GetTasksAsync();
+        var teamTask    = TeamTasksService.GetAsync();
+        var contextTask = ProjectContext.GetAsync();
 
         _data      = await tasksTask;
         _teamTasks = await teamTask;
+        _context   = await contextTask;
 
         _loadError = _data is null;
         _isLoading = false;

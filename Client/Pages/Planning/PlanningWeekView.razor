@@ -1,0 +1,110 @@
+@namespace AuthWithAdmin.Client.Pages.Planning
+
+@*
+    PlanningWeekView — a compact 7-day planning view.
+
+    DERIVED FROM, NOT INVENTED: the Design's week view
+    (Motiva Calendar.dc.html:174–221) contributes its day-head strip verbatim
+    (day name over a 15px/700 number, today as a 25px indigo disc), its today
+    column tint, its per-column hairlines, and the same .pl-chip items the
+    Month view uses.
+
+    WHAT IS DELIBERATELY ABSENT: the 08:00–20:00 hour grid (13 rows × 44px).
+    It exists in the Design solely to position `event` blocks by start/end
+    time. Motiva has no meetings table and no task carries a time-of-day, so
+    rendering it would be 91 empty cells implying a scheduling capability the
+    product does not have. The Design's own "יעדים" deadline row is what
+    survives — promoted from a 34px strip into the column body, which is the
+    space the hour grid vacated.
+
+    The result answers מה קורה לי השבוע? — today and tomorrow are named, and
+    the rest of the week is one glance wide.
+*@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+    <div class="pl-clip">
+
+        <div class="pl-week-head">
+            @foreach (var col in Columns)
+            {
+                <div class="pl-week-headcell @(col.IsToday ? "pl-week-headcell-today" : "")">
+                    <div class="pl-week-dayname">@col.DayName</div>
+                    <div class="pl-week-daynum @(col.IsToday ? "pl-week-daynum-today" : "")">@col.Date.Day</div>
+                    @if (col.RelLabel is not null)
+                    {
+                        <div class="pl-week-rel">@col.RelLabel</div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="pl-week-body">
+            @foreach (var col in Columns)
+            {
+                <div class="pl-week-col @(col.IsToday ? "pl-week-col-today" : "") @(col.Items.Count == 0 ? "pl-week-col-quiet" : "")">
+                    @if (col.Items.Count == 0)
+                    {
+                        @* Quiet, not empty-stated: a day with nothing due is the
+                           normal case, and seven "אין משימות" blocks would shout. *@
+                        <span class="pl-week-none" aria-label="אין פריטים">·</span>
+                    }
+                    else
+                    {
+                        @foreach (var item in col.Items)
+                        {
+                            <PlanningItemChip Item="@item" Relaxed="true" OnOpen="OnOpenItem" />
+                        }
+                    }
+                </div>
+            }
+        </div>
+
+    </div>
+</MCard>
+
+@code {
+    /// <summary>Any date inside the week being shown.</summary>
+    [Parameter, EditorRequired] public DateTime Anchor { get; set; }
+
+    [Parameter] public IReadOnlyList<PlanningItem> Items { get; set; } = Array.Empty<PlanningItem>();
+
+    [Parameter] public EventCallback<PlanningItem> OnOpenItem { get; set; }
+
+    private static readonly string[] DayNames =
+        { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
+
+    private sealed record Col(
+        DateTime Date, string DayName, bool IsToday, string? RelLabel, List<PlanningItem> Items);
+
+    /// <summary>Sunday-first, matching the Month header and the Design.</summary>
+    public static DateTime StartOfWeek(DateTime d) => d.Date.AddDays(-(int)d.Date.DayOfWeek);
+
+    private List<Col> Columns
+    {
+        get
+        {
+            var start = StartOfWeek(Anchor);
+
+            var byDate = Items
+                .GroupBy(i => i.Date)
+                .ToDictionary(g => g.Key, g => g.OrderBy(i => i.IsDone)
+                                                .ThenBy(i => (int)i.Kind)
+                                                .ToList());
+
+            var cols = new List<Col>(7);
+            for (int k = 0; k < 7; k++)
+            {
+                var d    = start.AddDays(k);
+                int diff = (d - DateTime.Today).Days;
+
+                cols.Add(new Col(
+                    d,
+                    DayNames[(int)d.DayOfWeek],
+                    d == DateTime.Today,
+                    diff switch { 0 => "היום", 1 => "מחר", _ => null },
+                    byDate.TryGetValue(d, out var list) ? list : new List<PlanningItem>()));
+            }
+            return cols;
+        }
+    }
+}

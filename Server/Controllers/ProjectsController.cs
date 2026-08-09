@@ -185,6 +185,12 @@ public class ProjectsController : ControllerBase
         // ── 6. Open requests ──────────────────────────────────────────────────
         // Reads from ProjectRequests (unified requests module).
         // Maps CreatedAt → OpenedAt to satisfy OpenRequestDto column mapping.
+        //
+        // 'Resolved' AND 'Closed' are both terminal (RequestStatuses documents
+        // the lifecycle as New → InProgress → Resolved | Closed). Excluding only
+        // 'Closed' put handled requests into the dashboard's "דורש התייחסות"
+        // card labelled "ממתין לתגובה". ProjectOverviewController and
+        // LecturerDashboardController already filter on both.
         const string requestsSql = @"
             SELECT  r.Id,
                     r.Title,
@@ -193,7 +199,7 @@ public class ProjectsController : ControllerBase
                     r.CreatedAt AS OpenedAt
             FROM    ProjectRequests r
             WHERE   r.ProjectId = @ProjectId
-              AND   r.Status   != 'Closed'
+              AND   r.Status NOT IN ('Resolved', 'Closed')
             ORDER   BY r.CreatedAt DESC";
 
         var requests = await _db.GetRecordsAsync<OpenRequestDto>(
@@ -398,8 +404,14 @@ public class ProjectsController : ControllerBase
                      ?? milestones.FirstOrDefault(m => m.Status == "NotStarted");
 
         // ── Derive next task ──────────────────────────────────────────────────
-        var nextTask = tasks.FirstOrDefault(t => t.Status != "Done" && t.DueDate.HasValue)
-                    ?? tasks.FirstOrDefault(t => t.Status != "Done");
+        // Compare against the NORMALIZED status. Some legacy rows store
+        // "Completed" instead of "Done" (see NormalizeTaskStatus); a raw
+        // `Status != "Done"` test treats those as still open, which surfaced a
+        // task finished months ago as the student's next deadline and
+        // under-counted TasksDone. my-dashboard and my-tasks already normalize
+        // at their read boundary — this endpoint was the one that did not.
+        var nextTask = tasks.FirstOrDefault(t => NormalizeTaskStatus(t.Status) != "Done" && t.DueDate.HasValue)
+                    ?? tasks.FirstOrDefault(t => NormalizeTaskStatus(t.Status) != "Done");
 
         return Ok(new ProjectContextDto
         {
@@ -418,7 +430,7 @@ public class ProjectsController : ControllerBase
             CurrentMilestoneDueDate  = currentMs?.DueDate,
             MilestonesCompleted      = milestones.Count(m => IsMilestoneCompleted(m.Status)),
             MilestonesTotal          = milestones.Count,
-            TasksDone                = tasks.Count(t => t.Status == "Done"),
+            TasksDone                = tasks.Count(t => NormalizeTaskStatus(t.Status) == "Done"),
             TasksTotal               = tasks.Count,
             NextTaskTitle            = nextTask?.Title,
             NextTaskDueDate          = nextTask?.DueDate,
@@ -485,7 +497,11 @@ public class ProjectsController : ControllerBase
                     aym.DueDate,
                     pm.CompletedAt,
                     COUNT(t.Id)    AS TotalTasks,
-                    COALESCE(SUM(CASE WHEN t.Status = 'Done' THEN 1 ELSE 0 END), 0)
+                    -- IN ('Done','Completed'): legacy rows store 'Completed'
+                    -- for the same terminal state (see NormalizeTaskStatus).
+                    -- Matching only 'Done' under-counted milestone progress —
+                    -- a milestone with both tasks finished reported 1/2.
+                    COALESCE(SUM(CASE WHEN t.Status IN ('Done','Completed') THEN 1 ELSE 0 END), 0)
                                    AS CompletedTasks,
                     CASE WHEN (
                         SELECT COUNT(*)
