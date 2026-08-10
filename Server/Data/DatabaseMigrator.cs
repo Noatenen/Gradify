@@ -2498,6 +2498,88 @@ public static class DatabaseMigrator
                 FOREIGN KEY (AssignedToUserId) REFERENCES users(Id)
             )");
 
+        // ── ProjectTeamProfile — the team's own project identity ────────────
+        // The student-editable display name and description of a project, kept
+        // OUT of the Projects row on purpose.
+        //
+        // Projects.Title / Projects.Description are catalog fields: 108 of the
+        // 117 seeded projects are SourceType='Airtable', and AirtableService's
+        // sync overwrites both columns on every run (AirtableService.cs:957).
+        // Writing a student's edit there would be silently reverted by the next
+        // sync, and would also change what lecturers, mentors and the catalog
+        // see. This table is Motiva-owned, the sync never touches it, and the
+        // student-facing name resolves as
+        //     COALESCE(ptp.DisplayTitle, p.Title)
+        // so a project with no row here behaves exactly as it did before.
+        //
+        // One row per project (PK on ProjectId), because the identity belongs
+        // to the project, not to whichever team member last edited it.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectTeamProfile (
+                ProjectId       INTEGER PRIMARY KEY,
+                DisplayTitle    TEXT,
+                Description     TEXT,
+                UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedByUserId INTEGER,
+                FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
+            )");
+
+        // ── ProjectResources — the team's own links ─────────────────────────
+        // "משאבי הפרויקט": the Google Doc, the Drive folder, the Figma file,
+        // the repo. Team-owned and team-writable, exactly like TeamTasks, and
+        // deliberately NOT part of ResourceFiles — that table is the course's
+        // knowledge base, published by staff to every project.
+        //
+        // Only a label and a URL are stored. The resource's KIND (Figma /
+        // GitHub / Drive …) is derived from the URL at render time rather than
+        // persisted, so a stored kind can never disagree with the link it
+        // describes.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectResources (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ProjectId       INTEGER NOT NULL,
+                TeamId          INTEGER NOT NULL,
+                Label           TEXT    NOT NULL,
+                Url             TEXT    NOT NULL,
+                CreatedByUserId INTEGER NOT NULL,
+                CreatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (TeamId)          REFERENCES Teams(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (CreatedByUserId) REFERENCES users(Id)
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_projectresources_project ON ProjectResources(ProjectId)");
+
+        // ── ProjectSubmissionStatuses — team progress on תוצרי ההגשה ────────
+        // Motiva's progress layer on top of the course's submission guidance.
+        //
+        // Only the STATUS is persisted. The guidance itself (what a "חוברת" or
+        // a "פוסטר" requires) is course content with no authoring UI behind it,
+        // so it lives in the client-side catalog
+        // (Client/Pages/ProjectWorkspace/SubmissionDeliverablesCatalog.cs) and
+        // is keyed from here by DeliverableKey. A key that disappears from the
+        // catalog leaves an orphan row that nothing reads — harmless — and a
+        // new key simply has no row until the team sets one.
+        //
+        // Deliberately NOT modelled on Tasks/TaskSubmissions: those are the
+        // milestone submission pipeline (submit → mentor approve → Moodle), and
+        // overloading them would corrupt /tasks, /submissions and the mentor
+        // review queue.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectSubmissionStatuses (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ProjectId       INTEGER NOT NULL,
+                DeliverableKey  TEXT    NOT NULL,
+                Status          TEXT    NOT NULL,
+                UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedByUserId INTEGER,
+                UNIQUE (ProjectId, DeliverableKey),
+                FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
+            )");
+
         // ── Canonical reference-data seeds ──────────────────────────────────
         // The two ProjectTypes rows are referenced by the MilestoneTemplates
         // seed below in the migrator (ProjectTypeId = 1 / 2). On a fresh DB

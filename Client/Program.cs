@@ -16,6 +16,9 @@ builder.Services.AddScoped<ITasksService, TasksService>();
 builder.Services.AddScoped<IMilestonesService, MilestonesService>();
 builder.Services.AddScoped<IProjectContextService, ProjectContextService>();
 
+// Student project workspace (/project) — identity, resources, deliverables
+builder.Services.AddScoped<IProjectWorkspaceService, ProjectWorkspaceService>();
+
 // Resource files (admin/lecturer knowledge-base uploads)
 builder.Services.AddScoped<IResourceFilesService, ResourceFilesService>();
 

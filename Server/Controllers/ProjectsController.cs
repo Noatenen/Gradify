@@ -306,7 +306,11 @@ public class ProjectsController : ControllerBase
         const string projectSql = @"
             SELECT  p.Id                        AS ProjectId,
                     p.ProjectNumber,
-                    p.Title                     AS ProjectTitle,
+                    -- The team's own display name wins over the catalog title;
+                    -- see ProjectTeamProfile in DatabaseMigrator. A project
+                    -- with no row there resolves exactly as it did before.
+                    COALESCE(NULLIF(TRIM(ptp.DisplayTitle), ''), p.Title)
+                                                AS ProjectTitle,
                     t.Id                        AS TeamId,
                     t.TeamName                  AS TeamName,
                     pt.Name                     AS TrackName,
@@ -335,6 +339,7 @@ public class ProjectsController : ControllerBase
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId  = t.Id
             LEFT JOIN ProjectTypes pt ON pt.Id = p.ProjectTypeId
+            LEFT JOIN ProjectTeamProfile ptp ON ptp.ProjectId = p.Id
             JOIN    TeamMembers  tm  ON t.Id      = tm.TeamId
             WHERE   tm.UserId  = @UserId
               AND   tm.IsActive = 1
@@ -1738,13 +1743,18 @@ public class ProjectsController : ControllerBase
     [HttpGet("my-project-details")]
     public async Task<IActionResult> GetMyProjectDetails(int authUserId)
     {
+        // Title and Description resolve through ProjectTeamProfile: the team's
+        // own display name / description wins where it exists, and the catalog
+        // value is the fallback. See the ProjectTeamProfile block in
+        // DatabaseMigrator for why the student's edit is not written into the
+        // Projects row itself (Airtable sync overwrites those two columns).
         const string sql = @"
             SELECT  p.Id,
                     p.ProjectNumber,
-                    p.Title,
+                    COALESCE(NULLIF(TRIM(ptp.DisplayTitle), ''), p.Title)       AS Title,
                     pt.Name   AS ProjectType,
                     ay.Name   AS AcademicYear,
-                    p.Description,
+                    COALESCE(NULLIF(TRIM(ptp.Description),  ''), p.Description) AS Description,
                     p.Goals,
                     p.TargetAudience,
                     p.OrganizationName,
@@ -1760,6 +1770,7 @@ public class ProjectsController : ControllerBase
             JOIN    AcademicYears ay  ON p.AcademicYearId = ay.Id
             JOIN    Teams         t   ON p.TeamId         = t.Id
             JOIN    TeamMembers   tm  ON t.Id             = tm.TeamId
+            LEFT JOIN ProjectTeamProfile ptp ON ptp.ProjectId = p.Id
             WHERE   tm.UserId   = @UserId
               AND   tm.IsActive = 1
             LIMIT 1";
@@ -1770,6 +1781,312 @@ public class ProjectsController : ControllerBase
 
         if (row is null) return NotFound("פרויקט לא נמצא");
         return Ok(row);
+    }
+
+    // ── PUT /api/projects/my-project ─────────────────────────────────────────
+    // Updates the display name + description of the authenticated student's own
+    // project. This is the only project write a student can make.
+    //
+    // The values are stored in ProjectTeamProfile, NOT in the Projects row:
+    // Projects.Title / Projects.Description are catalog fields that
+    // AirtableService rewrites on every sync, and that lecturers and mentors
+    // read. See the ProjectTeamProfile block in DatabaseMigrator.
+    //
+    // Clearing a field (empty / whitespace) stores NULL, which makes the read
+    // queries fall back to the catalog value — so a team can always get back to
+    // the official title without an "undo" of its own.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-project")]
+    public async Task<IActionResult> UpdateMyProject(
+        [FromBody] UpdateMyProjectRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var title       = (req.Title       ?? "").Trim();
+        var description = (req.Description ?? "").Trim();
+
+        // Length guards mirror what the fields realistically hold; the client
+        // enforces the same numbers so an over-long value never round-trips.
+        if (title.Length > MaxProjectTitleLength)
+            return BadRequest($"שם הפרויקט ארוך מדי — עד {MaxProjectTitleLength} תווים");
+
+        if (description.Length > MaxProjectDescriptionLength)
+            return BadRequest($"תיאור הפרויקט ארוך מדי — עד {MaxProjectDescriptionLength} תווים");
+
+        var projectId = await GetProjectIdForUserAsync(authUserId);
+        if (projectId is null) return NotFound("פרויקט לא נמצא");
+
+        // One row per project, so the write is an upsert on the primary key.
+        const string sql = @"
+            INSERT INTO ProjectTeamProfile
+                        (ProjectId, DisplayTitle, Description, UpdatedAt, UpdatedByUserId)
+            VALUES      (@ProjectId, @Title, @Description, datetime('now'), @UserId)
+            ON CONFLICT(ProjectId) DO UPDATE SET
+                        DisplayTitle    = excluded.DisplayTitle,
+                        Description     = excluded.Description,
+                        UpdatedAt       = excluded.UpdatedAt,
+                        UpdatedByUserId = excluded.UpdatedByUserId";
+
+        await _db.SaveDataAsync(sql, new
+        {
+            ProjectId   = projectId.Value,
+            Title       = title.Length       == 0 ? null : title,
+            Description = description.Length == 0 ? null : description,
+            UserId      = authUserId,
+        });
+
+        return NoContent();
+    }
+
+    private const int MaxProjectTitleLength       = 120;
+    private const int MaxProjectDescriptionLength = 2000;
+
+    // ── GET /api/projects/my-resources ───────────────────────────────────────
+    // The team's own links (משאבי הפרויקט), newest last so the grid keeps a
+    // stable reading order as items are added.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("my-resources")]
+    public async Task<IActionResult> GetMyResources(int authUserId)
+    {
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return Ok(Enumerable.Empty<ProjectResourceDto>());
+
+        const string sql = @"
+            SELECT  Id, Label, Url
+            FROM    ProjectResources
+            WHERE   ProjectId = @ProjectId
+            ORDER   BY Id";
+
+        var rows = await _db.GetRecordsAsync<ProjectResourceDto>(
+            sql, new { ProjectId = ctx.ProjectId });
+
+        return Ok(rows ?? Enumerable.Empty<ProjectResourceDto>());
+    }
+
+    // ── POST /api/projects/my-resources ──────────────────────────────────────
+    // Adds a link to the caller's own project.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPost("my-resources")]
+    public async Task<IActionResult> CreateMyResource(
+        [FromBody] CreateProjectResourceRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var label = (req.Label ?? "").Trim();
+        var url   = (req.Url   ?? "").Trim();
+
+        if (label.Length == 0) return BadRequest("שם המשאב לא יכול להיות ריק");
+        if (label.Length > MaxResourceLabelLength)
+            return BadRequest($"שם המשאב ארוך מדי — עד {MaxResourceLabelLength} תווים");
+
+        if (!TryNormalizeResourceUrl(url, out var safeUrl))
+            return BadRequest("הקישור אינו תקין. יש להזין כתובת שמתחילה ב-http או ב-https");
+
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        const string sql = @"
+            INSERT INTO ProjectResources (ProjectId, TeamId, Label, Url, CreatedByUserId)
+            VALUES (@ProjectId, @TeamId, @Label, @Url, @UserId)";
+
+        int newId = await _db.InsertReturnIdAsync(sql, new
+        {
+            ctx.ProjectId,
+            ctx.TeamId,
+            Label  = label,
+            Url    = safeUrl,
+            UserId = authUserId,
+        });
+
+        return Ok(new ProjectResourceDto { Id = newId, Label = label, Url = safeUrl });
+    }
+
+    // ── PUT /api/projects/my-resources/{id} ──────────────────────────────────
+    // Edits a link the caller's team owns — the label, the URL, or both.
+    //
+    // Same validation as the POST above, deliberately: a resource must not be
+    // able to become unsafe by being edited into something the create path
+    // would have refused. The ProjectId predicate in the WHERE clause is the
+    // authorization — a row belonging to another team simply does not match.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-resources/{id:int}")]
+    public async Task<IActionResult> UpdateMyResource(
+        int id, [FromBody] CreateProjectResourceRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var label = (req.Label ?? "").Trim();
+        var url   = (req.Url   ?? "").Trim();
+
+        if (label.Length == 0) return BadRequest("שם המשאב לא יכול להיות ריק");
+        if (label.Length > MaxResourceLabelLength)
+            return BadRequest($"שם המשאב ארוך מדי — עד {MaxResourceLabelLength} תווים");
+
+        if (!TryNormalizeResourceUrl(url, out var safeUrl))
+            return BadRequest("הקישור אינו תקין. יש להזין כתובת שמתחילה ב-http או ב-https");
+
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        const string sql = @"
+            UPDATE ProjectResources
+            SET    Label = @Label,
+                   Url   = @Url
+            WHERE  Id        = @Id
+              AND  ProjectId = @ProjectId";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            Id = id,
+            ctx.ProjectId,
+            Label = label,
+            Url   = safeUrl,
+        });
+
+        if (affected == 0) return NotFound("המשאב לא נמצא");
+
+        return Ok(new ProjectResourceDto { Id = id, Label = label, Url = safeUrl });
+    }
+
+    // ── DELETE /api/projects/my-resources/{id} ───────────────────────────────
+    // Removes a link. The ProjectId predicate is the authorization: a row that
+    // belongs to another team simply does not match.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("my-resources/{id:int}")]
+    public async Task<IActionResult> DeleteMyResource(int id, int authUserId)
+    {
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        int affected = await _db.SaveDataAsync(
+            "DELETE FROM ProjectResources WHERE Id = @Id AND ProjectId = @ProjectId",
+            new { Id = id, ctx.ProjectId });
+
+        if (affected == 0) return NotFound("המשאב לא נמצא");
+        return NoContent();
+    }
+
+    // ── GET /api/projects/my-submission-progress ─────────────────────────────
+    // The team's status per submission category (תוצרי ההגשה). Only categories
+    // the team has actually touched have a row; everything else is
+    // "NotStarted" by absence, which is why no seeding is needed when the
+    // catalog gains an entry.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("my-submission-progress")]
+    public async Task<IActionResult> GetMySubmissionProgress(int authUserId)
+    {
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return Ok(Enumerable.Empty<SubmissionStatusDto>());
+
+        const string sql = @"
+            SELECT  DeliverableKey, Status
+            FROM    ProjectSubmissionStatuses
+            WHERE   ProjectId = @ProjectId";
+
+        var rows = await _db.GetRecordsAsync<SubmissionStatusDto>(
+            sql, new { ProjectId = ctx.ProjectId });
+
+        return Ok(rows ?? Enumerable.Empty<SubmissionStatusDto>());
+    }
+
+    // ── PUT /api/projects/my-submission-progress/{deliverableKey} ────────────
+    // Sets one category's status for the caller's team.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-submission-progress/{deliverableKey}")]
+    public async Task<IActionResult> UpdateMySubmissionProgress(
+        string deliverableKey, [FromBody] UpdateDeliverableStatusRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var key = (deliverableKey ?? "").Trim();
+        if (key.Length == 0 || key.Length > MaxDeliverableKeyLength)
+            return BadRequest("מזהה התוצר אינו תקין");
+
+        if (!SubmissionStatusValues.IsValid(req.Status))
+            return BadRequest("מצב לא חוקי");
+
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        const string sql = @"
+            INSERT INTO ProjectSubmissionStatuses
+                        (ProjectId, DeliverableKey, Status, UpdatedAt, UpdatedByUserId)
+            VALUES      (@ProjectId, @Key, @Status, datetime('now'), @UserId)
+            ON CONFLICT(ProjectId, DeliverableKey) DO UPDATE SET
+                        Status          = excluded.Status,
+                        UpdatedAt       = excluded.UpdatedAt,
+                        UpdatedByUserId = excluded.UpdatedByUserId";
+
+        await _db.SaveDataAsync(sql, new
+        {
+            ctx.ProjectId,
+            Key    = key,
+            req.Status,
+            UserId = authUserId,
+        });
+
+        return NoContent();
+    }
+
+    private const int MaxDeliverableKeyLength = 60;
+
+    private const int MaxResourceLabelLength = 80;
+    private const int MaxResourceUrlLength   = 2000;
+
+    /// <summary>
+    /// Accepts only an absolute http/https URL. A bare host ("figma.com/...")
+    /// is upgraded to https rather than rejected, because that is what a
+    /// student pasting from an address bar produces; everything else —
+    /// javascript:, data:, file:, mailto: — is refused, so nothing that reaches
+    /// an anchor's href can execute or exfiltrate.
+    /// </summary>
+    private static bool TryNormalizeResourceUrl(string raw, out string safeUrl)
+    {
+        safeUrl = "";
+
+        if (string.IsNullOrWhiteSpace(raw) || raw.Length > MaxResourceUrlLength)
+            return false;
+
+        var candidate = raw.Trim();
+
+        // Only add a scheme when there is none at all. A string that already
+        // carries a scheme must be judged on that scheme, never rewritten.
+        if (!candidate.Contains("://", StringComparison.Ordinal)
+            && !candidate.Contains(':', StringComparison.Ordinal))
+        {
+            candidate = "https://" + candidate;
+        }
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
+            return false;
+
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(uri.Host))
+            return false;
+
+        safeUrl = uri.ToString();
+        return safeUrl.Length <= MaxResourceUrlLength;
+    }
+
+    // Resolves the caller's project the same way my-project-details does —
+    // deliberately WITHOUT the AssignmentIsDraft filter that
+    // GetProjectTeamForUserAsync applies, so a student can always edit the
+    // project the workspace page just showed them.
+    private async Task<int?> GetProjectIdForUserAsync(int userId)
+    {
+        const string sql = @"
+            SELECT  p.Id
+            FROM    Projects    p
+            JOIN    Teams       t  ON p.TeamId = t.Id
+            JOIN    TeamMembers tm ON t.Id     = tm.TeamId
+            WHERE   tm.UserId   = @UserId
+              AND   tm.IsActive = 1
+            LIMIT   1";
+
+        var rows = await _db.GetRecordsAsync<SubTeamIdRow>(sql, new { UserId = userId });
+        return rows?.FirstOrDefault()?.Id;
     }
 
     // ── GET /api/projects/personal-tasks ─────────────────────────────────────

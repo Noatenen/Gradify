@@ -60,15 +60,21 @@ public static class NavDefinitions
     // entry for a route that already shipped, not a new screen. It also
     // replaces the calendar shortcut that AppTopBar used to provide, which
     // disappears for students now that the bar is hidden on /dashboard.
+    // Each entry carries BOTH icons: the open-iconic class, which is what it
+    // always had, and the stroked SVG the student rail draws instead (see
+    // NavIcons for why). The open-iconic value is deliberately left in place
+    // rather than deleted — it is the fallback the rail falls back to for any
+    // item without path data, and removing it would make this list role-
+    // specific when it is not.
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
-        new NavItem("דשבורד",      "dashboard",  "oi-dashboard",       NavLinkMatch.All),
-        new NavItem("המשימות שלי", "tasks",      "oi-task",            NavLinkMatch.Prefix),
+        new NavItem("דשבורד",      "dashboard",  "oi-dashboard",       NavLinkMatch.All,    NavIcons.Dashboard),
+        new NavItem("המשימות שלי", "tasks",      "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
         // Match.All, not Prefix: the admin/mentor "milestones-overview" route
         // would otherwise light this item up as active under a prefix match.
-        new NavItem("יומן ותכנון", "milestones", "oi-calendar",        NavLinkMatch.All),
-        new NavItem("בקשות",       "requests",   "oi-envelope-closed", NavLinkMatch.Prefix),
-        new NavItem("מרכז ידע",    "learning",   "oi-book",            NavLinkMatch.Prefix),
+        new NavItem("יומן ותכנון", "milestones", "oi-calendar",        NavLinkMatch.All,    NavIcons.Calendar),
+        new NavItem("בקשות",       "requests",   "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
+        new NavItem("מרכז ידע",    "learning",   "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
     };
 
     // Empty: students reach /settings via the profile card at the bottom

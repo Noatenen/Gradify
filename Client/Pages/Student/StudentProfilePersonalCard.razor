@@ -1,0 +1,270 @@
+@namespace AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IStudentProfileService ProfileService
+
+@*
+    StudentProfilePersonalCard — "פרטים אישיים"
+
+    The contact block the hero used to carry. Nothing about the phone's
+    behaviour changed in the move: same PUT /api/student/me through
+    IStudentProfileService.UpdatePhoneAsync, same 20-character client guard
+    mirroring StudentController's own, same Enter/Escape keys, same 2.2s
+    "נשמר" flash, same in-place update of the parent's Profile object so the
+    page never disagrees with the server.
+
+    WHAT IS IN THIS CARD, AND WHY ONLY THIS
+    Every field is one the page already loaded via GET /api/student/me — no
+    new request, nothing invented:
+
+      * מייל — display only, deliberately with no edit affordance. No
+        endpoint mutates users.Email and it is the login identity, so an
+        editable-looking field would promise something the system cannot do.
+        The Master draws an inline editor for it; that is the one place this
+        card knowingly departs from the design file.
+
+      * טלפון — the one editable value on the screen.
+
+      * שנה אקדמית — display only, set by the course staff.
+
+    Also on StudentProfileDto and deliberately absent: IdNumber (empty for
+    every seeded user — a column that would render as "—" for everyone is a
+    field in appearance only), and ProjectTitle / TeamName / ProjectNumber,
+    which are project identity rather than personal details. The team is
+    already named once, in the hero's context line.
+*@
+
+@* MCard's own root cannot be reached from this component's scoped CSS, so
+   every style below hangs off the head/body wrappers rendered here. *@
+@* Fill: this card and the team card beside it share a grid row, and Fill is
+   what lets the shorter of the two stretch to the taller one's height so the
+   first row reads as one band. The slack lands at the bottom of the card's
+   inner column as plain space — no content is stretched to fill it. Below the
+   page's two-column breakpoint the cell has no imposed height, so height:100%
+   resolves to auto and this changes nothing. *@
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Fill="true">
+    @* Save status lives in the head, exactly as it does on the notification
+       card, and NOT beside the phone value. Inline, it has to reserve its own
+       ~30px so the pencil does not jump when "נשמר" fades in — which pushed
+       the pencil far enough from the number that it stopped reading as that
+       row's control. One predictable place per card is also simply how this
+       page already reports a save. *@
+    <div class="spf-pd-head">
+        <h2 class="spf-pd-title">פרטים אישיים</h2>
+        <span class="spf-pd-status" aria-live="polite">
+            @if (_savingPhone)
+            {
+                <span class="spf-pd-spinner" aria-hidden="true"></span>
+            }
+            else if (_phoneSaved)
+            {
+                <span class="spf-pd-saved">נשמר</span>
+            }
+        </span>
+    </div>
+
+    <div class="spf-pd-body">
+        @* Two column wrappers, contact and academic. They sit side by side
+           only while the page is stacked and this card is full width — see
+           the CSS. The wrappers exist even when they render as one column
+           because the divider rules need something this component's scoped
+           CSS can match: MRowList renders its own root under its own scope
+           id and is unreachable from here. *@
+        <div class="spf-pd-cols">
+        <div class="spf-pd-col">
+        <MRowList Divided="true">
+
+            @* ── Email — read-only ───────────────────────────────────── *@
+            <MRow Primary="מייל">
+                <Trailing>
+                    <span class="spf-pd-value">@Profile.Email</span>
+                </Trailing>
+            </MRow>
+
+            @* ── Phone — inline edit ─────────────────────────────────── *@
+            <MRow Primary="טלפון">
+                <Trailing>
+                    @if (_editingPhone)
+                    {
+                        <input class="spf-phone-input"
+                               type="tel"
+                               maxlength="20"
+                               placeholder="05x-xxxxxxx"
+                               aria-label="מספר טלפון"
+                               disabled="@_savingPhone"
+                               @bind="_phoneDraft"
+                               @bind:event="oninput"
+                               @onkeydown="HandlePhoneKeyDownAsync" />
+
+                        <button type="button" class="spf-meta-btn spf-meta-btn-save"
+                                title="שמירה" aria-label="שמירת מספר טלפון"
+                                disabled="@_savingPhone"
+                                @onclick="SavePhoneAsync">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="m5 12.5 4.5 4.5L19 7.5"></path>
+                            </svg>
+                        </button>
+
+                        <button type="button" class="spf-meta-btn spf-meta-btn-cancel"
+                                title="ביטול" aria-label="ביטול עריכת מספר טלפון"
+                                disabled="@_savingPhone"
+                                @onclick="CancelPhoneEdit">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M6 6l12 12M18 6 6 18"></path>
+                            </svg>
+                        </button>
+                    }
+                    else
+                    {
+                        <span class="@PhoneValueClass">@PhoneDisplay</span>
+
+                        <button type="button" class="spf-meta-btn spf-meta-btn-edit"
+                                title="עריכת מספר טלפון" aria-label="עריכת מספר טלפון"
+                                @onclick="StartPhoneEdit">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                 stroke="url(#spfEditGradient)"
+                                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                            </svg>
+                        </button>
+                    }
+                </Trailing>
+            </MRow>
+
+        </MRowList>
+        </div>
+
+        <div class="spf-pd-col">
+        <MRowList Divided="true">
+
+            @* ── Academic year — read-only ───────────────────────────── *@
+            <MRow Primary="שנה אקדמית">
+                <Trailing>
+                    <span class="@(string.IsNullOrWhiteSpace(Profile.AcademicYear)
+                                   ? "spf-pd-value spf-pd-value-empty" : "spf-pd-value")">
+                        @(string.IsNullOrWhiteSpace(Profile.AcademicYear) ? "—" : Profile.AcademicYear)
+                    </span>
+                </Trailing>
+            </MRow>
+
+        </MRowList>
+        </div>
+        </div>
+
+        @if (_phoneError is not null)
+        {
+            <p class="spf-pd-error" role="alert">@_phoneError</p>
+        }
+    </div>
+
+    @* The Master strokes the edit pencil with a violet->teal gradient, which
+       in SVG has to reference a real <defs> node by id. Declared once here,
+       in a zero-size svg, exactly as the design file does. It moved from the
+       hero with the pencil it strokes — an SVG url(#id) reference resolves
+       document-wide, but leaving the definition behind in a component that no
+       longer draws a gradient would be a trap for whoever edits it next. *@
+    <svg width="0" height="0" class="spf-defs" aria-hidden="true" focusable="false">
+        <defs>
+            <linearGradient id="spfEditGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#7C3AED" />
+                <stop offset="100%" stop-color="#0D9C9A" />
+            </linearGradient>
+        </defs>
+    </svg>
+</MCard>
+
+@code {
+    /// <summary>The profile the page already loaded. Mutated in place on a
+    /// successful save so the parent page and this card never disagree about
+    /// the current phone number.</summary>
+    [Parameter, EditorRequired] public StudentProfileDto Profile { get; set; } = default!;
+
+    /// <summary>Raised after a successful write so the page can re-render.</summary>
+    [Parameter] public EventCallback OnProfileChanged { get; set; }
+
+    private bool    _editingPhone;
+    private string  _phoneDraft = "";
+    private bool    _savingPhone;
+    private bool    _phoneSaved;
+
+    /// <summary>The message to show, or null for none. A string rather than a
+    /// flag because the two ways a save can fail need different words: an
+    /// over-long number was never sent, so telling the user the save failed
+    /// would send them retrying an unchanged value.</summary>
+    private string? _phoneError;
+
+    private bool HasPhone => !string.IsNullOrWhiteSpace(Profile.Phone);
+
+    private string PhoneDisplay => HasPhone ? Profile.Phone : "לא הוזן מספר";
+
+    private string PhoneValueClass =>
+        HasPhone ? "spf-pd-value" : "spf-pd-value spf-pd-value-empty";
+
+    // ── Phone ────────────────────────────────────────────────────────────
+
+    private void StartPhoneEdit()
+    {
+        _phoneDraft   = Profile.Phone ?? "";
+        _editingPhone = true;
+        _phoneError   = null;
+        _phoneSaved   = false;
+    }
+
+    private void CancelPhoneEdit()
+    {
+        _editingPhone = false;
+        _phoneError   = null;
+    }
+
+    private async Task HandlePhoneKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")      await SavePhoneAsync();
+        else if (e.Key == "Escape") CancelPhoneEdit();
+    }
+
+    private async Task SavePhoneAsync()
+    {
+        var phone = (_phoneDraft ?? "").Trim();
+
+        // Mirrors the server's own guard (StudentController.UpdateMyProfile)
+        // so an over-long value is caught before the round trip.
+        if (phone.Length > 20)
+        {
+            _phoneError = "מספר טלפון ארוך מדי — עד 20 תווים.";
+            return;
+        }
+
+        _savingPhone = true;
+        _phoneError  = null;
+
+        var ok = await ProfileService.UpdatePhoneAsync(phone);
+
+        _savingPhone = false;
+
+        if (!ok)
+        {
+            _phoneError = "שמירת מספר הטלפון נכשלה. נסי שנית.";
+            return;
+        }
+
+        Profile.Phone = phone;
+        _editingPhone = false;
+        _phoneSaved   = true;
+
+        if (OnProfileChanged.HasDelegate) await OnProfileChanged.InvokeAsync();
+
+        _ = ClearSavedFlagAsync();
+    }
+
+    private async Task ClearSavedFlagAsync()
+    {
+        // The Master holds "נשמר" for 2.2s, then fades it out.
+        await Task.Delay(2200);
+        _phoneSaved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+}

@@ -1,0 +1,119 @@
+@page "/project"
+@layout AppLayout
+@namespace AuthWithAdmin.Client.Pages.ProjectWorkspace
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IProjectWorkspaceService Workspace
+@inject IProjectContextService ProjectContext
+@attribute [Authorize]
+
+@*
+    ── מרחב הפרויקט (Student project workspace) ─────────────────────────────
+    Structural / UX reference: design-reference/project-details/project/
+                               Motiva Project Details.dc.html
+    Visual source of truth:    the implemented student workspace — this page
+                               borrows LearningMaterialsPage's shell recipe
+                               (header bleed + MPageHeader Compact + a body
+                               that adds no inset of its own, because the
+                               student shell already supplies 40px/60px).
+
+    NOT a new nav destination: the entry point is the project name in the
+    sidebar (AppSideNav's .snav-workspace), per the IA decision that the
+    project's own name is what opens its workspace.
+
+    Three areas, in the design file's order:
+      1. Project identity     — ProjectIdentityCard
+      2. משאבי הפרויקט         — ProjectResourcesSection
+      3. תוצרי ההגשה           — SubmissionDeliverablesSection
+
+    The design file's 880px content column is deliberately NOT reproduced: the
+    student shell is full-bleed with a 40px inset (motiva-tokens.css:313-317),
+    and StudentProfilePage already established that a narrow centred column
+    leaves a real screen floating in empty canvas. Readability is held by the
+    prose max-widths inside the cards instead.
+*@
+
+<div class="pw-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Title="מרחב הפרויקט"
+                 Subtitle="הבית של הפרויקט שלכם במוטיבה — הפרטים, המשאבים והתוצרים להגשה" />
+</div>
+
+<div class="pw-body">
+
+    @if (_loading)
+    {
+        <div class="pw-loading" role="status" aria-live="polite">
+            <span class="pw-spinner" aria-hidden="true"></span>
+            <span>טוענת את מרחב הפרויקט…</span>
+        </div>
+    }
+    else if (_state == ProjectLoadState.Error)
+    {
+        <MEmptyState Live="true"
+                     Title="לא הצלחנו לטעון את מרחב הפרויקט"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">
+                    נסי שוב
+                </MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_state == ProjectLoadState.NoProject || _project is null)
+    {
+        @* Not an error: a student who has not been placed on a team yet. The
+           endpoint answers 404 for exactly this case, and the wording matches
+           StudentProfileTeamCard's own unassigned copy. *@
+        <MEmptyState Title="עדיין לא שויכת לפרויקט"
+                     Description="לאחר השיבוץ יופיעו כאן פרטי הפרויקט, המשאבים של הצוות ותוצרי ההגשה." />
+    }
+    else
+    {
+        <ProjectIdentityCard Project="_project"
+                             Context="_context"
+                             OnProjectChanged="StateHasChanged" />
+
+        <ProjectResourcesSection />
+
+        <SubmissionDeliverablesSection />
+    }
+
+</div>
+
+@code {
+    private StudentProjectDetailsDto? _project;
+    private ProjectContextDto?        _context;
+
+    private ProjectLoadState _state = ProjectLoadState.Loaded;
+    private bool             _loading = true;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        // Two reads, both already part of the student session:
+        //   * my-project-details — the project's own fields.
+        //   * my-context         — the roster, already cached by
+        //                          ProjectContextService, so this costs no
+        //                          extra HTTP request on any page but the
+        //                          first one of the session.
+        var result = await Workspace.GetProjectAsync();
+
+        _state   = result.State;
+        _project = result.Project;
+
+        // A failed context load must not fail the page: the roster strip is
+        // simply absent, while the project's own details still render.
+        _context = _state == ProjectLoadState.Loaded
+            ? await ProjectContext.GetAsync()
+            : null;
+
+        _loading = false;
+    }
+}

@@ -1,0 +1,276 @@
+@namespace AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IProjectContextService ProjectContext
+@inject IJSRuntime JS
+
+@*
+    StudentProfileTeamCard — "הצוות שלי"
+
+    NO NEW DATA AND NO NEW ENDPOINT. Every value comes from
+    IProjectContextService, i.e. GET /api/projects/my-context, which:
+
+      * the student shell already calls on every page — AppSideNav reads
+        TeamName / ProjectNumber / ProjectTitle from it to draw the workspace
+        block, and
+      * caches its result for the session (ProjectContextService._cached), so
+        this card costs zero additional HTTP requests.
+
+    The endpoint already returns the full roster to the calling student:
+    StudentNames/StudentEmails and MentorNames/MentorEmails as parallel lists
+    (ProjectContextDto:17-30), populated by the GROUP_CONCAT subqueries in
+    ProjectsController.GetMyContext. Until now only the STAFF branch of the
+    sidebar surfaced them, through TeamQuickInfoPopover; a student could not
+    see their own team roster anywhere. This card is that data, displayed.
+
+    Display only. The staff popover pairs each person with a copy-email button
+    and opens a mentor-profile modal; neither is reproduced here — that is
+    staff tooling, and this epic adds no functionality.
+
+    TrackName is also on the DTO and is deliberately not shown: it holds the
+    raw ProjectTypes.Name ("Technological"), and an untranslated English value
+    reads as a glitch in this screen's Hebrew. The staff popover, where it is
+    already surfaced, is a different audience.
+
+    ── NO MENTOR PHONE NUMBERS ───────────────────────────────────────────────
+    Asked for, and deliberately not implemented, because the model cannot
+    support it. A phone may only be published with the owner's consent, and no
+    consent exists anywhere to read:
+
+      * users.Phone            — a bare column, no visibility flag beside it.
+      * UserPreferences        — notifications, calendar, Slack, theme. Nothing
+                                 about contact visibility.
+      * MentorPreferences      — 30 columns of mentorship expectations.
+                                 PreferredChannel ("email|whatsapp|slack|other")
+                                 is the closest thing and is NOT consent: it
+                                 says how a mentor prefers to be reached, not
+                                 that their number may be shown to students.
+      * MentorProfileViewDto   — the existing student-facing mentor projection.
+                                 It carries Email and no Phone at all, and its
+                                 header enumerates every field withheld from
+                                 students. The model's own answer, already
+                                 written down.
+
+    ProjectContextDto does not carry mentor phones either, so there is nothing
+    to render even if consent existed. Adding the field would be a schema +
+    API + consent-capture change, which this task explicitly excludes.
+
+    ── NO "לפרטי הפרויקט" ACTION (YET) ───────────────────────────────────────
+    There is no student-safe Project Details ROUTE to send anyone to. The only
+    project-detail screens are ProjectOverviewPage (/projects/{id}/overview)
+    and MentorProjectDetailPage, both [Authorize]d to Admin/Staff/Mentor — a
+    student following either would be bounced. The DATA is ready:
+    GET /api/projects/my-project-details returns StudentProjectDetailsDto, and
+    IDashboardService.GetMyProjectDetailsAsync already wraps it; no component
+    renders it yet. Reported rather than invented.
+*@
+
+@* Fill — see the matching note on StudentProfilePersonalCard: the two share a
+   grid row and stretch to a common height. *@
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Fill="true">
+    <div class="spf-tm-head">
+        <h2 class="spf-tm-title">הצוות שלי</h2>
+        @if (_ctx is not null && Subtitle is not null)
+        {
+            <p class="spf-tm-subtitle">@Subtitle</p>
+        }
+    </div>
+
+    <div class="spf-tm-body">
+        @if (_loading)
+        {
+            <p class="spf-tm-note">טוענת פרטי צוות…</p>
+        }
+        else if (_ctx is null)
+        {
+            @* Not an error: a student who has not been placed yet. The
+               endpoint returns null for exactly this case. *@
+            <MEmptyState Title="עדיין לא שויכת לצוות"
+                         Description="לאחר השיבוץ יופיעו כאן חברי הצוות והמנחים." />
+        }
+        else
+        {
+            <div class="spf-tm-cols">
+                <section class="spf-tm-col" aria-labelledby="spf-tm-students">
+                    <h3 class="spf-tm-label" id="spf-tm-students">סטודנטים</h3>
+                    @PeopleList(_ctx.StudentNames, _ctx.StudentEmails, "לא הוגדרו סטודנטים לצוות זה")
+                </section>
+
+                <section class="spf-tm-col" aria-labelledby="spf-tm-mentors">
+                    <h3 class="spf-tm-label" id="spf-tm-mentors">מנחים</h3>
+                    @PeopleList(_ctx.MentorNames, _ctx.MentorEmails, "טרם שויך מנחה")
+                </section>
+            </div>
+        }
+    </div>
+</MCard>
+
+@code {
+    /// <summary>The loaded profile. Used only to recognise the signed-in
+    /// student inside the roster — the roster itself comes from the project
+    /// context, not from here.</summary>
+    [Parameter, EditorRequired] public StudentProfileDto Profile { get; set; } = default!;
+
+    private ProjectContextDto? _ctx;
+    private bool _loading = true;
+
+    /// <summary>The address whose copy button is currently showing its
+    /// confirmation tick. One at a time, keyed by the address itself — the
+    /// same person can appear in only one row.</summary>
+    private string? _copiedEmail;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _ctx     = await ProjectContext.GetAsync();
+        _loading = false;
+    }
+
+    /// <summary>"צוות 15 · Gradify Platform". The team half repeats
+    /// AppSideNav's own expression (TeamName, falling back to
+    /// "צוות {ProjectNumber}") so the two places naming this team never name
+    /// it differently. Either half is dropped when empty, and the line
+    /// disappears entirely rather than printing a bare separator.</summary>
+    private string? Subtitle
+    {
+        get
+        {
+            if (_ctx is null) return null;
+
+            var parts = new List<string>(2)
+            {
+                string.IsNullOrWhiteSpace(_ctx.TeamName)
+                    ? $"צוות {_ctx.ProjectNumber}"
+                    : _ctx.TeamName!,
+            };
+
+            if (!string.IsNullOrWhiteSpace(_ctx.ProjectTitle)) parts.Add(_ctx.ProjectTitle);
+
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>One roster column. Names and emails are parallel lists by the
+    /// DTO's own contract, so the email is read by index and simply omitted if
+    /// the lists ever disagree in length — a missing address must not shift
+    /// every following person's email onto the wrong name.</summary>
+    private RenderFragment PeopleList(
+        List<string> names, List<string> emails, string emptyText) => __builder =>
+    {
+        if (names is null || names.Count == 0)
+        {
+            <p class="spf-tm-empty">@emptyText</p>
+        }
+        else
+        {
+            <MRowList Divided="true">
+                @for (var i = 0; i < names.Count; i++)
+                {
+                    var name  = names[i];
+                    var email = emails is not null && i < emails.Count ? emails[i] : null;
+                    var isMe  = IsSignedInUser(email);
+
+                    @* Trailing is declared unconditionally and the test lives
+                       inside it: a named slot cannot be wrapped in an @if, and
+                       every row keeping the same slot structure is also what
+                       keeps their widths identical.
+
+                       The row itself is NOT a link or a button. Only the copy
+                       control inside it is interactive, so nothing here can
+                       navigate by accident. *@
+                    <MRow Primary="@name" Secondary="@email">
+                        <Leading>
+                            <span class="spf-tm-chip" aria-hidden="true">@InitialsOf(name)</span>
+                        </Leading>
+                        <Trailing>
+                            @if (isMe)
+                            {
+                                @* Hebrew "אני" carries no grammatical gender,
+                                   so it marks the row without assuming
+                                   anything about the student. *@
+                                <span class="spf-tm-me">אני</span>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(email))
+                            {
+                                var copied = _copiedEmail == email;
+                                <button type="button"
+                                        class="spf-tm-copy @(copied ? "spf-tm-copy-done" : "")"
+                                        title="@(copied ? "הועתק" : "העתקת כתובת המייל")"
+                                        aria-label="@(copied ? $"כתובת המייל של {name} הועתקה" : $"העתקת כתובת המייל של {name}")"
+                                        @onclick="@(() => CopyEmailAsync(email!))">
+                                    @if (copied)
+                                    {
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="m5 12.5 4.5 4.5L19 7.5"></path>
+                                        </svg>
+                                    }
+                                    else
+                                    {
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <rect x="9" y="9" width="12" height="12" rx="2"></rect>
+                                            <path d="M5 15V5a2 2 0 0 1 2-2h10"></path>
+                                        </svg>
+                                    }
+                                </button>
+                            }
+                        </Trailing>
+                    </MRow>
+                }
+            </MRowList>
+        }
+    };
+
+    /// <summary>Copies one address, through the same
+    /// <c>gradify.copyToClipboard</c> helper TeamQuickInfoPopover already uses
+    /// for exactly these people — no second clipboard mechanism.
+    ///
+    /// <para>The tick only appears if the helper reports success, so the card
+    /// never claims a copy the browser refused.</para></summary>
+    private async Task CopyEmailAsync(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return;
+
+        bool ok;
+        try   { ok = await JS.InvokeAsync<bool>("gradify.copyToClipboard", email); }
+        catch { ok = false; }
+
+        if (!ok) return;
+
+        _copiedEmail = email;
+        _ = ClearCopiedAsync(email);
+    }
+
+    private async Task ClearCopiedAsync(string email)
+    {
+        await Task.Delay(2000);
+
+        // Guard: a second copy may have moved the tick elsewhere while this
+        // one was waiting, and clearing unconditionally would snap it off.
+        if (_copiedEmail == email)
+        {
+            _copiedEmail = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    /// <summary>Email is the match key, not the display name: two students on
+    /// one team can share a name, and the address is the account identity.</summary>
+    private bool IsSignedInUser(string? email) =>
+        !string.IsNullOrWhiteSpace(email)
+        && !string.IsNullOrWhiteSpace(Profile.Email)
+        && string.Equals(email.Trim(), Profile.Email.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>First letter of the first two words — the roster arrives as
+    /// one "First Last" string, so this cannot reuse the hero's
+    /// FirstName/LastName version.</summary>
+    private static string InitialsOf(string fullName)
+    {
+        var words = (fullName ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) return "?";
+        return words.Length == 1
+            ? words[0][..1]
+            : $"{words[0][0]}{words[1][0]}";
+    }
+}

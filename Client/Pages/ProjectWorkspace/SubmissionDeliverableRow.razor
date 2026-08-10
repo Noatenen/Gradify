@@ -1,0 +1,227 @@
+@namespace AuthWithAdmin.Client.Pages.ProjectWorkspace
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Learning
+
+@*
+    SubmissionDeliverableRow — one submission category as an accordion item.
+
+    MECHANICS, reused rather than re-invented: this is RequestThreadRow's
+    accordion, at section scale.
+      * The header is an MRow in BUTTON form, so the whole strip toggles and
+        keyboard activation comes for free. The chevron is a <span>, because a
+        button inside a button is invalid markup and unreachable by keyboard.
+      * The body opens with a 0fr→1fr grid row plus an opacity fade, so it
+        animates without a measured pixel height, and is visibility:hidden when
+        collapsed — which removes its links and its status buttons from the tab
+        order AND from the accessibility tree. aria-hidden alone would do only
+        half of that.
+
+    CONTENT: every block below is independently optional and renders only when
+    the catalog actually has that content. Nothing is padded out to make the
+    categories look alike — that is the brief's explicit instruction, and the
+    catalog's record shape is what enforces it.
+
+    STATUS: the segmented control is PlanningToolbar's (.pl-seg / .pl-seg-btn /
+    .pl-seg-on), rebuilt under this component's own prefix because scoped CSS
+    cannot be shared between components. Behaviour is identical: aria-pressed
+    per option, the selected one lifted onto the raised surface.
+*@
+
+<div class="pwd @(IsOpen ? "pwd-open" : "")">
+
+    <div class="pwd-headwrap">
+        <MRow OnClick="OnToggle"
+              AriaLabel="@(IsOpen ? $"צמצום {Deliverable.Title}" : $"הרחבת {Deliverable.Title}")">
+            <Leading>
+                <span class="pwd-icon" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="@Deliverable.IconPath"></path>
+                    </svg>
+                </span>
+            </Leading>
+            <ChildContent>
+                <span class="pwd-titlerow">
+                    <strong class="pwd-title">@Deliverable.Title</strong>
+                </span>
+                @if (!string.IsNullOrWhiteSpace(MetaLine))
+                {
+                    <span class="pwd-meta">@MetaLine</span>
+                }
+            </ChildContent>
+            <Status>
+                <MStatusBadge Variant="@BadgeVariant" Text="@StatusLabel" />
+            </Status>
+            <Trailing>
+                <span class="pwd-chevron @(IsOpen ? "pwd-chevron-open" : "")" aria-hidden="true">⌃</span>
+            </Trailing>
+        </MRow>
+    </div>
+
+    <div class="pwd-body @(IsOpen ? "pwd-body-open" : "")">
+        <div class="pwd-body-clip">
+            <div class="pwd-body-pad">
+
+                @if (!string.IsNullOrWhiteSpace(Deliverable.Intro))
+                {
+                    <p class="pwd-intro">@Deliverable.Intro</p>
+                }
+
+                @if (Deliverable.Requirements.Count > 0)
+                {
+                    <div class="pwd-block">
+                        <p class="pwd-blocklabel">@Deliverable.RequirementsLabel</p>
+                        <ul class="pwd-reqs">
+                            @foreach (var requirement in Deliverable.Requirements)
+                            {
+                                <li class="pwd-req">
+                                    <span class="pwd-bullet" aria-hidden="true"></span>
+                                    <span class="pwd-reqtext">@requirement</span>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                @if (Deliverable.Notes.Count > 0)
+                {
+                    @* Neutral informational surface, NOT amber (which would be a
+                       fourth semantic colour) and NOT rose (which would read as
+                       an error on an ordinary note). The hierarchy is carried by
+                       the quiet fill, the hairline and the label weight. *@
+                    <aside class="pwd-callout" aria-label="לתשומת לבכם">
+                        <p class="pwd-calloutlabel">לתשומת לבכם</p>
+                        @foreach (var note in Deliverable.Notes)
+                        {
+                            <p class="pwd-note">@note</p>
+                        }
+                    </aside>
+                }
+
+                @if (Documents.Count > 0)
+                {
+                    @* Real Knowledge Center resources only — see the catalog's
+                       ResourceTitles note. Each chip follows the resource's own
+                       action (download / external / video), exactly as the
+                       Knowledge Center rows do, and never exposes a raw URL. *@
+                    <div class="pwd-block">
+                        <p class="pwd-blocklabel">מסמכים וקישורים</p>
+                        <div class="pwd-docs">
+                            @foreach (var doc in Documents)
+                            {
+                                var captured = doc;
+
+                                if (captured.Action == KnowledgeResourceAction.External)
+                                {
+                                    <a class="pwd-doc"
+                                       href="@captured.Href"
+                                       target="_blank"
+                                       rel="noopener noreferrer">
+                                        @DocIcon
+                                        <span class="pwd-doclabel">@captured.Title</span>
+                                    </a>
+                                }
+                                else if (captured.Action == KnowledgeResourceAction.Download)
+                                {
+                                    <a class="pwd-doc"
+                                       href="@captured.Href"
+                                       download="@captured.DownloadName">
+                                        @DocIcon
+                                        <span class="pwd-doclabel">@captured.Title</span>
+                                    </a>
+                                }
+                                else if (captured.Action == KnowledgeResourceAction.PlayVideo)
+                                {
+                                    <a class="pwd-doc"
+                                       href="@captured.VideoUrl"
+                                       target="_blank"
+                                       rel="noopener noreferrer">
+                                        @DocIcon
+                                        <span class="pwd-doclabel">@captured.Title</span>
+                                    </a>
+                                }
+                            }
+                        </div>
+                    </div>
+                }
+
+                <div class="pwd-statusrow">
+                    <span class="pwd-statuslabel" id="@StatusLabelId">מצב התוצר</span>
+                    <div class="pwd-seg" role="group" aria-labelledby="@StatusLabelId">
+                        @foreach (var option in StatusOptions)
+                        {
+                            var value = option.Value;
+                            <button type="button"
+                                    class="pwd-seg-btn @(Status == value ? "pwd-seg-on" : "")"
+                                    aria-pressed="@(Status == value)"
+                                    disabled="@Saving"
+                                    @onclick="() => OnStatusChange.InvokeAsync(value)">
+                                @option.Label
+                            </button>
+                        }
+                    </div>
+                    @if (Saving)
+                    {
+                        <span class="pwd-saving" role="status" aria-live="polite">שומרת…</span>
+                    }
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public SubmissionDeliverable Deliverable { get; set; } = default!;
+
+    /// <summary>One of SubmissionStatusValues.</summary>
+    [Parameter] public string Status { get; set; } = SubmissionStatusValues.NotStarted;
+
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Knowledge Center resources this category resolved to. Empty
+    /// means the documents block is not rendered at all.</summary>
+    [Parameter] public IReadOnlyList<KnowledgeResource> Documents { get; set; } = Array.Empty<KnowledgeResource>();
+
+    /// <summary>True while this row's status write is in flight.</summary>
+    [Parameter] public bool Saving { get; set; }
+
+    [Parameter] public EventCallback OnToggle { get; set; }
+    [Parameter] public EventCallback<string> OnStatusChange { get; set; }
+
+    private string StatusLabelId => $"pwd-status-{Deliverable.Key}";
+
+    private string MetaLine =>
+        SubmissionDeliverablesCatalog.MetaLine(Deliverable, Documents.Count);
+
+    private static readonly (string Value, string Label)[] StatusOptions =
+    {
+        (SubmissionStatusValues.NotStarted, "לא התחיל"),
+        (SubmissionStatusValues.InProgress, "בביצוע"),
+        (SubmissionStatusValues.Done,       "הושלם"),
+    };
+
+    private string StatusLabel => Status switch
+    {
+        SubmissionStatusValues.Done       => "הושלם",
+        SubmissionStatusValues.InProgress => "בביצוע",
+        _                                 => "לא התחיל"
+    };
+
+    // The Master's three semantics, and no fourth: teal for completion, violet
+    // for in-progress/focus, neutral for untouched.
+    private MStatusBadge.BadgeVariant BadgeVariant => Status switch
+    {
+        SubmissionStatusValues.Done       => MStatusBadge.BadgeVariant.Teal,
+        SubmissionStatusValues.InProgress => MStatusBadge.BadgeVariant.Violet,
+        _                                 => MStatusBadge.BadgeVariant.Neutral
+    };
+
+    private readonly RenderFragment DocIcon = @<svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="1.7"
+                                                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M7 3h7l5 5v13H7zM10 12h7M10 16h5"></path>
+    </svg>;
+}

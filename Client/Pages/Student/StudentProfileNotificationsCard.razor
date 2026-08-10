@@ -1,0 +1,304 @@
+@namespace AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject INotificationPreferencesService NotificationPrefs
+
+@*
+    StudentProfileNotificationsCard — "התראות במייל"
+    Source of truth: Motiva Profile.dc.html:150-162 (LIGHT presentation).
+
+    The Master's card lists six email switches under three group headings.
+    Only the ones with a real backing NotificationType are rendered here:
+    the server decides which types a student may receive
+    (NotificationTypes.ForRoles -> _studentTypes), and this card renders
+    exactly what GET /api/users/me/notification-preferences returns —
+    nothing invented, nothing disabled-and-decorative.
+
+    Two of the Master's rows therefore do not appear at all
+    ("משימה שהוחזרה לתיקון" and the whole "פרויקט" group): no
+    NotificationType backs them, and adding one is a backend change this
+    epic is scoped out of. Conversely the backend exposes types the Master
+    did not draw (task assignment, overdue, assignment publication); those
+    DO appear, because hiding a working preference would silently strand it.
+
+    Email only, as the Master's title says. Each item's InAppEnabled value
+    is loaded and written back untouched, so this card cannot clobber the
+    in-app preferences the staff settings page still edits.
+
+    ── Density pass ──────────────────────────────────────────────────────
+    The card used to print the backend's own five groups as five headings
+    stacked in one narrow column — four headings for seven switches, which
+    at desktop width reads as a thin ribbon of text. The switches are
+    unchanged; only their PRESENTATION is regrouped, into two semantic
+    sections that each lay their rows out in two columns:
+
+        משימות ובקשות   — Tasks + Requests      (what I have to act on)
+        הגשות ועדכונים  — Submissions + Milestones + Assignments
+                          (what comes back to me)
+
+    The grouping is display-only and keyed by the real
+    NotificationTypes.Groups constants, so it adds no type, hides no type,
+    and needs no backend change. A type in a group this map does not name
+    still renders — it falls into the last section rather than vanishing.
+*@
+
+@* Default, NOT AmbientEdge. The Master gives AmbientEdge — a violet->teal
+   1px rule — to its highest-emphasis surfaces, and on this page that belongs
+   to the two cards about the student and their team. Preferences are the last
+   section and the least of the three, so they sit on the plain hairline
+   surface; the emphasis step is the whole point, not an oversight.
+
+   MCard's own root cannot be reached from this component's scoped CSS, so
+   every style below hangs off the head/body wrappers rendered here. *@
+<MCard Variant="MCard.CardVariant.Default" Padding="MCard.CardPadding.None">
+    <div class="spf-card-head">
+        <h2 class="spf-card-title">התראות במייל</h2>
+        <span class="spf-card-status" aria-live="polite">
+            @if (_saving)
+            {
+                <span class="spf-card-spinner" aria-hidden="true"></span>
+            }
+            else if (_saved)
+            {
+                <span class="spf-card-saved">נשמר</span>
+            }
+            else if (_saveError)
+            {
+                <span class="spf-card-failed">השמירה נכשלה</span>
+            }
+        </span>
+    </div>
+
+    <div class="spf-card-body">
+        @if (_loading)
+        {
+            <p class="spf-card-note">טוענת העדפות…</p>
+        }
+        else if (_loadError)
+        {
+            <p class="spf-card-note spf-card-note-error">שגיאה בטעינת העדפות ההתראות.</p>
+        }
+        else if (_sections.Count == 0)
+        {
+            <MEmptyState Title="אין העדפות להצגה"
+                         Description="לא הוגדרו עבורך סוגי התראות במערכת." />
+        }
+        else
+        {
+            @for (var i = 0; i < _sections.Count; i++)
+            {
+                @* Not named `section`: Razor would read "@section.Label" below
+                   as the @section directive and fail to compile. *@
+                var group   = _sections[i];
+                var labelId = $"spf-notif-section-{i}";
+
+                @* The heading names the section once and both row columns
+                   point at it, instead of each MRowList carrying the same
+                   AriaLabel — two groups with an identical name would read
+                   as a duplicate, not as two halves of one list. *@
+                <section class="spf-section" aria-labelledby="@labelId">
+                    <h3 class="spf-section-label" id="@labelId">@group.Label</h3>
+
+                    <div class="spf-section-cols">
+                        @foreach (var column in SplitColumns(group.Items))
+                        {
+                            @* This wrapper exists so the column rule and the
+                               inter-column hairline have something this
+                               component's scoped CSS can actually match —
+                               MRowList renders its own root under its own
+                               scope id and is unreachable from here. *@
+                            <div class="spf-section-col">
+                                <MRowList Divided="true">
+                                    @foreach (var item in column)
+                                    {
+                                        var captured = item;
+                                        <MRow Primary="@LabelFor(captured.NotificationType)">
+                                            <Trailing>
+                                                <MToggle Checked="captured.EmailEnabled"
+                                                         AriaLabel="@($"קבלת מייל — {LabelFor(captured.NotificationType)}")"
+                                                         Disabled="_saving"
+                                                         CheckedChanged="@(v => OnToggledAsync(captured, v))" />
+                                            </Trailing>
+                                        </MRow>
+                                    }
+                                </MRowList>
+                            </div>
+                        }
+                    </div>
+                </section>
+            }
+        }
+    </div>
+</MCard>
+
+@code {
+    private NotificationPreferencesDto? _prefs;
+
+    private bool _loading = true;
+    private bool _loadError;
+    private bool _saving;
+    private bool _saved;
+    private bool _saveError;
+
+    private sealed record Section(string Label, List<NotificationPreferenceItemDto> Items);
+
+    private List<Section> _sections = new();
+
+    /// <summary>The card's two display sections, in order, each naming the
+    /// real <see cref="NotificationTypes.Groups"/> keys it absorbs.
+    ///
+    /// <para>Presentation only. The backend's five groups stay exactly as they
+    /// are — this map just stops the card printing five headings for seven
+    /// switches. Row order inside a section follows the group order declared
+    /// here, and the server's own canonical order inside each group, so the
+    /// switches never reshuffle between renders or between users.</para></summary>
+    private static readonly (string Label, string[] Groups)[] SectionMap =
+    {
+        ("משימות ובקשות", new[]
+        {
+            NotificationTypes.Groups.Tasks,
+            NotificationTypes.Groups.Requests,
+        }),
+        ("הגשות ועדכונים", new[]
+        {
+            NotificationTypes.Groups.Submissions,
+            NotificationTypes.Groups.Milestones,
+            NotificationTypes.Groups.Assignments,
+        }),
+    };
+
+    /// <summary>Student-voiced labels for the canonical NotificationTypes.
+    ///
+    /// <para>The shared <see cref="NotificationTypes.Label"/> strings are
+    /// role-neutral ("שיוך משימה") because staff read the same list; the
+    /// Master writes the student's copy in the first person about their own
+    /// work ("משימה שמתקרבת למועד ההגשה"). This map is presentation only —
+    /// it is keyed by the real type constants, adds no types, and falls back
+    /// to the shared label for anything it does not cover, so a future
+    /// backend type still renders correctly here without a code change.</para>
+    /// </summary>
+    private static readonly Dictionary<string, string> StudentLabels = new()
+    {
+        // The Master's exact row text where a design row maps 1:1.
+        [NotificationTypes.RequestCommentAdded]        = "תגובה חדשה לבקשה",
+        [NotificationTypes.TaskDueSoon]                = "משימה שמתקרבת למועד ההגשה",
+
+        // Student voice for the remaining backed types.
+        [NotificationTypes.RequestStatusChanged]       = "עדכון סטטוס בבקשה שלי",
+        [NotificationTypes.TaskAssigned]               = "שיוך משימה חדשה",
+        [NotificationTypes.TaskOverdue]                = "משימה שעברה את מועד ההגשה",
+        [NotificationTypes.SubmissionFeedbackReceived] = "התקבל משוב על הגשה",
+        [NotificationTypes.AssignmentPublished]        = "פרסום שיבוצים",
+    };
+
+    private static string LabelFor(string type) =>
+        StudentLabels.TryGetValue(type, out var label) ? label : NotificationTypes.Label(type);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var prefs = await NotificationPrefs.GetMineAsync();
+
+        if (prefs is null) _loadError = true;
+        else
+        {
+            _prefs = prefs;
+            Regroup();
+        }
+
+        _loading = false;
+    }
+
+    /// <summary>The server sends the group with each item; GroupOf is only the
+    /// fallback for a payload that left it blank.</summary>
+    private static string GroupKeyOf(NotificationPreferenceItemDto item) =>
+        string.IsNullOrEmpty(item.Group)
+            ? NotificationTypes.GroupOf(item.NotificationType)
+            : item.Group;
+
+    private void Regroup()
+    {
+        _sections = new();
+        if (_prefs is null) return;
+
+        var mapped = new HashSet<string>(
+            SectionMap.SelectMany(s => s.Groups), StringComparer.Ordinal);
+
+        for (var i = 0; i < SectionMap.Length; i++)
+        {
+            var (label, groups) = SectionMap[i];
+
+            var items = groups
+                .SelectMany(key => _prefs.Items.Where(it => GroupKeyOf(it) == key))
+                .ToList();
+
+            // A preference this map does not name is still a real, working
+            // preference — it lands in the last section rather than being
+            // silently dropped, which is the same rule the card already
+            // applies to labels it does not know (see LabelFor).
+            if (i == SectionMap.Length - 1)
+            {
+                items.AddRange(_prefs.Items.Where(it => !mapped.Contains(GroupKeyOf(it))));
+            }
+
+            if (items.Count > 0) _sections.Add(new Section(label, items));
+        }
+    }
+
+    /// <summary>Splits one section's rows into the two desktop columns.
+    ///
+    /// <para>The larger half goes first so the taller column sits on the
+    /// reading side in RTL, and a single-row section stays in one column
+    /// rather than being split into two columns of nothing.</para></summary>
+    private static List<List<NotificationPreferenceItemDto>> SplitColumns(
+        List<NotificationPreferenceItemDto> items)
+    {
+        if (items.Count < 2) return new() { items };
+
+        var first = (items.Count + 1) / 2;
+        return new() { items.Take(first).ToList(), items.Skip(first).ToList() };
+    }
+
+    /// <summary>Optimistic per-toggle save — the Master's card has no save
+    /// button, so the switch itself is the commit. The previous value is
+    /// restored if the write fails, so the UI can never claim a preference
+    /// was stored when it was not.</summary>
+    private async Task OnToggledAsync(NotificationPreferenceItemDto item, bool value)
+    {
+        var previous = item.EmailEnabled;
+
+        item.EmailEnabled = value;
+        _saving    = true;
+        _saved     = false;
+        _saveError = false;
+
+        // The endpoint upserts by (UserId, NotificationType), so sending the
+        // full list is idempotent — and it carries every item's untouched
+        // InAppEnabled straight back, which is what keeps the in-app
+        // preferences this card does not show from being reset.
+        var ok = await NotificationPrefs.SaveMineAsync(new SaveNotificationPreferencesRequest
+        {
+            Items = _prefs!.Items,
+        });
+
+        _saving = false;
+
+        if (ok)
+        {
+            _saved = true;
+            _ = ClearSavedFlagAsync();
+        }
+        else
+        {
+            item.EmailEnabled = previous;
+            _saveError        = true;
+        }
+    }
+
+    private async Task ClearSavedFlagAsync()
+    {
+        await Task.Delay(2200);
+        _saved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+}
