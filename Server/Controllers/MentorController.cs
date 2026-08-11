@@ -320,6 +320,35 @@ public class MentorController : ControllerBase
         });
     }
 
+    // ── GET /api/mentor/resources ────────────────────────────────────────────
+    //
+    // The mentor's read-only view of the shared resource library.
+    //
+    // WHY THIS ACTION HAD TO EXIST AT ALL
+    // Before it, a mentor could not list resources through ANY endpoint:
+    //   api/resourcefiles    -> [Authorize(Admin, Staff)]  — 403 for a mentor
+    //   api/student/resources-> [Authorize(Student)]       — 403 for a mentor
+    // so "משאבים למנחים" had no reachable data source, and the nav item
+    // pointed at /resource-files, a page a mentor is likewise not authorised
+    // to open. This is the smallest change that closes that hole.
+    //
+    // DELIBERATELY READ-ONLY, AND DELIBERATELY NOT A WIDENED PERMISSION
+    // Adding Roles.Mentor to ResourceFilesController's class-level attribute
+    // would have been one word, and would also have handed mentors upload,
+    // update and delete on the shared library. A mentor consumes this
+    // library; the lecturer curates it. So this is a GET and nothing else,
+    // and ResourceFilesController's own authorisation is untouched.
+    //
+    // NO NEW QUERY AND NO NEW SHAPE: it calls the same
+    // FetchAllRowsAsync/MapRows pair that both existing endpoints already
+    // use, so all three return byte-identical rows and cannot drift.
+    [HttpGet("resources")]
+    public async Task<IActionResult> GetResources()
+    {
+        var rows = await ResourceFilesController.FetchAllRowsAsync(_db);
+        return Ok(ResourceFilesController.MapRows(rows));
+    }
+
     // ── GET /api/mentor/submissions ──────────────────────────────────────────
     // Returns ALL submissions pending mentor review across every project the
     // mentor is assigned to. Used by the global mentor submissions page.

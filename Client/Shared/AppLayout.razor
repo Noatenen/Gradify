@@ -1,4 +1,6 @@
 @inherits LayoutComponentBase
+@using AuthWithAdmin.Client.Services
+@implements IDisposable
 
 @*
     AppLayout — shared shell for the authenticated app area.
@@ -6,7 +8,7 @@
     Auth pages (Login, Signup, etc.) continue to use MainLayout.
 *@
 
-<div class="app-shell @(IsStudentShell ? "motiva-student" : "")">
+<div class="app-shell @ShellClasses">
     <AppSideNav />
     <div class="app-main">
         <AppTopBar />
@@ -21,20 +23,57 @@
 
     // Single attachment point for the Motiva System Master foundations.
     //
-    // `.motiva-student` carries the entire token rebase declared in
-    // motiva-tokens.css (palette, Heebo, type scale, radii, shadows,
-    // ambient gradients, shell geometry). Putting it on the shell root
-    // means the sidebar AND the page content inherit it together, and
-    // nothing outside this element can ever reach it — so Mentor,
-    // Lecturer, Staff and Admin continue to resolve every token at its
-    // :root value, unchanged.
+    // `.motiva` carries the entire token rebase declared in motiva-tokens.css
+    // (palette, Heebo, type scale, radii, shadows, ambient gradients, shell
+    // geometry). Putting it on the shell root means the sidebar AND the page
+    // content inherit it together, and nothing outside this element can ever
+    // reach it — so Lecturer, Staff and Admin continue to resolve every token
+    // at its :root value, unchanged.
     //
-    // Gated on the same predicate AppSideNav already uses for its
-    // .snav-motiva override layer, so the two can never disagree about
-    // who counts as a student.
+    // TWO CLASSES, NOT ONE (Epic 0)
+    // ─────────────────────────────
+    // `.motiva`          the shared visual system. Every token, every
+    //                    component override, every ambient gradient reads
+    //                    this and only this. There is nothing in it that
+    //                    means one thing for a student and another for a
+    //                    mentor, which is exactly why it carries no role.
     //
-    // _user cascades in asynchronously from App.razor, so this is false
-    // on the very first render and flips once auth state resolves —
+    // `.motiva-student`  / `.motiva-mentor` — role hooks, for the places
+    //                    where behaviour or UX genuinely differs. Nothing in
+    //                    the foundations layer uses them today; they exist so
+    //                    that when a genuine divergence appears it has an
+    //                    obvious, scoped home instead of being expressed as a
+    //                    second copy of the design system.
+    //
+    // The student experience is the regression baseline: it still carries
+    // `.motiva-student`, and `.motiva` has identical specificity to the class
+    // it replaced, declared in the same place in the same files — so every
+    // computed value on every student page is what it was before.
+    //
+    // _user cascades in asynchronously from App.razor, so this resolves to
+    // Staff on the very first render and settles once auth state arrives —
     // identical to the existing AppSideNav behaviour.
-    private bool IsStudentShell => RoleService.IsStudent(_user);
+    //
+    // Gated on NavDefinitions.GetShell, the same method AppSideNav uses for
+    // its .snav-motiva rail and AppTopBar for its bell placement, so the
+    // three can never disagree about who gets which shell — including the
+    // dual-role (Staff + Mentor) case, where the active view mode decides.
+    private string ShellClasses => NavDefinitions.GetShell(_user) switch
+    {
+        NavDefinitions.Shell.Student => "motiva motiva-student",
+        NavDefinitions.Shell.Mentor  => "motiva motiva-mentor",
+        _                            => "",
+    };
+
+    // A dual-role user flipping the mode toggle changes which shell they are
+    // in, not just which nav items they see. Without this the token scope
+    // would keep whatever it resolved to at first render until a full reload.
+    // AppSideNav already subscribes for the same reason.
+    protected override void OnInitialized()
+        => UserModeService.CurrentModeChanged += OnModeChanged;
+
+    private void OnModeChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+        => UserModeService.CurrentModeChanged -= OnModeChanged;
 }

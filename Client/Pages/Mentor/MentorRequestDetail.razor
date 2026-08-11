@@ -1,0 +1,280 @@
+@namespace AuthWithAdmin.Client.Pages.Mentor
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IProjectRequestsService RequestsService
+
+@*
+    MentorRequestDetail — everything there is to say about one request, and the
+    one place a mentor can act on it.
+
+    ONE IMPLEMENTATION, TWO SURFACES
+    המשימות שלי opens a request in a modal; בקשות expands it inline in the row.
+    Those are two presentations of identical content, so the content lives here
+    and the two callers supply only the chrome:
+
+        MentorRequestModal   → MModal shell around this
+        MentorRequestsPage   → renders this inside the expanded accordion row
+
+    Without this split the recommendation form — the only mentor write in the
+    product — would exist twice, which is exactly how two copies of a business
+    rule start to disagree.
+
+    WHAT A MENTOR CAN ACTUALLY DO
+    Extension requests in PendingMentorRecommendation get the REAL mentor stage:
+    ממליץ / לא ממליץ plus an internal note, posted to
+    POST /api/project-requests/{id}/mentor-recommendation. The mentor advises;
+    the lecturer decides. Everything else is read-only, because /handle is
+    [Authorize(Admin,Staff)] and /reply requires team membership — there is no
+    decision a mentor could post, and a button that 403s is worse than no button.
+*@
+
+@if (_loading)
+{
+    <div class="mrd-state" role="status" aria-live="polite">
+        <span class="mrd-spinner" aria-hidden="true"></span>
+        <span>טוענת את הבקשה…</span>
+    </div>
+}
+else if (_detail is null)
+{
+    <MEmptyState Live="true"
+                 Title="לא הצלחנו לטעון את הבקשה"
+                 Description="ייתכן שיש תקלת רשת זמנית." />
+}
+else
+{
+    @if (ShowHeader)
+    {
+        <div class="mrd-head">
+            <MStatusBadge Text="@RequestTypes.Label(_detail.RequestType)" />
+            <MStatusDot Tone="@MentorRequestBuckets.Tone(Bucket)"
+                        Label="@MentorRequestBuckets.RowLabel(Bucket)" />
+        </div>
+    }
+
+    <dl class="mrd-facts">
+        <div class="mrd-fact"><dt>פרויקט</dt><dd>@_detail.ProjectTitle</dd></div>
+        <div class="mrd-fact"><dt>מגיש/ת הבקשה</dt><dd>@_detail.CreatedByName</dd></div>
+        @if (!string.IsNullOrWhiteSpace(_detail.TeamName))
+        {
+            <div class="mrd-fact"><dt>צוות</dt><dd>@_detail.TeamName</dd></div>
+        }
+        <div class="mrd-fact"><dt>סטטוס</dt><dd>@RequestStatuses.Label(_detail.Status)</dd></div>
+        <div class="mrd-fact"><dt>זמן המתנה</dt><dd>@MentorTime.WaitingLabel(_detail.CreatedAt, "התקבלה היום")</dd></div>
+    </dl>
+
+    @if (!string.IsNullOrWhiteSpace(_detail.Description))
+    {
+        <div class="mrd-block">
+            <p class="mrd-block-label">פרטי הבקשה</p>
+            <p class="mrd-body-text">@_detail.Description</p>
+        </div>
+    }
+
+    @if (_detail.Extension is not null)
+    {
+        <div class="mrd-block">
+            <p class="mrd-block-label">פרטי הדחייה המבוקשת</p>
+            <dl class="mrd-facts mrd-facts-tight">
+                @if (ExtensionTarget is not null)
+                {
+                    <div class="mrd-fact"><dt>יעד</dt><dd>@ExtensionTarget</dd></div>
+                }
+                @if (_detail.Extension.CurrentDueDate is not null)
+                {
+                    <div class="mrd-fact"><dt>מועד נוכחי</dt><dd>@_detail.Extension.CurrentDueDate.Value.ToString("dd.MM.yyyy")</dd></div>
+                }
+                <div class="mrd-fact"><dt>מועד מבוקש</dt><dd>@_detail.Extension.RequestedDueDate.ToString("dd.MM.yyyy")</dd></div>
+                @if (!string.IsNullOrWhiteSpace(_detail.Extension.Reason))
+                {
+                    <div class="mrd-fact"><dt>נימוק</dt><dd>@_detail.Extension.Reason</dd></div>
+                }
+            </dl>
+        </div>
+    }
+
+    @if (_detail.Events.Count > 0)
+    {
+        <div class="mrd-block">
+            <p class="mrd-block-label">היסטוריה</p>
+            <ul class="mrd-history">
+                @foreach (var e in _detail.Events.OrderBy(x => x.CreatedAt).Take(8))
+                {
+                    <li class="mrd-history-row">
+                        <span class="mrd-history-when">@e.CreatedAt.ToLocalTime().ToString("dd.MM")</span>
+                        <span class="mrd-history-what">@EventLine(e)</span>
+                    </li>
+                }
+            </ul>
+        </div>
+    }
+
+    @if (IsRecommendationStage)
+    {
+        <div class="mrd-decision">
+            <p class="mrd-block-label">המלצת מנחה</p>
+            <p class="mrd-decision-hint">
+                ההמלצה וההערה מועברות למרצה ואינן מוצגות לסטודנט. ההחלטה הסופית היא של המרצה.
+            </p>
+
+            <div class="mrd-choice" role="radiogroup" aria-label="המלצה">
+                <button type="button"
+                        class="mrd-choice-btn @(_recommendation == ExtensionDecisionStatuses.Recommended ? "mrd-choice-on" : "")"
+                        role="radio"
+                        aria-checked="@(_recommendation == ExtensionDecisionStatuses.Recommended)"
+                        disabled="@_submitting"
+                        @onclick="@(() => _recommendation = ExtensionDecisionStatuses.Recommended)">
+                    ממליץ
+                </button>
+                <button type="button"
+                        class="mrd-choice-btn @(_recommendation == ExtensionDecisionStatuses.NotRecommended ? "mrd-choice-off" : "")"
+                        role="radio"
+                        aria-checked="@(_recommendation == ExtensionDecisionStatuses.NotRecommended)"
+                        disabled="@_submitting"
+                        @onclick="@(() => _recommendation = ExtensionDecisionStatuses.NotRecommended)">
+                    לא ממליץ
+                </button>
+            </div>
+
+            <textarea class="mrd-notes" rows="3" maxlength="2000"
+                      placeholder="הסבר קצר עבור המרצה (אופציונלי)…"
+                      disabled="@_submitting"
+                      @bind="_notes"></textarea>
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <p class="mrd-error" role="alert">@_error</p>
+            }
+
+            @if (ShowActions)
+            {
+                <div class="mrd-actions">
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             OnClick="SubmitRecommendationAsync"
+                             Loading="@_submitting"
+                             LoadingText="שולחת…"
+                             Disabled="@(_submitting || string.IsNullOrEmpty(_recommendation))">
+                        שליחת המלצה
+                    </MButton>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <p class="mrd-readonly">@ReadOnlyExplanation</p>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public int RequestId { get; set; }
+
+    /// <summary>Raised after the server accepts a recommendation, so the host
+    /// can reload its counts — the request has just left "מחכות לתגובתך".</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    /// <summary>The type badge + status dot line. The modal shows it; the
+    /// accordion row does not, because the row it expands from already carries
+    /// both and repeating them two lines apart reads as a rendering bug.</summary>
+    [Parameter] public bool ShowHeader { get; set; } = true;
+
+    /// <summary>Whether this component renders its own submit button. False in
+    /// the modal, whose footer owns the actions.</summary>
+    [Parameter] public bool ShowActions { get; set; } = true;
+
+    private ProjectRequestDetailDto? _detail;
+    private int?    _loadedId;
+    private bool    _loading;
+    private bool    _submitting;
+    private string? _recommendation;
+    private string  _notes = "";
+    private string? _error;
+
+    /// <summary>True once a choice is picked — lets a host footer enable its own
+    /// submit button.</summary>
+    public bool CanSubmit => IsRecommendationStage && !string.IsNullOrEmpty(_recommendation) && !_submitting;
+    public bool IsSubmitting => _submitting;
+
+    private MentorRequestBucket Bucket =>
+        MentorRequestBuckets.Of(_detail?.Status ?? RequestStatuses.New);
+
+    private bool IsRecommendationStage =>
+        _detail is not null && _detail.Status == RequestStatuses.PendingMentorRecommendation;
+
+    private string ReadOnlyExplanation => Bucket switch
+    {
+        MentorRequestBucket.WithLecturer => "הבקשה נמצאת אצל המרצה. אין פעולה שנדרשת ממך בשלב הזה.",
+        MentorRequestBucket.AwaitingTeam => "הבקשה הוחזרה לצוות והיא ממתינה להשלמת פרטים מהסטודנטים.",
+        MentorRequestBucket.Closed       => "הבקשה טופלה ונסגרה.",
+        _                                => "אין פעולה שנדרשת ממך בבקשה הזו כרגע.",
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (RequestId <= 0) { Reset(); return; }
+        if (_loadedId == RequestId) return;
+
+        _loading = true;
+        _loadedId = RequestId;
+        StateHasChanged();
+
+        _detail = await RequestsService.GetByIdAsync(RequestId);
+
+        // Preserve the legacy screen's behaviour: opening a request clears its
+        // unread marker. Fire-and-forget, exactly as the old drawer did — the
+        // read receipt must never block the detail from rendering.
+        _ = RequestsService.MarkReadAsync(RequestId);
+
+        _recommendation = null;
+        _notes = "";
+        _error = null;
+        _loading = false;
+    }
+
+    private void Reset()
+    {
+        _detail = null; _loadedId = null;
+        _recommendation = null; _notes = ""; _error = null;
+    }
+
+    /// <summary>Callable by a host that owns the submit button (the modal).</summary>
+    public async Task SubmitRecommendationAsync()
+    {
+        if (_detail is null || string.IsNullOrEmpty(_recommendation)) return;
+
+        _submitting = true;
+        _error = null;
+        StateHasChanged();
+
+        var err = await RequestsService.SubmitMentorRecommendationAsync(
+            _detail.Id,
+            new MentorRecommendationRequest
+            {
+                Recommendation = _recommendation,
+                Notes          = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
+            });
+
+        _submitting = false;
+
+        if (err is not null) { _error = err; return; }
+
+        await OnChanged.InvokeAsync();
+    }
+
+    private string? ExtensionTarget =>
+        _detail?.Extension is null ? null
+        : !string.IsNullOrWhiteSpace(_detail.Extension.TaskTitle)      ? _detail.Extension.TaskTitle
+        : !string.IsNullOrWhiteSpace(_detail.Extension.MilestoneTitle) ? _detail.Extension.MilestoneTitle
+        : null;
+
+    private static string EventLine(ProjectRequestEventDto e)
+    {
+        if (!string.IsNullOrWhiteSpace(e.Content)) return $"{e.UserName}: {e.Content}";
+        if (!string.IsNullOrWhiteSpace(e.NewValue))
+            return string.IsNullOrWhiteSpace(e.OldValue)
+                ? $"{e.UserName} — {e.NewValue}"
+                : $"{e.UserName} — {e.OldValue} ← {e.NewValue}";
+        return e.UserName;
+    }
+}

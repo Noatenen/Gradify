@@ -55,6 +55,9 @@ builder.Services.AddScoped<IIntegrationSettingsService, IntegrationSettingsServi
 
 // Mentor area
 builder.Services.AddScoped<IMentorProjectsService, MentorProjectsService>();
+// Cross-project snapshot shared by בית and המשימות שלי. Composes the three
+// services above/below it — it owns no endpoint of its own.
+builder.Services.AddScoped<IMentorWorkspaceService, MentorWorkspaceService>();
 
 // In-system notifications
 builder.Services.AddScoped<INotificationService, NotificationService>();

@@ -83,22 +83,100 @@ public static class NavDefinitions
     private static readonly IReadOnlyList<NavItem> _studentBottom = Array.Empty<NavItem>();
 
     // ── Mentor ───────────────────────────────────────────────────────
+    // Restructured in Epic 1 to the six destinations of the mentor design
+    // reference (design-reference/mentor-experience/project/Motiva Mentor
+    // Home.dc.html:36-46 and every sibling screen, which all draw the same
+    // rail): בית · המשימות שלי · הפרויקטים שלי · בקשות · יומן ותכנון ·
+    // משאבים למנחים.
+    //
+    // WITHDRAWN FROM THE PRIMARY NAV — NOT DELETED
+    //   ציר התקדמות     (/mentor/roadmap)
+    //   בריאות פרויקטים  (/project-health)
+    //   אבני דרך         (/milestones-overview)
+    //   הגשות            (/mentor/submissions)
+    //
+    // Every one of those routes, pages, services and APIs is untouched and
+    // still resolves — this list is the only thing that changed. Their
+    // information is planned to return contextually: project health inside
+    // הפרויקטים שלי and מרחב הפרויקט, milestones/roadmap inside מרחב
+    // הפרויקט, submissions awaiting review inside המשימות שלי and מרחב
+    // הפרויקט. None of those integrations exists yet.
+    //
+    // Same convention as the student list: every entry carries BOTH icons —
+    // the open-iconic class it always had (the rail's fallback for an item
+    // with no path data) and the stroked SVG the Motiva rail actually draws.
     private static readonly IReadOnlyList<NavItem> _mentorMain = new[]
     {
-        new NavItem("דשבורד מנחה", "dashboard/mentor",     "oi-pulse",            NavLinkMatch.Prefix),
-        new NavItem("פרויקטים",    "mentor/projects",      "oi-folder",           NavLinkMatch.Prefix),
-        new NavItem("ציר התקדמות", "mentor/roadmap",       "oi-graph",            NavLinkMatch.Prefix),
-        new NavItem("בריאות פרויקטים", "project-health",   "oi-heart",            NavLinkMatch.Prefix),
-        new NavItem("אבני דרך",    "milestones-overview",  "oi-flag",             NavLinkMatch.Prefix),
-        new NavItem("הגשות",       "mentor/submissions",   "oi-inbox",            NavLinkMatch.Prefix),
-        new NavItem("בקשות",       "mentor-requests",      "oi-envelope-closed",  NavLinkMatch.Prefix),
+        // Match.Prefix, so /dashboard/mentor stays lit. The route belongs to
+        // MentorHomePage as of Phase A; OverviewDashboardPage kept
+        // /dashboard/lecturer and is no longer reachable from this rail.
+        new NavItem("בית",            "dashboard/mentor", "oi-home",            NavLinkMatch.Prefix, NavIcons.Home),
+        new NavItem("המשימות שלי",    "mentor/tasks",     "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
+        new NavItem("הפרויקטים שלי",  "mentor/projects",  "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
+        new NavItem("בקשות",          "mentor-requests",  "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
+        new NavItem("יומן ותכנון",    "mentor/calendar",  "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),
+        // The mentor's own read-only view of the shared library.
+        //
+        // This pointed at /resource-files until Phase B, which was a real bug,
+        // not just a styling gap: that page is [Authorize(Admin, Staff)], so a
+        // mentor following their own nav item was refused. /mentor/resources
+        // reads the same corpus through a mentor-authorised endpoint.
+        new NavItem("משאבים למנחים",  "mentor/resources", "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
     };
 
-    private static readonly IReadOnlyList<NavItem> _mentorBottom = new[]
+    // Empty, like the student's: הגדרות is reached from the profile card at
+    // the foot of the rail (AppSideNav's .snav-profile-footer), which is what
+    // the mentor design draws too — a second row here would be a duplicate
+    // destination for something the footer already owns.
+    private static readonly IReadOnlyList<NavItem> _mentorBottom = Array.Empty<NavItem>();
+
+    // ─────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Which of the three shells a user gets. Declared here, next to the nav
+    /// lists themselves, because the shell and the navigation must resolve the
+    /// same way for the same user — including the dual-role case, where the
+    /// active view mode decides. Splitting that logic across AppLayout,
+    /// AppSideNav and AppTopBar is what would let them disagree.
+    /// </summary>
+    public enum Shell
     {
-        new NavItem("חומרי עזר", "resource-files", "oi-folder", NavLinkMatch.Prefix),
-        new NavItem("הגדרות",   "settings",        "oi-cog",    NavLinkMatch.Prefix),
-    };
+        /// <summary>The finalized Motiva student experience.</summary>
+        Student,
+
+        /// <summary>The Motiva mentor experience — same visual system as
+        /// <see cref="Student"/>, different information architecture.</summary>
+        Mentor,
+
+        /// <summary>Lecturer / Staff / Admin — the legacy shell, untouched.
+        /// Resolves every token at its :root value.</summary>
+        Staff
+    }
+
+    /// <summary>
+    /// Resolves the shell for a user. Mirrors <see cref="GetNavItems"/>
+    /// exactly — the two share this method rather than re-deriving the answer.
+    /// </summary>
+    public static Shell GetShell(User? user)
+    {
+        if (RoleService.IsStudent(user)) return Shell.Student;
+
+        // Dual-role users (Staff + Mentor): the active mode picks.
+        if (UserModeService.IsDualRole(user))
+            return UserModeService.EffectiveMode(user) == UserModes.Mentor
+                ? Shell.Mentor
+                : Shell.Staff;
+
+        if (RoleService.IsMentor(user))       return Shell.Mentor;
+        if (RoleService.IsAdminOrStaff(user)) return Shell.Staff;
+
+        return Shell.Student; // safe fallback — matches GetNavItems
+    }
+
+    /// <summary>True for the two experiences that consume the Motiva System
+    /// Master (Student and Mentor). This is the single predicate behind the
+    /// `.motiva` token scope, the `.snav-motiva` rail, and the decision of
+    /// where the notification bell is mounted.</summary>
+    public static bool IsMotivaShell(User? user) => GetShell(user) != Shell.Staff;
 
     // ─────────────────────────────────────────────────────────────────
     /// <summary>
@@ -110,20 +188,10 @@ public static class NavDefinitions
     /// Falls back to the student view for unrecognised roles.
     /// </summary>
     public static (IReadOnlyList<NavItem> Main, IReadOnlyList<NavItem> Bottom) GetNavItems(User? user)
-    {
-        if (RoleService.IsStudent(user)) return (_studentMain, _studentBottom);
-
-        // Dual-role users (Staff + Mentor): the active mode picks.
-        if (UserModeService.IsDualRole(user))
+        => GetShell(user) switch
         {
-            return UserModeService.EffectiveMode(user) == UserModes.Mentor
-                ? (_mentorMain, _mentorBottom)
-                : (_adminMain,  _adminBottom);
-        }
-
-        if (RoleService.IsMentor(user))       return (_mentorMain,  _mentorBottom);
-        if (RoleService.IsAdminOrStaff(user)) return (_adminMain,   _adminBottom);
-
-        return (_studentMain, _studentBottom); // safe fallback
-    }
+            Shell.Student => (_studentMain, _studentBottom),
+            Shell.Mentor  => (_mentorMain,  _mentorBottom),
+            _             => (_adminMain,   _adminBottom),
+        };
 }

@@ -1,0 +1,404 @@
+@page "/mentor/calendar"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Mentor
+@using Microsoft.AspNetCore.Authorization
+@using System.Globalization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorWorkspaceService Workspace
+@inject NavigationManager Nav
+
+@*
+    ── יומן ותכנון — the mentor's CROSS-PROJECT planner ────────────────────
+    UX / IA source:  design-reference/mentor-experience/project/
+                     Motiva Mentor Calendar.dc.html
+    Visual source:   the implemented student experience.
+    Data source:     IMentorWorkspaceService.LoadCalendarAsync.
+
+    NOT THE STUDENT PLANNER. /milestones is StudentPlanningPage, which is
+    single-project by construction; a mentor needs several teams on one grid,
+    and every entry here therefore names its project and team. Nothing in the
+    mentor shell routes to /milestones any more.
+
+    WHAT IS REAL
+      אבני דרך         every milestone due date, from api/mentor/projects/{id}
+      הגשות            dated IsSubmission tasks under those milestones
+      ממתינות לבדיקה   pending submissions, dated by when they ARRIVED
+      משימות אישיות    the mentor's own dated reminders
+
+    WHAT IS MISSING, AND DELIBERATELY ABSENT RATHER THAN FAKED
+      פגישות — the design's fifth type. Its own prototype hardcodes a MEETINGS
+      array because no table stores a mentor-authored meeting: there is no
+      events/meetings entity, no participants, no location, no start/end time.
+      The design's "אירוע / פגישה חדשה" modal is unbuildable for the same
+      reason. Closing this needs a MentorEvents table (mentor, project?, type,
+      date, start/end, location/link, notes) plus CRUD — the single largest
+      remaining gap in the mentor area.
+
+    ONE CALL PER PROJECT. Milestone and deliverable dates live only in the
+    per-project detail payload; no cross-project endpoint returns them
+    (api/milestones/overview carries just the CURRENT milestone). The loader
+    fans out concurrently, but a mentor with a large caseload pays for it — a
+    cross-project dated-items endpoint would be the fix.
+*@
+
+<div class="mcal-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Title="יומן ותכנון"
+                 Subtitle="כל אבני הדרך, ההגשות והמועדים של הצוותים שבהנחייתך — במקום אחד.">
+        @if (!_loading)
+        {
+            <div class="mcal-controls">
+                <div class="mcal-navrow">
+                    <div class="mcal-period">
+                        <button type="button" class="mcal-navbtn" aria-label="תקופה קודמת" @onclick="Prev">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="m9 6 6 6-6 6"></path>
+                            </svg>
+                        </button>
+                        <span class="mcal-period-label" aria-live="polite">@PeriodLabel</span>
+                        <button type="button" class="mcal-navbtn" aria-label="תקופה הבאה" @onclick="Next">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="m15 6-6 6 6 6"></path>
+                            </svg>
+                        </button>
+                        <button type="button" class="mcal-today" @onclick="GoToday">היום</button>
+                    </div>
+
+                    @* Month / week. A segmented control, not two CTAs — it
+                       selects a view, it does not perform an action, so it
+                       carries no gradient. *@
+                    <div class="mcal-views" role="group" aria-label="תצוגה">
+                        <button type="button" class="mcal-view @(_view == View.Month ? "mcal-view-on" : "")"
+                                aria-pressed="@(_view == View.Month)" @onclick="@(() => _view = View.Month)">חודש</button>
+                        <button type="button" class="mcal-view @(_view == View.Week ? "mcal-view-on" : "")"
+                                aria-pressed="@(_view == View.Week)" @onclick="@(() => _view = View.Week)">שבוע</button>
+                    </div>
+                </div>
+
+                @* Type filter — categorical, never semantic. *@
+                <div class="mcal-filters" role="group" aria-label="סינון לפי סוג">
+                    <button type="button" class="mcal-chip @(_typeFilter is null ? "mcal-chip-on" : "")"
+                            aria-pressed="@(_typeFilter is null)" @onclick="@(() => _typeFilter = null)">
+                        הכול <span class="mcal-chip-count">@_events.Count</span>
+                    </button>
+                    @foreach (var t in MentorEventTypes.Ordered)
+                    {
+                        var type = t;
+                        <button type="button"
+                                class="mcal-chip mcal-chip-@MentorEventTypes.CssSuffix(type) @(_typeFilter == type ? "mcal-chip-on" : "")"
+                                aria-pressed="@(_typeFilter == type)"
+                                @onclick="@(() => _typeFilter = _typeFilter == type ? null : type)">
+                            <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(type)" aria-hidden="true"></span>
+                            @MentorEventTypes.FilterLabel(type)
+                            <span class="mcal-chip-count">@_events.Count(e => e.Type == type)</span>
+                        </button>
+                    }
+                </div>
+
+                @* Project filter — the cross-project axis this screen exists for. *@
+                @if (_projects.Count > 1)
+                {
+                    <div class="mcal-filters" role="group" aria-label="סינון לפי פרויקט">
+                        <button type="button" class="mcal-chip @(_projectFilter is null ? "mcal-chip-on" : "")"
+                                aria-pressed="@(_projectFilter is null)" @onclick="@(() => _projectFilter = null)">
+                            כל הפרויקטים
+                        </button>
+                        @foreach (var p in _projects)
+                        {
+                            var proj = p;
+                            <button type="button" class="mcal-chip @(_projectFilter == proj.Id ? "mcal-chip-on" : "")"
+                                    aria-pressed="@(_projectFilter == proj.Id)"
+                                    @onclick="@(() => _projectFilter = _projectFilter == proj.Id ? null : proj.Id)">
+                                @proj.Title
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </MPageHeader>
+</div>
+
+<div class="mcal-body">
+
+    @if (_loading)
+    {
+        <div class="mcal-state" role="status" aria-live="polite">
+            <span class="mcal-spinner" aria-hidden="true"></span>
+            <span>טוענת את היומן…</span>
+        </div>
+    }
+    else if (_events.Count == 0)
+    {
+        <MEmptyState Title="אין עדיין מועדים ביומן"
+                     Description="אבני דרך, הגשות ומשימות אישיות עם תאריך יעד יופיעו כאן אוטומטית." />
+    }
+    else
+    {
+        <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Class="mcal-card">
+            @if (_view == View.Month)
+            {
+                <div class="mcal-grid" role="grid" aria-label="@($"לוח חודשי — {PeriodLabel}")">
+                    @foreach (var name in DayNames)
+                    {
+                        <div class="mcal-dayname" role="columnheader">@name</div>
+                    }
+
+                    @foreach (var day in MonthCells)
+                    {
+                        var d = day;
+                        var items = EventsOn(d);
+                        <div class="mcal-cell @(d.Month != _anchor.Month ? "mcal-cell-out" : "") @(d.Date == DateTime.Now.Date ? "mcal-cell-today" : "")"
+                             role="gridcell">
+                            <div class="mcal-cell-head">
+                                <span class="mcal-daynum">@d.Day</span>
+                            </div>
+                            @foreach (var e in items.Take(3))
+                            {
+                                var ev = e;
+                                <button type="button"
+                                        class="mcal-item mcal-item-@MentorEventTypes.CssSuffix(ev.Type)"
+                                        title="@($"{ev.Title} — {ev.Context}")"
+                                        @onclick="@(() => _selected = ev)">
+                                    <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                    <span class="mcal-item-text">@ev.Title</span>
+                                </button>
+                            }
+                            @if (items.Count > 3)
+                            {
+                                <button type="button" class="mcal-more" @onclick="@(() => SelectDay(d))">
+                                    +@(items.Count - 3) נוספים
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                @* Week view: a dense agenda, one block per day. A 7-column grid
+                   at this width would give each day a column too narrow to
+                   name its project, and naming the project is the point. *@
+                <div class="mcal-week">
+                    @foreach (var day in WeekDays)
+                    {
+                        var d = day;
+                        var items = EventsOn(d);
+                        <div class="mcal-weekday @(d.Date == DateTime.Now.Date ? "mcal-weekday-today" : "")">
+                            <div class="mcal-weekday-head">
+                                <span class="mcal-weekday-name">@d.ToString("dddd", HebrewCulture)</span>
+                                <span class="mcal-weekday-date">@d.ToString("d 'ב'MMMM", HebrewCulture)</span>
+                            </div>
+                            @if (items.Count == 0)
+                            {
+                                <p class="mcal-weekday-empty">אין מועדים ביום זה.</p>
+                            }
+                            else
+                            {
+                                <MRowList Inset="true" AriaLabel="@d.ToString("d 'ב'MMMM", HebrewCulture)">
+                                    @foreach (var e in items)
+                                    {
+                                        var ev = e;
+                                        <MRow OnClick="@(() => _selected = ev)"
+                                              Primary="@ev.Title"
+                                              Secondary="@ev.Context"
+                                              Meta="@MentorEventTypes.Label(ev.Type)"
+                                              AriaLabel="@($"פרטי {ev.Title}")">
+                                            <Leading>
+                                                <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                            </Leading>
+                                        </MRow>
+                                    }
+                                </MRowList>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </MCard>
+
+        @* Upcoming list — the planning half of "יומן ותכנון". A month grid
+           answers "what is on the 14th"; this answers "what is coming",
+           which is the question a mentor actually opens the screen with. *@
+        <section class="mcal-section">
+            <MSectionHeading Text="המועדים הקרובים" Count="@Upcoming.Count.ToString()" />
+            <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                @if (Upcoming.Count == 0)
+                {
+                    <MEmptyState Title="אין מועדים קרובים בסינון הנוכחי." Class="mcal-empty" />
+                }
+                else
+                {
+                    <MRowList Inset="true" AriaLabel="המועדים הקרובים">
+                        @foreach (var e in Upcoming)
+                        {
+                            var ev = e;
+                            <MRow OnClick="@(() => _selected = ev)"
+                                  Primary="@ev.Title"
+                                  Secondary="@ev.Context"
+                                  Meta="@($"{ev.Date.ToString("dd.MM")} · {MentorTime.DeadlineLabel(ev.Date)}")"
+                                  MetaTone="@(ev.IsPast ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default)"
+                                  AriaLabel="@($"פרטי {ev.Title}")">
+                                <Leading>
+                                    <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                </Leading>
+                            </MRow>
+                        }
+                    </MRowList>
+                }
+            </MCard>
+        </section>
+    }
+</div>
+
+@* ── Entry detail ── *@
+<MModal IsOpen="@(_selected is not null)"
+        Size="MModal.ModalSize.Small"
+        Title="@(_selected?.Title ?? "")"
+        OnClose="@(() => _selected = null)">
+    <ChildContent>
+        @if (_selected is not null)
+        {
+            <dl class="mcal-facts">
+                <div class="mcal-fact"><dt>סוג</dt><dd>@MentorEventTypes.Label(_selected.Type)</dd></div>
+                <div class="mcal-fact">
+                    <dt>תאריך</dt>
+                    <dd>@_selected.Date.ToString("dddd, d 'ב'MMMM yyyy", HebrewCulture)</dd>
+                </div>
+                <div class="mcal-fact"><dt>שיוך</dt><dd>@_selected.Context</dd></div>
+                @if (!string.IsNullOrWhiteSpace(_selected.Detail))
+                {
+                    <div class="mcal-fact"><dt>פרטים</dt><dd>@_selected.Detail</dd></div>
+                }
+            </dl>
+        }
+    </ChildContent>
+    <FooterContent>
+        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="@(() => _selected = null)">סגירה</MButton>
+        @if (_selected?.Href is not null)
+        {
+            <MButton Variant="MButton.ButtonVariant.Primary" OnClick="OpenSelected">
+                @(_selected.ProjectId is null ? "למשימות שלי" : "פתיחת הפרויקט")
+            </MButton>
+        }
+    </FooterContent>
+</MModal>
+
+@* ── Day detail, from "+N נוספים" ── *@
+<MModal IsOpen="@(_selectedDay is not null)"
+        Size="MModal.ModalSize.Medium"
+        Title="@(_selectedDay?.ToString("dddd, d 'ב'MMMM", HebrewCulture) ?? "")"
+        OnClose="@(() => _selectedDay = null)">
+    <ChildContent>
+        @if (_selectedDay is not null)
+        {
+            <MRowList Inset="true" AriaLabel="מועדי היום">
+                @foreach (var e in EventsOn(_selectedDay.Value))
+                {
+                    var ev = e;
+                    <MRow OnClick="@(() => { _selectedDay = null; _selected = ev; })"
+                          Primary="@ev.Title"
+                          Secondary="@ev.Context"
+                          Meta="@MentorEventTypes.Label(ev.Type)">
+                        <Leading>
+                            <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                        </Leading>
+                    </MRow>
+                }
+            </MRowList>
+        }
+    </ChildContent>
+    <FooterContent>
+        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="@(() => _selectedDay = null)">סגירה</MButton>
+    </FooterContent>
+</MModal>
+
+@code {
+    private enum View { Month, Week }
+
+    private static readonly CultureInfo HebrewCulture = new("he-IL");
+    private static readonly string[] DayNames = { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
+
+    private IReadOnlyList<MentorCalendarEvent> _events = Array.Empty<MentorCalendarEvent>();
+    private List<MentorProjectSummaryDto>      _projects = new();
+    private bool _loading = true;
+
+    private View             _view = View.Month;
+    private DateTime         _anchor = DateTime.Now.Date;
+    private MentorEventType? _typeFilter;
+    private int?             _projectFilter;
+
+    private MentorCalendarEvent? _selected;
+    private DateTime?            _selectedDay;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var snapshot = await Workspace.LoadAsync();
+        _projects = snapshot.Projects.ToList();
+        _events   = await Workspace.LoadCalendarAsync();
+        _loading  = false;
+    }
+
+    // ── Filtering ───────────────────────────────────────────────────────
+
+    private IEnumerable<MentorCalendarEvent> Filtered =>
+        _events
+            .Where(e => _typeFilter is null || e.Type == _typeFilter)
+            .Where(e => _projectFilter is null || e.ProjectId == _projectFilter);
+
+    private List<MentorCalendarEvent> EventsOn(DateTime day) =>
+        Filtered.Where(e => e.Date.Date == day.Date).ToList();
+
+    /// <summary>The next 12 dated items from today, regardless of which period
+    /// the grid is parked on — a planning list that jumped around as you paged
+    /// the calendar would answer a different question every time.</summary>
+    private List<MentorCalendarEvent> Upcoming =>
+        Filtered.Where(e => e.Date.Date >= DateTime.Now.Date)
+                .OrderBy(e => e.Date)
+                .Take(12)
+                .ToList();
+
+    // ── Period navigation ───────────────────────────────────────────────
+
+    private void Prev()   => _anchor = _view == View.Month ? _anchor.AddMonths(-1) : _anchor.AddDays(-7);
+    private void Next()   => _anchor = _view == View.Month ? _anchor.AddMonths(1)  : _anchor.AddDays(7);
+    private void GoToday() => _anchor = DateTime.Now.Date;
+
+    private void SelectDay(DateTime d) => _selectedDay = d;
+
+    private string PeriodLabel =>
+        _view == View.Month
+            ? _anchor.ToString("MMMM yyyy", HebrewCulture)
+            : $"{WeekStart:dd.MM} – {WeekStart.AddDays(6):dd.MM.yyyy}";
+
+    /// <summary>Sunday-first, which is the Hebrew calendar week and what
+    /// DayNames above is ordered by.</summary>
+    private DateTime WeekStart => _anchor.AddDays(-(int)_anchor.DayOfWeek);
+
+    private IEnumerable<DateTime> WeekDays =>
+        Enumerable.Range(0, 7).Select(i => WeekStart.AddDays(i));
+
+    /// <summary>Six weeks from the Sunday on or before the 1st — a fixed cell
+    /// count keeps the grid from changing height as the month changes.</summary>
+    private IEnumerable<DateTime> MonthCells
+    {
+        get
+        {
+            var first = new DateTime(_anchor.Year, _anchor.Month, 1);
+            var start = first.AddDays(-(int)first.DayOfWeek);
+            return Enumerable.Range(0, 42).Select(i => start.AddDays(i));
+        }
+    }
+
+    private void OpenSelected()
+    {
+        var href = _selected?.Href;
+        _selected = null;
+        if (href is not null) Nav.NavigateTo(href);
+    }
+}
