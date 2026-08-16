@@ -12,4 +12,15 @@ public class LoginForm
     [Required(ErrorMessage = "יש להזין סיסמה")]
     public string Password { get; set; }
 
+    /// <summary>
+    /// "זכור אותי" — asks the server for a longer-lived token instead of the
+    /// one-day default.
+    ///
+    /// <para>It carries no credential and changes nothing about how the session
+    /// is stored: the token still goes to the same place, and logout still
+    /// revokes it. Defaults to false, so an unchecked login is byte-for-byte the
+    /// request that was sent before this option existed.</para>
+    /// </summary>
+    public bool RememberMe { get; set; }
+
 }

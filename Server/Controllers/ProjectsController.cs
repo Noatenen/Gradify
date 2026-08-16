@@ -18,7 +18,18 @@ public class ProjectsController : ControllerBase
 {
     private readonly DbRepository _db;
 
-    public ProjectsController(DbRepository db) => _db = db;
+    /// <summary>
+    /// Only used by DeleteTeamTask, to clean up any Google Calendar events the
+    /// deleted task left behind. Injecting the service — rather than reaching for
+    /// the Calendar API here — keeps every Google call inside that one service.
+    /// </summary>
+    private readonly GoogleCalendarEventService _calendarEvents;
+
+    public ProjectsController(DbRepository db, GoogleCalendarEventService calendarEvents)
+    {
+        _db             = db;
+        _calendarEvents = calendarEvents;
+    }
 
     // ── GET /api/projects/my-dashboard ───────────────────────────────────────
     // Returns the complete dashboard payload for the authenticated student.
@@ -2335,6 +2346,14 @@ public class ProjectsController : ControllerBase
 
         int affected = await _db.SaveDataAsync(sql, new { Id = id, pt.TeamId, pt.ProjectId });
         if (affected == 0) return NotFound("המשימה לא נמצאה");
+
+        // Best-effort Google cleanup, AFTER the task is gone and deliberately not
+        // awaited for success: this never throws and never fails the delete. A
+        // task must not become undeletable because Google is unreachable. Every
+        // link row for the task is dropped regardless of what Google answered, so
+        // no row survives pointing at an id that no longer exists.
+        await _calendarEvents.RemoveLinksForDeletedTaskAsync(id);
+
         return Ok();
     }
 }

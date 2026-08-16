@@ -1,6 +1,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @inject ITeamTasksService TeamTasksService
+@inject IGoogleCalendarService GoogleCalendar
 
 @*
     TeamTasksSection — the finalized design's "משימות צוות" panel
@@ -57,6 +58,17 @@
                                 }
                             </span>
                             <span class="tts-row-title">@task.Title</span>
+                            @* Metadata, not status: a small icon and two words on
+                               the existing row. A task in someone's calendar is
+                               still just a task — it gets no badge colour, no
+                               Google branding and no second line. *@
+                            @if (IsInGoogleCalendar(task.Id))
+                            {
+                                <span class="tts-row-gcal" title="נוסף ליומן Google">
+                                    <span class="oi oi-calendar" aria-hidden="true"></span>
+                                    <span>ביומן Google</span>
+                                </span>
+                            }
                         </span>
                         <span class="tts-row-due">@DueLabel(task)</span>
                     </div>
@@ -109,6 +121,31 @@
     private bool         _showModal;
     private TeamTaskDto? _editingTask;
 
+    /// <summary>
+    /// The signed-in user's own calendar links, by task id.
+    ///
+    /// <para>Personal, never the team's: the endpoint returns only the caller's
+    /// rows, so a teammate scheduling the same task does not put a chip on this
+    /// user's list. It also comes back EMPTY while the Google grant is
+    /// disconnected, which is what stops the chip claiming a live connection that
+    /// no longer exists.</para>
+    /// </summary>
+    private Dictionary<int, TaskCalendarScheduleDto> _schedules = new();
+
+    /// <summary>Only a confirmed Google event earns the chip. A link still
+    /// awaiting a retry is loaded (so the modal can prefill it) but is not shown
+    /// here — the event does not exist yet.</summary>
+    private bool IsInGoogleCalendar(int taskId) =>
+        _schedules.TryGetValue(taskId, out var s) && s.IsScheduled;
+
+    protected override async Task OnInitializedAsync() => await LoadSchedulesAsync();
+
+    private async Task LoadSchedulesAsync()
+    {
+        var rows = await GoogleCalendar.GetTaskSchedulesAsync();
+        _schedules = rows.ToDictionary(r => r.TaskId);
+    }
+
     private IEnumerable<TeamTaskDto> Filtered =>
         Filter is null ? Tasks : Tasks.Where(Filter);
 
@@ -159,10 +196,16 @@
         _showModal   = true;
     }
 
-    private void CloseModal()
+    /// <summary>
+    /// Re-reads the links on every close rather than mirroring what the modal
+    /// did. One call, and it is right for every path the modal can take —
+    /// scheduled, moved, removed, or saved-but-Google-failed.
+    /// </summary>
+    private async Task CloseModal()
     {
         _showModal   = false;
         _editingTask = null;
+        await LoadSchedulesAsync();
     }
 
     private async Task OnCreated(TeamTaskDto created)

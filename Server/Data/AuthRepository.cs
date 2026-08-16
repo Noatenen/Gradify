@@ -48,7 +48,7 @@ public class AuthRepository
             return new UserAuthResult() { Result = AuthResults.WrongPassword };
 
         userFromDB.Roles = await GetUserRoles(userFromDB.Id);
-        string token = CreateToken(userFromDB);
+        string token = CreateToken(userFromDB, user.RememberMe);
 
         return new UserAuthResult() { User=userFromDB.MapUser(),Result=token };
     }
@@ -461,7 +461,16 @@ public class AuthRepository
     /// <param name="user">משתמש</param>
     /// <returns>Token</returns>
 
-    private string CreateToken(UserFromDB user)
+    /// <summary>
+    /// Days a "זכור אותי" session lasts. The ordinary session keeps
+    /// TokenService's own one-day default — this only lengthens the SAME token,
+    /// it does not introduce a second kind of credential. Logout still revokes it
+    /// through the blacklist, so a remembered session is no less revocable than
+    /// a normal one.
+    /// </summary>
+    private const int RememberMeDays = 30;
+
+    private string CreateToken(UserFromDB user, bool rememberMe = false)
     {
         user.Email = cleanEmail(user.Email);
         var claims = new List<Claim> // יצירת מזהה משתמש
@@ -486,7 +495,12 @@ public class AuthRepository
             claims.Add(new Claim(ClaimTypes.Role, role));
         }
 
-        var token = _tokenService.GenerateToken(claims); //יצירת TOKEN
+        // The lifetime argument GenerateToken already takes — signup has always
+        // passed 7 here. Omitting it keeps TokenService's one-day default, which
+        // is exactly what every caller got before "זכור אותי" existed.
+        var token = rememberMe
+            ? _tokenService.GenerateToken(claims, RememberMeDays)
+            : _tokenService.GenerateToken(claims); //יצירת TOKEN
         return token;
     }
     /// <summary>

@@ -1,6 +1,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @inject ITeamTasksService TeamTasksService
+@inject IGoogleCalendarService GoogleCalendar
 
 @* ─────────────────────────────────────────────────────────────
    TeamTasksCard — "משימות צוות"
@@ -85,11 +86,30 @@
                             }
                         </span>
 
-                        <button type="button" class="ttc-row-title"
-                                @onclick="@(() => OpenEditModal(captured))"
-                                aria-label="@($"עריכת {task.Title}")">
-                            @task.Title
-                        </button>
+                        @*
+                            Title and the calendar marker share ONE grid cell, so
+                            the row keeps its four V4 columns and the marker costs
+                            no width on the rows that don't carry it.
+                        *@
+                        <span class="ttc-row-main">
+                            <button type="button" class="ttc-row-title"
+                                    @onclick="@(() => OpenEditModal(captured))"
+                                    aria-label="@($"עריכת {task.Title}")">
+                                @task.Title
+                            </button>
+
+                            @* Same marker as the Tasks page, in this card's own
+                               caption scale: metadata on an existing row, not a
+                               status — no badge colour, no Google branding, no
+                               second line, and nothing to click. *@
+                            @if (IsInGoogleCalendar(task.Id))
+                            {
+                                <span class="ttc-gcal" title="נוסף ליומן Google">
+                                    <span class="oi oi-calendar" aria-hidden="true"></span>
+                                    <span>ביומן Google</span>
+                                </span>
+                            }
+                        </span>
 
                         <span class="ttc-assignee" title="@task.AssigneeName" aria-label="@task.AssigneeName">
                             @Initials(task.AssigneeName)
@@ -138,10 +158,40 @@
     private List<TeamTaskDto> _open    => _tasks.Where(t => !t.IsDone).ToList();
     private List<TeamTaskDto> _visible => _open.Take(MaxRows).ToList();
 
+    /// <summary>
+    /// The signed-in user's own calendar links, by task id — the same state the
+    /// Tasks page reads, from the same endpoint. One request for the whole list,
+    /// never one per row, and never a Google call: the server answers from
+    /// GoogleCalendarEventLinks.
+    ///
+    /// <para>Empty is the normal case for a user who never connected Google, and
+    /// also what comes back while a grant is disconnected — which is what stops
+    /// this card claiming a connection that no longer exists.</para>
+    /// </summary>
+    private Dictionary<int, TaskCalendarScheduleDto> _schedules = new();
+
+    /// <summary>Only a Google-confirmed event earns the marker. A link still
+    /// awaiting a retry exists, but its event does not.</summary>
+    private bool IsInGoogleCalendar(int taskId) =>
+        _schedules.TryGetValue(taskId, out var s) && s.IsScheduled;
+
     protected override async Task OnInitializedAsync()
     {
-        _tasks   = await TeamTasksService.GetAsync();
+        // Concurrent: the marker is decoration on a list this card already waits
+        // for, so it must not add a second round-trip to the card's time-to-paint.
+        var tasksTask     = TeamTasksService.GetAsync();
+        var schedulesTask = LoadSchedulesAsync();
+
+        _tasks = await tasksTask;
+        await schedulesTask;
+
         _loading = false;
+    }
+
+    private async Task LoadSchedulesAsync()
+    {
+        var rows = await GoogleCalendar.GetTaskSchedulesAsync();
+        _schedules = rows.ToDictionary(r => r.TaskId);
     }
 
     private void OpenCreateModal()
@@ -156,10 +206,16 @@
         _showModal   = true;
     }
 
-    private void CloseModal()
+    /// <summary>
+    /// Re-reads the links on close, exactly as the Tasks page does. The shared
+    /// modal could already schedule from here — this only keeps the new marker
+    /// honest about what the modal just did, on every path it can take.
+    /// </summary>
+    private async Task CloseModal()
     {
         _showModal   = false;
         _editingTask = null;
+        await LoadSchedulesAsync();
     }
 
     private void OnTaskCreated(TeamTaskDto created) => _tasks.Insert(0, created);

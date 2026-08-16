@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using AuthWithAdmin.Client;
+using AuthWithAdmin.Client.ClientHelpers;
 using AuthWithAdmin.Client.Services;
 using Microsoft.AspNetCore.Components.Authorization;
 
@@ -53,6 +54,10 @@ builder.Services.AddScoped<IMentorPreferencesService, MentorPreferencesService>(
 // Integration settings (admin-configurable OAuth credentials)
 builder.Services.AddScoped<IIntegrationSettingsService, IntegrationSettingsService>();
 
+// Per-user Google Calendar connection on /settings (connect / status / disconnect).
+// Unrelated to Google LOGIN, which goes through AuthenticationService.
+builder.Services.AddScoped<IGoogleCalendarService, GoogleCalendarService>();
+
 // Mentor area
 builder.Services.AddScoped<IMentorProjectsService, MentorProjectsService>();
 // Cross-project snapshot shared by בית and המשימות שלי. Composes the three
@@ -98,6 +103,8 @@ builder.Services.AddScoped<INotificationPreferencesService, NotificationPreferen
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();
 builder.Services.AddScoped<ILocalStorageService, LocalStorageService>();
+// Login-form preference ("זכור אותי"): an email and a boolean. Never a password.
+builder.Services.AddScoped<IRememberedLoginService, RememberedLoginService>();
 builder.Services.AddScoped<UserContextService>();
 builder.Services.AddScoped<IPersonalTasksService, PersonalTasksService>();
 builder.Services.AddScoped<ITeamTasksService, TeamTasksService>();

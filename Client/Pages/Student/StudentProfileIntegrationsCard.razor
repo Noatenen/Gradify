@@ -1,0 +1,145 @@
+@namespace AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IGoogleCalendarService GoogleCalendar
+@inject NavigationManager Nav
+
+@*
+    StudentProfileIntegrationsCard — "אינטגרציות"
+
+    StudentProfilePage's header lists the integrations card among the sections
+    deliberately left out of the Motiva rebuild, "with their backends fully
+    intact". Google Calendar now HAS a real backend — a per-user OAuth grant in
+    GoogleCalendarConnections — so the card comes back, holding exactly one row.
+
+    Only Google Calendar. Slack is not brought over: its row on the staff page
+    is unchanged and this epic is not the place to re-home it.
+
+    The row NEVER infers state. Consent happens on accounts.google.com with the
+    app unloaded, so the only thing that knows whether a grant exists is
+    GET /api/google-calendar/status — which is what this reads on mount and
+    again after every disconnect.
+*@
+
+<MCard Variant="MCard.CardVariant.Default" Padding="MCard.CardPadding.None">
+    <div class="spf-int-head">
+        <h2 class="spf-int-title">אינטגרציות</h2>
+    </div>
+
+    <div class="spf-int-body">
+        @if (_loading)
+        {
+            <p class="spf-int-note">טוענת חיבורים…</p>
+        }
+        else
+        {
+            <MRowList>
+                <MRow>
+                    <PrimaryContent>Google Calendar</PrimaryContent>
+                    <SecondaryContent>
+                        @if (_status?.IsConnected == true)
+                        {
+                            @(string.IsNullOrWhiteSpace(_status.GoogleEmail)
+                                ? "מחובר"
+                                : $"מחובר ל־{_status.GoogleEmail}")
+                        }
+                        else
+                        {
+                            @("חיבור יומן Google")
+                        }
+                    </SecondaryContent>
+                    <Trailing>
+                        @if (_status?.IsConnected == true)
+                        {
+                            <MButton Variant="MButton.ButtonVariant.Danger"
+                                     Size="MButton.ButtonSize.Small"
+                                     Loading="_busy"
+                                     OnClick="DisconnectAsync">ניתוק</MButton>
+                        }
+                        else
+                        {
+                            <MButton Variant="MButton.ButtonVariant.Primary"
+                                     Size="MButton.ButtonSize.Small"
+                                     Loading="_busy"
+                                     OnClick="ConnectAsync">חיבור</MButton>
+                        }
+                    </Trailing>
+                </MRow>
+            </MRowList>
+
+            @if (_error is not null)
+            {
+                <p class="spf-int-note spf-int-note-error" role="alert">@_error</p>
+            }
+            else if (_justConnected)
+            {
+                <p class="spf-int-note spf-int-note-ok">Google Calendar חובר בהצלחה.</p>
+            }
+        }
+    </div>
+</MCard>
+
+@code {
+    private GoogleCalendarStatusDto? _status;
+
+    private bool    _loading = true;
+    private bool    _busy;
+    private bool    _justConnected;
+    private string? _error;
+
+    /// <summary>Hebrew copy for each coarse failure flag the callback can put on
+    /// the return URL. The server never puts a reason, a token or an exception
+    /// text in a query string, so these five flags are the whole vocabulary.</summary>
+    private static string? ErrorMessageFor(string query) => query switch
+    {
+        var q when q.Contains("gcalError=denied")    => "החיבור ליומן Google בוטל.",
+        var q when q.Contains("gcalError=state")     => "בקשת החיבור פגה. נסי שנית.",
+        var q when q.Contains("gcalError=norefresh") => "Google לא החזירה הרשאה קבועה. נסי שנית ואשרי את הבקשה.",
+        var q when q.Contains("gcalError=config")    => "האינטגרציה עם Google Calendar עדיין לא הוגדרה במערכת.",
+        var q when q.Contains("gcalError=")          => "שגיאה בחיבור ליומן Google. נסי שנית.",
+        _                                            => null,
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var query      = new Uri(Nav.Uri).Query;
+        _justConnected = query.Contains("gcalConnected=true");
+        _error         = ErrorMessageFor(query);
+
+        _status  = await GoogleCalendar.GetStatusAsync();
+        _loading = false;
+    }
+
+    private async Task ConnectAsync()
+    {
+        _busy  = true;
+        _error = null;
+
+        // Minted per click: the URL carries a single-use state that expires in
+        // minutes, so it is never cached or reused.
+        var url = await GoogleCalendar.GetConnectUrlAsync();
+        _busy = false;
+
+        if (url is not null)
+            Nav.NavigateTo(url, forceLoad: true);
+        else
+            _error = "האינטגרציה עם Google Calendar עדיין לא הוגדרה במערכת.";
+    }
+
+    private async Task DisconnectAsync()
+    {
+        _busy          = true;
+        _error         = null;
+        _justConnected = false;
+
+        var ok = await GoogleCalendar.DisconnectAsync();
+
+        // Re-read instead of assuming. Disconnecting touches nothing about the
+        // Motiva session — the same page, the same token, still signed in.
+        if (ok) _status = await GoogleCalendar.GetStatusAsync();
+        else    _error  = "הניתוק נכשל. נסי שנית.";
+
+        _busy = false;
+    }
+}

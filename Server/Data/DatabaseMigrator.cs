@@ -933,6 +933,119 @@ public static class DatabaseMigrator
                 FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
             )");
 
+        // ── GoogleCalendarConnections table ──────────────────────────────────
+        // One row per user — the SINGLE source of truth for "this user has
+        // authorized Motiva against their Google Calendar".
+        //
+        // UserPreferences.GoogleCalendarConnected is NOT that. It is a
+        // self-declared checkbox that predates any OAuth flow; it is left in
+        // place (nothing reads it for connection state) rather than dropped, so
+        // this migration stays additive.
+        //
+        //   AccessTokenProtected  — access token, ASP.NET Core Data Protection
+        //   RefreshTokenProtected — refresh token, same. NEVER plaintext: this
+        //                           is a long-lived credential and the SQLite
+        //                           file also ships as a demo DB.
+        //   AccessTokenExpiresAt  — UTC, SQLite datetime() text format
+        //   Scopes                — what Google actually granted (may differ
+        //                           from what was requested)
+        //   IsActive              — 0 on disconnect / invalid_grant. Both token
+        //                           columns are wiped at the same time, so an
+        //                           inactive row is inert, not dormant.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS GoogleCalendarConnections (
+                Id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId                INTEGER NOT NULL UNIQUE,
+                GoogleEmail           TEXT    NOT NULL DEFAULT '',
+                AccessTokenProtected  TEXT    NOT NULL DEFAULT '',
+                RefreshTokenProtected TEXT    NOT NULL DEFAULT '',
+                AccessTokenExpiresAt  TEXT,
+                Scopes                TEXT    NOT NULL DEFAULT '',
+                ConnectedAt           TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt             TEXT    NOT NULL DEFAULT (datetime('now')),
+                IsActive              INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // ── GoogleCalendarEventLinks table ───────────────────────────────────
+        // The durable link between a Motiva task and the Google Calendar event a
+        // user created for it. NOT a boolean "synced" flag: it stores the real
+        // Google event id, which is what makes later update and delete possible.
+        //
+        // PERSONAL BY DESIGN. The row is keyed on (UserId, TaskType, TaskId), so
+        // a team task can hold one row per team member and each one is that
+        // member's own event on their own calendar. Nobody is invited to anyone
+        // else's — shared invitations are the meetings phase.
+        //
+        //   GoogleEventId  — client-supplied id (base32hex), generated BEFORE the
+        //                    insert and reused on retry. Together with the UNIQUE
+        //                    index below this is what prevents duplicate events:
+        //                    a retry re-sends the same id and Google answers 409
+        //                    instead of creating a second event.
+        //   SyncState      — 'pending' until Google confirms, then 'synced'. Only
+        //                    'synced' may be shown to the user as "ביומן Google".
+        //   ScheduledStart — Israel WALL-CLOCK 'yyyy-MM-dd HH:mm', not UTC. The
+        //   ScheduledEnd     user picked a time on a clock, and the event is sent
+        //                    to Google with an explicit IANA zone rather than as
+        //                    an instant, so DST is Google's problem, not ours.
+        //
+        // No FK on TaskId: TaskType means the column can point at more than one
+        // table later. Deletion is handled explicitly instead — see
+        // GoogleCalendarEventService.RemoveLinksForDeletedTaskAsync.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS GoogleCalendarEventLinks (
+                Id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId         INTEGER NOT NULL,
+                TaskId         INTEGER NOT NULL,
+                TaskType       TEXT    NOT NULL DEFAULT 'TeamTask',
+                GoogleEventId  TEXT    NOT NULL DEFAULT '',
+                CalendarId     TEXT    NOT NULL DEFAULT 'primary',
+                ScheduledStart TEXT    NOT NULL DEFAULT '',
+                ScheduledEnd   TEXT    NOT NULL DEFAULT '',
+                SyncState      TEXT    NOT NULL DEFAULT 'pending',
+                CreatedAt      TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt      TEXT    NOT NULL DEFAULT (datetime('now')),
+                IsActive       INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // One row per user per task — the mutex behind duplicate prevention. It
+        // covers inactive rows too, so a re-schedule reuses the row rather than
+        // racing a second one into existence.
+        await connection.ExecuteNonQueryAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS UX_GoogleCalendarEventLinks_User_Task " +
+            "ON GoogleCalendarEventLinks(UserId, TaskType, TaskId)");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_GoogleCalendarEventLinks_Task " +
+            "ON GoogleCalendarEventLinks(TaskType, TaskId)");
+
+        // ── OAuthStates table ────────────────────────────────────────────────
+        // Short-lived, single-use CSRF states for outbound OAuth flows.
+        //
+        // Only the SHA-256 hash of the state is kept, so the table cannot be
+        // read to forge a live authorization. The row — not the query string —
+        // is what binds a callback to a Motiva user, which is why the state
+        // itself carries no user id (unlike the older Slack Base64(userId)
+        // state, deliberately not reused here).
+        //
+        // Provider-keyed so a second integration can share the mechanism.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS OAuthStates (
+                Id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                Provider   TEXT    NOT NULL,
+                StateHash  TEXT    NOT NULL UNIQUE,
+                UserId     INTEGER NOT NULL,
+                CreatedAt  TEXT    NOT NULL DEFAULT (datetime('now')),
+                ExpiresAt  TEXT    NOT NULL,
+                ConsumedAt TEXT,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_OAuthStates_Provider_Expiry " +
+            "ON OAuthStates(Provider, ExpiresAt)");
+
         // ── UserPreferences table ─────────────────────────────────────────────
         // Per-user notification and integration preferences for the student
         // profile/settings page. UserId is the primary key so each user has at
