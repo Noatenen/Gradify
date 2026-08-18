@@ -1,0 +1,111 @@
+@namespace AuthWithAdmin.Client.Pages.Planning
+@inject IPersonalTasksService PersonalTasks
+
+@*
+    PersonalTaskPopover — what an "אישי" chip opens.
+
+    THE LIMITATION, STATED PLAINLY
+    PersonalTasks has no detail/edit UI anywhere in the application — no modal,
+    no page, no component. IPersonalTasksService exposes exactly three
+    operations: Get, Create and Toggle. There is no Update and no Delete
+    endpoint, so this surface cannot offer editing or deletion without new
+    backend work, which is out of scope.
+
+    What it therefore does: shows what the DTO carries, and offers the one
+    mutation the existing API already supports — Toggle. Everything else is
+    read-only, and the popover says so rather than showing dead controls.
+*@
+
+<MModal IsOpen="@(Task is not null)"
+        Title="@(Task?.Title ?? "")"
+        Size="MModal.ModalSize.Small"
+        OnClose="OnClose">
+
+    @* Once one named fragment is used, every child must be named. *@
+    <ChildContent>
+    @if (Task is not null)
+    {
+        <div class="pl-pt">
+            <span class="pl-pt-badge">משימה אישית</span>
+
+            <dl class="pl-pt-rows">
+                <div class="pl-pt-row">
+                    <dt>תאריך יעד</dt>
+                    <dd>@(Task.Date.ToString("dd.MM.yyyy"))</dd>
+                </div>
+                <div class="pl-pt-row">
+                    <dt>סטטוס</dt>
+                    <dd>@(Task.IsDone ? "הושלם" : Task.IsOverdue ? "באיחור" : "פתוח")</dd>
+                </div>
+            </dl>
+
+            <p class="pl-pt-note">
+                משימות אישיות גלויות לך בלבד ואינן משויכות לאבן דרך.
+                עריכה ומחיקה אינן זמינות מהיומן.
+            </p>
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <p class="pl-pt-error" role="alert">@_error</p>
+            }
+        </div>
+    }
+    </ChildContent>
+
+    <FooterContent>
+        @if (Task is not null)
+        {
+            <MButton Variant="MButton.ButtonVariant.Primary"
+                     Size="MButton.ButtonSize.Small"
+                     Loading="@_busy"
+                     LoadingText="שומר…"
+                     OnClick="ToggleAsync">
+                @(Task.IsDone ? "החזרה לפתוח" : "סימון כהושלם")
+            </MButton>
+            <MButton Variant="MButton.ButtonVariant.Secondary"
+                     Size="MButton.ButtonSize.Small"
+                     OnClick="OnClose">
+                סגירה
+            </MButton>
+        }
+    </FooterContent>
+</MModal>
+
+@code {
+    [Parameter] public PlanningItem? Task { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised after a successful toggle so the page can reload the
+    /// dataset — the chip's done state lives in the page's item list.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private bool   _busy;
+    private string _error = "";
+
+    protected override void OnParametersSet()
+    {
+        if (Task is null) { _error = ""; _busy = false; }
+    }
+
+    private async System.Threading.Tasks.Task ToggleAsync()
+    {
+        if (Task is null || _busy) return;
+
+        _busy  = true;
+        _error = "";
+
+        bool ok = await PersonalTasks.ToggleAsync(Task.SourceId);
+
+        _busy = false;
+
+        if (!ok)
+        {
+            _error = "לא הצלחנו לעדכן את המשימה. נסי שוב.";
+            return;
+        }
+
+        await OnChanged.InvokeAsync();
+        await OnClose.InvokeAsync();
+    }
+}

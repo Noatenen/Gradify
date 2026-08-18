@@ -1,0 +1,135 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@* ─────────────────────────────────────────────────────────────
+   DashboardFocusCard — "משימה קרובה להגשה"
+   Visual source: Motiva Student Dashboard V4.dc.html:130-156.
+
+   V4's answer to "what should I do next?": exactly ONE recommended
+   action on the page's single highest-emphasis surface — an
+   ambient-edge card, 22px radius, the whole card an activation
+   target, with the CTA vertically centred at the reading end.
+
+   The task shown is the real nearest-due incomplete submission
+   (StudentDashboardModel.NextSubmission), falling back to the first
+   incomplete task of the current milestone. The urgency flag is the
+   real exception ruleset, not a prop.
+
+   DEVIATIONS FROM V4, and why:
+     • V4's FOCUS_STATES ships five hand-written "reason" paragraphs
+       and five CTA labels. Neither is backed by a field. The reason
+       line uses the task's real Description and falls back to a
+       single neutral sentence; the CTA is one fixed label.
+     • V4 also has an "up_to_date" state with a "למרכז הידע" CTA.
+       That is kept, because "nothing is due" is a real state the
+       data can express — but it routes to the real /learning page.
+   ───────────────────────────────────────────────────────────── *@
+
+<section class="dfc-section" aria-labelledby="dfc-heading">
+    <h2 class="dfc-heading" id="dfc-heading">@Heading</h2>
+
+    <MCard Variant="MCard.CardVariant.AmbientEdge"
+           Padding="MCard.CardPadding.None"
+           Class="dfc-card"
+           Interactive="true"
+           OnClick="Activate">
+        <div class="dfc-body">
+            <div class="dfc-main">
+                @if (_task is not null && _isUrgent)
+                {
+                    <span class="dfc-flag">
+                        <MStatusDot Tone="MStatusDot.DotTone.Rose" />
+                        דורש תשומת לב
+                    </span>
+                }
+
+                <h3 class="dfc-title">@Title</h3>
+                <p class="dfc-reason">@Reason</p>
+
+                @if (_task?.DueDate is { } due)
+                {
+                    <p class="dfc-due">
+                        להגשה עד @due.ToString("dd.MM.yyyy")
+                        @if (StudentDashboardModel.DaysUntil(due) is { } days)
+                        {
+                            <span class="dfc-due-days @DaysToneClass(days)"> · @StudentDashboardModel.DaysText(days)</span>
+                        }
+                    </p>
+                }
+            </div>
+
+            @* Rendered as a span, not a button: the whole card is already the
+               single activation target (MCard Interactive), and a nested
+               button inside it would be a second, competing one. *@
+            <span class="dfc-cta motiva-cta">
+                @Cta
+                <span class="oi oi-chevron-left dfc-cta-arrow" aria-hidden="true"></span>
+            </span>
+        </div>
+    </MCard>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones { get; set; } = new();
+
+    /// <summary>Opens the real TaskDetailModal for the focused task.</summary>
+    [Parameter] public EventCallback<int> OnOpenTask { get; set; }
+
+    /// <summary>Invoked instead when there is nothing due — V4's "up_to_date"
+    /// state, whose CTA points at the Knowledge Center.</summary>
+    [Parameter] public EventCallback OnOpenLearning { get; set; }
+
+    private MilestoneSummaryDto? _current => StudentDashboardModel.CurrentMilestone(Milestones);
+
+    // Same pick as before the rebuild, now stated once in the shared model so
+    // the attention band and the deadline list exclude exactly this task.
+    private TaskSummaryDto? _task => StudentDashboardModel.FocusTask(Milestones);
+
+    private bool _isUrgent => _task is not null && StudentDashboardModel.IsAttentionItem(_task);
+
+    private string Heading => _task is null ? "מצב הפרויקט" : "משימה קרובה להגשה";
+
+    private string Title => _task?.Title ?? "הכול מעודכן";
+
+    // V4 ships five hand-written "reason" paragraphs driven by a prop. None of
+    // them is backed by a field. The task's real Description is used when there
+    // is one; otherwise the line states the task's actual workflow state, which
+    // IS real data. It deliberately does not restate the milestone name — the
+    // hero directly above already says which milestone the student is in, and
+    // the earlier draft's "the nearest task in milestone X" simply echoed the
+    // title back at them.
+    private string Reason
+    {
+        get
+        {
+            if (_task is null)
+                return "אין כרגע משימה שממתינה לך. זה זמן טוב לעיין בחומרי הלמידה או להתקדם על השלב הבא.";
+
+            if (!string.IsNullOrWhiteSpace(_task.Description))
+                return _task.Description!;
+
+            return StudentDashboardModel.KindOf(_task) switch
+            {
+                StudentDashboardModel.AttentionKind.Returned      => "ההגשה הוחזרה לתיקון — יש לעדכן אותה ולהגיש מחדש.",
+                StudentDashboardModel.AttentionKind.Overdue       => "מועד ההגשה כבר חלף. כדאי להשלים את המשימה בהקדם.",
+                StudentDashboardModel.AttentionKind.PendingMoodle => "אושרה ע״י המנחה — נותר לאשר שההגשה בוצעה במודל.",
+                _ when _task.LatestSubmissionStatus is not null   => "ההגשה נשלחה וממתינה לבדיקת המנחה.",
+                _                                                 => "זו המשימה הקרובה ביותר להגשה בפרויקט שלך.",
+            };
+        }
+    }
+
+    private string Cta => _task is null ? "למרכז הידע" : "פתיחת משימה";
+
+    private static string DaysToneClass(int days) =>
+        days < 0    ? "dfc-due-overdue"
+        : days <= 3 ? "dfc-due-urgent"
+        : "dfc-due-normal";
+
+    private async Task Activate()
+    {
+        if (_task is not null)
+            await OnOpenTask.InvokeAsync(_task.Id);
+        else
+            await OnOpenLearning.InvokeAsync();
+    }
+}

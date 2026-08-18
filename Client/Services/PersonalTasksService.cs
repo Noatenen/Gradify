@@ -8,6 +8,16 @@ public interface IPersonalTasksService
     Task<List<PersonalTaskDto>>                          GetAsync();
     Task<(PersonalTaskDto? Task, string? Error)>         CreateAsync(CreatePersonalTaskRequest req);
     Task<bool>                                           ToggleAsync(int id);
+
+    /// <summary>Edits title / description / due date. Returns an error string
+    /// on failure, mirroring CreateAsync so the modal can show one message for
+    /// either path. The server scopes the UPDATE to the caller, so another
+    /// user's id simply answers "not found".</summary>
+    Task<string?>                                        UpdateAsync(int id, UpdatePersonalTaskRequest req);
+
+    /// <summary>Removes the task. False on any failure, including a task that
+    /// is not the caller's.</summary>
+    Task<bool>                                           DeleteAsync(int id);
 }
 
 public class PersonalTasksService : IPersonalTasksService
@@ -47,6 +57,32 @@ public class PersonalTasksService : IPersonalTasksService
         try
         {
             var res = await _http.PatchAsync($"api/projects/personal-tasks/{id}/toggle", null);
+            return res.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    public async Task<string?> UpdateAsync(int id, UpdatePersonalTaskRequest req)
+    {
+        try
+        {
+            var res = await _http.PutAsJsonAsync($"api/projects/personal-tasks/{id}", req);
+            if (res.IsSuccessStatusCode) return null;
+
+            var err = await res.Content.ReadAsStringAsync();
+            return string.IsNullOrWhiteSpace(err) ? "שגיאה בשמירת המשימה" : err.Trim('"');
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    public async Task<bool> DeleteAsync(int id)
+    {
+        try
+        {
+            var res = await _http.DeleteAsync($"api/projects/personal-tasks/{id}");
             return res.IsSuccessStatusCode;
         }
         catch { return false; }

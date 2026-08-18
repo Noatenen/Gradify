@@ -1,0 +1,415 @@
+@page "/milestones"
+@layout AppLayout
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Pages.Tasks
+@inject ITasksService          TasksService
+@inject IMilestonesService     MilestonesService
+@inject ITeamTasksService      TeamTasksService
+@inject IPersonalTasksService  PersonalTasksService
+@inject IProjectContextService ProjectContext
+@attribute [Authorize]
+
+@*
+    StudentPlanningPage — "יומן ותכנון" (/milestones)
+
+    Implements design-reference/motiva/project/Motiva Calendar.dc.html, bound
+    to real Motiva data. The screen is the 5th member of the finalized student
+    set; all four approved screens link to it under this name.
+
+    DATA
+    Three existing endpoints, no new ones, no DTO or backend change:
+      /api/projects/my-tasks       submissions, system tasks, mentor tasks, AND
+                                   the milestone date WINDOWS (OpenDate /
+                                   CloseDate / team-effective DueDate) that the
+                                   Timeline's bands are made of
+      /api/projects/my-milestones  the complete milestone ROSTER plus the
+                                   server's ProgressPct / IsCurrent. Needed
+                                   alongside my-tasks because my-tasks groups by
+                                   task, so a milestone with zero tasks is absent
+                                   from it entirely — see PlanningMapper.
+      /api/projects/team-tasks     team tasks
+      /api/projects/personal-tasks personal tasks
+      /api/projects/my-context     the hero's current-milestone line (cached)
+
+    ABSENT BY DESIGN
+    Meetings/events. No table, entity, DTO or endpoint exists, so the Design's
+    `event` type, its פגישות filter, its event form and its hour grid are all
+    gone rather than faked.
+*@
+
+@* ── Reused modals — task detail is never re-implemented here ── *@
+<TaskDetailModal TaskId="@_detailTaskId" OnClose="CloseTaskDetail" />
+
+<TeamTaskEditModal IsOpen="@_teamModalOpen"
+                   EditingTask="@_editingTeamTask"
+                   OnClose="CloseTeamModal"
+                   OnCreated="OnTeamTaskSaved"
+                   OnUpdated="OnTeamTaskSaved" />
+
+<MilestoneDetailPopover Milestone="@_milestonePopover"
+                        Items="@MilestonePopoverItems"
+                        OnClose="() => _milestonePopover = null"
+                        OnOpenItem="OpenItem" />
+
+<PersonalTaskPopover Task="@_personalPopover"
+                     OnClose="() => _personalPopover = null"
+                     OnChanged="ReloadAsync" />
+
+@* ── Hero ──
+   MPageHeader/Compact, the same treatment Tasks and Knowledge Center use. The
+   bleed cancels the shell's 40px inline inset so the ambient band reaches the
+   shell edge while its text stays on the content boundary. *@
+<div class="pl-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="יומן ותכנון">
+        <SubtitleContent>
+            @if (!string.IsNullOrWhiteSpace(_context?.CurrentMilestoneTitle))
+            {
+                @:אבן דרך נוכחית:
+                <strong class="pl-hero-ms">@_context!.CurrentMilestoneTitle</strong>
+                @if (_context.CurrentMilestoneDueDate.HasValue)
+                {
+                    @($" · יעד {_context.CurrentMilestoneDueDate.Value:dd.MM}")
+                }
+            }
+            else if (!_isLoading)
+            {
+                @:תכנון הפרויקט — אבני דרך, הגשות ומשימות על ציר הזמן.
+            }
+        </SubtitleContent>
+    </MPageHeader>
+</div>
+
+@if (_isLoading)
+{
+    <div class="pl-loading">
+        <div class="pl-spinner"></div>
+        <span>טוענת יומן…</span>
+    </div>
+}
+else if (_loadError)
+{
+    <MEmptyState Title="אירעה שגיאה בטעינת היומן"
+                 Description="נסי לרענן את הדף." />
+}
+else if (!HasProject)
+{
+    <MEmptyState Title="לא שויכת לפרויקט עדיין"
+                 Description="פני למנחה שלך להשמת הצוות." />
+}
+else
+{
+    <div class="pl-page">
+
+        <PlanningToolbar View="@_view"
+                         PeriodLabel="@PeriodLabel"
+                         TimelineFullSpan="@_timelineFullSpan"
+                         OnViewChange="SetView"
+                         OnTimelineScopeChange="SetTimelineScope"
+                         OnPrev="PrevPeriod"
+                         OnNext="NextPeriod"
+                         OnToday="GoToday"
+                         OnNewTask="OpenNewTeamTask" />
+
+        <PlanningFilterChips Active="@_filter"
+                             AllItems="@_allItems"
+                             OnChange="SetFilter" />
+
+        @* ── Desktop / laptop ──
+           Rendered and hidden by CSS rather than by a measured viewport: no JS
+           interop, no resize listener to leak, and no first-paint flash from a
+           width that is not known until after render. *@
+        <div class="pl-wide">
+            @switch (_view)
+            {
+                case PlanningView.Month:
+                    <PlanningMonthGrid Anchor="@_anchor"
+                                       Items="@FilteredItems"
+                                       OnOpenItem="OpenItem" />
+                    break;
+
+                case PlanningView.Week:
+                    <PlanningWeekView Anchor="@_anchor"
+                                      Items="@FilteredItems"
+                                      OnOpenItem="OpenItem" />
+                    break;
+
+                default:
+                    <PlanningTimeline RangeStart="@TimelineStart"
+                                      RangeEnd="@TimelineEnd"
+                                      FitToWidth="@_timelineFullSpan"
+                                      Milestones="@_milestones"
+                                      Items="@FilteredItems"
+                                      OnOpenItem="OpenItem"
+                                      OnOpenMilestone="OpenMilestone" />
+                    break;
+            }
+        </div>
+
+        @* ── Mobile ── *@
+        <div class="pl-narrow">
+            @if (_view == PlanningView.Timeline)
+            {
+                <PlanningTimelineCards RangeStart="@TimelineStart"
+                                       RangeEnd="@TimelineEnd"
+                                       Milestones="@_milestones"
+                                       Items="@FilteredItems"
+                                       OnOpenItem="OpenItem"
+                                       OnOpenMilestone="OpenMilestone" />
+            }
+            else
+            {
+                <PlanningAgendaList RangeStart="@RangeStart"
+                                    RangeEnd="@RangeEnd"
+                                    Items="@FilteredItems"
+                                    OnOpenItem="OpenItem" />
+            }
+        </div>
+
+        <p class="pl-foot">
+            הגשות ומשימות מערכת מגיעות מהפרויקט ואינן ניתנות לעריכה מהיומן.
+            משימות צוות הן אותן משימות שמופיעות במסך <a href="/tasks">המשימות שלי</a>.
+        </p>
+
+    </div>
+}
+
+@code {
+    // ── Loaded data ───────────────────────────────────────────────────────────
+    private TasksPageDto?          _tasks;
+    private ProjectContextDto?     _context;
+    private List<PlanningItem>     _allItems   = new();
+    private List<PlanningMilestone> _milestones = new();
+
+    private bool _isLoading = true;
+    private bool _loadError;
+
+    // ── View state ────────────────────────────────────────────────────────────
+    private PlanningView  _view   = PlanningView.Month;
+    private DateTime      _anchor = DateTime.Today;
+    private PlanningKind? _filter;
+
+    /// <summary>Timeline scope. Defaults to the whole project, which is the
+    /// scale that answers "איפה אני נמצאת בציר הזמן של הפרויקט".</summary>
+    private bool _timelineFullSpan = true;
+
+    // ── Modal state ───────────────────────────────────────────────────────────
+    private int                _detailTaskId;
+    private bool               _teamModalOpen;
+    private TeamTaskDto?       _editingTeamTask;
+    private PlanningMilestone? _milestonePopover;
+    private PlanningItem?      _personalPopover;
+
+    /// <summary>The raw team tasks, kept so a chip click can hand the original
+    /// DTO to TeamTaskEditModal rather than a projection of it.</summary>
+    private List<TeamTaskDto> _teamTasks = new();
+
+    private bool HasProject => _tasks is not null && _context is not null;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+
+        var tasksTask     = TasksService.GetTasksAsync();
+        var milestoneTask = MilestonesService.GetMilestonesAsync();
+        var teamTask      = TeamTasksService.GetAsync();
+        var personalTask  = PersonalTasksService.GetAsync();
+        var contextTask   = ProjectContext.GetAsync();
+
+        await Task.WhenAll(tasksTask, milestoneTask, teamTask, personalTask, contextTask);
+
+        _tasks     = tasksTask.Result;
+        _teamTasks = teamTask.Result;
+        _context   = contextTask.Result;
+
+        // my-tasks is the load-bearing call: without it there are no project
+        // tasks at all, which is an error rather than an empty calendar.
+        _loadError = _tasks is null;
+
+        _milestones = PlanningMapper.FromMilestones(milestoneTask.Result, _tasks);
+
+        _allItems = PlanningMapper.FromTasks(_tasks)
+            .Concat(PlanningMapper.FromTeamTasks(_teamTasks))
+            .Concat(PlanningMapper.FromPersonalTasks(personalTask.Result))
+            .OrderBy(i => i.Date)
+            .ToList();
+
+        _isLoading = false;
+    }
+
+    /// <summary>Reload after a mutation. Keeps view/filter/anchor untouched —
+    /// creating a task should not throw the student back to today.</summary>
+    private async Task ReloadAsync()
+    {
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    // ── Filtering ─────────────────────────────────────────────────────────────
+    private IReadOnlyList<PlanningItem> FilteredItems =>
+        _filter is null
+            ? _allItems
+            : _allItems.Where(i => i.Kind == _filter.Value).ToList();
+
+    private void SetFilter(PlanningKind? k) => _filter = k;
+
+    private void SetView(PlanningView v) => _view = v;
+
+    private void SetTimelineScope(bool fullSpan) => _timelineFullSpan = fullSpan;
+
+    // ── Period ────────────────────────────────────────────────────────────────
+    private DateTime RangeStart => _view == PlanningView.Week
+        ? PlanningWeekView.StartOfWeek(_anchor)
+        : new DateTime(_anchor.Year, _anchor.Month, 1);
+
+    private DateTime RangeEnd => _view == PlanningView.Week
+        ? PlanningWeekView.StartOfWeek(_anchor).AddDays(6)
+        : new DateTime(_anchor.Year, _anchor.Month, 1).AddMonths(1).AddDays(-1);
+
+    private static readonly string[] MonthNames =
+    {
+        "ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני",
+        "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"
+    };
+
+    private string PeriodLabel
+    {
+        get
+        {
+            if (_view == PlanningView.Timeline && _timelineFullSpan)
+                return "כל הפרויקט";
+
+            if (_view == PlanningView.Week)
+            {
+                var s = PlanningWeekView.StartOfWeek(_anchor);
+                var e = s.AddDays(6);
+                return s.Month == e.Month
+                    ? $"{s.Day}–{e.Day} ב{MonthNames[s.Month - 1]} {s.Year}"
+                    : $"{s.Day} ב{MonthNames[s.Month - 1]} – {e.Day} ב{MonthNames[e.Month - 1]} {e.Year}";
+            }
+
+            return $"{MonthNames[_anchor.Month - 1]} {_anchor.Year}";
+        }
+    }
+
+    private void PrevPeriod() => _anchor = _view == PlanningView.Week
+        ? _anchor.AddDays(-7)
+        : _anchor.AddMonths(-1);
+
+    private void NextPeriod() => _anchor = _view == PlanningView.Week
+        ? _anchor.AddDays(7)
+        : _anchor.AddMonths(1);
+
+    private void GoToday() => _anchor = DateTime.Today;
+
+    // ── Timeline span ─────────────────────────────────────────────────────────
+    // Derived from real data only. No hardcoded window, no invented project
+    // start: Projects has no StartDate/EndDate columns, so the span is the
+    // envelope of the dates that actually exist.
+
+    private (DateTime Start, DateTime End) FullSpan
+    {
+        get
+        {
+            var dates = new List<DateTime>();
+
+            foreach (var m in _milestones)
+            {
+                if (m.Start.HasValue) dates.Add(m.Start.Value);
+                if (m.Due.HasValue)   dates.Add(m.Due.Value);
+            }
+            foreach (var i in _allItems) dates.Add(i.Date);
+
+            if (dates.Count == 0)
+            {
+                // Nothing dated at all — fall back to the current month rather
+                // than rendering a zero-width track.
+                var first = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+                return (first, first.AddMonths(1).AddDays(-1));
+            }
+
+            var min = dates.Min().Date;
+            var max = dates.Max().Date;
+
+            // Today is part of the story even when it falls outside the project's
+            // own dates — "where am I" needs the marker to be reachable.
+            if (DateTime.Today < min) min = DateTime.Today;
+            if (DateTime.Today > max) max = DateTime.Today;
+
+            // A few days of air so edge markers are not clipped by the track.
+            min = min.AddDays(-3);
+            max = max.AddDays(3);
+
+            return (min, max);
+        }
+    }
+
+    private DateTime TimelineStart => _timelineFullSpan
+        ? FullSpan.Start
+        : new DateTime(_anchor.Year, _anchor.Month, 1);
+
+    private DateTime TimelineEnd => _timelineFullSpan
+        ? FullSpan.End
+        : new DateTime(_anchor.Year, _anchor.Month, 1).AddMonths(1).AddDays(-1);
+
+    // ── Interactions ──────────────────────────────────────────────────────────
+
+    /// <summary>Single dispatch point. Every view routes chip clicks here, so
+    /// Month, Week, Timeline and Agenda cannot drift apart on behaviour.</summary>
+    private void OpenItem(PlanningItem item)
+    {
+        switch (item.Kind)
+        {
+            case PlanningKind.Submission:
+            case PlanningKind.System:
+            case PlanningKind.Mentor:
+                // The existing student task modal — self-loading by id.
+                _detailTaskId = item.SourceId;
+                break;
+
+            case PlanningKind.Team:
+                _editingTeamTask = _teamTasks.FirstOrDefault(t => t.Id == item.SourceId);
+                _teamModalOpen   = _editingTeamTask is not null;
+                break;
+
+            case PlanningKind.Personal:
+                _personalPopover = item;
+                break;
+        }
+
+        // Opening an item from inside the milestone popover replaces it.
+        _milestonePopover = null;
+    }
+
+    private void OpenMilestone(PlanningMilestone m) => _milestonePopover = m;
+
+    private IReadOnlyList<PlanningItem> MilestonePopoverItems =>
+        _milestonePopover is null
+            ? Array.Empty<PlanningItem>()
+            : FilteredItems
+                .Where(i => i.MilestoneId == _milestonePopover.ProjectMilestoneId)
+                .OrderBy(i => i.Date)
+                .ToList();
+
+    private void CloseTaskDetail() => _detailTaskId = 0;
+
+    private void OpenNewTeamTask()
+    {
+        _editingTeamTask = null;
+        _teamModalOpen   = true;
+    }
+
+    private void CloseTeamModal()
+    {
+        _teamModalOpen   = false;
+        _editingTeamTask = null;
+    }
+
+    private async Task OnTeamTaskSaved()
+    {
+        CloseTeamModal();
+        await ReloadAsync();
+    }
+}

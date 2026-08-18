@@ -1,0 +1,193 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Learning
+@inject IResourceFilesService ResourceFilesService
+
+@* ─────────────────────────────────────────────────────────────
+   DashboardResourcesSection — "חומרים מומלצים · {אבן דרך}"
+   Visual source: Motiva Student Dashboard V4.dc.html:158-195.
+
+   V4's idea is sound and backed by real data: show the material that
+   belongs to the milestone the student is standing in. The match is
+   ResourceFileDto.MilestoneName == current milestone Title — both sides
+   resolve to MilestoneTemplates.Title server-side
+   (ResourceFilesController.cs:351 and ProjectsController.cs's milestone
+   join), so this is a real relationship, not a text coincidence.
+
+   WHAT IS NOT REPRODUCED (decision M.7):
+     • V4's six-way kind taxonomy (guide / tool / template / checklist /
+       video / archive) and its "חיצוני ↗" flag. Neither exists in
+       ResourceFiles. Icons, accents and type labels come from the real
+       KnowledgeCenterModel classification the approved Knowledge Center
+       already ships, so both screens classify a file identically.
+     • Any fallback to generic material. When nothing is attached to the
+       current milestone the section renders ONE quiet line saying so —
+       it never presents project-wide files as milestone recommendations.
+
+   Capped at three items, per the density requirement.
+
+   Like the Knowledge Center's own rows, the element each card renders
+   follows the resource's real action: an <a download> for a file, an
+   <a target="_blank"> for an external link, a <button> for the video
+   modal. That is why the card is not hardcoded to one of them.
+   ───────────────────────────────────────────────────────────── *@
+
+@if (_show)
+{
+    <section class="drs-section" aria-labelledby="drs-heading">
+        <div class="drs-head">
+            <h2 class="drs-heading" id="drs-heading">
+                חומרים מומלצים
+                @if (!string.IsNullOrWhiteSpace(MilestoneTitle))
+                {
+                    <span class="drs-heading-stage"> · @MilestoneTitle</span>
+                }
+            </h2>
+            <a class="drs-all" href="/learning">למרכז הידע</a>
+        </div>
+
+        @if (_items.Count > 0)
+        {
+            <div class="drs-grid">
+                @foreach (var res in _items)
+                {
+                    var captured = res;
+
+                    <MCard Variant="MCard.CardVariant.AmbientEdge"
+                           Padding="MCard.CardPadding.None"
+                           Class="drs-card">
+                        @if (captured.Action == KnowledgeResourceAction.PlayVideo)
+                        {
+                            <button type="button" class="drs-hit"
+                                    @onclick="@(() => _playing = captured)"
+                                    aria-label="@($"נגן {captured.Title}")">
+                                @CardBody(captured)
+                            </button>
+                        }
+                        else if (captured.Action == KnowledgeResourceAction.Download)
+                        {
+                            <a class="drs-hit" href="@captured.Href" download="@captured.DownloadName">
+                                @CardBody(captured)
+                            </a>
+                        }
+                        else if (captured.Action == KnowledgeResourceAction.External)
+                        {
+                            <a class="drs-hit" href="@captured.Href" target="_blank" rel="noopener noreferrer">
+                                @CardBody(captured)
+                            </a>
+                        }
+                        else
+                        {
+                            <div class="drs-hit drs-hit-inert">
+                                @CardBody(captured)
+                            </div>
+                        }
+                    </MCard>
+                }
+            </div>
+        }
+        else
+        {
+            @* Honest, compact, one line — never a stand-in for real
+               milestone material. *@
+            <p class="drs-none">אין עדיין חומרים המשויכים לאבן הדרך הזו.</p>
+        }
+    </section>
+}
+
+@* Video plays in place, mirroring the Knowledge Center's own modal. *@
+@if (_playing is not null)
+{
+    <div class="drs-video-overlay" @onclick="CloseVideo">
+        <div class="drs-video-modal" @onclick:stopPropagation="true"
+             role="dialog" aria-modal="true" aria-label="@_playing.Title">
+            <div class="drs-video-head">
+                <h3 class="drs-video-title">@_playing.Title</h3>
+                <button type="button" class="drs-video-close" @onclick="CloseVideo" aria-label="סגירה">
+                    <span aria-hidden="true">✕</span>
+                </button>
+            </div>
+            @if (KnowledgeCenterModel.ToEmbedUrl(_playing.VideoUrl) is { } embed)
+            {
+                <iframe class="drs-video-frame" src="@embed" title="@_playing.Title"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture"
+                        allowfullscreen></iframe>
+            }
+            else
+            {
+                <p class="drs-video-fallback">
+                    <a href="@_playing.VideoUrl" target="_blank" rel="noopener noreferrer">פתיחת הסרטון בחלון חדש</a>
+                </p>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>Title of the milestone whose material should be shown. Null or
+    /// empty means there is no active milestone — the section stays hidden.</summary>
+    [Parameter] public string? MilestoneTitle { get; set; }
+
+    private const int MaxItems = 3;
+
+    private List<KnowledgeResource> _items = new();
+    private KnowledgeResource?      _playing;
+    private bool                    _loaded;
+    private string?                 _loadedFor;
+
+    // Hidden while loading, on a load failure, and when there is no active
+    // milestone: an empty recommendations block is noise on a screen whose
+    // job is a fast overview.
+    private bool _show => _loaded && !string.IsNullOrWhiteSpace(MilestoneTitle);
+
+    // Every item carries a resource-type icon inside the standard Motiva icon
+    // container. The glyph is KnowledgeIcon — the SAME inline-SVG family the
+    // Knowledge Center draws, thin outline at a single weight, never an emoji
+    // and never the "oi" icon font (which is solid and reads far heavier).
+    //
+    // The type is not guessed here. res.Category comes from
+    // KnowledgeCenterModel's own classifier, over the resource's real ItemType
+    // and ContentType, so the four glyphs map onto conditions that actually
+    // exist in the data:
+    //     pdf / doc / docx / txt      → document glyph   (Documents)
+    //     ItemType == "Video"         → play glyph       (Videos)
+    //     ppt / pptx / xls / xlsx     → frames glyph     (Slides)
+    //     images, archives, anything else → picture glyph (Images)
+    // No category is invented for a type the library cannot produce, and the
+    // same file therefore shows the same glyph here and on /learning.
+    //
+    // It stays SECONDARY to the title: 16px inside a 32px chip at an 8% tint,
+    // against a semibold 14px title.
+    private RenderFragment CardBody(KnowledgeResource res) => @<text>
+        <span class="drs-icon" style="--drs-accent: @res.Accent">
+            <KnowledgeIcon Category="res.Category" Size="16" />
+        </span>
+        <span class="drs-text">
+            <span class="drs-title">@res.Title</span>
+            <span class="drs-type">@res.TypeLabel</span>
+        </span>
+    </text>;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.IsNullOrWhiteSpace(MilestoneTitle)) return;
+        if (_loadedFor == MilestoneTitle) return;
+
+        _loadedFor = MilestoneTitle;
+
+        // Same endpoint the approved Knowledge Center reads. Nothing on the
+        // server, in the DTO or in the SQL is touched.
+        var files = await ResourceFilesService.GetPublicAsync();
+
+        _items = files is null
+            ? new()
+            : KnowledgeCenterModel.ToResources(files)
+                .Where(r => string.Equals(r.MilestoneLabel, MilestoneTitle, StringComparison.Ordinal))
+                .Take(MaxItems)
+                .ToList();
+
+        _loaded = files is not null;
+    }
+
+    private void CloseVideo() => _playing = null;
+}

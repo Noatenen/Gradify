@@ -1,0 +1,542 @@
+@page "/dashboard/mentor"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Mentor
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorWorkspaceService Workspace
+@inject NavigationManager Nav
+
+@*
+    ── בית — the mentor's daily cross-project workspace ─────────────────────
+    UX / IA source:  design-reference/mentor-experience/project/
+                     Motiva Mentor Home.dc.html
+    Visual source:   the implemented student experience — MPageHeader Hero
+                     exactly as StudentDashboardHero uses it, MKpiGrid/MKpiCard,
+                     MCard AmbientEdge, MRowList/MRow, MSectionHeading.
+    Data source:     IMentorWorkspaceService. Everything about "what is waiting
+                     on me" — which items, how long they have waited, how
+                     urgent that is and in what order — comes from
+                     GET /api/mentor/attention. This page no longer filters by
+                     status, computes an age or compares against a threshold;
+                     the daily digest reads the very same model, which is what
+                     keeps the morning email and this screen in agreement.
+
+    WHAT THIS REPLACED
+    /dashboard/mentor used to render OverviewDashboardPage — the LECTURER
+    dashboard, shared by URL. That page answers "how is the cohort doing"
+    with six generic totals, a health donut and an admin filter table. The
+    mentor design answers a different question — "what is waiting on ME
+    today" — so this is a new page rather than a restyle, and
+    OverviewDashboardPage keeps /dashboard/lecturer untouched.
+
+    THE PAGE'S ARGUMENT, TOP TO BOTTOM
+      1. ממתינות לתגובתך   inbound work, loudest thing on the screen
+      2. מצב הפרויקטים     health, quieter — context, not a task
+      3. העדיפות של היום   the ONE item, isolated on the highest surface
+      4. four previews     each a doorway, none of them a full list
+
+    GREETING SIZE — the design draws it at 27px; the product does not. The
+    student Dashboard states the rule ("the greeting is quiet — not a page
+    title") and MPageHeader Hero encodes it, so the greeting here resolves to
+    the same quiet step. The implemented product wins over the design file.
+*@
+
+<div class="mh-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Hero" Title="@Greeting">
+        <SubtitleContent>
+            <p class="mh-workload">@TodayLine</p>
+        </SubtitleContent>
+
+        <ChildContent>
+            @if (!_loading)
+            {
+                @* ── A. Requires action — the largest, most prominent block ── *@
+                <p class="mh-band-label">ממתינות לתגובתך</p>
+                <MKpiGrid Columns="2" Class="mh-action-grid" AriaLabel="ממתינות לתגובתך">
+                    <MKpiCard Accent="MKpiCard.KpiAccent.Violet"
+                              Value="@Counts.PendingSubmissions.ToString()"
+                              Label="הגשות לבדיקה"
+                              Href="/mentor/tasks?focus=reviews"
+                              AriaLabel="@($"{Counts.PendingSubmissions} הגשות לבדיקה — מעבר לתור העבודה")">
+                        <Icon><MentorGlyph Kind="MentorGlyph.GlyphKind.Review" /></Icon>
+                    </MKpiCard>
+                    <MKpiCard Accent="MKpiCard.KpiAccent.Amber"
+                              Value="@Counts.AwaitingRequests.ToString()"
+                              Label="בקשות ממתינות לך"
+                              Href="/mentor/tasks?focus=requests"
+                              AriaLabel="@($"{Counts.AwaitingRequests} בקשות ממתינות לך — מעבר לתור העבודה")">
+                        <Icon><MentorGlyph Kind="MentorGlyph.GlyphKind.Request" /></Icon>
+                    </MKpiCard>
+                </MKpiGrid>
+
+                @* ── B. Project health — lighter, secondary, and a filter ──
+                     Clicking a state filters the הפרויקטים שלי preview below,
+                     which is what the design's own KPI handlers do. ── *@
+                <p class="mh-band-label mh-band-label-quiet">מצב הפרויקטים</p>
+                <MKpiGrid Columns="3" Class="mh-health-grid" AriaLabel="מצב הפרויקטים">
+                    @foreach (var h in AllHealthStates)
+                    {
+                        var state = h;
+                        <MKpiCard Accent="@MentorHealthStates.Accent(state)"
+                                  Value="@CountOf(state).ToString()"
+                                  Label="@MentorHealthStates.CountLabel(state)"
+                                  Pressed="@(_healthFilter == state)"
+                                  OnClick="@(() => ToggleHealth(state))"
+                                  AriaLabel="@($"{CountOf(state)} פרויקטים {MentorHealthStates.CountLabel(state)} — סינון")">
+                            <Icon><MentorGlyph Kind="@MentorGlyph.For(state)" /></Icon>
+                        </MKpiCard>
+                    }
+                </MKpiGrid>
+
+                @if (_healthFilter is not null)
+                {
+                    <div class="mh-filter-chip">
+                        <span>מציג: פרויקטים @MentorHealthStates.CountLabel(_healthFilter.Value)</span>
+                        <button type="button" class="mh-filter-clear" @onclick="ClearHealth">נקה ✕</button>
+                    </div>
+                }
+            }
+        </ChildContent>
+    </MPageHeader>
+</div>
+
+<div class="mh-body">
+
+    @if (_loading)
+    {
+        <div class="mh-state" role="status" aria-live="polite">
+            <span class="mh-spinner" aria-hidden="true"></span>
+            <span>טוענת את סביבת העבודה…</span>
+        </div>
+    }
+    else
+    {
+        @* ── 3. העדיפות של היום — one item, on the highest surface ── *@
+        <MSectionHeading Text="העדיפות של היום" />
+        <MCard Variant="MCard.CardVariant.AmbientEdge" Class="mh-priority">
+            @if (_priority is null)
+            {
+                <div class="mh-priority-calm">
+                    <strong class="mh-priority-calm-title">הכול תחת שליטה.</strong>
+                    <p class="mh-priority-calm-text">
+                        אין הגשות, בקשות או פרויקטים שדורשים את תשומת לבך היום.
+                    </p>
+                </div>
+            }
+            else
+            {
+                <div class="mh-priority-row">
+                    <div class="mh-priority-text">
+                        @* Pulse only at NEEDS ATTENTION. A pulsing dot on an item
+                           that arrived this morning would claim an urgency the
+                           product explicitly does not assert — there is no
+                           deadline, and nothing is late. *@
+                        <MStatusDot Tone="@_priority.Tone" Label="@_priority.Tag" Pulse="@_priorityUrgent" />
+                        <strong class="mh-priority-title">@_priority.Title</strong>
+                        <p class="mh-priority-desc">@_priority.Description</p>
+                    </div>
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             OnClick="@(() => Nav.NavigateTo(_priority.Href))">
+                        @_priority.Cta
+                    </MButton>
+                </div>
+            }
+        </MCard>
+
+        @* ── 4a. המשימות שלי ── *@
+        <MSectionHeading Text="המשימות שלי" LinkHref="/mentor/tasks" LinkText="לכל המשימות ←" />
+        <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Class="mh-list">
+            @if (_taskPreview.Count == 0)
+            {
+                <MEmptyState Title="אין משימות פתוחות." Class="mh-empty" />
+            }
+            else
+            {
+                <MRowList Inset="true" AriaLabel="המשימות שלי">
+                    @foreach (var t in _taskPreview)
+                    {
+                        <MRow Href="@t.Href"
+                              Primary="@t.Title"
+                              Secondary="@t.Context"
+                              Meta="@t.Due"
+                              MetaTone="@(t.Urgent ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default)">
+                            <Leading>
+                                <MStatusBadge Text="@t.Tag" Variant="@t.TagVariant" />
+                            </Leading>
+                        </MRow>
+                    }
+                </MRowList>
+            }
+        </MCard>
+
+        @* ── 4b. הפרויקטים שלי — respects the health KPI filter above ── *@
+        <MSectionHeading Text="הפרויקטים שלי" LinkHref="/mentor/projects" LinkText="לכל הפרויקטים ←" />
+        <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Class="mh-list">
+            @if (_projectPreview.Count == 0)
+            {
+                <MEmptyState Title="@(_healthFilter is null ? "לא משויכים אליך פרויקטים כרגע." : "אין פרויקטים תואמים לסינון.")"
+                             Class="mh-empty" />
+            }
+            else
+            {
+                <MRowList Inset="true" AriaLabel="הפרויקטים שלי">
+                    @foreach (var p in _projectPreview)
+                    {
+                        var health = MentorHealthStates.Of(p.HealthStatus);
+                        <MRow Href="@($"/mentor/projects/{p.Id}")"
+                              Primary="@p.Title"
+                              Secondary="@ProjectContextLine(p)"
+                              Meta="@MentorTime.DeadlineLabel(p.CurrentMilestoneDueDate)"
+                              MetaTone="@(MentorTime.IsOverdue(p.CurrentMilestoneDueDate) ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default)">
+                            <Status>
+                                <MStatusDot Tone="@MentorHealthStates.Tone(health)"
+                                            Label="@MentorHealthStates.Label(health)" />
+                            </Status>
+                        </MRow>
+                    }
+                </MRowList>
+            }
+        </MCard>
+
+        @* ── 4c. בקשות ── *@
+        <MSectionHeading Text="בקשות" LinkHref="/mentor-requests" LinkText="לכל הבקשות ←" />
+        <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Class="mh-list">
+            @if (_awaitingMe.Count == 0)
+            {
+                <MEmptyState Title="אין בקשות שממתינות לתגובתך." Class="mh-empty" />
+            }
+            else
+            {
+                <MRowList Inset="true" AriaLabel="בקשות הממתינות לתגובתך">
+                    @foreach (var r in _awaitingMe.Take(3))
+                    {
+                        var id = r.EntityId;
+                        <MRow OnClick="@(() => _openRequestId = id)"
+                              Primary="@r.Title"
+                              Secondary="@ItemContext(r)"
+                              Meta="@r.WaitingLabel"
+                              MetaTone="@ToneFor(r)"
+                              AriaLabel="@($"פתיחת הבקשה {r.Title}")">
+                            <Leading>
+                                <MStatusBadge Text="@RequestTypes.Label(r.RequestType ?? "")" />
+                            </Leading>
+                        </MRow>
+                    }
+                </MRowList>
+            }
+        </MCard>
+    }
+</div>
+
+<MentorRequestModal RequestId="@_openRequestId"
+                    WaitingLabel="@OpenRequestWaitingLabel"
+                    OnClose="@(() => _openRequestId = null)"
+                    OnChanged="ReloadAsync" />
+
+@code {
+    [CascadingParameter] private User? _user { get; set; }
+
+    private MentorWorkspace _ws = MentorWorkspace.Empty;
+    private bool _loading = true;
+    private int? _openRequestId;
+    private MentorHealth? _healthFilter;
+
+    private IReadOnlyList<MentorAttentionItemDto> _reviews    = Array.Empty<MentorAttentionItemDto>();
+    private IReadOnlyList<MentorAttentionItemDto> _awaitingMe = Array.Empty<MentorAttentionItemDto>();
+    private List<MentorProjectSummaryDto>    _projectPreview = new();
+    private List<PreviewTask>                _taskPreview    = new();
+    private PriorityItem?                    _priority;
+
+    /// <summary>Server-computed counts. The hero, the two action tiles and the
+    /// workload sentence all read these rather than counting a list, so they
+    /// cannot disagree with each other or with the daily digest.</summary>
+    private MentorAttentionCountsDto Counts => _ws.Attention.Counts;
+
+    /// <summary>True only when today's priority has actually been waiting.
+    /// Drives the pulse on the priority dot.</summary>
+    private bool _priorityUrgent;
+
+    /// <summary>Waiting phrase for the request currently open in the modal,
+    /// taken from the same attention item the row rendered.</summary>
+    private string? OpenRequestWaitingLabel =>
+        _openRequestId is int id
+            ? _awaitingMe.FirstOrDefault(r => r.EntityId == id)?.WaitingLabel
+            : null;
+
+    private static readonly MentorHealth[] AllHealthStates =
+        { MentorHealth.OnTrack, MentorHealth.Attention, MentorHealth.AtRisk };
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _ws = await Workspace.LoadAsync();
+
+        // Already filtered, aged and ordered worst-first by the server. No
+        // .Where on status, no .OrderBy on a timestamp — those were the three
+        // duplicated blocks this page used to carry.
+        _reviews    = _ws.Reviews;
+        _awaitingMe = _ws.AwaitingMe;
+
+        Recompute();
+        _loading = false;
+    }
+
+    // ── Shared row presentation for attention items ─────────────────────────
+
+    /// <summary>Project · team · who filed it. Every value real — the design's
+    /// "בעלים כרגע" and "פעילות אחרונה" have no backing field and stay absent
+    /// rather than invented.</summary>
+    private static string ItemContext(MentorAttentionItemDto i) =>
+        string.Join(" · ", new[]
+        {
+            i.ProjectTitle,
+            i.TeamName,
+            string.IsNullOrWhiteSpace(i.MilestoneTitle) ? null : $"אבן דרך: {i.MilestoneTitle}",
+            i.ActorName,
+        }.Where(s => !string.IsNullOrWhiteSpace(s)));
+
+    /// <summary>Rose ONLY at NEEDS ATTENTION. An item that arrived today or
+    /// yesterday stays neutral: nothing here is late, and a mentor opening the
+    /// app the same day something landed should not be alarmed by it.</summary>
+    private static MRow.RowMetaTone ToneFor(MentorAttentionItemDto i) =>
+        i.Age == MentorAttentionAge.NeedsAttention
+            ? MRow.RowMetaTone.Rose
+            : MRow.RowMetaTone.Default;
+
+    /// <summary>Everything that depends on the health filter. Split out so
+    /// toggling a KPI re-derives the previews without re-fetching.</summary>
+    private void Recompute()
+    {
+        _projectPreview = _ws.Projects
+            .Where(p => _healthFilter is null
+                        || MentorHealthStates.Of(p.HealthStatus) == _healthFilter)
+            .OrderBy(p => MentorHealthStates.Severity(MentorHealthStates.Of(p.HealthStatus)))
+            .ThenBy(p => p.CurrentMilestoneDueDate ?? DateTime.MaxValue)
+            .Take(3)
+            .ToList();
+
+        _taskPreview = BuildTaskPreview();
+        _priority    = BuildPriority();
+
+        var top = _ws.TopPriority;
+        _priorityUrgent = top is not null
+            && (top.Age == MentorAttentionAge.NeedsAttention || top.IsOverdue);
+    }
+
+    private void ToggleHealth(MentorHealth h)
+    {
+        _healthFilter = _healthFilter == h ? null : h;
+        Recompute();
+    }
+
+    private void ClearHealth()
+    {
+        _healthFilter = null;
+        Recompute();
+    }
+
+    private int CountOf(MentorHealth h) =>
+        _ws.Projects.Count(p => MentorHealthStates.Of(p.HealthStatus) == h);
+
+    // ── Copy ────────────────────────────────────────────────────────────
+
+    private string Greeting
+    {
+        get
+        {
+            var name = _user?.FirstName?.Trim();
+            var hour = DateTime.Now.Hour;
+
+            // Written as conditionals rather than as a `switch { < 12 => … }`
+            // relational pattern on purpose: inside a .razor @code block the
+            // Razor parser reads a leading `<` as the start of a tag and the
+            // whole code block stops compiling.
+            var part = hour < 12 ? "בוקר טוב"
+                     : hour < 17 ? "צהריים טובים"
+                     : hour < 21 ? "ערב טוב"
+                     :             "לילה טוב";
+
+            return string.IsNullOrEmpty(name) ? part : $"{part}, {name}";
+        }
+    }
+
+    /// <summary>Date + workload in one line. The design stacks them; the
+    /// product's hero has one subtitle slot, and splitting the sentence across
+    /// two lines here would compete with the greeting above it.</summary>
+    private string TodayLine
+    {
+        get
+        {
+            var date = DateTime.Now.ToString("dddd · d 'ב'MMMM",
+                           new System.Globalization.CultureInfo("he-IL"));
+
+            if (Counts.Total == 0)
+                return $"{date} · אין פריטים שדורשים את תשומת ליבך.";
+
+            var work = $"יש לך {Counts.Total} פריטים שדורשים את תשומת ליבך";
+
+            // "how many arrived today" separates a busy morning from a backlog:
+            // 5 items of which 5 are new is a normal day, 5 of which 0 are new
+            // is a queue that has stopped moving.
+            int newToday = Counts.SubmissionsNewToday + Counts.RequestsNewToday;
+            if (newToday > 0) work += $" · {newToday} מתוכם התקבלו היום";
+
+            return $"{date} · {work}.";
+        }
+    }
+
+    /// <summary>The row's second line: what the team is working on and how much
+    /// is queued on it. Every value is real — the design's "בעלים כרגע" and
+    /// "פעילות אחרונה" have no backing field and are therefore absent, not
+    /// invented.</summary>
+    private string ProjectContextLine(MentorProjectSummaryDto p)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(p.TeamName)) parts.Add(p.TeamName);
+        if (!string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle))
+            parts.Add($"אבן דרך: {p.CurrentMilestoneTitle}");
+        if (p.PendingMentorReview > 0) parts.Add($"{p.PendingMentorReview} הגשות לבדיקה");
+
+        var open = _ws.OpenRequestsFor(p.Id);
+        if (open > 0) parts.Add($"{open} בקשות פתוחות");
+
+        return string.Join(" · ", parts);
+    }
+
+    // ── Preview list ────────────────────────────────────────────────────
+
+    private sealed record PreviewTask(
+        string Title, string Context, string Tag,
+        MStatusBadge.BadgeVariant TagVariant, string Due, bool Urgent, string Href);
+
+    /// <summary>The design's mix: reviews first, then requests, then the
+    /// mentor's own reminders — four rows total, because this is a doorway to
+    /// המשימות שלי and not a second copy of it.
+    ///
+    /// <para>Ages and urgency come from the attention model; the two magic
+    /// thresholds that used to live in this method (4 for a review, 3 for a
+    /// request) are gone, along with the ordering — each list arrives
+    /// worst-first already.</para></summary>
+    private List<PreviewTask> BuildTaskPreview()
+    {
+        var rows = new List<PreviewTask>();
+
+        rows.AddRange(_reviews.Take(2).Select(r => new PreviewTask(
+            Title:      $"בדיקת הגשה — {r.Title}",
+            Context:    ItemContext(r),
+            Tag:        "בדיקת הגשה",
+            TagVariant: MStatusBadge.BadgeVariant.Violet,
+            Due:        r.WaitingLabel,
+            Urgent:     r.Age == MentorAttentionAge.NeedsAttention,
+            Href:       r.Href)));
+
+        rows.AddRange(_awaitingMe.Take(2).Select(q => new PreviewTask(
+            Title:      q.Title,
+            Context:    ItemContext(q),
+            Tag:        "בקשה",
+            TagVariant: MStatusBadge.BadgeVariant.Warning,
+            Due:        q.WaitingLabel,
+            Urgent:     q.Age == MentorAttentionAge.NeedsAttention,
+            Href:       "/mentor/tasks?focus=requests")));
+
+        // Personal tasks read from the FULL list, not from attention: attention
+        // holds only what is due today or earlier, and this preview is meant to
+        // show what the mentor has coming as well. They are also the one kind
+        // here with a real DueDate, so they keep deadline wording — including
+        // באיחור, which no submission or request may ever use.
+        rows.AddRange(_ws.PersonalTasks
+            .Where(t => !t.IsDone)
+            .OrderBy(t => t.DueDate ?? DateTime.MaxValue)
+            .Take(2)
+            .Select(t => new PreviewTask(
+                Title:      t.Title,
+                Context:    "משימה אישית",
+                Tag:        "אישית",
+                TagVariant: MStatusBadge.BadgeVariant.Teal,
+                Due:        MentorTime.DeadlineLabel(t.DueDate) ?? "ללא תאריך יעד",
+                Urgent:     MentorTime.IsOverdue(t.DueDate),
+                Href:       "/mentor/tasks?focus=personal")));
+
+        return rows.Take(4).ToList();
+    }
+
+    // ── Today's priority ────────────────────────────────────────────────
+
+    private sealed record PriorityItem(
+        string Tag, MStatusDot.DotTone Tone, string Title,
+        string Description, string Cta, string Href);
+
+    /// <summary>
+    /// The one item to start with.
+    ///
+    /// <para><b>The ladder is now the attention model's own ordering.</b> The
+    /// server returns Items worst-first — NEEDS ATTENTION before WAITING before
+    /// NEW, oldest first inside each band — so "today's priority" is simply its
+    /// first entry. That replaces a hand-written four-rung ladder whose top two
+    /// rungs read Projects.HealthStatus, a column nothing in this application
+    /// ever writes: in practice they never fired, and the card always fell
+    /// through to the request/submission rungs anyway. Project health is out of
+    /// scope for this change and is untouched — this simply stops pretending to
+    /// consult it.</para>
+    ///
+    /// <para>Nothing is fabricated: when there is no attention item at all, the
+    /// card says so.</para>
+    /// </summary>
+    private PriorityItem? BuildPriority()
+    {
+        var top = _ws.TopPriority;
+        if (top is null) return null;
+
+        return top.Kind switch
+        {
+            MentorAttentionKind.Request => new PriorityItem(
+                Tag:   TagFor(top, "דורש את פעולתך"),
+                Tone:  ToneDotFor(top),
+                Title: string.IsNullOrWhiteSpace(top.ActorName)
+                           ? top.Title
+                           : $"{top.ActorName}: {top.Title}",
+                Description: ItemContext(top),
+                Cta:   "ענה לבקשה",
+                Href:  "/mentor/tasks?focus=requests"),
+
+            MentorAttentionKind.Submission => new PriorityItem(
+                Tag:   TagFor(top, "הגשה ממתינה"),
+                Tone:  ToneDotFor(top),
+                Title: $"בדיקת הגשה — {top.Title}",
+                Description: ItemContext(top),
+                Cta:   "בדוק הגשה",
+                Href:  top.Href),
+
+            // A personal task — the only kind with a real deadline, and so the
+            // only one that may read as late.
+            _ => new PriorityItem(
+                Tag:   top.IsOverdue ? "משימה אישית באיחור" : "משימה אישית להיום",
+                Tone:  top.IsOverdue ? MStatusDot.DotTone.Rose : MStatusDot.DotTone.Teal,
+                Title: top.Title,
+                Description: MentorTime.DeadlineLabel(top.DueDate) ?? "",
+                Cta:   "למשימות שלי",
+                Href:  "/mentor/tasks?focus=personal"),
+        };
+    }
+
+    /// <summary>Chip text: the kind, plus the waiting phrase. At NEEDS ATTENTION
+    /// the shared state word is prepended so the escalation is stated in words
+    /// and not only in colour.</summary>
+    private static string TagFor(MentorAttentionItemDto i, string kindLabel)
+    {
+        var state = MentorAging.StateLabel(i.Age);
+        return state is null
+            ? $"{kindLabel} · {i.WaitingLabel}"
+            : $"{state} · {i.WaitingLabel}";
+    }
+
+    private static MStatusDot.DotTone ToneDotFor(MentorAttentionItemDto i) =>
+        i.Age == MentorAttentionAge.NeedsAttention
+            ? MStatusDot.DotTone.Rose
+            : MStatusDot.DotTone.Violet;
+}

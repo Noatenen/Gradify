@@ -1,366 +1,224 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @inject ITeamTasksService TeamTasksService
+@inject IGoogleCalendarService GoogleCalendar
 
 @* ─────────────────────────────────────────────────────────────
-   TeamTasksCard — student-created, team-visible work items.
-   Completely separate from the official Tasks/Submissions workflow.
-   No milestone, no mentor review, no progress impact.
+   TeamTasksCard — "משימות צוות"
+   Visual source: Motiva Student Dashboard V4.dc.html:237-274.
 
-   Embedded (default false): rendered as a zone of the shared
-   "Dashboard Workspace" surface in Dashboard.razor, alongside
-   ActionCenterCard/UpcomingSubmissionsCard — one continuous surface
-   for the whole lower dashboard instead of three separate MCards.
-   Mirrors the exact Embedded pattern those two cards already use.
-   Embedded=false keeps the original standalone MCard for reuse
-   elsewhere if ever needed.
+   Student-created, team-visible work items. Completely separate from the
+   official Tasks/Submissions workflow: no milestone, no mentor review, no
+   effect on project progress.
+
+   V4's presentation, matched: full-width ambient-edge card; header
+   carrying the title, a quiet sub-label and a 28px violet "+"; rows laid
+   out as [checkbox · title · assignee initials · due]; a maximum of three
+   open rows followed by a centred "ראה הכל" that hands off to the Tasks
+   page's own team-tasks panel rather than expanding here.
+
+   The BEHAVIOUR is the real one and is unchanged: ITeamTasksService
+   Get/Toggle/Delete plus the shared TeamTaskEditModal, which the approved
+   Tasks page also uses. Delete stays available — it moved from an inline
+   confirm into the edit modal, which is where V4 puts it.
    ───────────────────────────────────────────────────────────── *@
 
-@{
-    RenderFragment body = @<text>
+<MCard Variant="MCard.CardVariant.AmbientEdge"
+       Padding="MCard.CardPadding.None"
+       Class="ttc-card">
+    <div class="ttc-body">
+        <div class="ttc-head">
+            <div class="ttc-head-text">
+                <h2 class="ttc-title">משימות צוות</h2>
+                <span class="ttc-subtitle">משימות פנימיות וחלוקת אחריות</span>
+            </div>
+            <button type="button" class="ttc-add motiva-cta"
+                    @onclick="OpenCreateModal"
+                    title="הוספת משימת צוות" aria-label="הוספת משימת צוות">
+                <span class="oi oi-plus" aria-hidden="true"></span>
+            </button>
+        </div>
+
         @if (_loading)
         {
-            <div class="ttc-loading">
-                <div class="ttc-spinner"></div>
+            <div class="ttc-loading" role="status" aria-live="polite">
+                <span class="ttc-spinner" aria-hidden="true"></span>
+                <span>טוענת משימות צוות…</span>
             </div>
         }
-        else if (_incompleteTasks.Count == 0)
+        else if (_open.Count == 0)
         {
-            <div class="ttc-empty">
-                <span class="oi oi-people ttc-empty-icon" aria-hidden="true"></span>
-                <p class="ttc-empty-title">אין כרגע משימות צוות פתוחות</p>
-                <button class="ttc-empty-create-btn" @onclick="OpenCreateModal">
-                    + משימה חדשה
-                </button>
-            </div>
+            <MEmptyState Title="אין כרגע משימות צוות"
+                         Description="משימות שהצוות מגדיר לעצמו יופיעו כאן.">
+                <Action>
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             Size="MButton.ButtonSize.Small"
+                             OnClick="OpenCreateModal">
+                        הוספת משימה
+                    </MButton>
+                </Action>
+            </MEmptyState>
         }
         else
         {
             <div class="ttc-list">
-                @foreach (var task in _incompleteTasks)
+                @foreach (var task in _visible)
                 {
                     var captured = task;
-                    <div class="ttc-item">
+                    <div class="ttc-row">
+                        @*
+                            A real checkbox role with a real keyboard handler —
+                            unlike the milestone checklist in the hero, THIS
+                            toggle is backed by an API (TeamTasks.Toggle) and
+                            is genuinely interactive.
+                        *@
+                        <span class="ttc-check @(task.IsDone ? "ttc-check-on" : "")"
+                              role="checkbox" tabindex="0"
+                              aria-checked="@(task.IsDone ? "true" : "false")"
+                              aria-label="@(task.IsDone ? "ביטול סימון" : "סימון כהושלם")"
+                              @onclick="@(() => ToggleTask(captured))"
+                              @onclick:stopPropagation="true"
+                              @onkeydown="@(e => OnCheckKeyDown(e, captured))"
+                              @onkeydown:stopPropagation="true">
+                            @if (task.IsDone)
+                            {
+                                <span class="ttc-check-mark" aria-hidden="true">✓</span>
+                            }
+                        </span>
 
-                        <!-- Toggle: mark complete -->
-                        <button class="ttc-toggle-btn"
-                                @onclick="@(() => ToggleTask(captured))"
-                                title="@ToggleLabel(task.IsDone)"
-                                aria-label="@ToggleLabel(task.IsDone)">
-                            <span class="oi oi-circle ttc-toggle-icon" aria-hidden="true"></span>
-                        </button>
-
-                        <!-- Body: title + meta (clickable → edit) -->
-                        <div class="ttc-item-body" @onclick="@(() => OpenEditModal(captured))"
-                             role="button" tabindex="0"
-                             @onkeydown="@(e => OnItemKeyDown(e, captured))">
-                            <span class="ttc-item-title">@task.Title</span>
-                            <div class="ttc-item-meta">
-                                <span class="ttc-item-assignee">
-                                    <span class="oi oi-person ttc-meta-icon" aria-hidden="true"></span>
-                                    @task.AssigneeName
-                                </span>
-                                @if (task.DueDate.HasValue)
-                                {
-                                    var overdue = task.DueDate.Value.Date < DateTime.Today;
-                                    <span class="ttc-item-due @(overdue ? "ttc-due-overdue" : "")">
-                                        <span class="oi oi-calendar ttc-meta-icon" aria-hidden="true"></span>
-                                        @task.DueDate.Value.ToString("dd/MM/yy")
-                                    </span>
-                                }
-                            </div>
-                        </div>
-
-                        <!-- Delete: inline confirm pattern -->
-                        @if (_pendingDeleteId == task.Id)
-                        {
-                            <div class="ttc-delete-confirm">
-                                <span class="ttc-delete-confirm-text">מחק?</span>
-                                <button class="ttc-confirm-yes" @onclick="@(() => ConfirmDelete(captured))">כן</button>
-                                <button class="ttc-confirm-no"  @onclick="CancelDelete">לא</button>
-                            </div>
-                        }
-                        else
-                        {
-                            <button class="ttc-delete-btn"
-                                    @onclick="@(() => _pendingDeleteId = captured.Id)"
-                                    title="מחק משימה"
-                                    aria-label="מחק משימה">
-                                <span class="oi oi-trash" aria-hidden="true"></span>
+                        @*
+                            Title and the calendar marker share ONE grid cell, so
+                            the row keeps its four V4 columns and the marker costs
+                            no width on the rows that don't carry it.
+                        *@
+                        <span class="ttc-row-main">
+                            <button type="button" class="ttc-row-title"
+                                    @onclick="@(() => OpenEditModal(captured))"
+                                    aria-label="@($"עריכת {task.Title}")">
+                                @task.Title
                             </button>
-                        }
 
+                            @* Same marker as the Tasks page, in this card's own
+                               caption scale: metadata on an existing row, not a
+                               status — no badge colour, no Google branding, no
+                               second line, and nothing to click. *@
+                            @if (IsInGoogleCalendar(task.Id))
+                            {
+                                <span class="ttc-gcal" title="נוסף ליומן Google">
+                                    <span class="oi oi-calendar" aria-hidden="true"></span>
+                                    <span>ביומן Google</span>
+                                </span>
+                            }
+                        </span>
+
+                        <span class="ttc-assignee" title="@task.AssigneeName" aria-label="@task.AssigneeName">
+                            @Initials(task.AssigneeName)
+                        </span>
+
+                        <span class="ttc-due">@DueLabel(task)</span>
                     </div>
                 }
             </div>
+
+            @if (_open.Count > MaxRows)
+            {
+                <div class="ttc-foot">
+                    <a class="ttc-all" href="/tasks#team-tasks">ראה הכל</a>
+                </div>
+            }
         }
-    </text>;
-}
-
-@if (Embedded)
-{
-    <div class="ttc-embedded">
-        <div class="ttc-embedded-header">
-            <span class="oi oi-people ttc-header-icon" aria-hidden="true"></span>
-            <h3 class="ttc-embedded-title">משימות צוות</h3>
-            <button class="ttc-add-btn" @onclick="OpenCreateModal" title="משימה חדשה">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                משימה חדשה
-            </button>
-        </div>
-        @body
     </div>
-}
-else
-{
-    <MCard Class="ttc-card" Padding="MCard.CardPadding.None" Title="משימות צוות">
-        <Icon><span class="oi oi-people ttc-header-icon" aria-hidden="true"></span></Icon>
-        <TrailingContent>
-            <button class="ttc-add-btn" @onclick="OpenCreateModal" title="משימה חדשה">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                משימה חדשה
-            </button>
-        </TrailingContent>
-        <ChildContent>@body</ChildContent>
-    </MCard>
-}
+</MCard>
 
-@* ── Create / Edit modal ── *@
-@if (_showModal)
-{
-    <div class="ttc-overlay" @onclick="CloseModal">
-        <div class="ttc-modal" @onclick:stopPropagation="true" dir="rtl"
-             role="dialog" aria-modal="true"
-             aria-label="@ModalAriaLabel(_editingTask)">
-
-            <!-- Modal header -->
-            <div class="ttc-modal-header">
-                <div class="ttc-modal-title-row">
-                    <span class="oi oi-people ttc-modal-icon" aria-hidden="true"></span>
-                    <h2 class="ttc-modal-title">@(_editingTask is null ? "משימת צוות חדשה" : "עריכת משימה")</h2>
-                </div>
-                <button class="ttc-modal-close" @onclick="CloseModal"
-                        title="סגירה" aria-label="סגירה"
-                        disabled="@_isSaving">
-                    <span class="oi oi-x" aria-hidden="true"></span>
-                </button>
-            </div>
-
-            <!-- Modal body -->
-            <div class="ttc-modal-body">
-
-                <!-- Title (required) -->
-                <div class="ttc-field">
-                    <label class="ttc-label">
-                        כותרת <span class="ttc-required" aria-hidden="true">*</span>
-                    </label>
-                    <input class="@TitleInputClass()"
-                           type="text"
-                           placeholder="שם המשימה..."
-                           @bind="_newTitle"
-                           @bind:event="oninput"
-                           disabled="@_isSaving" />
-                    @if (_touched && string.IsNullOrWhiteSpace(_newTitle))
-                    {
-                        <div class="ttc-field-error">כותרת המשימה היא שדה חובה</div>
-                    }
-                </div>
-
-                <!-- Description (optional) -->
-                <div class="ttc-field">
-                    <label class="ttc-label">תיאור (אופציונלי)</label>
-                    <textarea class="ttc-textarea"
-                              placeholder="פרטים נוספים..."
-                              @bind="_newDescription"
-                              rows="2"
-                              disabled="@_isSaving"></textarea>
-                </div>
-
-                <!-- Assigned to -->
-                <div class="ttc-field">
-                    <label class="ttc-label">משויך/ת ל</label>
-                    <select class="ttc-select" @bind="_newAssignedToUserId" disabled="@_isSaving">
-                        <option value="0">כל הצוות</option>
-                        @foreach (var member in TeamMembers)
-                        {
-                            <option value="@member.UserId">@member.FullName</option>
-                        }
-                    </select>
-                </div>
-
-                <!-- Due date (optional) -->
-                <div class="ttc-field">
-                    <label class="ttc-label">תאריך יעד (אופציונלי)</label>
-                    <input class="ttc-input"
-                           type="date"
-                           value="@_newDueDateStr"
-                           @onchange="@(e => _newDueDateStr = e.Value?.ToString() ?? "")"
-                           disabled="@_isSaving" />
-                </div>
-
-                @if (_saveError is not null)
-                {
-                    <div class="ttc-save-error">@_saveError</div>
-                }
-
-            </div><!-- /ttc-modal-body -->
-
-            <!-- Modal footer -->
-            <div class="ttc-modal-footer">
-                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseModal" Disabled="@_isSaving">
-                    ביטול
-                </MButton>
-                <MButton Variant="MButton.ButtonVariant.Primary" OnClick="SaveTask" Loading="@_isSaving" LoadingText="שומר...">
-                    שמירה
-                </MButton>
-            </div>
-
-        </div><!-- /ttc-modal -->
-    </div><!-- /ttc-overlay -->
-}
+@*
+    Create / edit modal — the shared TeamTaskEditModal, unchanged. Delete
+    lives inside it, which is where V4 puts the delete action too.
+*@
+<TeamTaskEditModal IsOpen="@_showModal"
+                   EditingTask="@_editingTask"
+                   TeamMembers="@TeamMembers"
+                   OnClose="CloseModal"
+                   OnCreated="OnTaskCreated"
+                   OnUpdated="StateHasChanged" />
 
 @code {
-    /// <summary>Team member list passed from the parent dashboard (already loaded
-    /// in DashboardDto.TeamMembers — no extra API call needed).</summary>
+    /// <summary>Team member list passed from the parent dashboard (already in
+    /// DashboardDto.TeamMembers — no extra API call needed).</summary>
     [Parameter] public List<TeamMemberDto> TeamMembers { get; set; } = new();
-    [Parameter] public bool                Embedded    { get; set; }
 
-    private List<TeamTaskDto> _tasks     = new();
-    private bool              _loading   = true;
+    /// <summary>Bounded on purpose (density requirement) — V4 shows three and
+    /// hands the rest to the Tasks page.</summary>
+    private const int MaxRows = 3;
+
+    private List<TeamTaskDto> _tasks = new();
+    private bool              _loading = true;
     private bool              _showModal;
-    private bool              _touched;
-    private bool              _isSaving;
-    private string?           _saveError;
     private TeamTaskDto?      _editingTask;
-    private int               _pendingDeleteId;
 
-    // Form fields
-    private string  _newTitle            = "";
-    private string? _newDescription;
-    private int     _newAssignedToUserId = 0; // 0 = כל הצוות; otherwise UserId
-    private string  _newDueDateStr       = "";
+    private List<TeamTaskDto> _open    => _tasks.Where(t => !t.IsDone).ToList();
+    private List<TeamTaskDto> _visible => _open.Take(MaxRows).ToList();
 
-    // Show only incomplete tasks, up to 4 (matches product spec)
-    private List<TeamTaskDto> _incompleteTasks =>
-        _tasks.Where(t => !t.IsDone).Take(4).ToList();
+    /// <summary>
+    /// The signed-in user's own calendar links, by task id — the same state the
+    /// Tasks page reads, from the same endpoint. One request for the whole list,
+    /// never one per row, and never a Google call: the server answers from
+    /// GoogleCalendarEventLinks.
+    ///
+    /// <para>Empty is the normal case for a user who never connected Google, and
+    /// also what comes back while a grant is disconnected — which is what stops
+    /// this card claiming a connection that no longer exists.</para>
+    /// </summary>
+    private Dictionary<int, TaskCalendarScheduleDto> _schedules = new();
 
-    private DateTime? ParsedDueDate =>
-        string.IsNullOrEmpty(_newDueDateStr) ? null
-        : DateTime.TryParse(_newDueDateStr, out var d) ? d : (DateTime?)null;
-
-    // Helpers: avoid double-quote conflicts inside HTML attribute strings
-    private static string ToggleLabel(bool isDone) =>
-        isDone ? "ביטול סימון" : "סימון כהושלם";
-
-    private static string ModalAriaLabel(TeamTaskDto? editing) =>
-        editing is null ? "משימת צוות חדשה" : "עריכת משימת צוות";
-
-    private string TitleInputClass() =>
-        _touched && string.IsNullOrWhiteSpace(_newTitle)
-            ? "ttc-input ttc-input-error"
-            : "ttc-input";
-
-    private void OnItemKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, TeamTaskDto task)
-    {
-        if (e.Key == "Enter") OpenEditModal(task);
-    }
+    /// <summary>Only a Google-confirmed event earns the marker. A link still
+    /// awaiting a retry exists, but its event does not.</summary>
+    private bool IsInGoogleCalendar(int taskId) =>
+        _schedules.TryGetValue(taskId, out var s) && s.IsScheduled;
 
     protected override async Task OnInitializedAsync()
     {
-        _tasks   = await TeamTasksService.GetAsync();
+        // Concurrent: the marker is decoration on a list this card already waits
+        // for, so it must not add a second round-trip to the card's time-to-paint.
+        var tasksTask     = TeamTasksService.GetAsync();
+        var schedulesTask = LoadSchedulesAsync();
+
+        _tasks = await tasksTask;
+        await schedulesTask;
+
         _loading = false;
+    }
+
+    private async Task LoadSchedulesAsync()
+    {
+        var rows = await GoogleCalendar.GetTaskSchedulesAsync();
+        _schedules = rows.ToDictionary(r => r.TaskId);
     }
 
     private void OpenCreateModal()
     {
-        _editingTask         = null;
-        _newTitle            = "";
-        _newDescription      = null;
-        _newAssignedToUserId = 0;
-        _newDueDateStr       = "";
-        _touched             = false;
-        _saveError           = null;
-        _showModal           = true;
+        _editingTask = null;
+        _showModal   = true;
     }
 
     private void OpenEditModal(TeamTaskDto task)
     {
-        _editingTask         = task;
-        _newTitle            = task.Title;
-        _newDescription      = task.Description;
-        _newAssignedToUserId = task.AssignedToUserId ?? 0;
-        _newDueDateStr       = task.DueDate.HasValue
-                               ? task.DueDate.Value.ToString("yyyy-MM-dd")
-                               : "";
-        _touched             = false;
-        _saveError           = null;
-        _showModal           = true;
+        _editingTask = task;
+        _showModal   = true;
     }
 
-    private void CloseModal()
+    /// <summary>
+    /// Re-reads the links on close, exactly as the Tasks page does. The shared
+    /// modal could already schedule from here — this only keeps the new marker
+    /// honest about what the modal just did, on every path it can take.
+    /// </summary>
+    private async Task CloseModal()
     {
-        if (!_isSaving) { _showModal = false; _editingTask = null; }
+        _showModal   = false;
+        _editingTask = null;
+        await LoadSchedulesAsync();
     }
 
-    private async Task SaveTask()
-    {
-        _touched = true;
-        if (string.IsNullOrWhiteSpace(_newTitle)) return;
-
-        _isSaving  = true;
-        _saveError = null;
-
-        if (_editingTask is null)
-        {
-            // ── Create ──
-            var (created, error) = await TeamTasksService.CreateAsync(new CreateTeamTaskRequest
-            {
-                Title            = _newTitle.Trim(),
-                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
-                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
-                DueDate          = ParsedDueDate,
-            });
-            _isSaving = false;
-            if (created is not null)
-            {
-                _tasks.Insert(0, created);
-                _showModal = false;
-            }
-            else
-            {
-                _saveError = error ?? "שגיאה ביצירת המשימה";
-            }
-        }
-        else
-        {
-            // ── Update ──
-            var error = await TeamTasksService.UpdateAsync(_editingTask.Id, new UpdateTeamTaskRequest
-            {
-                Title            = _newTitle.Trim(),
-                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
-                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
-                DueDate          = ParsedDueDate,
-            });
-            _isSaving = false;
-            if (error is null)
-            {
-                // Mirror the update in local state so the card refreshes without a reload
-                _editingTask.Title            = _newTitle.Trim();
-                _editingTask.Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim();
-                _editingTask.AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId;
-                _editingTask.DueDate          = ParsedDueDate;
-                _editingTask.AssigneeName     = _newAssignedToUserId == 0
-                    ? "כל הצוות"
-                    : TeamMembers.FirstOrDefault(m => m.UserId == _newAssignedToUserId)?.FullName ?? "כל הצוות";
-                _showModal   = false;
-                _editingTask = null;
-            }
-            else
-            {
-                _saveError = error;
-            }
-        }
-    }
+    private void OnTaskCreated(TeamTaskDto created) => _tasks.Insert(0, created);
 
     private async Task ToggleTask(TeamTaskDto task)
     {
@@ -368,12 +226,21 @@ else
         if (success) task.IsDone = !task.IsDone;
     }
 
-    private async Task ConfirmDelete(TeamTaskDto task)
+    private async Task OnCheckKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, TeamTaskDto task)
     {
-        var success = await TeamTasksService.DeleteAsync(task.Id);
-        if (success) _tasks.Remove(task);
-        _pendingDeleteId = 0;
+        if (e.Key is "Enter" or " ") await ToggleTask(task);
     }
 
-    private void CancelDelete() => _pendingDeleteId = 0;
+    private static string Initials(string? name)
+    {
+        var trimmed = (name ?? "").Trim();
+        if (trimmed.Length == 0) return "—";
+        var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2
+            ? $"{parts[0][0]}{parts[1][0]}"
+            : trimmed[..Math.Min(2, trimmed.Length)];
+    }
+
+    private static string DueLabel(TeamTaskDto task) =>
+        task.DueDate.HasValue ? task.DueDate.Value.ToString("dd.MM") : "";
 }

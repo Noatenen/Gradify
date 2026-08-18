@@ -2,9 +2,11 @@
 @using Microsoft.AspNetCore.Components.Forms
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.ClientHelpers
 @layout BlankLayout
 @inject NavigationManager nav
 @inject HttpClient Http
+@inject IRememberedLoginService RememberedLogin
 
 <PageTitle>Motiva — התחברות</PageTitle>
 
@@ -113,7 +115,12 @@
             <div class="lp-field">
                 <label class="lp-label" for="lp-email">כתובת מייל</label>
                 <div class="lp-input-shell">
-                    <InputText id="lp-email" class="lp-input" @bind-Value="loginUser.Email" placeholder="your@email.com" />
+                    @* autocomplete="username" is what lets the browser's own
+                       password manager offer and fill a saved account. The app
+                       stores nothing itself — this only stops us getting in the
+                       manager's way. *@
+                    <InputText id="lp-email" class="lp-input" @bind-Value="loginUser.Email"
+                               autocomplete="username" placeholder="your@email.com" />
                 </div>
                 <ValidationMessage For="@(() => loginUser.Email)" />
             </div>
@@ -121,7 +128,9 @@
             <div class="lp-field">
                 <label class="lp-label" for="lp-password">סיסמה</label>
                 <div class="lp-input-shell">
-                    <InputText id="lp-password" class="lp-input" type="@(_showPassword ? "text" : "password")" @bind-Value="loginUser.Password" placeholder="••••••••" />
+                    <InputText id="lp-password" class="lp-input" type="@(_showPassword ? "text" : "password")"
+                               @bind-Value="loginUser.Password"
+                               autocomplete="current-password" placeholder="••••••••" />
                     <button type="button" class="lp-toggle-visibility" @onclick="@(() => _showPassword = !_showPassword)"
                             title="@(_showPassword ? "הסתרת סיסמה" : "הצגת סיסמה")" aria-label="@(_showPassword ? "הסתרת סיסמה" : "הצגת סיסמה")">
                         @* open-iconic has no "eye-closed"/eye-slash glyph (.oi-eye is the only eye icon in the
@@ -144,6 +153,13 @@
                 </div>
                 <ValidationMessage For="@(() => loginUser.Password)" />
             </div>
+
+            @* Sits directly under the password, quiet and secondary to the CTA:
+               one control, no card, no explanatory copy. *@
+            <label class="lp-remember">
+                <input type="checkbox" class="lp-remember-box" @bind="loginUser.RememberMe" />
+                <span class="lp-remember-text">זכור אותי</span>
+            </label>
 
             @if (!string.IsNullOrEmpty(message))
             {
@@ -198,7 +214,22 @@
     protected override async Task OnInitializedAsync()
     {
         if (user != null)
+        {
             nav.NavigateTo(await GetRedirectTarget(user), forceLoad: true, replace: true);
+            return;
+        }
+
+        // Restore the FORM, not a session: the address last signed in with and
+        // the state of the box. The password field is deliberately left empty —
+        // filling it is the browser password manager's job, which the
+        // username/current-password attributes invite it to do.
+        var remembered = await RememberedLogin.GetRememberedEmailAsync();
+
+        if (!string.IsNullOrWhiteSpace(remembered))
+        {
+            loginUser.Email      = remembered;
+            loginUser.RememberMe = true;
+        }
     }
 
     async Task login()
@@ -206,10 +237,21 @@
         loading = true;
         message = "";
 
+        // Captured before the call: AuthenticationService normalises Email on the
+        // instance it is handed, and a failed attempt must not change what is
+        // remembered.
+        var attemptedEmail = loginUser.Email;
+        var rememberMe     = loginUser.RememberMe;
+
         bool LoginOK = await _Auth.Login(loginUser);
 
         if (LoginOK)
         {
+            // Only on success, and only ever this: an email and a boolean.
+            // rememberMe false clears any previous entry, which is how unticking
+            // the box takes effect on the next sign-in.
+            await RememberedLogin.SaveAsync(attemptedEmail, rememberMe);
+
             var loggedInUser = await _Auth.GetUserFromClaimAsync();
             nav.NavigateTo(await GetRedirectTarget(loggedInUser), forceLoad: true, replace: true);
         }
@@ -220,8 +262,27 @@
         loading = false;
     }
 
+    /// <summary>
+    /// Where the user was originally headed, captured by NotAllowed when it
+    /// refused an unauthenticated request. Absent on an ordinary login.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = ReturnUrlPolicy.QueryKey)]
+    public string? ReturnUrl { get; set; }
+
     private async Task<string> GetRedirectTarget(User? u)
     {
+        // An intended destination wins over the role default — that is the
+        // entire point of carrying it. It is honoured ONLY after passing both
+        // of ReturnUrlPolicy's gates: it must be a local path (no open
+        // redirect) and it must be reachable by this user's roles, so a stale
+        // link into another shell falls through to the dashboard instead of
+        // dead-ending on PendingPage.
+        //
+        // Checked before the student branch below, because that branch makes a
+        // network call this case does not need.
+        if (ReturnUrlPolicy.Sanitize(ReturnUrl, u) is { } destination)
+            return destination;
+
         // Non-students go to their role-specific dashboard
         // (Admin/Staff → /dashboard/lecturer, Mentor → /dashboard/mentor).
         if (!RoleService.IsStudent(u))

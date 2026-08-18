@@ -1,0 +1,682 @@
+@namespace AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject ITeamTasksService TeamTasksService
+@inject IGoogleCalendarService GoogleCalendar
+@inject NavigationManager Nav
+
+@*
+    TeamTaskEditModal — create/edit a team task.
+
+    Extracted verbatim from Dashboard/TeamTasksCard in Phase 4B, when the
+    finalized Tasks screen needed the same create/edit affordance. The markup,
+    field order, validation, service calls and local-state mirroring are the
+    Dashboard's working behaviour moved, not reimplemented — so both callers run
+    one implementation and the Dashboard renders exactly as it did before.
+
+    The component owns its own form state and talks to ITeamTasksService itself;
+    callers pass the task to edit (or null to create) and react to the result.
+*@
+
+@if (IsOpen)
+{
+    <div class="ttm-overlay" @onclick="CloseAsync">
+        <div class="ttm-modal" @onclick:stopPropagation="true" dir="rtl"
+             role="dialog" aria-modal="true"
+             aria-label="@(EditingTask is null ? "משימת צוות חדשה" : "עריכת משימת צוות")">
+
+            <div class="ttm-modal-header">
+                <div class="ttm-modal-title-row">
+                    <span class="oi oi-people ttm-modal-icon" aria-hidden="true"></span>
+                    <h2 class="ttm-modal-title">@(EditingTask is null ? "משימת צוות חדשה" : "עריכת משימה")</h2>
+                </div>
+                <button class="ttm-modal-close" @onclick="CloseAsync"
+                        title="סגירה" aria-label="סגירה"
+                        disabled="@_isSaving">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            </div>
+
+            <div class="ttm-modal-body">
+
+                <div class="ttm-field">
+                    <label class="ttm-label">
+                        כותרת <span class="ttm-required" aria-hidden="true">*</span>
+                    </label>
+                    <input class="@TitleInputClass()"
+                           type="text"
+                           placeholder="שם המשימה..."
+                           @bind="_newTitle"
+                           @bind:event="oninput"
+                           disabled="@_isSaving" />
+                    @if (_touched && string.IsNullOrWhiteSpace(_newTitle))
+                    {
+                        <div class="ttm-field-error">כותרת המשימה היא שדה חובה</div>
+                    }
+                </div>
+
+                <div class="ttm-field">
+                    <label class="ttm-label">תיאור (אופציונלי)</label>
+                    <textarea class="ttm-textarea"
+                              placeholder="פרטים נוספים..."
+                              @bind="_newDescription"
+                              rows="2"
+                              disabled="@_isSaving"></textarea>
+                </div>
+
+                <div class="ttm-field">
+                    <label class="ttm-label">משויך/ת ל</label>
+                    <select class="ttm-select" @bind="_newAssignedToUserId" disabled="@_isSaving">
+                        <option value="0">כל הצוות</option>
+                        @foreach (var member in TeamMembers)
+                        {
+                            <option value="@member.UserId">@member.FullName</option>
+                        }
+                        @*
+                            A caller that has no team roster to hand (the Tasks page
+                            does not load one) would otherwise silently reassign the
+                            task to "כל הצוות" on save, because the current assignee
+                            has no matching option. Keeping the existing assignee as
+                            an option preserves it.
+                        *@
+                        @if (EditingTask?.AssignedToUserId is int assignedId
+                             && !TeamMembers.Any(m => m.UserId == assignedId))
+                        {
+                            <option value="@assignedId">@EditingTask.AssigneeName</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="ttm-field">
+                    <label class="ttm-label">
+                        תאריך יעד@(_addToCalendar ? "" : " (אופציונלי)")
+                        @if (_addToCalendar)
+                        {
+                            <span class="ttm-required" aria-hidden="true">*</span>
+                        }
+                    </label>
+                    <input class="@DueDateInputClass()"
+                           type="date"
+                           value="@_newDueDateStr"
+                           @onchange="@(e => _newDueDateStr = e.Value?.ToString() ?? "")"
+                           disabled="@_isSaving" />
+                    @if (_touched && CalendarNeedsDueDate)
+                    {
+                        <div class="ttm-field-error">יש לבחור תאריך יעד כדי להוסיף את המשימה ליומן Google</div>
+                    }
+                </div>
+
+                @*
+                    ── Google Calendar ────────────────────────────────────────
+                    The task is the single source of truth. The event's date IS
+                    תאריך יעד above — there is no second date to keep in sync, and
+                    moving the due date moves the event. Title and description are
+                    read from the task server-side, so nothing here re-asks for
+                    information the form already holds.
+
+                    All the toggle adds is WHEN during that day: two time fields,
+                    rendered as ordinary task fields rather than a nested calendar
+                    form.
+
+                    Progressive disclosure: OFF is the default and reveals no
+                    fields, so a task created without touching this behaves — and
+                    saves — exactly as it did before this section existed.
+                *@
+                @if (_gcalStatus is null)
+                {
+                    @* Status still loading. Rendering nothing (rather than a
+                       spinner or a guessed state) keeps the modal from jumping
+                       and stops it ever showing a toggle it may have to retract. *@
+                }
+                else if (!_gcalStatus.IsConnected)
+                {
+                    <div class="ttm-gcal-notice">
+                        <span class="oi oi-calendar ttm-gcal-notice-icon" aria-hidden="true"></span>
+                        <span class="ttm-gcal-notice-text">יומן Google לא מחובר</span>
+                        <button type="button" class="ttm-gcal-connect"
+                                @onclick="ConnectCalendarAsync"
+                                disabled="@_isSaving">
+                            חיבור
+                        </button>
+                    </div>
+                }
+                else
+                {
+                    <div class="ttm-gcal">
+                        <div class="ttm-gcal-head">
+                            <span class="ttm-gcal-title" id="ttm-gcal-label">הוספה ליומן Google</span>
+                            @* Not disabled while the removal question is open.
+                               _addToCalendar stays true until the user answers,
+                               so the toggle keeps reading ON — which is the truth,
+                               the event is still in their calendar. Disabling it
+                               greys it out and it would read as already-removed. *@
+                            <MToggle Checked="_addToCalendar"
+                                     AriaLabel="הוספה ליומן Google"
+                                     Disabled="@(_isSaving || _calBusy)"
+                                     CheckedChanged="OnCalendarToggled" />
+                        </div>
+
+                        @if (_confirmRemove)
+                        {
+                            @* Turning the toggle off on an already-scheduled task
+                               deletes a real event out of the user's personal
+                               calendar. That is not something to do silently on a
+                               stray click, so the toggle stays visually on until
+                               this is answered. *@
+                            <div class="ttm-gcal-confirm" role="alertdialog" aria-label="הסרת המשימה מיומן Google">
+                                <p class="ttm-gcal-confirm-text">הסרת המשימה מיומן Google?</p>
+                                <div class="ttm-gcal-confirm-actions">
+                                    <MButton Variant="MButton.ButtonVariant.Secondary"
+                                             Size="MButton.ButtonSize.Small"
+                                             Disabled="@_calBusy"
+                                             OnClick="CancelRemove">ביטול</MButton>
+                                    <MButton Variant="MButton.ButtonVariant.Danger"
+                                             Size="MButton.ButtonSize.Small"
+                                             Loading="@_calBusy"
+                                             OnClick="ConfirmRemoveAsync">הסרה</MButton>
+                                </div>
+                            </div>
+                        }
+                        else if (_addToCalendar)
+                        {
+                            @* Only the one thing the task does not already say:
+                               when during the day. No box, no background — these
+                               are task fields that happen to appear on demand. *@
+                            <div class="ttm-gcal-times">
+                                <div class="ttm-field">
+                                    <label class="ttm-label">
+                                        שעת התחלה <span class="ttm-required" aria-hidden="true">*</span>
+                                    </label>
+                                    <input class="@CalInputClass(string.IsNullOrEmpty(_calStartStr))"
+                                           type="time"
+                                           value="@_calStartStr"
+                                           @onchange="@(e => _calStartStr = e.Value?.ToString() ?? "")"
+                                           disabled="@_isSaving" />
+                                </div>
+                                <div class="ttm-field">
+                                    <label class="ttm-label">
+                                        שעת סיום <span class="ttm-required" aria-hidden="true">*</span>
+                                    </label>
+                                    <input class="@CalInputClass(string.IsNullOrEmpty(_calEndStr))"
+                                           type="time"
+                                           value="@_calEndStr"
+                                           @onchange="@(e => _calEndStr = e.Value?.ToString() ?? "")"
+                                           disabled="@_isSaving" />
+                                </div>
+                            </div>
+
+                            @if (_calError is not null)
+                            {
+                                <div class="ttm-field-error">@_calError</div>
+                            }
+                        }
+                    </div>
+                }
+
+                @if (_saveError is not null)
+                {
+                    <div class="ttm-save-error">@_saveError</div>
+                }
+
+                @if (_partialFailure)
+                {
+                    @* The task IS saved. This block exists so the footer can drop
+                       "ביטול" entirely — a cancel button here would read as
+                       "undo the task", which is the opposite of what happened. *@
+                    <div class="ttm-partial" role="status">
+                        <span class="oi oi-warning ttm-partial-icon" aria-hidden="true"></span>
+                        <span>המשימה נשמרה, אך לא נוספה ליומן Google.</span>
+                    </div>
+                }
+
+            </div>
+
+            <div class="ttm-modal-footer">
+                @if (_partialFailure)
+                {
+                    <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_calBusy">
+                        סגירה
+                    </MButton>
+                    <MButton Variant="MButton.ButtonVariant.Primary" OnClick="RetryCalendarAsync"
+                             Loading="@_calBusy" LoadingText="מנסה שוב...">
+                        ניסיון נוסף
+                    </MButton>
+                }
+                else
+                {
+                    <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_isSaving">
+                        ביטול
+                    </MButton>
+                    <MButton Variant="MButton.ButtonVariant.Primary" OnClick="SaveAsync" Loading="@_isSaving" LoadingText="שומר...">
+                        שמירה
+                    </MButton>
+                }
+            </div>
+
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>The task being edited, or null to create a new one.</summary>
+    [Parameter] public TeamTaskDto? EditingTask { get; set; }
+
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Roster for the assignee dropdown. May be empty — the modal still
+    /// creates ("כל הצוות") and still preserves an existing assignee on edit.</summary>
+    [Parameter] public List<TeamMemberDto> TeamMembers { get; set; } = new();
+
+    /// <summary>Raised when the modal should close, whether it saved or not.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised with the server's new task after a successful create.</summary>
+    [Parameter] public EventCallback<TeamTaskDto> OnCreated { get; set; }
+
+    /// <summary>Raised after a successful update. The <see cref="EditingTask"/>
+    /// instance has already been mirrored in place, matching the Dashboard's
+    /// original no-reload behaviour.</summary>
+    [Parameter] public EventCallback OnUpdated { get; set; }
+
+    private bool    _touched;
+    private bool    _isSaving;
+    private string? _saveError;
+
+    private string  _newTitle            = "";
+    private string? _newDescription;
+    private int     _newAssignedToUserId;
+    private string  _newDueDateStr       = "";
+
+    // ── Google Calendar ───────────────────────────────────────────────────────
+
+    /// <summary>Null until the real server status arrives. Connection state is
+    /// never inferred locally — see OnParametersSet.</summary>
+    private GoogleCalendarStatusDto? _gcalStatus;
+
+    private bool    _addToCalendar;
+    private bool    _calBusy;
+    private bool    _confirmRemove;
+    private bool    _partialFailure;
+    private string? _calError;
+
+    // No calendar date field: the event's date IS _newDueDateStr. Only the
+    // time-of-day is calendar-specific, so only it is stored here.
+    private string _calStartStr = "";
+    private string _calEndStr   = "";
+
+    /// <summary>
+    /// The task id to schedule against. Same as EditingTask on an edit; on a
+    /// create it is filled in once the task exists, which is what lets "ניסיון
+    /// נוסף" retry the calendar step alone without re-creating the task.
+    /// </summary>
+    private int? _scheduledTaskId;
+
+    /// <summary>
+    /// Whether a Google event currently exists for this task — the difference
+    /// between "already on the calendar" (turning the toggle off deletes it, so
+    /// ask first) and "about to be added" (turning it off just hides the fields).
+    /// </summary>
+    private bool _hasSchedule;
+
+    // The open transition is what seeds the form — re-seeding on every render
+    // would wipe whatever the user has typed.
+    private bool _wasOpen;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsOpen && !_wasOpen)
+        {
+            ResetForm();
+            _wasOpen = true;
+            await LoadCalendarStateAsync();
+            StateHasChanged();
+            return;
+        }
+
+        _wasOpen = IsOpen;
+    }
+
+    /// <summary>
+    /// Loads connection state and this task's existing link, on every open.
+    ///
+    /// <para>Fetched here rather than passed in by the caller, so every host of
+    /// this modal — the Tasks panel and the Dashboard card — gets the same
+    /// correct state without having to remember to supply it. Not cached either:
+    /// the grant can be revoked from Google's side or from /settings at any
+    /// moment, and a stale "connected" would offer a toggle that fails on save.
+    /// The endpoint returns nothing at all while the grant is disconnected, so
+    /// the modal cannot show a schedule it can no longer manage.</para>
+    /// </summary>
+    private async Task LoadCalendarStateAsync()
+    {
+        var statusTask    = GoogleCalendar.GetStatusAsync();
+        var schedulesTask = GoogleCalendar.GetTaskSchedulesAsync();
+        await Task.WhenAll(statusTask, schedulesTask);
+
+        _gcalStatus = statusTask.Result ?? new GoogleCalendarStatusDto { IsConnected = false };
+
+        var existing = EditingTask is null
+            ? null
+            : schedulesTask.Result.FirstOrDefault(s => s.TaskId == EditingTask.Id);
+
+        if (existing is null) return;
+
+        // An already-scheduled task opens showing its real stored times, so the
+        // user can see when it is booked and move it — and so saving without
+        // touching anything is a no-op rather than a second event. The DATE is
+        // not read back: תאריך יעד is the one that governs now.
+        _hasSchedule   = true;
+        _addToCalendar = true;
+        _calStartStr   = existing.StartTime;
+        _calEndStr     = existing.EndTime;
+
+        // Links created before the date was unified can sit on a task that has no
+        // due date at all. Adopt the event's own date as that missing due date
+        // rather than opening an invalid form — it fills the single source of
+        // truth in, and the event stays exactly where it already is. An existing
+        // due date is never overwritten: it is the one that wins.
+        if (string.IsNullOrEmpty(_newDueDateStr))
+            _newDueDateStr = existing.CalendarDate.ToString("yyyy-MM-dd");
+    }
+
+    private void ResetForm()
+    {
+        _newTitle            = EditingTask?.Title ?? "";
+        _newDescription      = EditingTask?.Description;
+        _newAssignedToUserId = EditingTask?.AssignedToUserId ?? 0;
+        _newDueDateStr       = EditingTask?.DueDate?.ToString("yyyy-MM-dd") ?? "";
+        _touched             = false;
+        _saveError           = null;
+        _isSaving            = false;
+
+        _gcalStatus      = null;
+        _calBusy         = false;
+        _confirmRemove   = false;
+        _partialFailure  = false;
+        _calError        = null;
+        _scheduledTaskId = EditingTask?.Id;
+
+        // An already-scheduled task opens with its real stored slot, so the user
+        // sees when it is booked and can move it — and so saving without touching
+        // anything is a no-op rather than a second event.
+        // Cleared here and filled in by LoadCalendarStateAsync — the modal starts
+        // from "nothing scheduled" and only claims otherwise once the server says so.
+        _hasSchedule   = false;
+        _addToCalendar = false;
+        _calStartStr   = "";
+        _calEndStr     = "";
+    }
+
+    private DateTime? ParsedDueDate =>
+        string.IsNullOrEmpty(_newDueDateStr) ? null
+        : DateTime.TryParse(_newDueDateStr, out var d) ? d : (DateTime?)null;
+
+    /// <summary>
+    /// תאריך יעד is optional for a plain task, but it is the calendar event's date
+    /// — so switching the toggle on is what makes it required. Stated as a
+    /// condition rather than a second field, which is the whole point.
+    /// </summary>
+    private bool CalendarNeedsDueDate => _addToCalendar && ParsedDueDate is null;
+
+    private string TitleInputClass() =>
+        _touched && string.IsNullOrWhiteSpace(_newTitle)
+            ? "ttm-input ttm-input-error"
+            : "ttm-input";
+
+    private string DueDateInputClass() =>
+        _touched && CalendarNeedsDueDate ? "ttm-input ttm-input-error" : "ttm-input";
+
+    private async Task CloseAsync()
+    {
+        if (_isSaving) return;
+        await OnClose.InvokeAsync();
+    }
+
+    /// <summary>
+    /// Save order is deliberate and is the whole failure story of this feature:
+    ///
+    ///   1. validate the Motiva task
+    ///   2. validate the calendar fields, if the toggle is on
+    ///   3. save the Motiva task  ← committed here, and never rolled back
+    ///   4. only then talk to Google
+    ///
+    /// Step 2 runs before step 3 so a typo in the times is caught while nothing
+    /// has been written. Step 4 runs after the commit so a Google outage costs the
+    /// user a calendar event, never their task.
+    /// </summary>
+    private async Task SaveAsync()
+    {
+        _touched = true;
+        if (string.IsNullOrWhiteSpace(_newTitle)) return;
+
+        // 2. Calendar validation first — nothing is saved yet, so a bad range
+        //    just puts the cursor back in the form.
+        if (_addToCalendar && !ValidateCalendarFields()) return;
+
+        _isSaving  = true;
+        _saveError = null;
+        _calError  = null;
+
+        if (EditingTask is null)
+        {
+            var (created, error) = await TeamTasksService.CreateAsync(new CreateTeamTaskRequest
+            {
+                Title            = _newTitle.Trim(),
+                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
+                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
+                DueDate          = ParsedDueDate,
+            });
+
+            if (created is null)
+            {
+                _isSaving  = false;
+                _saveError = error ?? "שגיאה ביצירת המשימה";
+                return;
+            }
+
+            // 3. The task exists now. Publish it to the list immediately —
+            //    including when Google goes on to fail, because it really is
+            //    saved and the list must not pretend otherwise.
+            _scheduledTaskId = created.Id;
+            await OnCreated.InvokeAsync(created);
+        }
+        else
+        {
+            var error = await TeamTasksService.UpdateAsync(EditingTask.Id, new UpdateTeamTaskRequest
+            {
+                Title            = _newTitle.Trim(),
+                Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim(),
+                AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId,
+                DueDate          = ParsedDueDate,
+            });
+
+            if (error is not null)
+            {
+                _isSaving  = false;
+                _saveError = error;
+                return;
+            }
+
+            // Mirror the update locally so callers refresh without a reload.
+            EditingTask.Title            = _newTitle.Trim();
+            EditingTask.Description      = string.IsNullOrWhiteSpace(_newDescription) ? null : _newDescription.Trim();
+            EditingTask.AssignedToUserId = _newAssignedToUserId == 0 ? null : _newAssignedToUserId;
+            EditingTask.DueDate          = ParsedDueDate;
+            EditingTask.AssigneeName     = _newAssignedToUserId == 0
+                ? "כל הצוות"
+                : TeamMembers.FirstOrDefault(m => m.UserId == _newAssignedToUserId)?.FullName
+                  ?? EditingTask.AssigneeName;
+
+            _scheduledTaskId = EditingTask.Id;
+            await OnUpdated.InvokeAsync();
+        }
+
+        // 4. Calendar. Nothing below can undo what is already saved above.
+        if (_addToCalendar)
+        {
+            var scheduled = await PushScheduleAsync();
+            _isSaving = false;
+
+            // Stay open on failure so "ניסיון נוסף" is right there. Retrying hits
+            // the same idempotent endpoint with the same stored event id, so it
+            // cannot produce a second event.
+            if (!scheduled) { StateHasChanged(); return; }
+        }
+        else
+        {
+            _isSaving = false;
+        }
+
+        await OnClose.InvokeAsync();
+    }
+
+    // ── Google Calendar ───────────────────────────────────────────────────────
+
+    private bool ValidateCalendarFields()
+    {
+        _calError = null;
+
+        // The date is תאריך יעד, so a missing one is reported on that field
+        // rather than here — there is no calendar date to point at.
+        if (CalendarNeedsDueDate) return false;
+
+        if (!TimeSpan.TryParse(_calStartStr, out var start) ||
+            !TimeSpan.TryParse(_calEndStr,   out var end))
+        {
+            _calError = "יש להזין שעת התחלה ושעת סיום";
+            return false;
+        }
+
+        if (end <= start)
+        {
+            _calError = "שעת הסיום חייבת להיות אחרי שעת ההתחלה";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Sends the slot to the server. True when Google confirmed it.</summary>
+    private async Task<bool> PushScheduleAsync()
+    {
+        if (_scheduledTaskId is not int taskId) return false;
+
+        // The task's own due date — the only date in the modal. Editing it and
+        // saving therefore MOVES the existing event (same event id, patched
+        // server-side) instead of creating a second one.
+        if (ParsedDueDate is not DateTime calendarDate) return false;
+
+        var result = await GoogleCalendar.ScheduleTaskAsync(taskId, new ScheduleTaskInCalendarRequest
+        {
+            CalendarDate = calendarDate,
+            StartTime    = _calStartStr,
+            EndTime      = _calEndStr,
+        });
+
+        if (result?.Success == true)
+        {
+            _partialFailure = false;
+            return true;
+        }
+
+        // The grant disappeared between opening the modal and saving. Say so
+        // plainly instead of offering a retry that cannot succeed.
+        if (result?.Outcome == CalendarScheduleOutcomes.NotConnected)
+        {
+            _gcalStatus     = new GoogleCalendarStatusDto { IsConnected = false };
+            _partialFailure = true;
+            return false;
+        }
+
+        _partialFailure = true;
+        return false;
+    }
+
+    private async Task RetryCalendarAsync()
+    {
+        _calBusy = true;
+        StateHasChanged();
+
+        var ok = await PushScheduleAsync();
+        _calBusy = false;
+
+        if (ok) await OnClose.InvokeAsync();
+        else    StateHasChanged();
+    }
+
+    /// <summary>
+    /// The toggle. Switching ON just reveals the fields; switching OFF on a task
+    /// that already has an event asks first, because that click would delete
+    /// something out of the user's personal calendar.
+    /// </summary>
+    private void OnCalendarToggled(bool value)
+    {
+        // Toggling back on while the removal question is open is a change of
+        // mind — same as pressing ביטול.
+        if (value && _confirmRemove)
+        {
+            _confirmRemove = false;
+            return;
+        }
+
+        if (!value && _hasSchedule)
+        {
+            _confirmRemove = true;
+            return;
+        }
+
+        // Nothing to prefill: the date is already on the form as תאריך יעד, and
+        // the times are the only thing this reveals.
+        _addToCalendar = value;
+        _calError      = null;
+    }
+
+    private void CancelRemove() => _confirmRemove = false;
+
+    private async Task ConfirmRemoveAsync()
+    {
+        if (_scheduledTaskId is not int taskId) { _confirmRemove = false; return; }
+
+        _calBusy  = true;
+        _calError = null;
+        StateHasChanged();
+
+        var result = await GoogleCalendar.UnscheduleTaskAsync(taskId);
+        _calBusy = false;
+
+        if (result?.Success == true)
+        {
+            _confirmRemove = false;
+            _addToCalendar = false;
+            _calStartStr   = "";
+            _calEndStr     = "";
+
+            // The link is gone; the Motiva task is untouched and stays open for
+            // further editing.
+            _hasSchedule = false;
+            await OnUpdated.InvokeAsync();
+        }
+        else
+        {
+            // Keep the link and the confirmation open — the event is still in the
+            // calendar, so the user must be able to try again.
+            _calError = "לא ניתן להסיר את האירוע מיומן Google כרגע. נסי שנית.";
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ConnectCalendarAsync()
+    {
+        // No OAuth logic here — the same connect-url flow the settings page uses.
+        var url = await GoogleCalendar.GetConnectUrlAsync();
+
+        if (url is not null) Nav.NavigateTo(url, forceLoad: true);
+        else                 _calError = "האינטגרציה עם Google Calendar עדיין לא הוגדרה במערכת.";
+    }
+
+    /// <summary>Red border only AFTER a save attempt — an empty field the user
+    /// has not reached yet is not an error yet.</summary>
+    private string CalInputClass(bool isEmpty) =>
+        _touched && isEmpty ? "ttm-input ttm-input-error" : "ttm-input";
+}

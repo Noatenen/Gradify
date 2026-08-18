@@ -1,0 +1,430 @@
+@namespace AuthWithAdmin.Client.Pages.ProjectWorkspace
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IProjectWorkspaceService Workspace
+
+@*
+    ProjectResourcesSection — "משאבי הפרויקט"
+
+    The team's own working links: the spec doc, the Drive folder, the Figma
+    file, the repo. Deliberately lightweight — this is quick access to what the
+    team already uses, not a document management system. Course material stays
+    where it belongs, in מרכז ידע.
+
+    Visual language: the dashboard's "חומרים מומלצים" cards
+    (DashboardResourcesSection) — a fluid grid of AmbientEdge mini-cards, each a
+    real <a> so keyboard activation and the browser's own affordances come for
+    free, with a tinted icon chip and a quiet type label.
+
+    ── ONE FORM, TWO JOBS ────────────────────────────────────────────────────
+    Adding and editing are the same two fields, so they are the same component
+    (ResourceForm below) in two positions: above the grid when adding, and in
+    the edited card's own place — spanning the full row — when editing. Nothing
+    about the interaction differs between them except the button words and the
+    presence of "הסרה".
+
+    ── WHY THE CARD CARRIES ONLY A PENCIL ────────────────────────────────────
+    The card's primary action is opening the resource, and it stays the whole
+    card. The pencil is the only thing layered on top of that: one 26px control
+    in a gutter the card reserves permanently, invisible at rest, revealed on
+    hover and on keyboard focus. Deleting moved OUT of the card and into the
+    editor — a destructive one-click control on a hover-revealed corner button
+    was both the busiest thing on the card and the easiest to hit by accident.
+
+    Two deliberate departures from the design export:
+      * ADD IS INLINE, not a modal — the export's own choice, and the right one
+        for a two-field form.
+      * ONE ACCENT for every kind. The Master permits three semantic colours and
+        none of these is a status, so the kind is carried by the icon instead.
+        See ProjectResourceKinds.
+*@
+
+<section class="pwr" aria-labelledby="pwr-heading">
+
+    <div class="pwr-head">
+        <div class="pwr-headtext">
+            <h2 class="pwr-heading" id="pwr-heading">משאבי הפרויקט</h2>
+            <p class="pwr-sub">הקישורים והכלים שהצוות עובד איתם</p>
+        </div>
+
+        @if (!IsFormOpen && _resources.Count > 0)
+        {
+            @* Primary: adding a resource is this section's create action, so it
+               takes the shared gradient CTA like every other add/create in the
+               workspace. *@
+            <MButton Variant="MButton.ButtonVariant.Primary"
+                     Size="MButton.ButtonSize.Small"
+                     OnClick="StartAdd">
+                + הוספת משאב
+            </MButton>
+        }
+    </div>
+
+    @if (_adding)
+    {
+        @ResourceForm(false)
+    }
+
+    @* Outside the form on purpose: a failed DELETE has to be able to report
+       itself too, and it can happen while no form is open. *@
+    @if (_error is not null)
+    {
+        <p class="pwr-error" role="alert">@_error</p>
+    }
+
+    @if (_loading)
+    {
+        <p class="pwr-note" role="status" aria-live="polite">טוענת משאבים…</p>
+    }
+    else if (_loadFailed)
+    {
+        <p class="pwr-note pwr-note-error" role="status">
+            לא הצלחנו לטעון את משאבי הפרויקט.
+        </p>
+    }
+    else if (_resources.Count == 0)
+    {
+        @if (!_adding)
+        {
+            <MEmptyState Title="אין עדיין משאבים לפרויקט"
+                         Description="הוסיפו את הקישורים שהצוות עובד איתם — מסמך האפיון, תיקיית הדרייב, קובץ העיצוב או מאגר הקוד.">
+                <Action>
+                    <MButton Variant="MButton.ButtonVariant.Primary" OnClick="StartAdd">
+                        + הוספת משאב
+                    </MButton>
+                </Action>
+            </MEmptyState>
+        }
+    }
+    else
+    {
+        <div class="pwr-grid">
+            @foreach (var resource in _resources)
+            {
+                var captured = resource;
+
+                if (_editingId == captured.Id)
+                {
+                    @* The editor takes the card's place rather than opening
+                       somewhere else, so the thing being edited never moves.
+                       It spans the full row because a 232px grid track cannot
+                       hold a label and a URL side by side. *@
+                    <div class="pwr-cell pwr-cell-editing">
+                        @ResourceForm(true)
+                    </div>
+                }
+                else
+                {
+                    var kind = ProjectResourceKinds.Detect(captured.Url);
+                    var host = ProjectResourceKinds.HostOf(captured.Url);
+
+                    <div class="pwr-cell">
+                        <MCard Variant="MCard.CardVariant.AmbientEdge"
+                               Padding="MCard.CardPadding.None"
+                               Class="pwr-card">
+                            <a class="pwr-hit"
+                               href="@captured.Url"
+                               target="_blank"
+                               rel="noopener noreferrer"
+                               title="@(host ?? captured.Url)">
+                                <span class="pwr-icon" aria-hidden="true">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                         stroke="currentColor" stroke-width="1.6"
+                                         stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="@ProjectResourceKinds.IconPath(kind)"></path>
+                                    </svg>
+                                </span>
+                                <span class="pwr-text">
+                                    <span class="pwr-title">@captured.Label</span>
+                                    <span class="pwr-type">@ProjectResourceKinds.Label(kind)</span>
+                                </span>
+                            </a>
+                        </MCard>
+
+                        @* Sibling of the anchor, never a child: a button inside
+                           a link is invalid markup and unreachable by keyboard.
+                           It sits in the gutter .pwr-hit reserves, so it can
+                           never cover the label. *@
+                        <button type="button"
+                                class="pwr-edit"
+                                title="עריכת המשאב"
+                                aria-label="@($"עריכת המשאב {captured.Label}")"
+                                @onclick="() => StartEdit(captured)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                }
+            }
+        </div>
+    }
+
+</section>
+
+@code {
+    private const int MaxLabel = 80;
+    private const int MaxUrl   = 2000;
+
+    private List<ProjectResourceDto> _resources = new();
+
+    private bool _loading = true;
+    private bool _loadFailed;
+
+    private bool   _adding;
+    private int?   _editingId;
+    private bool   _saving;
+    private bool   _deleting;
+    private string _labelDraft = "";
+    private string _urlDraft   = "";
+
+    private string? _error;
+
+    /// <summary>The label field of whichever form is open, so it can take focus
+    /// the moment the form appears.</summary>
+    private ElementReference _labelInput;
+    private bool             _focusPending;
+
+    private bool IsFormOpen => _adding || _editingId is not null;
+
+    /// <summary>Whether any write is in flight — both buttons and both fields
+    /// disable together, so a form can never be submitted twice or cancelled
+    /// out from under a request.</summary>
+    private bool IsBusy => _saving || _deleting;
+
+    // ── The form ─────────────────────────────────────────────────────────
+    // One definition for add and edit. `isEdit` changes the button words and
+    // adds "הסרה"; everything else — fields, keys, validation, error surface —
+    // is deliberately identical, because to the student it is the same act.
+    private RenderFragment ResourceForm(bool isEdit) => @<div class="pwr-form">
+        <div class="pwr-formfields">
+            <label class="pwr-sr-only" for="pwr-label">שם המשאב</label>
+            <input id="pwr-label"
+                   class="pwr-input pwr-input-label"
+                   type="text"
+                   maxlength="@MaxLabel"
+                   placeholder="שם המשאב"
+                   disabled="@IsBusy"
+                   @ref="_labelInput"
+                   @bind="_labelDraft"
+                   @bind:event="oninput"
+                   @onkeydown="HandleFormKeyDownAsync" />
+
+            @* dir="ltr" on the URL field only: a pasted link is Latin text and
+               reads backwards inside an RTL field. The label beside it stays
+               RTL — this is a per-field property, not a page one. *@
+            <label class="pwr-sr-only" for="pwr-url">קישור</label>
+            <input id="pwr-url"
+                   class="pwr-input pwr-input-url"
+                   type="url"
+                   dir="ltr"
+                   maxlength="@MaxUrl"
+                   placeholder="https://…"
+                   disabled="@IsBusy"
+                   @bind="_urlDraft"
+                   @bind:event="oninput"
+                   @onkeydown="HandleFormKeyDownAsync" />
+        </div>
+
+        <div class="pwr-formactions">
+            <MButton Variant="MButton.ButtonVariant.Primary"
+                     Size="MButton.ButtonSize.Small"
+                     Loading="_saving"
+                     LoadingText="@(isEdit ? "שומרת…" : "מוסיפה…")"
+                     Disabled="_deleting"
+                     OnClick="SaveFormAsync">
+                @(isEdit ? "שמירה" : "הוספה")
+            </MButton>
+
+            <MButton Variant="MButton.ButtonVariant.Secondary"
+                     Size="MButton.ButtonSize.Small"
+                     Disabled="IsBusy"
+                     OnClick="CloseForm">
+                ביטול
+            </MButton>
+
+            @if (isEdit)
+            {
+                @* Destructive, so it is the quietest control in the row and it
+                   lives one step inside the flow rather than on the card. *@
+                <MButton Variant="MButton.ButtonVariant.Ghost"
+                         Size="MButton.ButtonSize.Small"
+                         Class="pwr-remove"
+                         Loading="_deleting"
+                         LoadingText="מסירה…"
+                         Disabled="_saving"
+                         OnClick="DeleteEditedAsync">
+                    הסרה
+                </MButton>
+            }
+        </div>
+
+        @* The kind is DERIVED from the URL, never stored, so it cannot be
+           edited directly — it changes when the link changes. Showing it live
+           while the link is typed is what makes that rule visible instead of
+           mysterious. *@
+        @if (DetectedKindLabel is { } kindLabel)
+        {
+            <p class="pwr-kindhint">סוג: <strong>@kindLabel</strong> · נקבע אוטומטית לפי הקישור</p>
+        }
+    </div>;
+
+    // ── Load ─────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        var list = await Workspace.GetResourcesAsync();
+
+        _loadFailed = list is null;
+        _resources  = list ?? new();
+        _loading    = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusPending) return;
+
+        _focusPending = false;
+        // Best-effort: a form that has just been closed again by a fast second
+        // click leaves nothing to focus, and that is not an error.
+        try { await _labelInput.FocusAsync(); } catch { }
+    }
+
+    private string? DetectedKindLabel =>
+        string.IsNullOrWhiteSpace(_urlDraft)
+            ? null
+            : ProjectResourceKinds.Label(ProjectResourceKinds.Detect(NormalizedDraftUrl));
+
+    /// <summary>What the server will store, for the kind hint only: a bare host
+    /// is upgraded to https there, so the hint has to judge the same string the
+    /// card will end up rendering.</summary>
+    private string NormalizedDraftUrl
+    {
+        get
+        {
+            var url = (_urlDraft ?? "").Trim();
+            return url.Contains("://", StringComparison.Ordinal) ? url : $"https://{url}";
+        }
+    }
+
+    // ── Open / close ─────────────────────────────────────────────────────
+
+    private void StartAdd()
+    {
+        _adding       = true;
+        _editingId    = null;
+        _labelDraft   = "";
+        _urlDraft     = "";
+        _error        = null;
+        _focusPending = true;
+    }
+
+    private void StartEdit(ProjectResourceDto resource)
+    {
+        _adding       = false;
+        _editingId    = resource.Id;
+        _labelDraft   = resource.Label;
+        _urlDraft     = resource.Url;
+        _error        = null;
+        _focusPending = true;
+    }
+
+    private void CloseForm()
+    {
+        _adding    = false;
+        _editingId = null;
+        _error     = null;
+    }
+
+    private async Task HandleFormKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")       await SaveFormAsync();
+        else if (e.Key == "Escape") CloseForm();
+    }
+
+    // ── Write ────────────────────────────────────────────────────────────
+
+    private async Task SaveFormAsync()
+    {
+        if (IsBusy) return;
+
+        var label = (_labelDraft ?? "").Trim();
+        var url   = (_urlDraft   ?? "").Trim();
+
+        // Both checks mirror the server's own, so the common mistakes are
+        // answered without a round trip. The server still validates — this is
+        // convenience, not the boundary.
+        if (label.Length == 0)
+        {
+            _error = "יש להזין שם למשאב.";
+            return;
+        }
+
+        if (url.Length == 0)
+        {
+            _error = "יש להזין קישור.";
+            return;
+        }
+
+        _saving = true;
+        _error  = null;
+
+        if (_editingId is { } id)
+        {
+            var updated = await Workspace.UpdateResourceAsync(id, label, url);
+            _saving = false;
+
+            if (updated is null)
+            {
+                _error = "שמירת המשאב נכשלה. ודאי שהקישור מתחיל ב-http או ב-https ונסי שנית.";
+                return;
+            }
+
+            // Replaced in place rather than re-fetched: the grid's order is the
+            // server's insertion order, and an edit must not move a card.
+            var index = _resources.FindIndex(r => r.Id == id);
+            if (index >= 0) _resources[index] = updated;
+        }
+        else
+        {
+            var created = await Workspace.AddResourceAsync(label, url);
+            _saving = false;
+
+            if (created is null)
+            {
+                // The server rejects a non-http(s) URL with a 400, which is by
+                // far the likeliest reason to land here.
+                _error = "הוספת המשאב נכשלה. ודאי שהקישור מתחיל ב-http או ב-https ונסי שנית.";
+                return;
+            }
+
+            _resources.Add(created);
+        }
+
+        CloseForm();
+    }
+
+    private async Task DeleteEditedAsync()
+    {
+        if (IsBusy || _editingId is not { } id) return;
+
+        _deleting = true;
+        _error    = null;
+
+        var ok = await Workspace.DeleteResourceAsync(id);
+
+        _deleting = false;
+
+        if (!ok)
+        {
+            _error = "הסרת המשאב נכשלה. נסי שנית.";
+            return;
+        }
+
+        _resources.RemoveAll(r => r.Id == id);
+        CloseForm();
+    }
+}

@@ -1,0 +1,161 @@
+@*
+    RequestFilterBar — the finalized design's compact filter row
+    (Motiva Requests.dc.html, the block above the thread groups).
+
+    Design shape: an "הכל" reset chip, a hairline separator, one dropdown per
+    filter axis (status, type) with a count badge on its trigger, and then the
+    active selections repeated as removable chips.
+
+    Two things make this NOT the existing TaskFilterPopover:
+      • both menus are MULTI-select (checkbox rows, a count badge, several
+        values live at once) where TaskFilterPopover picks exactly one;
+      • the selection is surfaced as removable chips outside the trigger.
+    The System Master lists FilterControl/FilterChip as shared between Requests
+    and Tasks, so this is deliberately built with a generic option/axis API and
+    no request vocabulary in it — Tasks can adopt it later without a rewrite.
+
+    Dismissal uses the same transparent backdrop element TaskFilterPopover
+    already uses, rather than the Design's document-level mousedown listener:
+    it needs no JS interop and it is the pattern this codebase already has.
+*@
+
+<div class="rfb">
+
+    @*
+        "הכל" is a reset, not a fourth option: it is filled while nothing is
+        selected and goes quiet once any filter is on, which is the Design's
+        own allChipStyle.
+    *@
+    <button type="button"
+            class="rfb-all @(HasAnyFilter ? "" : "rfb-all-on")"
+            aria-pressed="@(HasAnyFilter ? "false" : "true")"
+            @onclick="ClearAll">
+        הכל
+    </button>
+
+    <span class="rfb-sep" aria-hidden="true"></span>
+
+    <div class="rfb-menus">
+        @foreach (var axis in Axes)
+        {
+            var key     = axis.Key;
+            var isOpen  = _openMenu == key;
+            var count   = axis.Options.Count(o => axis.Selected.Contains(o.Value));
+
+            <div class="rfb-menu-wrap">
+                <button type="button"
+                        class="rfb-trigger @(isOpen ? "rfb-trigger-open" : "") @(count > 0 ? "rfb-trigger-active" : "")"
+                        aria-haspopup="true"
+                        aria-expanded="@(isOpen ? "true" : "false")"
+                        @onclick="@(() => ToggleMenu(key))">
+                    <span>@axis.Label</span>
+                    @if (count > 0)
+                    {
+                        <span class="rfb-count">@count</span>
+                    }
+                    <span class="rfb-caret @(isOpen ? "rfb-caret-open" : "")" aria-hidden="true">▾</span>
+                </button>
+
+                @if (isOpen)
+                {
+                    <div class="rfb-backdrop" @onclick="CloseMenu"></div>
+                    <div class="rfb-panel" role="group" aria-label="@axis.Label">
+                        @if (axis.Options.Count == 0)
+                        {
+                            <p class="rfb-panel-empty">אין ערכים לסינון</p>
+                        }
+                        else
+                        {
+                            @foreach (var opt in axis.Options)
+                            {
+                                var captured = opt;
+                                var on = axis.Selected.Contains(captured.Value);
+
+                                <button type="button"
+                                        class="rfb-option"
+                                        role="checkbox"
+                                        aria-checked="@(on ? "true" : "false")"
+                                        @onclick="@(() => Toggle(key, captured.Value))">
+                                    <span class="rfb-box @(on ? "rfb-box-on" : "")" aria-hidden="true">
+                                        @if (on)
+                                        {
+                                            <span class="rfb-check">✓</span>
+                                        }
+                                    </span>
+                                    <span class="rfb-option-label @(on ? "rfb-option-label-on" : "")">@captured.Label</span>
+                                </button>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    @*
+        Active chips. The Design renders them after both triggers, in selection
+        order, each removable on its own — so a student can drop one value
+        without reopening the menu it came from.
+    *@
+    @foreach (var chip in ActiveChips)
+    {
+        var captured = chip;
+        <span class="rfb-chip">
+            <span class="rfb-chip-dot @(captured.DotClass)" aria-hidden="true"></span>
+            <span>@captured.Label</span>
+            <button type="button"
+                    class="rfb-chip-x"
+                    aria-label="@($"הסרת הסינון {captured.Label}")"
+                    @onclick="@(() => Toggle(captured.AxisKey, captured.Value))">×</button>
+        </span>
+    }
+</div>
+
+@code {
+    /// <summary>One selectable value inside an axis.</summary>
+    public sealed record FilterOption(string Value, string Label, string DotClass = "rfb-dot-neutral");
+
+    /// <summary>One filter axis — a dropdown and the set it writes to.</summary>
+    public sealed record FilterAxis(
+        string Key,
+        string Label,
+        IReadOnlyList<FilterOption> Options,
+        IReadOnlyCollection<string> Selected);
+
+    [Parameter, EditorRequired] public IReadOnlyList<FilterAxis> Axes { get; set; }
+        = Array.Empty<FilterAxis>();
+
+    /// <summary>Raises (axisKey, value). The parent owns the sets — this
+    /// component never mutates a selection itself.</summary>
+    [Parameter] public EventCallback<(string AxisKey, string Value)> OnToggle { get; set; }
+
+    [Parameter] public EventCallback OnClearAll { get; set; }
+
+    private string? _openMenu;
+
+    private bool HasAnyFilter => Axes.Any(a => a.Selected.Count > 0);
+
+    private sealed record ActiveChip(string AxisKey, string Value, string Label, string DotClass);
+
+    private IEnumerable<ActiveChip> ActiveChips =>
+        Axes.SelectMany(a => a.Options
+                              .Where(o => a.Selected.Contains(o.Value))
+                              .Select(o => new ActiveChip(a.Key, o.Value, o.Label, o.DotClass)));
+
+    private void ToggleMenu(string key) => _openMenu = _openMenu == key ? null : key;
+    private void CloseMenu() => _openMenu = null;
+
+    private async Task Toggle(string axisKey, string value)
+    {
+        // The menu deliberately stays open: these are multi-select axes, and
+        // closing after every tick would make picking two statuses a
+        // four-click operation.
+        await OnToggle.InvokeAsync((axisKey, value));
+    }
+
+    private async Task ClearAll()
+    {
+        _openMenu = null;
+        await OnClearAll.InvokeAsync();
+    }
+}

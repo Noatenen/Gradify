@@ -1,642 +1,403 @@
 @page "/mentor-requests"
 @layout AppLayout
-@attribute [Authorize(Roles = Roles.Mentor)]
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Mentor
 @using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IProjectRequestsService RequestsService
+@inject IMentorAttentionService Attention
 
-<!-- ── Detail drawer backdrop ── -->
-@if (_drawerRow is not null)
-{
-    <div class="mreq-backdrop" @onclick="CloseDrawer"></div>
-}
+@*
+    ── בקשות — the mentor's request queue ──────────────────────────────────
+    UX / IA source:  design-reference/mentor-experience/project/
+                     Motiva Mentor Requests.dc.html
+    Visual source:   the implemented student experience — MPageHeader Compact,
+                     MKpiGrid/MKpiCard as filters, MCard AmbientEdge,
+                     MRowList Inset, and the 16/48 section rhythm from the
+                     Phase A polish pass.
+    Data source:     GET api/project-requests — already scoped server-side to
+                     the caller's own projects for a mentor-only user.
 
-<!-- ── Detail drawer ── -->
-@if (_drawerRow is not null)
-{
-    <div class="mreq-drawer" dir="rtl">
-        <div class="mreq-drawer-header">
-            <div class="mreq-drawer-title-row">
-                <div>
-                    <div class="mreq-drawer-type">
-                        <span class="mreq-type-badge mreq-type-@TypeClass(_drawerRow.RequestType)">
-                            @RequestTypes.Label(_drawerRow.RequestType)
-                        </span>
+    WHAT REPLACED WHAT
+    The legacy screen was a filter bar, a table and a hand-rolled side drawer.
+    The drawer is gone and the four responsibility groups the design specifies
+    replace the table. The drawer's one real capability — the extension
+    recommendation — moved into MentorRequestDetail, shared with המשימות שלי,
+    so the product's only mentor write exists exactly once.
+
+    CARRIED OVER FROM THE LEGACY SCREEN, because they are functionality and
+    not decoration:
+      * the ?requestId= deep link a request notification arrives on, which now
+        expands that row instead of opening a drawer;
+      * search across title / project / number / requester;
+      * MarkRead on open (inside MentorRequestDetail).
+
+    THE KPI ROW IS THE FILTER, not a statistics strip: each card selects its
+    own group, shows a pressed ring while active, and clears when clicked again.
+
+    "טופלו" IS COLLAPSED BY DEFAULT — the design's own behaviour
+    (`const collapsible = g.key === 'closed'`). It is history and must not push
+    live work below the fold.
+*@
+
+<div class="mrq-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Title="בקשות"
+                 Subtitle="כאן עוקבים אחר בקשות מהצוותים שלך — מה ממתין לך, מה עבר למרצה ומה כבר טופל.">
+        @if (!_loading && !_loadError && _all.Count > 0)
+        {
+            <div class="mrq-controls">
+                <MSearchField @bind-Value="_query"
+                              MaxWidth="320px"
+                              Placeholder="חיפוש בקשה, פרויקט או סטודנט…"
+                              AriaLabel="חיפוש בבקשות" />
+
+                <MKpiGrid Columns="4" AriaLabel="סיכום בקשות ומסננים">
+                    @foreach (var b in MentorRequestBuckets.Ordered)
+                    {
+                        var bucket = b;
+                        <MKpiCard Accent="@KpiAccentFor(bucket)"
+                                  Value="@CountOf(bucket).ToString()"
+                                  Label="@MentorRequestBuckets.GroupLabel(bucket)"
+                                  Pressed="@(_bucketFilter == bucket)"
+                                  OnClick="@(() => ToggleBucket(bucket))"
+                                  AriaLabel="@($"{CountOf(bucket)} {MentorRequestBuckets.GroupLabel(bucket)} — סינון")">
+                            <Icon><MentorGlyph Kind="@GlyphFor(bucket)" /></Icon>
+                        </MKpiCard>
+                    }
+                </MKpiGrid>
+
+                @if (_bucketFilter is not null)
+                {
+                    <div class="mrq-filter-chip">
+                        <span>מציג: @MentorRequestBuckets.GroupLabel(_bucketFilter.Value)</span>
+                        <button type="button" class="mrq-filter-clear" @onclick="ClearBucket">נקה ✕</button>
                     </div>
-                    <div class="mreq-drawer-title">@_drawerRow.Title</div>
-                </div>
-                <button class="mreq-drawer-close" @onclick="CloseDrawer" title="סגירה">
-                    <span class="oi oi-x" aria-hidden="true"></span>
+                }
+            </div>
+        }
+    </MPageHeader>
+</div>
+
+<div class="mrq-body">
+
+    @if (_loading)
+    {
+        <div class="mrq-state" role="status" aria-live="polite">
+            <span class="mrq-spinner" aria-hidden="true"></span>
+            <span>טוענת בקשות…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Live="true"
+                     Title="לא הצלחנו לטעון את הבקשות"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">נסי שוב</MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_all.Count == 0)
+    {
+        <MEmptyState Title="אין בקשות בפרויקטים שלך"
+                     Description="כשצוות יגיש בקשה, היא תופיע כאן." />
+    }
+    else
+    {
+        @* ── Request-type filter — a NEUTRAL axis.
+             These pills say WHAT a request is; the KPI row above says WHO has
+             to act. The design is explicit about keeping the two apart
+             ("סוג הבקשה מסומן בתגית ניטרלית קטנה — לא צבע"), which is why
+             there is no semantic colour and no CTA gradient here. ── *@
+        <div class="mrq-types" role="group" aria-label="סינון לפי סוג בקשה">
+            <button type="button"
+                    class="mrq-type @(_typeFilter is null ? "mrq-type-on" : "")"
+                    aria-pressed="@(_typeFilter is null)"
+                    @onclick="@(() => SetType(null))">
+                הכל
+            </button>
+            @foreach (var t in AvailableTypes)
+            {
+                var type = t;
+                <button type="button"
+                        class="mrq-type @(_typeFilter == type ? "mrq-type-on" : "")"
+                        aria-pressed="@(_typeFilter == type)"
+                        @onclick="@(() => SetType(_typeFilter == type ? null : type))">
+                    @RequestTypes.Label(type)
                 </button>
-            </div>
-            <div class="mreq-drawer-meta">
-                <div class="mreq-drawer-meta-item">
-                    <span class="oi oi-folder" aria-hidden="true"></span>
-                    צוות @_drawerRow.ProjectNumber — @_drawerRow.ProjectTitle
-                </div>
-                <div class="mreq-drawer-meta-item">
-                    <span class="oi oi-person" aria-hidden="true"></span>
-                    @_drawerRow.CreatedByName
-                </div>
-                <div class="mreq-drawer-meta-item">
-                    <span class="oi oi-calendar" aria-hidden="true"></span>
-                    @_drawerRow.CreatedAt.IsraelFormat()
-                </div>
-            </div>
-            <div class="mreq-drawer-status-row">
-                <span class="mreq-status-badge mreq-badge-@_drawerRow.Status.ToLower()">
-                    @RequestStatuses.Label(_drawerRow.Status)
-                </span>
-                <span class="mreq-priority-badge mreq-priority-@_drawerRow.Priority.ToLower()">
-                    @RequestPriorities.Label(_drawerRow.Priority)
-                </span>
-            </div>
-        </div>
-
-        <div class="mreq-drawer-body">
-
-            @if (_detailLoading)
-            {
-                <div class="mreq-drawer-loading">
-                    <span class="mreq-spinner-inline"></span>טוען פרטי בקשה…
-                </div>
-            }
-            else if (_detail is null)
-            {
-                <div class="mreq-drawer-empty">לא ניתן לטעון את פרטי הבקשה.</div>
-            }
-            else
-            {
-                @* ── Description ── *@
-                @if (!string.IsNullOrWhiteSpace(_detail.Description))
-                {
-                    <div class="mreq-drawer-section">
-                        <div class="mreq-drawer-section-title">תיאור</div>
-                        <div class="mreq-drawer-text">@_detail.Description</div>
-                    </div>
-                }
-
-                @* ── Extension panel (only for Extension type) ── *@
-                @if (_detail.RequestType == RequestTypes.Extension && _detail.Extension is not null)
-                {
-                    <div class="mreq-drawer-section mreq-extension-block">
-                        <div class="mreq-drawer-section-title">פרטי בקשת הדחייה</div>
-
-                        <div class="mreq-ext-grid">
-                            <div class="mreq-ext-cell">
-                                <div class="mreq-ext-label">משימה / אבן דרך</div>
-                                <div class="mreq-ext-value">
-                                    @if (!string.IsNullOrWhiteSpace(_detail.Extension.TaskTitle))
-                                    {
-                                        <span class="oi oi-task" aria-hidden="true"></span> <span>@_detail.Extension.TaskTitle</span>
-                                    }
-                                    else if (!string.IsNullOrWhiteSpace(_detail.Extension.MilestoneTitle))
-                                    {
-                                        <span class="oi oi-flag" aria-hidden="true"></span> <span>@_detail.Extension.MilestoneTitle</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="mreq-ext-general">אחר / כללי (ללא משימה ספציפית)</span>
-                                    }
-                                </div>
-                            </div>
-                            <div class="mreq-ext-cell">
-                                <div class="mreq-ext-label">תאריך נוכחי</div>
-                                <div class="mreq-ext-value">
-                                    @(_detail.Extension.CurrentDueDate?.ToString("dd/MM/yyyy") ?? "—")
-                                </div>
-                            </div>
-                            <div class="mreq-ext-cell">
-                                <div class="mreq-ext-label">תאריך מבוקש</div>
-                                <div class="mreq-ext-value mreq-ext-requested">
-                                    @_detail.Extension.RequestedDueDate.ToString("dd/MM/yyyy")
-                                </div>
-                            </div>
-                            <div class="mreq-ext-cell">
-                                <div class="mreq-ext-label">החלטת מנחה</div>
-                                <div class="mreq-ext-value">
-                                    <span class="mreq-ext-decision mreq-ext-dec-@_detail.Extension.MentorDecision.ToLower()">
-                                        @ExtensionDecisionStatuses.Label(_detail.Extension.MentorDecision)
-                                    </span>
-                                </div>
-                            </div>
-                            @if (_detail.Extension.LecturerDecision != ExtensionDecisionStatuses.NotRequired)
-                            {
-                                <div class="mreq-ext-cell">
-                                    <div class="mreq-ext-label">החלטת מרצה</div>
-                                    <div class="mreq-ext-value">
-                                        <span class="mreq-ext-decision mreq-ext-dec-@_detail.Extension.LecturerDecision.ToLower()">
-                                            @ExtensionDecisionStatuses.Label(_detail.Extension.LecturerDecision)
-                                        </span>
-                                    </div>
-                                </div>
-                            }
-                            @if (_detail.Extension.ApprovedDueDate.HasValue)
-                            {
-                                <div class="mreq-ext-cell">
-                                    <div class="mreq-ext-label">תאריך מאושר</div>
-                                    <div class="mreq-ext-value mreq-ext-approved">
-                                        @_detail.Extension.ApprovedDueDate.Value.ToString("dd/MM/yyyy")
-                                    </div>
-                                </div>
-                            }
-                        </div>
-
-                        @if (!string.IsNullOrWhiteSpace(_detail.Extension.Reason))
-                        {
-                            <div class="mreq-ext-reason">
-                                <div class="mreq-ext-label">נימוק הסטודנט</div>
-                                <div class="mreq-drawer-text">@_detail.Extension.Reason</div>
-                            </div>
-                        }
-
-                        @* ── Mentor recommendation form ─────────────────
-                           Mentors no longer approve/reject extensions directly.
-                           They pick "ממליץ" / "לא ממליץ" with an internal note
-                           and the request always escalates to the lecturer. *@
-                        @if (_detail.Status == RequestStatuses.PendingMentorRecommendation)
-                        {
-                            <div class="mreq-decision-form">
-                                <div class="mreq-decision-form-title">המלצת מנחה</div>
-                                <div class="mreq-decision-hint">
-                                    ההמלצה וההערה יועברו למרצה ולא יוצגו לסטודנט.
-                                </div>
-
-                                <label class="mreq-decision-label">המלצה</label>
-                                <div class="mreq-recommend-toggle">
-                                    <button type="button"
-                                            class="mreq-recommend-btn @(_recommendation == ExtensionDecisionStatuses.Recommended ? "mreq-recommend-on" : "")"
-                                            disabled="@_submitting"
-                                            @onclick="@(() => _recommendation = ExtensionDecisionStatuses.Recommended)">
-                                        <span class="oi oi-check" aria-hidden="true"></span> ממליץ
-                                    </button>
-                                    <button type="button"
-                                            class="mreq-recommend-btn @(_recommendation == ExtensionDecisionStatuses.NotRecommended ? "mreq-recommend-off" : "")"
-                                            disabled="@_submitting"
-                                            @onclick="@(() => _recommendation = ExtensionDecisionStatuses.NotRecommended)">
-                                        <span class="oi oi-x" aria-hidden="true"></span> לא ממליץ
-                                    </button>
-                                </div>
-
-                                <label class="mreq-decision-label">הערת מנחה פנימית</label>
-                                <textarea class="mreq-decision-notes"
-                                          rows="3"
-                                          maxlength="2000"
-                                          placeholder="הסבר קצר עבור המרצה (לא מוצג לסטודנט)…"
-                                          @bind="_decisionNotes"></textarea>
-
-                                @if (!string.IsNullOrEmpty(_decisionError))
-                                {
-                                    <div class="mreq-decision-error">
-                                        <span class="oi oi-warning" aria-hidden="true"></span>
-                                        @_decisionError
-                                    </div>
-                                }
-
-                                <div class="mreq-decision-actions">
-                                    <button class="mreq-btn mreq-btn-approve"
-                                            disabled="@(_submitting || string.IsNullOrEmpty(_recommendation))"
-                                            @onclick="SubmitRecommendation">
-                                        <span class="oi oi-share" aria-hidden="true"></span> שליחת המלצה
-                                    </button>
-                                </div>
-                            </div>
-                        }
-                        else if (_detail.Extension.MentorDecision == ExtensionDecisionStatuses.Recommended
-                              || _detail.Extension.MentorDecision == ExtensionDecisionStatuses.NotRecommended)
-                        {
-                            @* Read-only summary after the mentor submitted — visible only to mentor/staff. *@
-                            <div class="mreq-decision-form">
-                                <div class="mreq-decision-form-title">המלצת מנחה</div>
-                                <div class="mreq-ext-row">
-                                    <div class="mreq-ext-label">המלצה</div>
-                                    <div class="mreq-ext-value">
-                                        <span class="mreq-ext-decision mreq-ext-dec-@_detail.Extension.MentorDecision.ToLower()">
-                                            @ExtensionDecisionStatuses.Label(_detail.Extension.MentorDecision)
-                                        </span>
-                                    </div>
-                                </div>
-                                @if (!string.IsNullOrWhiteSpace(_detail.Extension.MentorNotes))
-                                {
-                                    <label class="mreq-decision-label">הערת מנחה פנימית</label>
-                                    <div class="mreq-drawer-text">@_detail.Extension.MentorNotes</div>
-                                }
-                            </div>
-                        }
-                    </div>
-                }
-
-                @* ── Attachments ── *@
-                @if (_detail.Attachments.Count > 0)
-                {
-                    <div class="mreq-drawer-section">
-                        <div class="mreq-drawer-section-title">
-                            קבצים מצורפים
-                            <span class="mreq-drawer-count">@_detail.Attachments.Count</span>
-                        </div>
-                        <div class="mreq-file-list">
-                            @foreach (var att in _detail.Attachments)
-                            {
-                                <a class="mreq-file-row"
-                                   href="/request-attachments/@att.StoredFileName"
-                                   download="@att.OriginalFileName"
-                                   title="הורדה">
-                                    <span class="oi oi-file mreq-file-icon" aria-hidden="true"></span>
-                                    <span class="mreq-file-name">@att.OriginalFileName</span>
-                                    <span class="mreq-file-size">@FormatSize(att.SizeBytes)</span>
-                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
-                                </a>
-                            }
-                        </div>
-                    </div>
-                }
-
-                @* ── Thread / events history ── *@
-                <div class="mreq-drawer-section">
-                    <div class="mreq-drawer-section-title">
-                        היסטוריית בקשה
-                        <span class="mreq-drawer-count">@_detail.Events.Count</span>
-                    </div>
-                    @if (_detail.Events.Count == 0)
-                    {
-                        <div class="mreq-drawer-empty">אין הודעות עדיין.</div>
-                    }
-                    else
-                    {
-                        <div class="mreq-events">
-                            @foreach (var evt in _detail.Events)
-                            {
-                                <div class="mreq-event mreq-event-@evt.EventType.ToLower()">
-                                    <div class="mreq-event-head">
-                                        <span class="mreq-event-author">@evt.UserName</span>
-                                        <span class="mreq-event-type">@EventTypeLabel(evt.EventType)</span>
-                                        <span class="mreq-event-date">@evt.CreatedAt.IsraelFormat("dd/MM/yy HH:mm")</span>
-                                    </div>
-                                    @if (evt.EventType == RequestEventTypes.Comment && !string.IsNullOrWhiteSpace(evt.Content))
-                                    {
-                                        <div class="mreq-event-body">@evt.Content</div>
-                                    }
-                                    else if (!string.IsNullOrWhiteSpace(evt.OldValue) || !string.IsNullOrWhiteSpace(evt.NewValue))
-                                    {
-                                        <div class="mreq-event-change">
-                                            @if (!string.IsNullOrWhiteSpace(evt.OldValue))
-                                            {
-                                                <span class="mreq-event-old">@evt.OldValue</span>
-                                                <span class="oi oi-arrow-thick-left" aria-hidden="true"></span>
-                                            }
-                                            <span class="mreq-event-new">@evt.NewValue</span>
-                                        </div>
-                                    }
-                                </div>
-                            }
-                        </div>
-                    }
-                </div>
-
             }
         </div>
-    </div>
-}
 
-<!-- ── Page ── -->
-<div class="mreq-page" dir="rtl">
+        @if (VisibleGroups.Sum(g => g.Items.Count) == 0)
+        {
+            <MEmptyState Title="אין בקשות תואמות לסינון."
+                         Description="אפשר לנקות את הסינון ולראות את כל הבקשות.">
+                <Action>
+                    <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ClearAllFilters">
+                        ניקוי הסינון
+                    </MButton>
+                </Action>
+            </MEmptyState>
+        }
+        else
+        {
+            @foreach (var group in VisibleGroups)
+            {
+                var g = group;
+                @* MSectionHeading exposes exactly one named slot, so an @if
+                   cannot wrap <Trailing> — the fragment is chosen here and
+                   passed as null when the group is not collapsible. *@
+                @* Already inside a code block (@foreach), so this is a plain
+                   C# statement — an "@{" here would be a nested switch. *@
+                RenderFragment? groupTrailing = g.Collapsible
+                        ? @<button type="button" class="mrq-collapse"
+                                   aria-expanded="@_closedOpen"
+                                   @onclick="@(() => _closedOpen = !_closedOpen)">
+                               @(_closedOpen ? "הסתרה" : "הצגה")
+                           </button>
+                        : null;
 
-    <!-- ── Page header ── -->
-    <div class="mreq-header-card">
-        <div class="mreq-header-start">
-            <div class="mreq-page-icon">
-                <span class="oi oi-envelope-closed" aria-hidden="true"></span>
-            </div>
-            <div>
-                <h1 class="mreq-page-title">בקשות</h1>
-                <p class="mreq-page-subtitle">בקשות הקשורות לפרויקטים שאני מנחה</p>
-            </div>
-        </div>
-        <div class="mreq-header-end">
-            <span class="mreq-count-pill">@_all.Count</span>
-        </div>
-    </div>
+                <section class="mrq-section">
+                    <MSectionHeading Text="@MentorRequestBuckets.GroupLabel(g.Bucket)"
+                                     Count="@g.Items.Count.ToString()"
+                                     Trailing="@groupTrailing" />
 
-    <!-- ── Filters ── -->
-    <div class="mreq-filters-bar">
-        <div class="mreq-search-wrap">
-            <span class="oi oi-magnifying-glass mreq-search-icon" aria-hidden="true"></span>
-            <input class="mreq-search" type="text"
-                   placeholder="חיפוש לפי כותרת, פרויקט, סטודנט…"
-                   @bind="_searchQuery" @bind:event="oninput" />
-        </div>
-        <div class="mreq-filter-group">
-            <select class="mreq-filter-select" @bind="_scopeFilter">
-                <option value="active">בקשות פעילות</option>
-                <option value="handled">טופלו / סגורות</option>
-                <option value="all">הכול</option>
-            </select>
-            <select class="mreq-filter-select" @bind="_filterType">
-                <option value="">כל הסוגים</option>
-                @foreach (var t in RequestTypes.All)
-                {
-                    <option value="@t">@RequestTypes.Label(t)</option>
-                }
-            </select>
-            <select class="mreq-filter-select" @bind="_filterStatus">
-                <option value="">כל הסטטוסים</option>
-                @foreach (var s in RequestStatuses.All)
-                {
-                    <option value="@s">@RequestStatuses.Label(s)</option>
-                }
-            </select>
-        </div>
-    </div>
-
-    <!-- ── Table ── -->
-    <div class="mreq-table-panel">
-        <div class="mreq-table-wrap">
-            <table class="mreq-table">
-                <thead>
-                    <tr>
-                        <th>סוג</th>
-                        <th>כותרת</th>
-                        <th>פרויקט / צוות</th>
-                        <th>פתח על ידי</th>
-                        <th>תאריך</th>
-                        <th>עדיפות</th>
-                        <th>סטטוס</th>
-                        <th class="mreq-th-action"></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (_loading)
+                    @if (!g.Collapsible || _closedOpen)
                     {
-                        <tr><td colspan="8" class="mreq-empty">
-                            <span class="mreq-spinner-inline"></span>טוען בקשות…
-                        </td></tr>
-                    }
-                    else if (_loadError)
-                    {
-                        <tr><td colspan="8" class="mreq-empty mreq-empty--error">
-                            <span class="oi oi-warning" aria-hidden="true"></span>
-                            שגיאה בטעינת הבקשות. נסה לרענן את הדף.
-                        </td></tr>
-                    }
-                    else if (!Filtered.Any())
-                    {
-                        <tr><td colspan="8" class="mreq-empty">
-                            <span class="oi oi-inbox" aria-hidden="true"></span>
-                            @if (_all.Count == 0)
+                        <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                            @if (g.Items.Count == 0)
                             {
-                                <span>אין בקשות לפרויקטים שאתה מנחה.</span>
+                                <MEmptyState Title="אין בקשות בקבוצה זו." Class="mrq-empty" />
                             }
                             else
                             {
-                                <span>לא נמצאו בקשות התואמות את הסינון.</span>
-                            }
-                        </td></tr>
-                    }
-                    else
-                    {
-                        foreach (var r in Filtered)
-                        {
-                            bool isSelected = _drawerRow?.Id == r.Id;
-                            <tr class="mreq-row @(isSelected ? "mreq-row-selected" : "") @(r.HasUnread ? "mreq-row-unread" : "")"
-                                @onclick="@(async () => await OpenDrawer(r))">
-                                <td>
-                                    <span class="mreq-type-badge mreq-type-@TypeClass(r.RequestType)">
-                                        @RequestTypes.Label(r.RequestType)
-                                    </span>
-                                </td>
-                                <td>
-                                    <div class="mreq-title-cell">
-                                        @if (r.HasUnread)
-                                        {
-                                            <span class="mreq-unread-dot" title="עדכון חדש"></span>
-                                        }
-                                        <span>@r.Title</span>
-                                        @if (r.AttachmentCount > 0)
-                                        {
-                                            <span class="mreq-attach-indicator" title="@r.AttachmentCount קבצים מצורפים">
-                                                <span class="oi oi-paperclip" aria-hidden="true"></span>
-                                            </span>
-                                        }
-                                    </div>
-                                </td>
-                                <td>
-                                    <div class="mreq-project-cell">
-                                        <span class="mreq-team-number">צוות @r.ProjectNumber</span>
-                                        <span class="mreq-project-title">@r.ProjectTitle</span>
-                                    </div>
-                                </td>
-                                <td>
-                                    <span class="mreq-name-cell">@r.CreatedByName</span>
-                                </td>
-                                <td class="mreq-date-cell">
-                                    <div>@r.CreatedAt.ToString("dd/MM/yyyy")</div>
-                                    <div class="mreq-time">@r.CreatedAt.IsraelFormat("HH:mm")</div>
-                                </td>
-                                <td>
-                                    <span class="mreq-priority-badge mreq-priority-@r.Priority.ToLower()">
-                                        @RequestPriorities.Label(r.Priority)
-                                    </span>
-                                </td>
-                                <td>
-                                    <span class="mreq-status-badge mreq-badge-@r.Status.ToLower()">
-                                        @RequestStatuses.Label(r.Status)
-                                    </span>
-                                </td>
-                                <td class="mreq-cell-action">
-                                    <button class="mreq-open-btn"
-                                            title="פתח פרטים"
-                                            @onclick:stopPropagation="true"
-                                            @onclick="@(async () => await OpenDrawer(r))">
-                                        <span class="oi oi-chevron-left" aria-hidden="true"></span>
-                                    </button>
-                                </td>
-                            </tr>
-                        }
-                    }
-                </tbody>
-            </table>
-        </div>
-    </div>
+                                <MRowList Inset="true" AriaLabel="@MentorRequestBuckets.GroupLabel(g.Bucket)">
+                                    @foreach (var r in g.Items)
+                                    {
+                                        var req = r;
+                                        var isOpen = _expandedId == req.Id;
 
+                                        <MRow OnClick="@(() => Toggle(req.Id))"
+                                              Selected="@isOpen"
+                                              Primary="@req.Title"
+                                              Secondary="@RowContext(req)"
+                                              Meta="@SlaLabel(req)"
+                                              MetaTone="@SlaTone(req)"
+                                              AriaLabel="@($"{(isOpen ? "סגירת" : "פתיחת")} הבקשה {req.Title}")">
+                                            <Leading>
+                                                <MStatusBadge Text="@RequestTypes.Label(req.RequestType)" />
+                                            </Leading>
+                                            <Trailing>
+                                                <span class="mrq-chevron @(isOpen ? "mrq-chevron-open" : "")" aria-hidden="true">
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="m6 9 6 6 6-6"></path>
+                                                    </svg>
+                                                </span>
+                                            </Trailing>
+                                        </MRow>
+
+                                        @if (isOpen)
+                                        {
+                                            <div class="mrq-detail">
+                                                <MentorRequestDetail RequestId="@req.Id"
+                                                                     ShowHeader="false"
+                                                                     WaitingLabel="@AttentionFor(req)?.WaitingLabel"
+                                                                     OnChanged="OnRequestChangedAsync" />
+                                            </div>
+                                        }
+                                    }
+                                </MRowList>
+                            }
+                        </MCard>
+                    }
+                </section>
+            }
+        }
+    }
 </div>
 
 @code {
-    // ── List state ───────────────────────────────────────────────────────────
-    private List<ProjectRequestRowDto> _all = new();
-    private bool _loading   = true;
-    private bool _loadError;
-
-    private string _searchQuery  = "";
-    private string _filterType   = "";
-    private string _filterStatus = "";
-    /// <summary>"active" | "handled" | "all" — default hides resolved/closed
-    /// requests so the inbox is focused on what still needs work.</summary>
-    private string _scopeFilter  = "active";
-
-    // ── Drawer state ─────────────────────────────────────────────────────────
-    private ProjectRequestRowDto?    _drawerRow;
-    private ProjectRequestDetailDto? _detail;
-    private bool _detailLoading;
-
-    // ── Decision form state ──────────────────────────────────────────────────
-    // _decisionApprovedDate is kept in state because the legacy
-    // SubmitExtensionDecision UI may still surface for old data, even though
-    // the new mentor-recommendation flow does not use it. _recommendation
-    // tracks the toggle ("Recommended" / "NotRecommended").
-    private DateTime? _decisionApprovedDate;
-    private string    _decisionNotes = "";
-    private string    _decisionError = "";
-    private string    _recommendation = "";
-    private bool      _submitting;
-
-    // Notification deep-link target. Clicking a request notification lands
-    // here with `?requestId={id}`; after the list loads we auto-open that
-    // row's drawer.
+    /// <summary>Deep link a request notification arrives on. The legacy screen
+    /// opened the drawer for it; this expands its row instead.</summary>
     [SupplyParameterFromQuery(Name = "requestId")]
     public int? DeepLinkRequestId { get; set; }
 
+    private List<ProjectRequestRowDto> _all = new();
+    /// <summary>Waiting ages for the requests that are actually on this mentor.
+    /// One extra GET, and the reason this page cannot word or escalate a request
+    /// differently from the rest of the mentor experience.</summary>
+    private MentorAttentionDto _attention = new();
+    private bool _loading = true;
+    private bool _loadError;
+
+    private string               _query = "";
+    private MentorRequestBucket? _bucketFilter;
+    private string?              _typeFilter;
+    private int?                 _expandedId;
+    private bool                 _closedOpen;   // "טופלו" starts collapsed, per the design
+
+    private sealed record Group(MentorRequestBucket Bucket, List<ProjectRequestRowDto> Items, bool Collapsible);
+
     protected override async Task OnInitializedAsync()
     {
-        await LoadList();
+        await LoadAsync();
 
-        if (DeepLinkRequestId is int reqId)
+        if (DeepLinkRequestId is int id && _all.Any(r => r.Id == id))
         {
-            var row = _all.FirstOrDefault(r => r.Id == reqId);
-            if (row is not null) await OpenDrawer(row);
+            _expandedId = id;
+            // A closed request reached from a notification must still open, so
+            // the collapsed group has to give way for it.
+            if (MentorRequestBuckets.Of(_all.First(r => r.Id == id).Status) == MentorRequestBucket.Closed)
+                _closedOpen = true;
         }
     }
 
-    private async Task LoadList()
+    private async Task LoadAsync()
     {
         _loading = true;
-        var result = await RequestsService.GetAllAsync();
-        _loadError = result is null;
-        _all       = result ?? new();
-        _loading   = false;
+        _loadError = false;
+
+        var rowsTask      = RequestsService.GetAllAsync();
+        var attentionTask = Attention.GetAsync();
+        await Task.WhenAll(rowsTask, attentionTask);
+
+        var rows = await rowsTask;
+        if (rows is null) { _loadError = true; _loading = false; return; }
+
+        _attention = await attentionTask;
+
+        // Newest activity first, the ordering the legacy inbox used.
+        _all = rows.OrderByDescending(r => r.UpdatedAt).ToList();
+        _loading = false;
     }
 
-    private IEnumerable<ProjectRequestRowDto> Filtered => _all
-        // Active vs handled scope. Default = active so resolved/closed
-        // requests don't clutter the inbox.
-        .Where(r => _scopeFilter switch
-        {
-            "handled" => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed,
-            "all"     => true,
-            _         => r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed),
-        })
-        .Where(r => string.IsNullOrEmpty(_filterType)   || r.RequestType == _filterType)
-        .Where(r => string.IsNullOrEmpty(_filterStatus) || r.Status      == _filterStatus)
-        .Where(r => string.IsNullOrEmpty(_searchQuery)
-                 || r.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
-                 || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
-                 || r.ProjectNumber.ToString().Contains(_searchQuery)
-                 || r.CreatedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
-        // WhatsApp-style: newest activity first.
-        .OrderByDescending(r => r.UpdatedAt);
-
-    // ── Drawer ───────────────────────────────────────────────────────────────
-    private async Task OpenDrawer(ProjectRequestRowDto row)
+    /// <summary>A recommendation was accepted, so the request has changed
+    /// bucket — reload rather than patching one row's status by hand.</summary>
+    private async Task OnRequestChangedAsync()
     {
-        _drawerRow            = row;
-        _detail               = null;
-        _detailLoading        = true;
-        _decisionError        = "";
-        _decisionNotes        = "";
-        _decisionApprovedDate = null;
-        _recommendation       = "";
-        StateHasChanged();
-
-        // Clear the WhatsApp dot — optimistic local + best-effort server call.
-        if (row.HasUnread)
-        {
-            row.HasUnread = false;
-            _ = RequestsService.MarkReadAsync(row.Id);
-        }
-
-        _detail = await RequestsService.GetByIdAsync(row.Id);
-
-        // Pre-fill the date input from the requested date so the mentor can
-        // approve as-is or override with a different date.
-        if (_detail?.Extension is not null)
-        {
-            _decisionApprovedDate = _detail.Extension.RequestedDueDate.Date;
-        }
-
-        _detailLoading = false;
+        _expandedId = null;
+        await LoadAsync();
     }
 
-    private void CloseDrawer()
+    private void Toggle(int id) => _expandedId = _expandedId == id ? null : id;
+
+    private void ToggleBucket(MentorRequestBucket b)
     {
-        _drawerRow            = null;
-        _detail               = null;
-        _decisionError        = "";
-        _decisionNotes        = "";
-        _decisionApprovedDate = null;
+        _bucketFilter = _bucketFilter == b ? null : b;
+        _expandedId = null;
+        // Selecting "טופלו" from the KPI row must actually reveal it, or the
+        // filter would appear to do nothing at all.
+        if (_bucketFilter == MentorRequestBucket.Closed) _closedOpen = true;
     }
 
-    // ── Mentor recommendation submit ─────────────────────────────────────────
-    private async Task SubmitRecommendation()
+    private void ClearBucket() => _bucketFilter = null;
+
+    private void SetType(string? t)
     {
-        if (_drawerRow is null || _detail?.Extension is null) return;
-
-        if (_recommendation != ExtensionDecisionStatuses.Recommended
-         && _recommendation != ExtensionDecisionStatuses.NotRecommended)
-        {
-            _decisionError = "יש לבחור 'ממליץ' או 'לא ממליץ'.";
-            return;
-        }
-
-        _decisionError = "";
-        _submitting    = true;
-        var err = await RequestsService.SubmitMentorRecommendationAsync(_drawerRow.Id,
-            new MentorRecommendationRequest
-            {
-                Recommendation = _recommendation,
-                Notes          = string.IsNullOrWhiteSpace(_decisionNotes) ? null : _decisionNotes.Trim(),
-            });
-        _submitting = false;
-
-        if (err is not null)
-        {
-            _decisionError = err;
-            return;
-        }
-
-        // Refresh list + drawer
-        await LoadList();
-        var refreshed = await RequestsService.GetByIdAsync(_drawerRow.Id);
-        if (refreshed is not null) _detail = refreshed;
-        var updatedRow = _all.FirstOrDefault(r => r.Id == _drawerRow.Id);
-        if (updatedRow is not null) _drawerRow = updatedRow;
+        _typeFilter = t;
+        _expandedId = null;
     }
 
-    // ── Display helpers ──────────────────────────────────────────────────────
-    private static string TypeClass(string t) => t switch
+    private void ClearAllFilters()
     {
-        RequestTypes.Extension                 => "extension",
-        RequestTypes.SpecialEvent              => "special",
-        RequestTypes.TechnicalSupport          => "tech",
-        RequestTypes.Meeting                   => "meeting",
-        RequestTypes.ClientChallenge           => "challenge",
-        RequestTypes.ContentChallenge          => "challenge",
-        RequestTypes.CharacterizationChallenge => "challenge",
-        _                                      => "other",
+        _bucketFilter = null;
+        _typeFilter   = null;
+        _query        = "";
+    }
+
+    // ── Derived ─────────────────────────────────────────────────────────
+
+    /// <summary>Search + type are applied BEFORE the counts, so the KPI numbers
+    /// always describe what the list below is actually showing.</summary>
+    private IEnumerable<ProjectRequestRowDto> Narrowed
+    {
+        get
+        {
+            var q = _query.Trim();
+            return _all
+                .Where(r => _typeFilter is null || r.RequestType == _typeFilter)
+                .Where(r => q.Length == 0
+                         || r.Title.Contains(q, StringComparison.OrdinalIgnoreCase)
+                         || r.ProjectTitle.Contains(q, StringComparison.OrdinalIgnoreCase)
+                         || r.ProjectNumber.ToString().Contains(q)
+                         || r.CreatedByName.Contains(q, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private int CountOf(MentorRequestBucket b) =>
+        Narrowed.Count(r => MentorRequestBuckets.Of(r.Status) == b);
+
+    /// <summary>Only the types that actually occur in this mentor's requests —
+    /// a pill for a type no team ever files is a dead control.</summary>
+    private List<string> AvailableTypes =>
+        RequestTypes.All.Where(t => _all.Any(r => r.RequestType == t)).ToList();
+
+    private List<Group> VisibleGroups =>
+        MentorRequestBuckets.Ordered
+            .Where(b => _bucketFilter is null || _bucketFilter == b)
+            .Select(b => new Group(
+                b,
+                Narrowed.Where(r => MentorRequestBuckets.Of(r.Status) == b).ToList(),
+                Collapsible: b == MentorRequestBucket.Closed))
+            .ToList();
+
+    // ── Row presentation ────────────────────────────────────────────────
+
+    /// <summary>Project + team + requester — every calendar/row surface in the
+    /// mentor area has to say which team it belongs to.</summary>
+    private static string RowContext(ProjectRequestRowDto r) =>
+        string.Join(" · ", new[] { r.ProjectTitle, r.TeamName, r.CreatedByName }
+            .Where(s => !string.IsNullOrWhiteSpace(s)));
+
+    /// <summary>
+    /// Ageing, written from the mentor's side. Only a request actually waiting
+    /// on them gets a "how long it has been waiting" reading; everything else
+    /// reports when it last moved.
+    ///
+    /// <para>The waiting phrase is looked up in the attention snapshot rather
+    /// than computed here. This page used to derive it from CreatedAt with its
+    /// own <c>&gt;= 3</c> comparison — the last of the four scattered thresholds
+    /// — and could therefore word or escalate the same request differently from
+    /// בית, המשימות שלי and the daily digest.</para>
+    /// </summary>
+    private string SlaLabel(ProjectRequestRowDto r) =>
+        AttentionFor(r)?.WaitingLabel ?? $"עודכנה {MentorTime.AgoLabel(r.UpdatedAt)}";
+
+    /// <summary>Rose only at NEEDS ATTENTION, and only for requests the mentor
+    /// is actually holding.</summary>
+    private MRow.RowMetaTone SlaTone(ProjectRequestRowDto r) =>
+        AttentionFor(r)?.Age == MentorAttentionAge.NeedsAttention
+            ? MRow.RowMetaTone.Rose
+            : MRow.RowMetaTone.Default;
+
+    /// <summary>The attention item for a request, or null when it is not waiting
+    /// on this mentor. Null is the normal case — most rows on this page are with
+    /// the lecturer, with the team, or closed.</summary>
+    private MentorAttentionItemDto? AttentionFor(ProjectRequestRowDto r) =>
+        _attention.Items.FirstOrDefault(
+            i => i.Kind == MentorAttentionKind.Request && i.EntityId == r.Id);
+
+    /// <summary>KPI accents. Amber for "waiting on you" is the presentation hue
+    /// the finalized student Requests screen already uses for the same idea;
+    /// the row-level status colour stays on the Master's violet/teal/rose via
+    /// MStatusDot. Presentation and semantics remain separate.</summary>
+    private static MKpiCard.KpiAccent KpiAccentFor(MentorRequestBucket b) => b switch
+    {
+        MentorRequestBucket.AwaitingMentor => MKpiCard.KpiAccent.Amber,
+        MentorRequestBucket.WithLecturer   => MKpiCard.KpiAccent.Violet,
+        MentorRequestBucket.AwaitingTeam   => MKpiCard.KpiAccent.Periwinkle,
+        _                                  => MKpiCard.KpiAccent.Teal,
     };
 
-    private static string EventTypeLabel(string t) => t switch
+    private static MentorGlyph.GlyphKind GlyphFor(MentorRequestBucket b) => b switch
     {
-        RequestEventTypes.Comment        => "הודעה",
-        RequestEventTypes.StatusChange   => "שינוי סטטוס",
-        RequestEventTypes.PriorityChange => "שינוי עדיפות",
-        RequestEventTypes.AssigneeChange => "שינוי אחראי",
-        _                                => t,
+        MentorRequestBucket.AwaitingMentor => MentorGlyph.GlyphKind.Request,
+        MentorRequestBucket.WithLecturer   => MentorGlyph.GlyphKind.Review,
+        MentorRequestBucket.AwaitingTeam   => MentorGlyph.GlyphKind.Personal,
+        _                                  => MentorGlyph.GlyphKind.OnTrack,
     };
-
-    private static string FormatSize(long bytes)
-    {
-        if (bytes < 1024)         return $"{bytes} B";
-        if (bytes < 1_048_576)    return $"{bytes / 1024} KB";
-        return $"{bytes / 1_048_576.0:F1} MB";
-    }
 }

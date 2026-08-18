@@ -1,0 +1,291 @@
+@page "/mentor/resources"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Mentor
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Learning
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IResourceFilesService ResourceFilesService
+@inject IJSRuntime JS
+
+@*
+    ── משאבים למנחים ──────────────────────────────────────────────────────
+    UX / IA source:  design-reference/mentor-experience/project/
+                     Motiva Mentor Resources.dc.html
+    Visual source:   the implemented student Knowledge Center.
+    Data source:     GET api/mentor/resources.
+
+    THE ENDPOINT IS NEW, AND IT HAD TO BE
+    Before this build a mentor could not list resources through ANY endpoint:
+    api/resourcefiles is [Authorize(Admin,Staff)] and api/student/resources is
+    [Authorize(Student)] — both 403 for a mentor — and the nav item pointed at
+    /resource-files, a page a mentor cannot open either. MentorController now
+    exposes a READ-ONLY GET over the same FetchAllRowsAsync/MapRows pair the
+    other two use. Curation stays with the lecturer; nothing was widened.
+
+    SHARED WITH THE STUDENT, ON PURPOSE
+    KnowledgeCenterModel (classification, type pills, action resolution,
+    search), KnowledgeCategoryCard and KnowledgeResourceRow are reused as-is.
+    They are already role-neutral — they take resources, not students — and the
+    design says so itself: "משתמש באותם רכיבים … מודל מנטלי אחד של עיון בכל
+    הפלטפורמה". Not one line of the student page changed.
+
+    WHAT IS MENTOR-SPECIFIC
+      * the full library rather than the student-visible feed;
+      * a מועדפים strip — the design's personalization row, and the one thing
+        a mentor needs that a student does not: they return to the same rubric
+        on every review.
+
+    THE OTHER TWO PERSONALIZATION COLUMNS ARE NOT BUILT
+    "נפתחו לאחרונה" and "בשימוש תכוף" need an activation signal. A resource row
+    is an <a download> / <a target=_blank> / <button> depending on the resource,
+    and MRow exposes no "was activated" hook alongside Href — adding one just to
+    count opens would push a tracking concern into a layout primitive. Real
+    usage counts belong on the server anyway (they should follow a mentor
+    between devices, which localStorage cannot). Reported rather than faked.
+
+    THE DESIGN'S HARDCODED SECTIONS ARE ABSENT, NOT FAKED
+    "מדריכים", "טפסים וקריטריונים" and "תאריכים חשובים" are literal HTML in the
+    prototype with no backing entity — there is no guide type, no read-time, no
+    curated form list and no key-dates table. Real resources carrying those
+    roles already appear in the categories below. See the page footnote.
+
+    FAVOURITES ARE DEVICE-LOCAL
+    The design stores them in localStorage and so does this, because no
+    endpoint persists a per-user resource preference. They are real user
+    actions, not sample data — but they do not follow a mentor to another
+    machine. A UserResourcePreferences table would close that.
+*@
+
+<div class="mres-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Class="mres-header"
+                 Title="משאבים למנחים"
+                 Subtitle="מדריכים, טפסים וקריטריונים — כל החומרים שהועמדו לרשותך לאורך הליווי.">
+        @if (!_loadError)
+        {
+            <MSearchField @bind-Value="_query"
+                          MaxWidth="480px"
+                          Placeholder="חיפוש מדריך, טופס או קובץ…"
+                          AriaLabel="חיפוש במשאבים" />
+        }
+    </MPageHeader>
+</div>
+
+<div class="mres-body">
+
+    @if (_loading)
+    {
+        <div class="mres-state" role="status" aria-live="polite">
+            <span class="mres-spinner" aria-hidden="true"></span>
+            <span>טוענת משאבים…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Live="true"
+                     Title="לא הצלחנו לטעון את המשאבים"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">נסי שוב</MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_resources.Count == 0)
+    {
+        <MEmptyState Title="אין עדיין משאבים בספרייה"
+                     Description="כשצוות הקורס יעלה מדריכים, טפסים או מסמכים, הם יופיעו כאן." />
+    }
+    else if (IsSearching)
+    {
+        <section class="mres-section">
+            <MSectionHeading Text="תוצאות חיפוש" Count="@SearchResults.Count.ToString()" />
+            @if (SearchResults.Count == 0)
+            {
+                <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                    <MEmptyState Title="לא נמצאו משאבים תואמים."
+                                 Description="אפשר לנסות מונח אחר או לנקות את החיפוש."
+                                 Class="mres-empty" />
+                </MCard>
+            }
+            else
+            {
+                <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                    <MRowList Inset="true" AriaLabel="תוצאות חיפוש">
+                        @foreach (var r in SearchResults)
+                        {
+                            var res = r;
+                            <KnowledgeResourceRow Resource="res" ShowCategory="true"
+                                                  Trailing="@StarFor(res)" />
+                        }
+                    </MRowList>
+                </MCard>
+            }
+        </section>
+    }
+    else
+    {
+        @* ── Favourites. Renders only once something is starred — an empty
+             panel explaining what favourites are would be furniture. ── *@
+        @if (Favorites.Count > 0)
+        {
+            <section class="mres-section">
+                <MSectionHeading Text="מועדפים" Count="@Favorites.Count.ToString()" />
+                <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                    <MRowList Inset="true" AriaLabel="מועדפים">
+                        @foreach (var r in Favorites)
+                        {
+                            var res = r;
+                            <KnowledgeResourceRow Resource="res" ShowCategory="true"
+                                                  Trailing="@StarFor(res)" />
+                        }
+                    </MRowList>
+                </MCard>
+            </section>
+        }
+
+        @* ── Browse. The Knowledge Center's own architecture: a fixed
+             four-category grid, one category expanding into an attached
+             panel of dense rows. ── *@
+        <section class="mres-section">
+            <MSectionHeading Text="עיון לפי קטגוריה" Count="@_resources.Count.ToString()" />
+
+            <div class="mres-cats">
+                @foreach (var cat in KnowledgeCenterModel.Categories)
+                {
+                    var c = cat;
+                    <KnowledgeCategoryCard Category="c"
+                                           Count="@CountIn(c.Key)"
+                                           IsOpen="@(_openCategory == c.Key)"
+                                           OnToggle="@(() => ToggleCategory(c.Key))"
+                                           PanelId="@($"mres-panel-{c.Key}")" />
+                }
+            </div>
+
+            @if (_openCategory is not null)
+            {
+                <div class="mres-panel" id="@($"mres-panel-{_openCategory}")">
+                    <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                        @if (InCategory(_openCategory.Value).Count == 0)
+                        {
+                            <MEmptyState Title="אין עדיין משאבים בקטגוריה הזו."
+                                         Class="mres-empty" />
+                        }
+                        else
+                        {
+                            <MRowList Inset="true" AriaLabel="@KnowledgeCenterModel.LabelFor(_openCategory.Value)">
+                                @foreach (var r in InCategory(_openCategory.Value))
+                                {
+                                    var res = r;
+                                    <KnowledgeResourceRow Resource="res"
+                                                          Trailing="@StarFor(res)" />
+                                }
+                            </MRowList>
+                        }
+                    </MCard>
+                </div>
+            }
+        </section>
+
+        <p class="mres-footnote">
+            הספרייה משותפת לכל התוכנית. העלאה, עריכה ומחיקה של חומרים נעשות על ידי צוות הקורס.
+        </p>
+    }
+</div>
+
+@code {
+    private const string FavKey = "motiva.mentor.resources.favorites";
+
+    private List<KnowledgeResource> _resources = new();
+    private bool _loading = true;
+    private bool _loadError;
+
+    private string _query = "";
+    private KnowledgeCategoryKey? _openCategory;
+    private HashSet<int> _favorites = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFavoritesAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _loadError = false;
+
+        var files = await ResourceFilesService.GetForMentorAsync();
+        if (files is null) { _loadError = true; _loading = false; return; }
+
+        _resources = KnowledgeCenterModel.ToResources(files);
+        _loading = false;
+    }
+
+    // ── Browse ──────────────────────────────────────────────────────────
+
+    private bool IsSearching => _query.Trim().Length > 0;
+
+    private List<KnowledgeResource> SearchResults =>
+        KnowledgeCenterModel.Search(_resources, _query);
+
+    private int CountIn(KnowledgeCategoryKey key) =>
+        _resources.Count(r => r.Category == key);
+
+    private List<KnowledgeResource> InCategory(KnowledgeCategoryKey key) =>
+        _resources.Where(r => r.Category == key).ToList();
+
+    private void ToggleCategory(KnowledgeCategoryKey key) =>
+        _openCategory = _openCategory == key ? null : key;
+
+    private List<KnowledgeResource> Favorites =>
+        _resources.Where(r => _favorites.Contains(r.Id)).ToList();
+
+    // ── Favourites ──────────────────────────────────────────────────────
+
+    /// <summary>The star, as a fragment so it can ride KnowledgeResourceRow's
+    /// Trailing slot. stopPropagation is load-bearing: the row itself is a
+    /// download/navigation target, and starring must never trigger it.</summary>
+    private RenderFragment StarFor(KnowledgeResource r) =>
+        @<button type="button"
+                 class="mres-star @(_favorites.Contains(r.Id) ? "mres-star-on" : "")"
+                 title="@(_favorites.Contains(r.Id) ? "הסרה מהמועדפים" : "הוספה למועדפים")"
+                 aria-label="@(_favorites.Contains(r.Id) ? "הסרה מהמועדפים" : "הוספה למועדפים")"
+                 aria-pressed="@_favorites.Contains(r.Id)"
+                 @onclick:stopPropagation="true"
+                 @onclick:preventDefault="true"
+                 @onclick="@(() => ToggleFavoriteAsync(r.Id))">
+             <svg width="15" height="15" viewBox="0 0 24 24"
+                  fill="@(_favorites.Contains(r.Id) ? "currentColor" : "none")"
+                  stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
+                 <path d="m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.6-4.8 2.6.9-5.4L4.2 9.7l5.4-.8z"></path>
+             </svg>
+         </button>;
+
+    private async Task ToggleFavoriteAsync(int id)
+    {
+        if (!_favorites.Add(id)) _favorites.Remove(id);
+        try { await JS.InvokeVoidAsync("localStorage.setItem", FavKey, string.Join(",", _favorites)); }
+        catch { /* storage blocked — the page stays fully usable */ }
+    }
+
+    private async Task LoadFavoritesAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", FavKey);
+            if (!string.IsNullOrWhiteSpace(raw))
+                _favorites = raw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => int.TryParse(x, out var v) ? v : -1)
+                                .Where(v => v > 0)
+                                .ToHashSet();
+        }
+        catch
+        {
+            // Storage unavailable (private mode, blocked). The page is fully
+            // usable without favourites, so this is not an error state.
+        }
+    }
+}

@@ -32,6 +32,13 @@ public static class NotificationTypes
     // Assignments
     public const string AssignmentPublished        = "AssignmentPublished";
 
+    // Mentor-only
+    /// <summary>The one automatic daily summary of everything currently waiting
+    /// on a mentor. Mentor-scoped by <see cref="ForRoles"/> — students and
+    /// lecturers never see this toggle, because nothing generates a digest for
+    /// them.</summary>
+    public const string MentorDailyDigest          = "MentorDailyDigest";
+
     public static readonly IReadOnlyList<string> All = new[]
     {
         RequestCreated, RequestStatusChanged, RequestCommentAdded,
@@ -39,6 +46,7 @@ public static class NotificationTypes
         SubmissionSubmitted, SubmissionFeedbackReceived,
         MilestoneDueSoon, MilestoneOverdue,
         AssignmentPublished,
+        MentorDailyDigest,
     };
 
     /// <summary>Group identifiers used by the settings UI.</summary>
@@ -49,6 +57,7 @@ public static class NotificationTypes
         public const string Submissions = "Submissions"; // הגשות
         public const string Milestones  = "Milestones";  // אבני דרך
         public const string Assignments = "Assignments"; // שיבוצים
+        public const string Digest      = "Digest";      // סיכום יומי
     }
 
     public static string GroupOf(string type) => type switch
@@ -58,6 +67,7 @@ public static class NotificationTypes
         SubmissionSubmitted or SubmissionFeedbackReceived             => Groups.Submissions,
         MilestoneDueSoon or MilestoneOverdue                          => Groups.Milestones,
         AssignmentPublished                                           => Groups.Assignments,
+        MentorDailyDigest                                             => Groups.Digest,
         _ => Groups.Requests,
     };
 
@@ -68,6 +78,7 @@ public static class NotificationTypes
         Groups.Submissions => "הגשות",
         Groups.Milestones  => "אבני דרך",
         Groups.Assignments => "שיבוצים",
+        Groups.Digest      => "סיכום יומי",
         _                  => group,
     };
 
@@ -84,6 +95,7 @@ public static class NotificationTypes
         MilestoneDueSoon           => "אבן דרך קרובה לתאריך יעד",
         MilestoneOverdue           => "אבן דרך באיחור",
         AssignmentPublished        => "פרסום שיבוצים",
+        MentorDailyDigest          => "סיכום יומי של פריטים הממתינים לך",
         _                          => type,
     };
 
@@ -121,6 +133,10 @@ public static class NotificationTypes
         RequestCreated, RequestCommentAdded,
         SubmissionSubmitted,
         TaskDueSoon, TaskOverdue,
+        // Mentor-only, and deliberately not added to _studentTypes or
+        // _staffTypes: no digest is generated for those roles, so showing them
+        // the toggle would be a control over nothing.
+        MentorDailyDigest,
     };
 
     // Lecturer (Staff) and Admin share the same scope — both run the program.

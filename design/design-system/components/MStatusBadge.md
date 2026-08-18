@@ -9,7 +9,27 @@ Single shared status→color mapping, replacing ~10 independent badge implementa
 
 ## Variants
 
-`Neutral` (default) · `Info` · `Success` · `Warning` · `Danger` — each pairs a `--motiva-color-*` foreground with its matching `-bg` token (e.g. `--motiva-color-success` on `--motiva-color-success-bg`).
+**Canonical (System Master Phase 3):** `Neutral` (default) · `Violet` · `Teal` · `Rose`.
+The Master permits exactly three semantics — violet = focus/action/in-progress, teal = progress/completion, rose = attention — and says *"never introduce a fourth."*
+
+**Legacy (pre-Master, still supported):** `Info` · `Success` · `Warning` · `Danger`. Each pairs a `--motiva-color-*` foreground with its matching `-bg` token.
+
+### Migration path
+
+The legacy members were **not** removed: they are in use today across every role (Mentor, Lecturer, Staff, Admin). Phase 1 already folded their tokens onto the permitted three inside `.motiva-student` (`info`→violet, `success`→teal, `warning`/`danger`→rose), so they are *visually* correct there — only their names belong to the old system.
+
+| Legacy | Canonical |
+|---|---|
+| `Info` | `Violet` |
+| `Success` | `Teal` |
+| `Warning` | `Rose` |
+| `Danger` | `Rose` |
+
+New Student code uses the canonical four. Existing callers convert as their page is redesigned; the legacy members are deleted only once no caller references them. The canonical members were **appended** to the enum, never inserted, so no existing member's ordinal changed.
+
+### Student-scope alignment
+
+`.motiva-student .m-badge` raises the pill to the Master's chip metrics (600 weight, 6px/10px padding) instead of the pre-Master 700 on 4px/8px. That rule is scoped, so Mentor / Lecturer / Staff / Admin render exactly as before — the same firewall the token scope itself uses.
 
 ## Parameters
 

@@ -1,0 +1,328 @@
+@namespace AuthWithAdmin.Client.Pages.ProjectWorkspace
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IProjectWorkspaceService Workspace
+@inject IProjectContextService ProjectContext
+
+@*
+    ProjectIdentityCard — the identity block of מרחב הפרויקט.
+
+    Structural reference: design-reference/project-details/project/Motiva
+    Project Details.dc.html:93-152. Visual language: the already-shipped
+    student cards (StudentProfilePersonalCard / StudentProfileTeamCard) —
+    MCard AmbientEdge with Padding.None and this component owning its own
+    inset, exactly as those two do.
+
+    WHAT IS SYSTEM INFORMATION AND WHAT IS THE TEAM'S
+      * project number, type and academic year — read-only, rendered as a
+        quiet meta LINE, deliberately not as disabled inputs. This is the
+        same decision StudentProfilePersonalCard made for email and academic
+        year: a disabled-looking field promises an edit the system will not
+        allow.
+      * team members — read-only chips, from the project context the shell
+        already caches. Mentors are NOT repeated here; they are already named
+        on the profile's team card, and this card is about the project.
+      * display name and description — the team's own, and the ONLY two
+        editable values on this page.
+
+    EDIT MODE
+    The default state is not a form. "עריכת פרטים" swaps the name + meta +
+    description block for two labelled fields; everything else on the card —
+    the glyph, the team strip — stays put, so the card does not resize into a
+    different object while you edit it.
+
+    The interaction is StudentProfilePersonalCard's, at card scale rather than
+    row scale: an optimistic-free save (nothing changes until the server says
+    yes), Escape to cancel, Enter to save from the single-line field, a busy
+    button while the request is in flight, and a "נשמר" flash in the head that
+    clears itself after 2.2s.
+
+    Saving writes to ProjectTeamProfile through PUT api/projects/my-project —
+    never to Projects.Title / Projects.Description, which the Airtable sync
+    owns — and then refreshes IProjectContextService so the sidebar's project
+    name (which is also the link back to this page) updates without a reload.
+*@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+    <div class="pwi-inner">
+
+        <div class="pwi-top">
+            @* The Master has no project glyph; this reuses the tinted icon-chip
+               treatment the dashboard's resource cards and the Knowledge
+               Center's category cards already use, at the card-header size. *@
+            <span class="pwi-glyph" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 7.5 12 3.5l8 4v9L12 20.5l-8-4z"></path>
+                    <path d="m4 7.5 8 4 8-4M12 11.5v9"></path>
+                </svg>
+            </span>
+
+            <div class="pwi-headtext">
+                @if (_editing)
+                {
+                    <div class="pwi-field">
+                        <label class="pwi-label" for="@TitleFieldId">שם הפרויקט</label>
+                        <input id="@TitleFieldId"
+                               class="pwi-input"
+                               type="text"
+                               maxlength="@MaxTitle"
+                               placeholder="שם הפרויקט"
+                               disabled="@_saving"
+                               @bind="_titleDraft"
+                               @bind:event="oninput"
+                               @onkeydown="HandleTitleKeyDownAsync" />
+                        <p class="pwi-hint">השם יופיע בכל מקום שבו הפרויקט מוצג במערכת.</p>
+                    </div>
+
+                    <div class="pwi-field">
+                        <label class="pwi-label" for="@DescFieldId">תיאור הפרויקט</label>
+                        <textarea id="@DescFieldId"
+                                  class="pwi-textarea"
+                                  rows="4"
+                                  maxlength="@MaxDescription"
+                                  placeholder="על מה הפרויקט, למי הוא מיועד ומה הוא פותר"
+                                  disabled="@_saving"
+                                  @bind="_descDraft"
+                                  @bind:event="oninput"
+                                  @onkeydown="HandleDescKeyDown"></textarea>
+                    </div>
+
+                    @if (_error is not null)
+                    {
+                        <p class="pwi-error" role="alert">@_error</p>
+                    }
+
+                    <div class="pwi-actions">
+                        <MButton Variant="MButton.ButtonVariant.Primary"
+                                 Size="MButton.ButtonSize.Small"
+                                 Loading="_saving"
+                                 LoadingText="שומרת…"
+                                 OnClick="SaveAsync">
+                            שמירת שינויים
+                        </MButton>
+                        <MButton Variant="MButton.ButtonVariant.Secondary"
+                                 Size="MButton.ButtonSize.Small"
+                                 Disabled="_saving"
+                                 OnClick="CancelEdit">
+                            ביטול
+                        </MButton>
+                    </div>
+                }
+                else
+                {
+                    <div class="pwi-titlerow">
+                        <div class="pwi-titlebox">
+                            <h2 class="pwi-name">@DisplayTitle</h2>
+                            @if (!string.IsNullOrWhiteSpace(MetaLine))
+                            {
+                                <p class="pwi-meta">@MetaLine</p>
+                            }
+                        </div>
+
+                        <div class="pwi-headend">
+                            <span class="pwi-status" aria-live="polite">
+                                @if (_saved)
+                                {
+                                    <span class="pwi-saved">נשמר</span>
+                                }
+                            </span>
+                            <MButton Variant="MButton.ButtonVariant.Secondary"
+                                     Size="MButton.ButtonSize.Small"
+                                     Class="pwi-editbtn"
+                                     OnClick="StartEdit">
+                                עריכת פרטים
+                            </MButton>
+                        </div>
+                    </div>
+
+                    <div class="pwi-desc">
+                        @if (HasDescription)
+                        {
+                            <p class="pwi-desc-text">@Project.Description</p>
+                        }
+                        else
+                        {
+                            @* Not an MEmptyState: the design file writes this as
+                               an invitation in the flow of the card, not as a
+                               centred block, and MEmptyState is centre-only by
+                               construction. *@
+                            <p class="pwi-desc-empty">
+                                עדיין אין תיאור לפרויקט. כמה משפטים על מה שאתם בונים יעזרו למנחה ולצוות לראות את התמונה המלאה.
+                            </p>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        @if (MemberNames.Count > 0)
+        {
+            <div class="pwi-team">
+                <span class="pwi-team-label">חברי הצוות</span>
+                <ul class="pwi-team-list">
+                    @foreach (var name in MemberNames)
+                    {
+                        <li class="pwi-chip">
+                            <span class="pwi-chip-avatar" aria-hidden="true">@ProjectWorkspaceModel.Initials(name)</span>
+                            <span class="pwi-chip-name">@name</span>
+                        </li>
+                    }
+                </ul>
+            </div>
+        }
+
+    </div>
+</MCard>
+
+@code {
+    /// <summary>The project as returned by GET api/projects/my-project-details.
+    /// Mutated in place on a successful save, so the page and this card never
+    /// disagree about the current name — the same contract
+    /// StudentProfilePersonalCard has with StudentProfileDto.</summary>
+    [Parameter, EditorRequired] public StudentProjectDetailsDto Project { get; set; } = default!;
+
+    /// <summary>The cached project context, for the team roster. Null when the
+    /// context call failed — the roster strip is then simply absent rather than
+    /// showing an error inside an otherwise healthy card.</summary>
+    [Parameter] public ProjectContextDto? Context { get; set; }
+
+    /// <summary>Raised after a successful write so the page can re-render.</summary>
+    [Parameter] public EventCallback OnProjectChanged { get; set; }
+
+    // Mirrors the server's own guards (ProjectsController.UpdateMyProject) so
+    // an over-long value is caught before the round trip. `maxlength` on the
+    // controls makes it unreachable by typing; the check below still runs,
+    // because a paste can exceed it in some browsers.
+    private const int MaxTitle       = 120;
+    private const int MaxDescription = 2000;
+
+    private const string TitleFieldId = "pwi-title";
+    private const string DescFieldId  = "pwi-desc";
+
+    private bool   _editing;
+    private bool   _saving;
+    private bool   _saved;
+    private string _titleDraft = "";
+    private string _descDraft  = "";
+
+    /// <summary>The message to show, or null for none. A string rather than a
+    /// flag because the ways a save can fail need different words.</summary>
+    private string? _error;
+
+    private string DisplayTitle =>
+        string.IsNullOrWhiteSpace(Project.Title) ? "פרויקט ללא שם" : Project.Title;
+
+    private string MetaLine =>
+        ProjectWorkspaceModel.IdentityMetaLine(
+            Project.ProjectNumber, Project.ProjectType, Project.AcademicYear);
+
+    private bool HasDescription => !string.IsNullOrWhiteSpace(Project.Description);
+
+    private IReadOnlyList<string> MemberNames =>
+        Context?.StudentNames?.Where(n => !string.IsNullOrWhiteSpace(n)).ToList()
+        ?? (IReadOnlyList<string>)Array.Empty<string>();
+
+    // ── Edit ─────────────────────────────────────────────────────────────
+
+    private void StartEdit()
+    {
+        _titleDraft = Project.Title       ?? "";
+        _descDraft  = Project.Description ?? "";
+        _editing    = true;
+        _error      = null;
+        _saved      = false;
+    }
+
+    private void CancelEdit()
+    {
+        _editing = false;
+        _error   = null;
+    }
+
+    /// <summary>The single-line field: Enter saves, Escape cancels — the same
+    /// two keys StudentProfilePersonalCard's inline editor binds.</summary>
+    private async Task HandleTitleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey) await SaveAsync();
+        else if (e.Key == "Escape")          CancelEdit();
+    }
+
+    /// <summary>The textarea: Escape cancels, Enter stays a newline. Binding
+    /// Enter to save here would make a multi-paragraph description impossible
+    /// to type — which is exactly what this field is for.</summary>
+    private void HandleDescKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CancelEdit();
+    }
+
+    private async Task SaveAsync()
+    {
+        var title = (_titleDraft ?? "").Trim();
+        var desc  = (_descDraft  ?? "").Trim();
+
+        if (title.Length > MaxTitle)
+        {
+            _error = $"שם הפרויקט ארוך מדי — עד {MaxTitle} תווים.";
+            return;
+        }
+
+        if (desc.Length > MaxDescription)
+        {
+            _error = $"תיאור הפרויקט ארוך מדי — עד {MaxDescription} תווים.";
+            return;
+        }
+
+        _saving = true;
+        _error  = null;
+
+        var ok = await Workspace.UpdateProjectAsync(title, desc);
+
+        _saving = false;
+
+        if (!ok)
+        {
+            _error = "שמירת פרטי הפרויקט נכשלה. נסי שנית.";
+            return;
+        }
+
+        // Clearing a field falls back to the catalog value on the server, so
+        // the local copy cannot simply take the empty string — the page would
+        // show a blank name until the next reload while the server shows the
+        // catalog title. Re-reading the project is the only honest answer.
+        var reread = await Workspace.GetProjectAsync();
+        if (reread.State == ProjectLoadState.Loaded && reread.Project is not null)
+        {
+            Project.Title       = reread.Project.Title;
+            Project.Description = reread.Project.Description;
+        }
+        else
+        {
+            // The write succeeded; only the re-read failed. Show what was sent
+            // rather than stale values, and let the next page load reconcile.
+            Project.Title       = title.Length == 0 ? Project.Title : title;
+            Project.Description = desc.Length  == 0 ? null          : desc;
+        }
+
+        _editing = false;
+        _saved   = true;
+
+        // The sidebar names this project too, and that name is the link back
+        // here. Refreshing the shared context is what makes it agree without a
+        // page reload.
+        await ProjectContext.RefreshAsync();
+
+        if (OnProjectChanged.HasDelegate) await OnProjectChanged.InvokeAsync();
+
+        _ = ClearSavedFlagAsync();
+    }
+
+    private async Task ClearSavedFlagAsync()
+    {
+        // Same 2.2s the profile card holds its own "נשמר" for.
+        await Task.Delay(2200);
+        _saved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+}

@@ -1,0 +1,770 @@
+@page "/mentor/calendar"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Mentor
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IMentorWorkspaceService Workspace
+@inject NavigationManager Nav
+
+@*
+    ── יומן ותכנון — the mentor's CROSS-PROJECT planner ────────────────────
+    UX / IA source:  design-reference/mentor-experience/project/
+                     Motiva Mentor Calendar.dc.html
+    Visual source:   the implemented student experience.
+    Data source:     IMentorWorkspaceService.LoadAsync, composed by
+                     BuildCalendarAsync — ONE snapshot, fetched here and handed
+                     to the builder rather than loaded twice.
+
+    NOT THE STUDENT PLANNER. /milestones is StudentPlanningPage, which is
+    single-project by construction; a mentor needs several teams on one grid,
+    and every entry here therefore names its project and team. Nothing in the
+    mentor shell routes to /milestones any more.
+
+    WHAT IS REAL
+      אבני דרך         every milestone due date, from api/mentor/projects/{id}
+      הגשות            dated IsSubmission tasks under those milestones
+      ממתינות לבדיקה   pending submissions, dated by when they ARRIVED
+      משימות אישיות    the mentor's own dated reminders
+
+    WHAT IS MISSING, AND DELIBERATELY ABSENT RATHER THAN FAKED
+      פגישות — the design's fifth type. Its own prototype hardcodes a MEETINGS
+      array because no table stores a mentor-authored meeting: there is no
+      events/meetings entity, no participants, no location, no start/end time.
+      The design's "אירוע / פגישה חדשה" modal is unbuildable for the same
+      reason. Closing this needs a MentorEvents table (mentor, project?, type,
+      date, start/end, location/link, notes) plus CRUD — the single largest
+      remaining gap in the mentor area.
+
+    ONE CALL PER PROJECT. Milestone and deliverable dates live only in the
+    per-project detail payload; no cross-project endpoint returns them
+    (api/milestones/overview carries just the CURRENT milestone). The loader
+    fans out concurrently, but a mentor with a large caseload pays for it — a
+    cross-project dated-items endpoint would be the fix.
+*@
+
+<div class="mcal-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Title="יומן ותכנון"
+                 Subtitle="כל אבני הדרך, ההגשות והמועדים של הצוותים שבהנחייתך — במקום אחד.">
+        @if (!_loading)
+        {
+            <div class="mcal-controls">
+                <div class="mcal-navrow">
+                    <div class="mcal-period">
+                        <button type="button" class="mcal-navbtn" aria-label="תקופה קודמת" @onclick="Prev">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="m9 6 6 6-6 6"></path>
+                            </svg>
+                        </button>
+                        <span class="mcal-period-label" aria-live="polite">@PeriodLabel</span>
+                        <button type="button" class="mcal-navbtn" aria-label="תקופה הבאה" @onclick="Next">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="m15 6-6 6 6 6"></path>
+                            </svg>
+                        </button>
+                        <button type="button" class="mcal-today" @onclick="GoToday">היום</button>
+                    </div>
+
+                    @* Month / week. A segmented control, not two CTAs — it
+                       selects a view, it does not perform an action, so it
+                       carries no gradient. *@
+                    <div class="mcal-views" role="group" aria-label="תצוגה">
+                        <button type="button" class="mcal-view @(_view == View.Month ? "mcal-view-on" : "")"
+                                aria-pressed="@(_view == View.Month)" @onclick="@(() => _view = View.Month)">חודש</button>
+                        <button type="button" class="mcal-view @(_view == View.Week ? "mcal-view-on" : "")"
+                                aria-pressed="@(_view == View.Week)" @onclick="@(() => _view = View.Week)">שבוע</button>
+                        <button type="button" class="mcal-view @(_view == View.Day ? "mcal-view-on" : "")"
+                                aria-pressed="@(_view == View.Day)" @onclick="@(() => _view = View.Day)">יום</button>
+                    </div>
+                </div>
+
+                @* ── Secondary filter row ──
+                   Deliberately lighter than the date row above it. Type is a
+                   quiet legend-style toggle; project is ONE compact control
+                   rather than a chip per project, which is the only shape that
+                   survives a mentor with twenty projects. *@
+                <div class="mcal-subfilters">
+                    <div class="mcal-typefilters" role="group" aria-label="סינון לפי סוג">
+                        <button type="button" class="mcal-tchip @(_typeFilter is null ? "mcal-tchip-on" : "")"
+                                aria-pressed="@(_typeFilter is null)" @onclick="@(() => _typeFilter = null)">
+                            הכול <span class="mcal-tchip-count">@_events.Count</span>
+                        </button>
+                        @foreach (var t in MentorEventTypes.Ordered)
+                        {
+                            var type = t;
+                            <button type="button"
+                                    class="mcal-tchip @(_typeFilter == type ? "mcal-tchip-on" : "")"
+                                    aria-pressed="@(_typeFilter == type)"
+                                    @onclick="@(() => _typeFilter = _typeFilter == type ? null : type)">
+                                <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(type)" aria-hidden="true"></span>
+                                @MentorEventTypes.FilterLabel(type)
+                                <span class="mcal-tchip-count">@_events.Count(e => e.Type == type)</span>
+                            </button>
+                        }
+                    </div>
+
+                    @* One control, listing only projects this mentor is
+                       authorized for — the same _projects list the rest of the
+                       page is built from. *@
+                    @if (_projects.Count > 1)
+                    {
+                        <label class="mcal-projfilter">
+                            <span class="mcal-projfilter-label">פרויקט</span>
+                            <select class="mcal-projfilter-select"
+                                    aria-label="סינון לפי פרויקט"
+                                    value="@(_projectFilter?.ToString() ?? "")"
+                                    @onchange="OnProjectFilterChanged">
+                                <option value="">כל הפרויקטים</option>
+                                @foreach (var p in _projects)
+                                {
+                                    <option value="@p.Id">@p.Title</option>
+                                }
+                            </select>
+                        </label>
+                    }
+                </div>
+            </div>
+        }
+    </MPageHeader>
+</div>
+
+<div class="mcal-body">
+
+    @if (_loading)
+    {
+        <div class="mcal-state" role="status" aria-live="polite">
+            <span class="mcal-spinner" aria-hidden="true"></span>
+            <span>טוענת את היומן…</span>
+        </div>
+    }
+    else if (_failed)
+    {
+        @* Failure, not emptiness. Same MEmptyState treatment the rest of Motiva
+           uses, with the retry wired to the one loading path — so the button
+           cannot drift from what the page does on first render. *@
+        <MEmptyState Title="לא הצלחנו לטעון את היומן"
+                     Description="ייתכן שיש תקלת רשת זמנית.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Primary"
+                         Size="MButton.ButtonSize.Small"
+                         OnClick="RetryAsync">
+                    נסי שוב
+                </MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_events.Count == 0)
+    {
+        <MEmptyState Title="אין עדיין מועדים ביומן"
+                     Description="אבני דרך, הגשות ומשימות אישיות עם תאריך יעד יופיעו כאן אוטומטית." />
+    }
+    else
+    {
+        <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Class="mcal-card">
+            @if (_view == View.Month)
+            {
+                <div class="mcal-grid" role="grid" aria-label="@($"לוח חודשי — {PeriodLabel}")">
+                    @foreach (var name in DayNames)
+                    {
+                        <div class="mcal-dayname" role="columnheader">@name</div>
+                    }
+
+                    @foreach (var day in MonthCells)
+                    {
+                        var d = day;
+                        var items = EventsOn(d);
+                        <div class="mcal-cell @(d.Month != _anchor.Month ? "mcal-cell-out" : "") @(d.Date == DateTime.Now.Date ? "mcal-cell-today" : "")"
+                             role="gridcell">
+                            <div class="mcal-cell-head">
+                                <span class="mcal-daynum">@d.Day</span>
+                            </div>
+                            @foreach (var e in items.Take(3))
+                            {
+                                var ev = e;
+                                <button type="button"
+                                        class="mcal-item mcal-item-@MentorEventTypes.CssSuffix(ev.Type)"
+                                        title="@($"{ev.Title} — {ev.Context}")"
+                                        @onclick="@(() => _selected = ev)">
+                                    <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                    <span class="mcal-item-text">@ev.Title</span>
+                                </button>
+                            }
+                            @if (items.Count > 3)
+                            {
+                                <button type="button" class="mcal-more" @onclick="@(() => SelectDay(d))">
+                                    +@(items.Count - 3) נוספים
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            else if (_view == View.Day)
+            {
+                @* Day view: a real daily calendar — an all-day band over an
+                   hour grid — rather than an agenda card.
+
+                   NO INVENTED TIMES. Every entry this build produces is dated,
+                   not timed (see MentorCalendarEvent.HasTime), so they all sit
+                   in the ללא שעה band. The grid below is deliberately drawn
+                   anyway: it is what makes a single day read as a day, and it
+                   is where genuinely timed items will land when something in
+                   the schema finally stores an hour. *@
+                var only     = _anchor.Date;
+                var dayItems = EventsOn(only);
+                var allDay   = dayItems.Where(e => !e.HasTime).ToList();
+                var timed    = dayItems.Where(e => e.HasTime).ToList();
+
+                <div class="mcal-day">
+                    <div class="mcal-day-head">
+                        <div class="mcal-day-heading">
+                            <span class="mcal-day-name @(only == DateTime.Now.Date ? "mcal-day-name-today" : "")">@DayName(only)</span>
+                            <span class="mcal-day-date">@DayAndMonth(only)</span>
+                        </div>
+                        <div class="mcal-day-headmeta">
+                            <span class="mcal-day-count">@CountLabel(dayItems.Count)</span>
+                            <button type="button" class="mcal-day-add"
+                                    @onclick="@(() => OpenNewTaskOn(only))"
+                                    aria-label="@($"הוספת משימה אישית ל{DayAndMonth(only)}")">
+                                <span aria-hidden="true">+</span> הוספת משימה
+                            </button>
+                        </div>
+                    </div>
+
+                    @* ── ללא שעה ── where everything currently lives. *@
+                    <div class="mcal-allday">
+                        <div class="mcal-allday-label">ללא שעה</div>
+                        <div class="mcal-allday-items">
+                            @if (allDay.Count == 0)
+                            {
+                                <p class="mcal-allday-empty">אין מועדים ביום זה.</p>
+                                <button type="button" class="mcal-day-empty-add"
+                                        @onclick="@(() => OpenNewTaskOn(only))">
+                                    הוספת משימה אישית ליום זה
+                                </button>
+                            }
+                            else
+                            {
+                                @foreach (var e in allDay)
+                                {
+                                    var ev = e;
+                                    <button type="button" class="mcal-allday-item"
+                                            @onclick="@(() => _selected = ev)"
+                                            aria-label="@($"פרטי {ev.Title}")">
+                                        <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                        <span class="mcal-allday-title">@ev.Title</span>
+                                        <span class="mcal-allday-context">@ev.Context</span>
+                                    </button>
+                                }
+                            }
+                        </div>
+                    </div>
+
+                    @* ── Hour grid ── working hours, drawn to scale. *@
+                    <div class="mcal-hours" role="list" aria-label="@($"שעות היום — {DayAndMonth(only)}")">
+                        @foreach (var hour in DayHours)
+                        {
+                            var h        = hour;
+                            var atThisHour = timed.Where(e => e.Date.Hour == h).ToList();
+                            <div class="mcal-hour @(IsCurrentHour(only, h) ? "mcal-hour-now" : "")" role="listitem">
+                                <span class="mcal-hour-label">@h.ToString("00"):00</span>
+                                <div class="mcal-hour-slot">
+                                    @foreach (var e in atThisHour)
+                                    {
+                                        var ev = e;
+                                        <button type="button" class="mcal-allday-item"
+                                                @onclick="@(() => _selected = ev)"
+                                                aria-label="@($"פרטי {ev.Title}")">
+                                            <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                            <span class="mcal-allday-title">@ev.Title</span>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                @* Week view: a dense agenda, one block per day. A 7-column grid
+                   at this width would give each day a column too narrow to
+                   name its project, and naming the project is the point. *@
+                <div class="mcal-week">
+                    @foreach (var day in WeekDays)
+                    {
+                        var d = day;
+                        var items = EventsOn(d);
+                        <div class="mcal-weekday @(d.Date == DateTime.Now.Date ? "mcal-weekday-today" : "")">
+                            <div class="mcal-weekday-head">
+                                <span class="mcal-weekday-name">@DayName(d)</span>
+                                <span class="mcal-weekday-date">@DayAndMonth(d)</span>
+                            </div>
+                            @if (items.Count == 0)
+                            {
+                                <p class="mcal-weekday-empty">אין מועדים ביום זה.</p>
+                            }
+                            else
+                            {
+                                <MRowList Inset="true" AriaLabel="@DayAndMonth(d)">
+                                    @foreach (var e in items)
+                                    {
+                                        var ev = e;
+                                        <MRow OnClick="@(() => _selected = ev)"
+                                              Primary="@ev.Title"
+                                              Secondary="@ev.Context"
+                                              Meta="@(ev.WaitingLabel ?? MentorEventTypes.Label(ev.Type))"
+                                              MetaTone="@MetaToneFor(ev)"
+                                              AriaLabel="@($"פרטי {ev.Title}")">
+                                            <Leading>
+                                                <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                            </Leading>
+                                        </MRow>
+                                    }
+                                </MRowList>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </MCard>
+
+        @* Upcoming list — the planning half of "יומן ותכנון". A month grid
+           answers "what is on the 14th"; this answers "what is coming",
+           which is the question a mentor actually opens the screen with.
+
+           NOT IN DAY VIEW. Someone looking at one specific day has already
+           asked a narrower question; a list of other days below it answers a
+           question they did not ask and pushes the day itself up the page. *@
+        @if (_view != View.Day)
+        {
+        <section class="mcal-section">
+            <MSectionHeading Text="המועדים הקרובים" Count="@Upcoming.Count.ToString()" />
+            <MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None">
+                @if (Upcoming.Count == 0)
+                {
+                    <MEmptyState Title="אין מועדים קרובים בסינון הנוכחי." Class="mcal-empty" />
+                }
+                else
+                {
+                    <MRowList Inset="true" AriaLabel="המועדים הקרובים">
+                        @foreach (var e in Upcoming)
+                        {
+                            var ev = e;
+                            <MRow OnClick="@(() => _selected = ev)"
+                                  Primary="@ev.Title"
+                                  Secondary="@ev.Context"
+                                  Meta="@MetaFor(ev)"
+                                  MetaTone="@MetaToneFor(ev)"
+                                  AriaLabel="@($"פרטי {ev.Title}")">
+                                <Leading>
+                                    <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                </Leading>
+                            </MRow>
+                        }
+                    </MRowList>
+                }
+            </MCard>
+        </section>
+        }
+    }
+</div>
+
+@* ── Entry detail ── *@
+<MModal IsOpen="@(_selected is not null)"
+        Size="MModal.ModalSize.Small"
+        Title="@(_selected?.Title ?? "")"
+        OnClose="@(() => _selected = null)">
+    <ChildContent>
+        @if (_selected is not null)
+        {
+            <dl class="mcal-facts">
+                <div class="mcal-fact"><dt>סוג</dt><dd>@MentorEventTypes.Label(_selected.Type)</dd></div>
+                <div class="mcal-fact">
+                    <dt>תאריך</dt>
+                    <dd>@FullDate(_selected.Date)</dd>
+                </div>
+                <div class="mcal-fact"><dt>שיוך</dt><dd>@_selected.Context</dd></div>
+                @if (_selected.WaitingLabel is { Length: > 0 })
+                {
+                    @* Reviews only — the shared waiting phrase, so this modal
+                       says exactly what the queue row and the digest say. *@
+                    <div class="mcal-fact"><dt>מצב</dt><dd>@_selected.WaitingLabel</dd></div>
+                }
+                @if (!string.IsNullOrWhiteSpace(_selected.Detail))
+                {
+                    <div class="mcal-fact"><dt>פרטים</dt><dd>@_selected.Detail</dd></div>
+                }
+            </dl>
+        }
+    </ChildContent>
+    <FooterContent>
+        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="@(() => _selected = null)">סגירה</MButton>
+        @if (_selected?.Type == MentorEventType.PersonalTask)
+        {
+            @* A personal task is the mentor's own item — it opens its editor
+               right here rather than sending them to another screen. *@
+            <MButton Variant="MButton.ButtonVariant.Primary"
+                     OnClick="@(() => OpenPersonalTask(_selected!))">
+                עריכת המשימה
+            </MButton>
+        }
+        else if (_selected?.Href is not null)
+        {
+            <MButton Variant="MButton.ButtonVariant.Primary" OnClick="OpenSelected">
+                @(_selected.ProjectId is null ? "למשימות שלי" : "פתיחת הפרויקט")
+            </MButton>
+        }
+    </FooterContent>
+</MModal>
+
+@* ── Day detail, from "+N נוספים" ── *@
+<MModal IsOpen="@(_selectedDay is not null)"
+        Size="MModal.ModalSize.Medium"
+        Title="@(_selectedDay is DateTime sd ? DayAndMonth(sd) : "")"
+        OnClose="@(() => _selectedDay = null)">
+    <ChildContent>
+        @if (_selectedDay is not null)
+        {
+            <MRowList Inset="true" AriaLabel="מועדי היום">
+                @foreach (var e in EventsOn(_selectedDay.Value))
+                {
+                    var ev = e;
+                    <MRow OnClick="@(() => { _selectedDay = null; _selected = ev; })"
+                          Primary="@ev.Title"
+                          Secondary="@ev.Context"
+                          Meta="@MentorEventTypes.Label(ev.Type)">
+                        <Leading>
+                            <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                        </Leading>
+                    </MRow>
+                }
+            </MRowList>
+        }
+    </ChildContent>
+    <FooterContent>
+        @* Creating for the day the mentor already opened — the same shared
+           editor, reached from month and week too, not only from Day view. *@
+        @if (_selectedDay is DateTime addDay)
+        {
+            <MButton Variant="MButton.ButtonVariant.Primary" OnClick="@(() => OpenNewTaskOn(addDay))">
+                הוספת משימה אישית
+            </MButton>
+        }
+        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="@(() => _selectedDay = null)">סגירה</MButton>
+    </FooterContent>
+</MModal>
+
+@* ── Personal-task editor — THE SHARED COMPONENT ──
+     The calendar creates and edits mentor personal tasks through the very same
+     modal /mentor/tasks uses. It holds no form state, no service call and no
+     copy of the create/update/delete logic; it only says which task (or which
+     date) to open with. *@
+<MentorPersonalTaskModal IsOpen="@_taskModalOpen"
+                         EditingTask="@_editingTask"
+                         Projects="@_projects"
+                         InitialDueDate="@_newTaskDate"
+                         OnClose="CloseTaskModal"
+                         OnSaved="OnTaskSaved"
+                         OnDeleted="OnTaskDeleted" />
+
+@code {
+    /// <summary>Month stays first, and stays the default — the mentor's question
+    /// on opening this screen is "what is coming", not "what is today".</summary>
+    private enum View { Month, Week, Day }
+
+    /// <summary>
+    /// The page's own Hebrew names, replacing a runtime <c>CultureInfo("he-IL")</c>.
+    ///
+    /// <para><b>Why not the culture.</b> Blazor WASM ships SHARDED ICU data and
+    /// picks a shard from the browser's language: a mentor whose Chrome runs in
+    /// English gets <c>icudt_EFIGS</c>, which contains no Hebrew, and
+    /// <c>new CultureInfo("he-IL")</c> throws there. In a STATIC field that
+    /// surfaces as a TypeInitializationException on the first render that reads
+    /// a label — after loading finished — which is a failure this page cannot
+    /// recover from and the user cannot act on. DayNames was already hardcoded
+    /// for the same reason; the months simply join it, and the page now renders
+    /// identically in every locale with no globalization payload at all.</para>
+    /// </summary>
+    private static readonly string[] DayNames = { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
+
+    private static readonly string[] MonthNames =
+    {
+        "ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני",
+        "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר",
+    };
+
+    /// <summary>"שני" — the weekday name.</summary>
+    private static string DayName(DateTime d) => DayNames[(int)d.DayOfWeek];
+
+    /// <summary>"17 באוגוסט" — what "d 'ב'MMMM" produced.</summary>
+    private static string DayAndMonth(DateTime d) => $"{d.Day} ב{MonthNames[d.Month - 1]}";
+
+    /// <summary>"שני, 17 באוגוסט 2026" — what "dddd, d 'ב'MMMM yyyy" produced.</summary>
+    private static string FullDate(DateTime d) => $"{DayName(d)}, {DayAndMonth(d)} {d.Year}";
+
+    private IReadOnlyList<MentorCalendarEvent> _events = Array.Empty<MentorCalendarEvent>();
+    private List<MentorProjectSummaryDto>      _projects = new();
+
+    /// <summary>The mentor's own tasks from the same snapshot the events were
+    /// built from. Kept so a personal-task entry can open its editor without a
+    /// second fetch — and so it can only ever resolve to one of their own.</summary>
+    private List<PersonalTaskDto>              _personalTasks = new();
+    private bool _loading = true;
+
+    /// <summary>Load or compose failed. Distinct from "loaded and empty", which
+    /// is a legitimate answer and keeps its own empty state.</summary>
+    private bool _failed;
+
+    private View             _view = View.Month;
+    private DateTime         _anchor = DateTime.Now.Date;
+    private MentorEventType? _typeFilter;
+    private int?             _projectFilter;
+
+    private MentorCalendarEvent? _selected;
+    private DateTime?            _selectedDay;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    /// <summary>
+    /// The one loading path, shared by first render and by "נסי שוב".
+    ///
+    /// <para><b>ONE snapshot.</b> The page needs Projects for the filter chips
+    /// and the calendar needs the same snapshot to compose from, so it is
+    /// fetched once here and handed to BuildCalendarAsync. It used to be loaded
+    /// twice — once here and again inside the calendar builder.</para>
+    ///
+    /// <para><b>The finally is the point.</b> Every underlying service already
+    /// swallows transport errors, so the realistic failure is something later —
+    /// a malformed payload, a null the composer did not expect. Whatever it is,
+    /// _loading is cleared on the way out, so the page can end up loaded or
+    /// failed but never stuck on the spinner.</para>
+    /// </summary>
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _failed  = false;
+
+        try
+        {
+            var snapshot   = await Workspace.LoadAsync();
+            _projects      = snapshot.Projects.ToList();
+            _personalTasks = snapshot.PersonalTasks.ToList();
+            _events        = await Workspace.BuildCalendarAsync(snapshot);
+        }
+        catch
+        {
+            // Nothing partial is kept: a half-built calendar would quietly
+            // under-report a mentor's month, which is worse than saying so.
+            _failed        = true;
+            _events        = Array.Empty<MentorCalendarEvent>();
+            _projects      = new();
+            _personalTasks = new();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RetryAsync()
+    {
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    // ── Row metadata ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The meta column.
+    ///
+    /// <para><b>A review is not a deadline, and this used to say it was.</b>
+    /// ממתינות לבדיקה entries are dated by ARRIVAL — that is the only real date
+    /// they have — so every one of them is in the past, and running them through
+    /// DeadlineLabel rendered "באיחור 27 ימים" against a deadline that does not
+    /// exist. They now carry the shared waiting phrase from the attention model
+    /// instead, the same string the Tasks queue and the daily digest print.</para>
+    ///
+    /// <para>Milestones and dated deliverables DO have real due dates and keep
+    /// deadline wording, including באיחור, which is true of them.</para>
+    /// </summary>
+    private static string MetaFor(MentorCalendarEvent ev) =>
+        ev.WaitingLabel is { Length: > 0 } waiting
+            ? waiting
+            : $"{ev.Date:dd.MM} · {MentorTime.DeadlineLabel(ev.Date)}";
+
+    /// <summary>Rose for a genuinely late deadline, or for a review that has
+    /// reached NEEDS ATTENTION. A review that arrived today or yesterday stays
+    /// neutral even though its date is in the past.</summary>
+    private static MRow.RowMetaTone MetaToneFor(MentorCalendarEvent ev)
+    {
+        if (ev.Age is MentorAttentionAge age)
+            return age == MentorAttentionAge.NeedsAttention
+                ? MRow.RowMetaTone.Rose
+                : MRow.RowMetaTone.Default;
+
+        return ev.IsPast ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default;
+    }
+
+    // ── Filtering ───────────────────────────────────────────────────────
+
+    private IEnumerable<MentorCalendarEvent> Filtered =>
+        _events
+            .Where(e => _typeFilter is null || e.Type == _typeFilter)
+            .Where(e => _projectFilter is null || e.ProjectId == _projectFilter);
+
+    private List<MentorCalendarEvent> EventsOn(DateTime day) =>
+        Filtered.Where(e => e.Date.Date == day.Date).ToList();
+
+    /// <summary>The next 12 dated items from today, regardless of which period
+    /// the grid is parked on — a planning list that jumped around as you paged
+    /// the calendar would answer a different question every time.</summary>
+    private List<MentorCalendarEvent> Upcoming =>
+        Filtered.Where(e => e.Date.Date >= DateTime.Now.Date)
+                .OrderBy(e => e.Date)
+                .Take(12)
+                .ToList();
+
+    // ── Period navigation ───────────────────────────────────────────────
+
+    /// <summary>The step matches the view: a month, a week, or a single day.</summary>
+    private int StepDays => _view == View.Day ? 1 : 7;
+
+    private void Prev()   => _anchor = _view == View.Month ? _anchor.AddMonths(-1) : _anchor.AddDays(-StepDays);
+    private void Next()   => _anchor = _view == View.Month ? _anchor.AddMonths(1)  : _anchor.AddDays(StepDays);
+    private void GoToday() => _anchor = DateTime.Now.Date;
+
+    /// <summary>Project filter from the compact select. Empty value = all
+    /// projects; anything else is one of the mentor's own project ids, since the
+    /// options are built from the authorized list.</summary>
+    private void OnProjectFilterChanged(ChangeEventArgs e)
+    {
+        var raw = e.Value?.ToString();
+        _projectFilter = int.TryParse(raw, out var id) ? id : null;
+    }
+
+    private void SelectDay(DateTime d) => _selectedDay = d;
+
+    private string PeriodLabel => _view switch
+    {
+        View.Month => $"{MonthNames[_anchor.Month - 1]} {_anchor.Year}",
+        View.Day   => FullDate(_anchor),
+        _          => $"{WeekStart:dd.MM} – {WeekStart.AddDays(6):dd.MM.yyyy}",
+    };
+
+    /// <summary>Sunday-first, which is the Hebrew calendar week and what
+    /// DayNames above is ordered by.</summary>
+    private DateTime WeekStart => _anchor.AddDays(-(int)_anchor.DayOfWeek);
+
+    private IEnumerable<DateTime> WeekDays =>
+        Enumerable.Range(0, 7).Select(i => WeekStart.AddDays(i));
+
+    /// <summary>Six weeks from the Sunday on or before the 1st — a fixed cell
+    /// count keeps the grid from changing height as the month changes.</summary>
+    private IEnumerable<DateTime> MonthCells
+    {
+        get
+        {
+            var first = new DateTime(_anchor.Year, _anchor.Month, 1);
+            var start = first.AddDays(-(int)first.DayOfWeek);
+            return Enumerable.Range(0, 42).Select(i => start.AddDays(i));
+        }
+    }
+
+    private void OpenSelected()
+    {
+        var href = _selected?.Href;
+        _selected = null;
+        if (href is not null) Nav.NavigateTo(href);
+    }
+
+    // ── Personal tasks, created and edited in place ──────────────────────
+
+    private bool             _taskModalOpen;
+    private PersonalTaskDto? _editingTask;
+    private DateTime?        _newTaskDate;
+
+    /// <summary>
+    /// The hours the day grid draws: a working day, not 24 rows.
+    ///
+    /// <para>08:00–20:00 keeps the grid scannable without scrolling past ten
+    /// empty night hours. Nothing is hidden by this range today because no entry
+    /// carries a time at all; when timed items exist, one outside these hours
+    /// would need the range to widen rather than be dropped.</para>
+    /// </summary>
+    private static IEnumerable<int> DayHours => Enumerable.Range(8, 13);
+
+    private static bool IsCurrentHour(DateTime day, int hour) =>
+        day.Date == DateTime.Now.Date && DateTime.Now.Hour == hour;
+
+    /// <summary>"אין מועדים" / "מועד אחד" / "N מועדים" — the day heading's count.</summary>
+    private static string CountLabel(int n) => n switch
+    {
+        0 => "אין מועדים",
+        1 => "מועד אחד",
+        _ => $"{n} מועדים",
+    };
+
+    /// <summary>Opens the shared editor for a NEW task on the given day. The
+    /// date is a starting point the mentor can still change before saving.</summary>
+    private void OpenNewTaskOn(DateTime day)
+    {
+        _selected      = null;
+        _selectedDay   = null;
+        _editingTask   = null;
+        _newTaskDate   = day.Date;
+        _taskModalOpen = true;
+    }
+
+    /// <summary>
+    /// Opens the editor for the personal task behind a calendar entry.
+    ///
+    /// <para>The event id carries the row id ("pt-{id}"), and the task itself is
+    /// found in the snapshot this page already loaded — so the calendar can only
+    /// ever open one of this mentor's own tasks, and needs no extra fetch.</para>
+    /// </summary>
+    private void OpenPersonalTask(MentorCalendarEvent ev)
+    {
+        if (ev.Type != MentorEventType.PersonalTask) return;
+        if (!int.TryParse(ev.Id.StartsWith("pt-") ? ev.Id[3..] : "", out var taskId)) return;
+
+        var task = _personalTasks.FirstOrDefault(t => t.Id == taskId);
+        if (task is null) return;
+
+        _selected      = null;
+        _editingTask   = task;
+        _newTaskDate   = null;
+        _taskModalOpen = true;
+    }
+
+    private void CloseTaskModal()
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+        _newTaskDate   = null;
+    }
+
+    /// <summary>A save changed the mentor's own tasks, so the calendar is rebuilt
+    /// from a fresh snapshot — that is what makes the new item appear in day,
+    /// week and month at once without a browser refresh.</summary>
+    private async Task OnTaskSaved(PersonalTaskDto _)
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+        _newTaskDate   = null;
+        await LoadAsync();
+    }
+
+    private async Task OnTaskDeleted(int _)
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+        _newTaskDate   = null;
+        await LoadAsync();
+    }
+}

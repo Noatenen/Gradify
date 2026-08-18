@@ -140,8 +140,29 @@
     /// </summary>
     private string? GetTargetUrl(NotificationDto n)
     {
-        // Submission notifications keep the existing routing — unaffected by this fix.
-        if (n.Type == "SubmissionReceived") return "mentor/submissions";
+        // The daily digest is a summary of the whole queue, so it opens the
+        // queue. Added in the same change that introduced the digest — a
+        // notification type with no arm here renders with a generic icon and
+        // navigates nowhere.
+        if (n.Type == NotificationTypes.MentorDailyDigest) return "mentor/tasks";
+
+        // A new submission arriving for a mentor.
+        //
+        //   "SubmissionReceived"  legacy rows already in the database, written
+        //                         before the type was corrected.
+        //   SubmissionSubmitted   what the server writes now — the canonical
+        //                         type, so the mentor's "הגשה חדשה" preference
+        //                         actually applies.
+        //
+        // Both land on the mentor's review queue. The old target,
+        // /mentor/submissions, is the legacy page and is no longer in the mentor
+        // nav; ?focus=reviews is where the approved Home tile and nav send a
+        // review today. Non-mentors fall through to the generic mapping below,
+        // since Staff and Admin also receive SubmissionSubmitted.
+        if (n.Type == "SubmissionReceived"
+            || (n.Type == NotificationTypes.SubmissionSubmitted && RoleService.IsMentor(_user)))
+            return "mentor/tasks?focus=reviews";
+
         if (n.Type == "SubmissionReturned")
             return n.RelatedEntityId.HasValue
                 ? $"tasks?taskId={n.RelatedEntityId}"
@@ -203,18 +224,21 @@
 
     private static string NotificationIconClass(string type) => type switch
     {
-        "SubmissionReceived" => "received",
-        "SubmissionReturned" => "returned",
-        "RequestReturned"    => "returned",
-        _                    => "general",
+        "SubmissionReceived"                     => "received",
+        NotificationTypes.SubmissionSubmitted    => "received",
+        "SubmissionReturned"                     => "returned",
+        "RequestReturned"                        => "returned",
+        _                                        => "general",
     };
 
     private static string NotificationIcon(string type) => type switch
     {
-        "SubmissionReceived" => "oi-data-transfer-upload",
-        "SubmissionReturned" => "oi-arrow-circle-left",
-        "RequestReturned"    => "oi-loop-circular",
-        _                    => "oi-bell",
+        "SubmissionReceived"                     => "oi-data-transfer-upload",
+        NotificationTypes.SubmissionSubmitted    => "oi-data-transfer-upload",
+        "SubmissionReturned"                     => "oi-arrow-circle-left",
+        "RequestReturned"                        => "oi-loop-circular",
+        NotificationTypes.MentorDailyDigest      => "oi-inbox",
+        _                                        => "oi-bell",
     };
 
     private static string FormatTime(DateTime dt)

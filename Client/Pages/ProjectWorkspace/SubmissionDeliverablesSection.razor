@@ -1,0 +1,206 @@
+@namespace AuthWithAdmin.Client.Pages.ProjectWorkspace
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Learning
+@inject IProjectWorkspaceService Workspace
+@inject IResourceFilesService ResourceFilesService
+
+@*
+    SubmissionDeliverablesSection — "תוצרי ההגשה"
+
+    Two independent halves, deliberately:
+
+      CONTENT  — the course's submission guidance, from
+                 SubmissionDeliverablesCatalog. Static, because the guidance has
+                 no authoring UI and no table behind it anywhere in this
+                 repository. It is currently PLACEHOLDER text, and the notice
+                 below says so in the UI for as long as it is.
+
+      PROGRESS — the team's status per category, real and persisted, through
+                 ProjectSubmissionStatuses. This half is finished; it does not
+                 change when the placeholder text is replaced.
+
+    Statuses that fail to load do NOT hide the guidance: the categories still
+    render, read-only-in-effect, with a line saying progress is unavailable.
+    The reverse cannot happen — the catalog is compiled in.
+
+    Only one category is open at a time (the design brief's rule and the same
+    toggle semantics the Knowledge Center and the dashboard hero already use).
+
+    Documents come from the REAL Knowledge Center (ResourceFiles), matched by
+    title, and are omitted entirely when a category has no match — the page
+    never invents a URL. No catalog entry maps to a resource today, so no
+    documents block renders; the mechanism is live and waiting for the real
+    faculty document.
+*@
+
+<section class="pws" aria-labelledby="pws-heading">
+
+    <div class="pws-head">
+        <div class="pws-headtext">
+            <h2 class="pws-heading" id="pws-heading">תוצרי ההגשה</h2>
+            <p class="pws-sub">כל מה שנדרש להגשת פרויקט הגמר, לפי דרישות הסגל</p>
+        </div>
+
+        @if (!_statusLoadFailed)
+        {
+            <span class="pws-count">@DoneCount מתוך @TotalCount הושלמו</span>
+        }
+    </div>
+
+    @if (!_statusLoadFailed)
+    {
+        <MProgressBar Value="DoneCount"
+                      Max="TotalCount"
+                      Size="MProgressBar.ProgressSize.Small"
+                      Class="pws-progress"
+                      AccessibleLabel="התקדמות בתוצרי ההגשה" />
+    }
+    else
+    {
+        <p class="pws-note pws-note-error" role="status">
+            לא הצלחנו לטעון את התקדמות ההגשה. הדרישות מוצגות, ושינוי מצב לא יישמר.
+        </p>
+    }
+
+    @if (SubmissionDeliverablesCatalog.IsPlaceholderContent)
+    {
+        @*
+            Not decoration and not a "coming soon" placeholder UI: the
+            categories, the statuses and the progress are all real and working.
+            This says only that the GUIDANCE TEXT inside them is development
+            content, so nobody reads it as the faculty's. It disappears on its
+            own when SubmissionDeliverablesCatalog.IsPlaceholderContent flips.
+        *@
+        <aside class="pws-placeholder" role="note">
+            <span class="pws-placeholder-label">תוכן זמני</span>
+            <span class="pws-placeholder-text">
+                הדרישות המוצגות בתוצרים הן תוכן פיתוח זמני ואינן הנחיות הסגל. מעקב ההתקדמות עצמו נשמר כרגיל.
+            </span>
+        </aside>
+    }
+
+    <div class="pws-list">
+        @foreach (var deliverable in SubmissionDeliverablesCatalog.All)
+        {
+            var captured = deliverable;
+            <SubmissionDeliverableRow Deliverable="captured"
+                                      Status="@StatusOf(captured.Key)"
+                                      IsOpen="_openKey == captured.Key"
+                                      Documents="DocumentsFor(captured)"
+                                      Saving="_savingKey == captured.Key"
+                                      OnToggle="() => Toggle(captured.Key)"
+                                      OnStatusChange="value => SetStatusAsync(captured.Key, value)" />
+        }
+    </div>
+
+    @if (_statusError is not null)
+    {
+        <p class="pws-note pws-note-error" role="alert">@_statusError</p>
+    }
+
+</section>
+
+@code {
+    /// <summary>Status per catalog key. A key with no entry is "not started" —
+    /// the server stores a row only once a team touches a category.</summary>
+    private Dictionary<string, string> _statuses = new(StringComparer.Ordinal);
+
+    /// <summary>Knowledge Center resources, indexed by title, for the
+    /// documents block. Empty when the load fails — a category then simply
+    /// renders no documents, which is the same honest result as having none.</summary>
+    private Dictionary<string, KnowledgeResource> _resourcesByTitle =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private string? _openKey;
+    private string? _savingKey;
+    private string? _statusError;
+    private bool    _statusLoadFailed;
+
+    private int TotalCount => SubmissionDeliverablesCatalog.All.Count;
+
+    private int DoneCount =>
+        SubmissionDeliverablesCatalog.All
+            .Count(d => StatusOf(d.Key) == SubmissionStatusValues.Done);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var statuses = await Workspace.GetSubmissionProgressAsync();
+
+        _statusLoadFailed = statuses is null;
+
+        if (statuses is not null)
+        {
+            _statuses = statuses
+                .Where(s => !string.IsNullOrWhiteSpace(s.DeliverableKey))
+                .GroupBy(s => s.DeliverableKey, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Last().Status, StringComparer.Ordinal);
+        }
+
+        // The same endpoint the Knowledge Center and the dashboard's
+        // recommendations already read, and the same classification, so a file
+        // is described identically everywhere it appears.
+        var files = await ResourceFilesService.GetPublicAsync();
+
+        if (files is not null)
+        {
+            foreach (var resource in KnowledgeCenterModel.ToResources(files))
+            {
+                _resourcesByTitle[resource.Title] = resource;
+            }
+        }
+    }
+
+    private string StatusOf(string key) =>
+        _statuses.TryGetValue(key, out var value) && SubmissionStatusValues.IsValid(value)
+            ? value
+            : SubmissionStatusValues.NotStarted;
+
+    /// <summary>Resolves a category's declared resource titles against what the
+    /// Knowledge Center actually holds. An unmatched title is dropped silently:
+    /// a document that is not there must not become a broken chip.</summary>
+    private IReadOnlyList<KnowledgeResource> DocumentsFor(SubmissionDeliverable deliverable)
+    {
+        if (deliverable.ResourceTitles.Count == 0) return Array.Empty<KnowledgeResource>();
+
+        var found = new List<KnowledgeResource>(deliverable.ResourceTitles.Count);
+
+        foreach (var title in deliverable.ResourceTitles)
+        {
+            if (_resourcesByTitle.TryGetValue(title, out var resource)) found.Add(resource);
+        }
+
+        return found;
+    }
+
+    // One open at a time; pressing the open one closes it.
+    private void Toggle(string key) => _openKey = _openKey == key ? null : key;
+
+    private async Task SetStatusAsync(string key, string status)
+    {
+        if (!SubmissionStatusValues.IsValid(status)) return;
+        if (StatusOf(key) == status) return;
+
+        var previous = _statuses.TryGetValue(key, out var existing) ? existing : null;
+
+        // Optimistic, then rolled back on failure: the segmented control has to
+        // respond immediately to be usable, and the progress bar above it reads
+        // from the same dictionary, so both move together either way.
+        _statuses[key] = status;
+        _savingKey     = key;
+        _statusError   = null;
+
+        var ok = await Workspace.SetSubmissionStatusAsync(key, status);
+
+        _savingKey = null;
+
+        if (!ok)
+        {
+            if (previous is null) _statuses.Remove(key);
+            else                  _statuses[key] = previous;
+
+            _statusError = "עדכון מצב התוצר נכשל. נסי שנית.";
+        }
+    }
+}

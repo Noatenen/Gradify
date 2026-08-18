@@ -9,6 +9,11 @@ public interface IResourceFilesService
     Task<List<ResourceFileDto>?>   GetAllAsync();
     /// <summary>All authenticated users — same data, student-accessible endpoint.</summary>
     Task<List<ResourceFileDto>?>   GetPublicAsync();
+    /// <summary>The mentor's read-only view of the same library. A mentor is
+    /// forbidden on BOTH other list endpoints (api/resourcefiles is Admin/Staff,
+    /// api/student/resources is Student), so this is the only one they can
+    /// call — see MentorController.GetResources.</summary>
+    Task<List<ResourceFileDto>?>   GetForMentorAsync();
     Task<List<MilestoneOptionDto>> GetMilestonesAsync();
     Task<List<TaskOptionDto>>      GetTasksForMilestoneAsync(int milestoneId);
     /// <summary>Returns null on success, or the server error message on failure.</summary>
@@ -32,6 +37,12 @@ public class ResourceFilesService : IResourceFilesService
     public async Task<List<ResourceFileDto>?> GetPublicAsync()
     {
         try   { return await _http.GetFromJsonAsync<List<ResourceFileDto>>("api/student/resources"); }
+        catch { return null; }
+    }
+
+    public async Task<List<ResourceFileDto>?> GetForMentorAsync()
+    {
+        try   { return await _http.GetFromJsonAsync<List<ResourceFileDto>>("api/mentor/resources"); }
         catch { return null; }
     }
 

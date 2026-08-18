@@ -1,5 +1,6 @@
 using AuthWithAdmin.Server.AuthHelpers;
 using AuthWithAdmin.Server.Data;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.StaticFiles;
@@ -47,8 +48,50 @@ builder.Services.AddHttpClient("Slack");
 builder.Services.Configure<SlackOptions>(
     builder.Configuration.GetSection(SlackOptions.SectionName));
 
+//Google Calendar — per-user OAuth connection.
+//
+// Separate from the Google LOGIN handler registered further down: different
+// routes, different redirect URI, different scopes, its own storage. The two
+// only share the ONE set of client credentials, read straight from
+// Authentication:Google:* by GoogleCalendarTokenService rather than copied into
+// a second config section.
+builder.Services.AddHttpClient(GoogleCalendarTokenService.HttpClientName);
+builder.Services.Configure<GoogleCalendarOptions>(
+    builder.Configuration.GetSection(GoogleCalendarOptions.SectionName));
+builder.Services.AddScoped<OAuthStateService>();
+builder.Services.AddScoped<GoogleCalendarTokenService>();
+// Calendar EVENT operations (task -> event). The only caller of the Calendar
+// events API; reuses the same named HttpClient and the token service above.
+builder.Services.AddScoped<GoogleCalendarEventService>();
+
+// Data Protection — encrypts the Google refresh/access tokens before they reach
+// SQLite. Keys are pinned to an explicit directory instead of the framework
+// default (~/.aspnet/DataProtection-Keys), because that default is per-user and
+// per-container: a redeploy would silently lose the key ring and every stored
+// refresh token would become undecryptable. SetApplicationName keeps the ring
+// stable across environments. In a container this directory MUST be on a
+// persistent volume.
+var dataProtectionKeys = builder.Configuration["DataProtection:KeysDirectory"];
+if (string.IsNullOrWhiteSpace(dataProtectionKeys))
+    dataProtectionKeys = Path.Combine(
+        builder.Environment.ContentRootPath, "App_Data", "DataProtection-Keys");
+
+Directory.CreateDirectory(dataProtectionKeys);
+
+builder.Services.AddDataProtection()
+    .SetApplicationName("Gradify")
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeys));
+
 //Mail
 builder.Services.AddSingleton<EmailHelper>();
+
+//Mentor attention + daily digest
+// Scoped, because both depend on the scoped DbRepository (one SqliteConnection
+// per instance). The background scheduler resolves them inside its own scope
+// per run — never from the root provider.
+builder.Services.AddScoped<MentorAttentionService>();
+builder.Services.AddScoped<MentorDigestService>();
+builder.Services.AddHostedService<MentorDigestBackgroundService>();
 
 
 //JWT

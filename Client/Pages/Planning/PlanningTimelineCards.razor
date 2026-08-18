@@ -1,0 +1,137 @@
+@namespace AuthWithAdmin.Client.Pages.Planning
+
+@*
+    PlanningTimelineCards — the <768px presentation of ציר זמן.
+
+    A horizontal Gantt on a phone means dragging a 2000px track through a
+    360px window to read a bar. Instead the same milestones become a vertical
+    stack: each card states its range, status and progress in words and a bar,
+    with its deadline markers as a list underneath.
+
+    Same data, same click targets, same ordering as the desktop Timeline —
+    only the axis changes.
+*@
+
+<div class="pl-tlc">
+    @if (Groups.Count == 0 && LooseSections.Count == 0)
+    {
+        <MEmptyState Title="אין תוכן להצגה בציר הזמן"
+                     Description="נסי לשנות את הסינון או להרחיב את הטווח לכל הפרויקט."
+                     Live="true" />
+    }
+
+    @foreach (var g in Groups)
+    {
+        var m = g.Milestone!;
+        <section class="pl-tlc-card pl-tlc-@StatusSlug(m.Status)">
+            <button type="button" class="pl-tlc-head" @onclick="() => OnOpenMilestone.InvokeAsync(m)">
+                <span class="pl-tlc-dot"></span>
+                <span class="pl-tlc-title">@m.Title</span>
+                @if (m.IsCurrent)
+                {
+                    <span class="pl-tlc-now">נוכחית</span>
+                }
+            </button>
+
+            <p class="pl-tlc-range">
+                @if (m.HasBand)
+                {
+                    @($"{m.Start!.Value:dd.MM.yy} – {m.Due!.Value:dd.MM.yy}")
+                }
+                else if (m.Due.HasValue)
+                {
+                    @($"יעד {m.Due.Value:dd.MM.yy}")
+                    <span class="pl-tlc-nostart">· ללא תאריך פתיחה</span>
+                }
+            </p>
+
+            <MProgressBar Value="@m.ProgressPct" />
+
+            <p class="pl-tlc-counts">@m.DoneCount / @m.TotalCount משימות הושלמו</p>
+
+            @if (g.Items.Count > 0)
+            {
+                <div class="pl-tlc-items">
+                    @foreach (var item in g.Items)
+                    {
+                        <PlanningItemChip Item="@item" Relaxed="true" OnOpen="OnOpenItem" />
+                    }
+                </div>
+            }
+        </section>
+    }
+
+    @foreach (var loose in LooseSections)
+    {
+        <section class="pl-tlc-card pl-tlc-loose">
+            <div class="pl-tlc-head pl-tlc-head-static">
+                <span class="pl-tlc-dot" style="@PlanningKinds.PaletteStyle(loose.Kind) background:var(--pl-ink)"></span>
+                <span class="pl-tlc-title">@loose.Title</span>
+            </div>
+            <p class="pl-tlc-range">ללא שיוך לאבן דרך</p>
+            <div class="pl-tlc-items">
+                @foreach (var item in loose.Items)
+                {
+                    <PlanningItemChip Item="@item" Relaxed="true" OnOpen="OnOpenItem" />
+                }
+            </div>
+        </section>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public DateTime RangeStart { get; set; }
+    [Parameter, EditorRequired] public DateTime RangeEnd   { get; set; }
+
+    [Parameter] public IReadOnlyList<PlanningMilestone> Milestones { get; set; } = Array.Empty<PlanningMilestone>();
+    [Parameter] public IReadOnlyList<PlanningItem>      Items      { get; set; } = Array.Empty<PlanningItem>();
+
+    [Parameter] public EventCallback<PlanningItem>      OnOpenItem      { get; set; }
+    [Parameter] public EventCallback<PlanningMilestone> OnOpenMilestone { get; set; }
+
+    private bool InRange(DateTime d) => d.Date >= RangeStart.Date && d.Date <= RangeEnd.Date;
+
+    private sealed record Group(PlanningMilestone? Milestone, List<PlanningItem> Items);
+    private sealed record Loose(PlanningKind Kind, string Title, List<PlanningItem> Items);
+
+    private List<Group> Groups =>
+        Milestones
+            .Where(m => (m.HasBand && m.Due!.Value >= RangeStart.Date && m.Start!.Value <= RangeEnd.Date)
+                        || (!m.HasBand && m.Due.HasValue && InRange(m.Due.Value)))
+            .OrderBy(m => m.OrderIndex)
+            .Select(m => new Group(
+                m,
+                Items.Where(i => i.MilestoneId == m.ProjectMilestoneId && InRange(i.Date))
+                     .OrderBy(i => i.Date)
+                     .ToList()))
+            .ToList();
+
+    private List<Loose> LooseSections
+    {
+        get
+        {
+            var result = new List<Loose>();
+            foreach (var (kind, title) in new[]
+            {
+                (PlanningKind.Team,     "משימות צוות"),
+                (PlanningKind.Personal, "אישי")
+            })
+            {
+                var list = Items
+                    .Where(i => i.Kind == kind && i.MilestoneId is null && InRange(i.Date))
+                    .OrderBy(i => i.Date)
+                    .ToList();
+                if (list.Count > 0) result.Add(new Loose(kind, title, list));
+            }
+            return result;
+        }
+    }
+
+    private static string StatusSlug(string s) => s switch
+    {
+        "Completed"  => "done",
+        "InProgress" => "active",
+        "Delayed"    => "late",
+        _            => "pending"
+    };
+}

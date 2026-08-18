@@ -1,0 +1,154 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    ProjectTasksSection — the finalized design's "משימות הפרויקט" panel
+    (Motiva Tasks.dc.html, first child of #task-sections, the wider 1.6fr track).
+
+    This restores the milestone hierarchy the previous board flattened away:
+    TasksPageDto already ships ActiveGroups / CompletedGroups as real
+    TaskMilestoneGroupDto records, and the page had been discarding everything
+    but the milestone's title. Nothing is invented here — current vs completed,
+    the task counts and the due dates all come off the existing DTO.
+
+    The Design's two milestone states:
+      • current   — gradient-wash block, hollow violet ring dot, expanded,
+                    labelled "אבן דרך נוכחית"
+      • completed — plain block, solid teal dot, collapsed, "N משימות · הושלמה"
+*@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge" Padding="MCard.CardPadding.None" Fill="true">
+    <div class="pts-body">
+        <div class="pts-header">
+            <p class="pts-title">משימות הפרויקט</p>
+        </div>
+
+        @*
+            No Class here: Blazor CSS isolation cannot style a child component's
+            root, so the scroll box relies on MScrollArea's own min-height:0 —
+            as a flex child of .pts-body it shrinks into the space the header
+            leaves and scrolls from there.
+        *@
+        <MScrollArea Tabbable="false">
+            @if (Groups.Count == 0)
+            {
+                <MEmptyState Title="@EmptyMessage" Live="true" />
+            }
+            else
+            {
+                @foreach (var group in Groups)
+                {
+                    var captured = group;
+                    var isCurrent = IsCurrent(group);
+                    var isOpen = IsExpanded(group);
+
+                    <div class="pts-milestone @(isCurrent ? "pts-milestone-current" : "")">
+                        <button type="button"
+                                class="pts-mile-head"
+                                aria-expanded="@(isOpen ? "true" : "false")"
+                                @onclick="@(() => Toggle(captured.ProjectMilestoneId))">
+                            <span class="pts-mile-lead">
+                                <span class="pts-chevron @(isOpen ? "pts-chevron-open" : "")" aria-hidden="true">⌄</span>
+                                <span class="pts-dot @(isCurrent ? "pts-dot-current" : "pts-dot-done")" aria-hidden="true"></span>
+                                <strong class="pts-mile-title">@group.MilestoneTitle</strong>
+                            </span>
+                            <span class="pts-mile-meta @(isCurrent ? "pts-mile-meta-current" : "")">@MetaFor(group, isCurrent)</span>
+                        </button>
+
+                        @if (isOpen)
+                        {
+                            <div class="pts-mile-body">
+                                @if (group.Tasks.Count == 0)
+                                {
+                                    <p class="pts-mile-empty">@EmptyMessage</p>
+                                }
+                                else
+                                {
+                                    @foreach (var task in group.Tasks)
+                                    {
+                                        var capturedTask = task;
+                                        <button type="button" class="pts-task"
+                                                @onclick="@(() => OnOpenDetail.InvokeAsync(capturedTask.Id))"
+                                                aria-label="@($"פתיחת {task.Title}")">
+                                            <span class="pts-task-main">
+                                                <strong class="pts-task-title">@task.Title</strong>
+                                                @if (task.DueDate.HasValue)
+                                                {
+                                                    <span class="pts-task-due">יעד: @task.DueDate.Value.ToString("dd.MM")</span>
+                                                }
+                                            </span>
+                                            <span class="pts-task-status @StatusClass(task)">@StatusLabel(task)</span>
+                                        </button>
+                                    }
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </MScrollArea>
+    </div>
+</MCard>
+
+@code {
+    /// <summary>Milestone groups to render, already filtered/ordered by the page.
+    /// The component does no filtering of its own.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<TaskMilestoneGroupDto> Groups { get; set; } = Array.Empty<TaskMilestoneGroupDto>();
+
+    /// <summary>Milestone ids the page considers "current" — the ones the Design
+    /// emphasises and expands by default.</summary>
+    [Parameter] public IReadOnlySet<int> CurrentMilestoneIds { get; set; } = new HashSet<int>();
+
+    [Parameter] public string EmptyMessage { get; set; } = "אין משימות להצגה.";
+
+    [Parameter] public EventCallback<int> OnOpenDetail { get; set; }
+
+    // Expansion is pure view state: which milestones the student has opened or
+    // closed. Absent from the set means "use the default for this milestone",
+    // which the Design defines as open for current, closed for completed.
+    private readonly Dictionary<int, bool> _expanded = new();
+
+    private bool IsCurrent(TaskMilestoneGroupDto g) => CurrentMilestoneIds.Contains(g.ProjectMilestoneId);
+
+    private bool IsExpanded(TaskMilestoneGroupDto g) =>
+        _expanded.TryGetValue(g.ProjectMilestoneId, out var open) ? open : IsCurrent(g);
+
+    private void Toggle(int milestoneId)
+    {
+        var group = Groups.FirstOrDefault(g => g.ProjectMilestoneId == milestoneId);
+        bool current = group is not null && IsExpanded(group);
+        _expanded[milestoneId] = !current;
+    }
+
+    /// <summary>The Design's milestone meta: "N משימות · הושלמה" for a finished
+    /// milestone, the plain count otherwise. Hebrew has a real singular, so one
+    /// task reads "משימה אחת" rather than "1 משימות"; and a milestone with
+    /// nothing done yet gets no trailing clause instead of "0 הושלמו".</summary>
+    private static string MetaFor(TaskMilestoneGroupDto g, bool isCurrent)
+    {
+        if (isCurrent) return "אבן דרך נוכחית";
+
+        string count = g.TotalCount == 1 ? "משימה אחת" : $"{g.TotalCount} משימות";
+
+        if (g.TotalCount > 0 && g.DoneCount >= g.TotalCount) return $"{count} · הושלמה";
+        if (g.DoneCount > 0) return $"{count} · {g.DoneCount} הושלמו";
+        return count;
+    }
+
+    // Status text and tone come from the existing shared helpers — this section
+    // introduces no second status vocabulary.
+    private static string StatusLabel(TaskItemDto t) => TaskStatusHelpers.GetCategory(t) switch
+    {
+        TaskStatusHelpers.TaskCategory.Completed             => "הושלם",
+        TaskStatusHelpers.TaskCategory.Returned              => "נדרש תיקון",
+        TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "מאושרת להגשה",
+        _                                                     => TaskStatusHelpers.IsOverdue(t) ? "באיחור" : "פתוחה",
+    };
+
+    private static string StatusClass(TaskItemDto t) => TaskStatusHelpers.GetCategory(t) switch
+    {
+        TaskStatusHelpers.TaskCategory.Completed             => "pts-status-done",
+        TaskStatusHelpers.TaskCategory.Returned              => "pts-status-attention",
+        TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "pts-status-done",
+        _                                                     => TaskStatusHelpers.IsOverdue(t) ? "pts-status-attention" : "pts-status-open",
+    };
+}

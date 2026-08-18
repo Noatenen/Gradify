@@ -1,0 +1,512 @@
+@using Microsoft.AspNetCore.Components.Forms
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    RequestThreadRow — one request as the finalized design's accordion thread
+    (Motiva Requests.dc.html, the repeated block inside each group).
+
+    Collapsed it is the Master's row pattern, so the header is a real MRow in
+    button form: the whole header toggles, which is both the larger hit target
+    and the reason the chevron is a <span> (a button inside a button is invalid
+    markup and unreachable by keyboard). The tinted, rounded shell around it is
+    Requests-specific and is owned here.
+
+    Expanded it is a conversation: the student's original request as the first
+    bubble, then the real thread events, then the composer. The Design's
+    per-message and per-file "⋯" menus are deliberately absent — the domain has
+    no update/delete path for a request event or its attachments, and a control
+    that cannot do anything is worse than no control.
+
+    All state is owned by the page: this component renders a draft and raises
+    events, so a re-render after a reload can never drop what the student typed.
+*@
+
+<div class="rtr rtr-@RequestBuckets.CssSuffix(Bucket) @(Expanded ? "rtr-open" : "")">
+
+    @*
+        The 12px inset lives on this wrapper rather than on MRow: MRow's own
+        near-zero inline padding (2px) is what makes it read as a line of
+        content, and Blazor's CSS isolation means a page cannot restyle a child
+        component's root anyway. 12 + MRow's 2 lands on the Design's 14.
+    *@
+    <div class="rtr-headwrap">
+    <MRow OnClick="OnToggle"
+          Meta="@RelativeTime"
+          AriaLabel="@(Expanded ? $"צמצום הבקשה {Request.Title}" : $"הרחבת הבקשה {Request.Title}")">
+        <Leading>
+            <span class="rtr-avatar" aria-hidden="true">@CounterpartInitials</span>
+        </Leading>
+        <ChildContent>
+            <span class="rtr-titlerow">
+                @if (Request.HasUnread)
+                {
+                    @*
+                        Not in the Design, which carries "new" through the
+                        notification bell and the sidebar badge instead. The
+                        unread state is real, working data (HasUnread /
+                        mark-read), so it is kept — drawn in the violet the
+                        System Master's own audit normalized every unread
+                        indicator onto.
+                    *@
+                    <span class="rtr-unread" title="עדכון חדש"
+                          role="img" aria-label="עדכון חדש שלא נקרא"></span>
+                }
+                <strong class="rtr-title">@Request.Title</strong>
+                <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral"
+                              Text="@TypeLabel" />
+            </span>
+            @if (!string.IsNullOrWhiteSpace(SubLine))
+            {
+                <span class="rtr-sub">@SubLine</span>
+            }
+        </ChildContent>
+        <Status>
+            <MStatusDot Tone="@RequestBuckets.Tone(Bucket)"
+                        Label="@RequestBuckets.RowLabel(Bucket)" />
+        </Status>
+        <Trailing>
+            <span class="rtr-chevron @(Expanded ? "rtr-chevron-open" : "")" aria-hidden="true">⌃</span>
+        </Trailing>
+    </MRow>
+    </div>
+
+    @*
+        Design's expansion mechanic: a 0fr→1fr grid row plus an opacity fade,
+        so the body animates open without a measured pixel height. The content
+        stays in the DOM, which is what keeps a half-typed reply alive across a
+        collapse/expand.
+
+        The collapsed state adds visibility:hidden rather than aria-hidden. A
+        clipped-but-visible subtree still holds the composer's textarea, its
+        attach control and every attachment link in the tab order, so a
+        keyboard user would tab into a thread they cannot see; aria-hidden on
+        focusable content is the other half of that same bug. visibility
+        removes the subtree from both the tab order and the accessibility tree,
+        and still animates.
+    *@
+    <div class="rtr-body @(Expanded ? "rtr-body-open" : "")">
+        <div class="rtr-body-clip">
+            <div class="rtr-body-pad">
+
+                <p class="rtr-metaline">
+                    נפתחה @Request.CreatedAt.IsraelFormat("dd.MM") · @RequestBuckets.RowLabel(Bucket)
+                </p>
+
+                <div class="rtr-msgs">
+
+                    @*
+                        The origin bubble. Description is the text the student
+                        submitted; the current page showed it in a separate
+                        "הבקשה שלי" block, the Design treats it as the first
+                        message of the conversation, which is what it is.
+                    *@
+                    @if (!string.IsNullOrWhiteSpace(Request.Description) || Request.AttachmentCount > 0)
+                    {
+                        <div class="rtr-wrap rtr-wrap-mine">
+                            <div class="rtr-bubble rtr-bubble-mine">
+                                <div class="rtr-bubble-meta">
+                                    <span>את · @Request.CreatedAt.IsraelFormat("dd.MM · HH:mm")</span>
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(Request.Description))
+                                {
+                                    <p class="rtr-text">@Request.Description</p>
+                                }
+                                @if (Request.AttachmentCount > 0)
+                                {
+                                    @*
+                                        Count only, by design decision I.4: the
+                                        student list endpoint returns a count for
+                                        request-level attachments, not filenames,
+                                        and inventing names would be worse than
+                                        stating the fact. Reply attachments below
+                                        use their real metadata.
+                                    *@
+                                    <p class="rtr-attach-count">
+                                        📎 @Request.AttachmentCount @(Request.AttachmentCount == 1 ? "מסמך מצורף" : "מסמכים מצורפים")
+                                    </p>
+                                }
+                            </div>
+                        </div>
+                    }
+
+                    @*
+                        Progressive disclosure. A long thread is not allowed to
+                        take over the viewport, so only the most recent few
+                        events are drawn at rest and the rest sit behind one
+                        control. The events themselves are untouched — this
+                        window is a slice of the same list, in the same order,
+                        and every hidden event is one click away.
+
+                        Deliberately NOT a fixed-height scroller: a scroll box
+                        inside a page that already scrolls hides the fact that
+                        there is more to read, and steals the wheel from the
+                        page. Collapsing older content keeps the page's own
+                        scrollbar the single, honest measure of the thread.
+                    *@
+                    @{
+                        var timeline   = VisibleEvents;
+                        var olderCount = Math.Max(0, timeline.Count - RecentEventWindow);
+                        var shown      = olderCount == 0 || _showOlder
+                            ? timeline
+                            : timeline.Skip(olderCount).ToList();
+                    }
+
+                    @if (olderCount > 0)
+                    {
+                        @*
+                            Sits where the older events belong — after the
+                            origin bubble, before the recent ones — so opening
+                            it inserts history in place instead of appending it
+                            out of order.
+                        *@
+                        <div class="rtr-more">
+                            <button type="button"
+                                    class="rtr-more-btn"
+                                    aria-expanded="@(_showOlder ? "true" : "false")"
+                                    @onclick="ToggleOlder">
+                                @(_showOlder ? "הסתרת הודעות קודמות" : "הצגת הודעות קודמות")
+                            </button>
+                        </div>
+                    }
+
+                    @foreach (var evt in shown)
+                    {
+                        var isComment = evt.EventType == RequestEventTypes.Comment;
+
+                        if (!isComment)
+                        {
+                            @*
+                                VisibleEvents already dropped the summary-less
+                                system events, so this always renders.
+                            *@
+                            <p class="rtr-system">
+                                @EventSummary(evt) · @evt.CreatedAt.IsraelFormat("dd.MM · HH:mm")
+                            </p>
+                        }
+                        else
+                        {
+                            var mine = evt.UserRole == Roles.Student;
+
+                            <div class="rtr-wrap @(mine ? "rtr-wrap-mine" : "rtr-wrap-other")">
+                                <div class="rtr-bubble @(mine ? "rtr-bubble-mine" : "rtr-bubble-other")">
+                                    <div class="rtr-bubble-meta">
+                                        <span>@BubbleMeta(evt, mine)</span>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(evt.Content))
+                                    {
+                                        <p class="rtr-text">@evt.Content</p>
+                                    }
+                                    @if (evt.Attachments.Count > 0)
+                                    {
+                                        <div class="rtr-files">
+                                            @foreach (var att in evt.Attachments)
+                                            {
+                                                @if (IsImage(att.ContentType))
+                                                {
+                                                    <a class="rtr-thumb"
+                                                       href="@AttachmentUrl(att)"
+                                                       target="_blank" rel="noopener noreferrer"
+                                                       title="@att.OriginalFileName">
+                                                        <img src="@AttachmentUrl(att)"
+                                                             alt="@att.OriginalFileName" loading="lazy" />
+                                                    </a>
+                                                }
+                                                else
+                                                {
+                                                    <a class="rtr-file @(mine ? "rtr-file-mine" : "")"
+                                                       href="@AttachmentUrl(att)"
+                                                       target="_blank" rel="noopener noreferrer"
+                                                       title="@att.OriginalFileName">
+                                                        📎 @att.OriginalFileName
+                                                    </a>
+                                                }
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    }
+
+                    @*
+                        ResolutionNotes has no slot in the Design. It is a real,
+                        student-visible staff response, so it lands where it
+                        belongs in a conversation: the closing message.
+                    *@
+                    @if (!string.IsNullOrWhiteSpace(Request.ResolutionNotes))
+                    {
+                        <div class="rtr-wrap rtr-wrap-other">
+                            <div class="rtr-bubble rtr-bubble-other">
+                                <div class="rtr-bubble-meta"><span>תגובת הצוות האקדמי</span></div>
+                                <p class="rtr-text">@Request.ResolutionNotes</p>
+                            </div>
+                        </div>
+                    }
+
+                    @if (!HasAnyMessage)
+                    {
+                        <p class="rtr-system">אין עדיין הודעות בשיחה</p>
+                    }
+                </div>
+
+                @if (CanReply)
+                {
+                    <div class="rtr-composer">
+                        <textarea class="rtr-input"
+                                  rows="2"
+                                  placeholder="כתיבת תגובה..."
+                                  maxlength="2000"
+                                  disabled="@IsSending"
+                                  value="@ReplyText"
+                                  @oninput="@(e => ReplyTextChanged.InvokeAsync(e.Value?.ToString() ?? ""))"></textarea>
+
+                        @if (Attachments.Count > 0)
+                        {
+                            <div class="rtr-drafts">
+                                @foreach (var att in Attachments)
+                                {
+                                    var captured = att;
+                                    <span class="rtr-draft">
+                                        📎 @captured.Name
+                                        <span class="rtr-draft-size">@FormatBytes(captured.Size)</span>
+                                        <button type="button"
+                                                class="rtr-draft-x"
+                                                aria-label="@($"הסרת הקובץ {captured.Name}")"
+                                                disabled="@IsSending"
+                                                @onclick="@(() => OnRemoveAttachment.InvokeAsync(captured))">×</button>
+                                    </span>
+                                }
+                            </div>
+                        }
+
+                        @if (!string.IsNullOrEmpty(FileError))
+                        {
+                            <p class="rtr-error">@FileError</p>
+                        }
+                        @if (!string.IsNullOrEmpty(ReplyError))
+                        {
+                            <p class="rtr-error">@ReplyError</p>
+                        }
+
+                        <div class="rtr-composer-actions">
+                            @*
+                                The wrapping <label> makes the whole control the
+                                click target for the hidden InputFile — the same
+                                mechanic the previous composer and NewRequestModal
+                                already used. accept/multiple/limits are unchanged.
+                            *@
+                            <label class="rtr-attach @(CanAttachMore ? "" : "rtr-attach-off")"
+                                   title="@($"עד {MaxAttachments} קבצים, עד 5MB כל אחד")">
+                                <svg class="rtr-attach-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M20 11.5 12 19.5a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l7-7"></path>
+                                </svg>
+                                <span>צירוף קובץ</span>
+                                @if (CanAttachMore)
+                                {
+                                    @*
+                                        The hiding class goes on a WRAPPER, not on InputFile.
+                                        Blazor's CSS isolation stamps its scope attribute only
+                                        on elements this component renders itself — the <input>
+                                        InputFile emits is a child component's element and never
+                                        matches a scoped selector, so styling it directly leaves
+                                        the browser's native "choose file" control on screen.
+                                    *@
+                                    <span class="rtr-file-hidden">
+                                        <InputFile multiple
+                                                   accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,.jpg,.jpeg,.png,.webp"
+                                                   OnChange="OnFilesSelected"
+                                                   disabled="@IsSending" />
+                                    </span>
+                                }
+                            </label>
+
+                            <MButton Variant="MButton.ButtonVariant.Primary"
+                                     Size="MButton.ButtonSize.Small"
+                                     Loading="@IsSending"
+                                     LoadingText="שולח…"
+                                     Disabled="@(IsSending || string.IsNullOrWhiteSpace(ReplyText))"
+                                     OnClick="OnSend">
+                                שליחה
+                            </MButton>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <p class="rtr-closed">הבקשה טופלה ונסגרה · השיחה נשמרת לקריאה</p>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public StudentOwnRequestDto Request { get; set; } = default!;
+    [Parameter, EditorRequired] public RequestBucket Bucket { get; set; }
+
+    /// <summary>Resolved by the page from the admin-managed request-type
+    /// catalogue, falling back to RequestTypes.Label. Passed in rather than
+    /// looked up here so every row on the page uses one map.</summary>
+    [Parameter] public string TypeLabel { get; set; } = "";
+
+    [Parameter] public bool Expanded { get; set; }
+    [Parameter] public EventCallback OnToggle { get; set; }
+
+    /// <summary>False for Resolved/Closed — the server rejects a reply on those,
+    /// so the composer is replaced by the read-only line rather than failing.</summary>
+    [Parameter] public bool CanReply { get; set; }
+
+    [Parameter] public string ReplyText { get; set; } = "";
+    [Parameter] public EventCallback<string> ReplyTextChanged { get; set; }
+
+    [Parameter] public IReadOnlyList<PendingRequestAttachment> Attachments { get; set; }
+        = Array.Empty<PendingRequestAttachment>();
+    [Parameter] public EventCallback<InputFileChangeEventArgs> OnFilesSelected { get; set; }
+    [Parameter] public EventCallback<PendingRequestAttachment> OnRemoveAttachment { get; set; }
+
+    [Parameter] public int MaxAttachments { get; set; } = 3;
+    [Parameter] public bool IsSending { get; set; }
+    [Parameter] public string? ReplyError { get; set; }
+    [Parameter] public string? FileError { get; set; }
+    [Parameter] public EventCallback OnSend { get; set; }
+
+    private bool CanAttachMore => Attachments.Count < MaxAttachments && !IsSending;
+
+    // ── Timeline window ───────────────────────────────────────────────────
+    // How much of a conversation is "enough recent context to act". Three
+    // events is a staff message plus the exchange around it, which is what a
+    // student re-reads before replying; everything older is reference.
+
+    private const int RecentEventWindow = 3;
+
+    /// <summary>Per-thread, and the page's @key on this component is the
+    /// request id — so the choice to open history survives a reload, a reply
+    /// and a collapse/expand of the thread, exactly like the reply draft.</summary>
+    private bool _showOlder;
+
+    private void ToggleOlder() => _showOlder = !_showOlder;
+
+    /// <summary>The events that actually reach the student. A system event with
+    /// no summary (an event type this screen does not narrate) renders nothing,
+    /// so counting it would make the window silently shorter than three and
+    /// could offer a "show older" control that reveals nothing.
+    /// Order is the server's — CreatedAt ASC — and is never re-sorted here.</summary>
+    private List<ProjectRequestEventDto> VisibleEvents =>
+        Request.Events
+               .Where(e => e.EventType == RequestEventTypes.Comment
+                           || !string.IsNullOrWhiteSpace(EventSummary(e)))
+               .ToList();
+
+    private bool HasAnyMessage =>
+        !string.IsNullOrWhiteSpace(Request.Description)
+        || Request.AttachmentCount > 0
+        || Request.Events.Count > 0
+        || !string.IsNullOrWhiteSpace(Request.ResolutionNotes);
+
+    // ── Counterpart ───────────────────────────────────────────────────────
+    // The Design's avatar and sub-line name the person on the other side of the
+    // thread. The student list DTO carries no assignee, so the counterpart is
+    // derived from who last spoke that isn't the student — which is exactly who
+    // the student is waiting on. Falls back to the generic academic-side name.
+
+    private ProjectRequestEventDto? LatestStaffEvent =>
+        Request.Events
+               .Where(e => e.EventType == RequestEventTypes.Comment
+                           && e.UserRole != Roles.Student
+                           && !string.IsNullOrWhiteSpace(e.UserName))
+               .OrderByDescending(e => e.CreatedAt)
+               .FirstOrDefault();
+
+    private string CounterpartName => LatestStaffEvent?.UserName ?? "הצוות האקדמי";
+
+    private string CounterpartInitials
+    {
+        get
+        {
+            var parts = CounterpartName
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 0) return "?";
+            if (parts.Length == 1) return parts[0][..Math.Min(2, parts[0].Length)];
+            return $"{parts[0][0]}{parts[1][0]}";
+        }
+    }
+
+    /// <summary>Design's sub-line: who is on the other side, then the latest
+    /// message as a one-line excerpt. Reuses the excerpt rule the previous
+    /// inbox list already used.</summary>
+    private string SubLine
+    {
+        get
+        {
+            var latest = Request.Events
+                .Where(e => e.EventType == RequestEventTypes.Comment
+                            && !string.IsNullOrWhiteSpace(e.Content))
+                .OrderByDescending(e => e.CreatedAt)
+                .FirstOrDefault();
+
+            var raw = latest?.Content ?? Request.ResolutionNotes ?? Request.Description ?? "";
+            raw = raw.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (raw.Length > 90) raw = raw[..90] + "…";
+
+            if (LatestStaffEvent is null) return raw;
+            return string.IsNullOrEmpty(raw) ? CounterpartName : $"{CounterpartName} · {raw}";
+        }
+    }
+
+    private string BubbleMeta(ProjectRequestEventDto evt, bool mine)
+    {
+        var stamp = evt.CreatedAt.IsraelFormat("dd.MM · HH:mm");
+        if (mine) return $"את · {stamp}";
+
+        var role = string.IsNullOrWhiteSpace(evt.UserRole) ? "" : $" · {RoleLabel(evt.UserRole)}";
+        return $"{evt.UserName}{role} · {stamp}";
+    }
+
+    private string RelativeTime => FormatRelativeOrDate(Request.UpdatedAt);
+
+    // ── Display helpers (carried over unchanged from the previous page) ────
+
+    private static string EventSummary(ProjectRequestEventDto evt) => evt.EventType switch
+    {
+        RequestEventTypes.StatusChange   => $"סטטוס שונה ל: {evt.NewValue}",
+        RequestEventTypes.PriorityChange => $"עדיפות שונתה ל: {evt.NewValue}",
+        RequestEventTypes.AssigneeChange => evt.NewValue is not null
+            ? $"הבקשה הועברה ל{evt.NewValue}"
+            : "שיוך הוסר",
+        _ => "",
+    };
+
+    private static string RoleLabel(string role) => role switch
+    {
+        Roles.Admin   => "מנהל",
+        Roles.Staff   => "מרצה",
+        Roles.Mentor  => "מנחה",
+        Roles.Student => "סטודנט",
+        _             => role,
+    };
+
+    private static string AttachmentUrl(ProjectRequestEventAttachmentDto att) =>
+        $"/request-attachments/{att.StoredFileName}";
+
+    private static bool IsImage(string? contentType) =>
+        !string.IsNullOrWhiteSpace(contentType)
+        && contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)        return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024):F1} MB";
+    }
+
+    private static string FormatRelativeOrDate(DateTime t)
+    {
+        var diff = DateTime.Now - t.ToLocalTime();
+        if (diff.TotalMinutes < 1)  return "כעת";
+        if (diff.TotalMinutes < 60) return $"לפני {(int)diff.TotalMinutes} דק'";
+        if (diff.TotalHours   < 24) return $"לפני {(int)diff.TotalHours} שע'";
+        if (diff.TotalDays    < 7)  return $"לפני {(int)diff.TotalDays} ימים";
+        return t.ToLocalTime().ToString("dd.MM.yyyy");
+    }
+}

@@ -1,0 +1,236 @@
+@namespace AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject IStudentProfileService ProfileService
+
+@*
+    StudentProfileIdentityHero — the finalized Profile screen's ambient hero
+    (Motiva Profile.dc.html:90-136), light presentation.
+
+    IDENTITY ONLY. The Master draws email and phone inside this band with
+    inline editors beside them; they are not here. A hero is the screen's
+    introduction, and mixing "who you are" with "edit your contact details"
+    made the top of the page read as a form with an avatar attached. Both
+    fields — and the phone's whole edit interaction, unchanged — now live in
+    StudentProfilePersonalCard, where an editable value belongs.
+
+    What is left is the three things that identify the student: the avatar,
+    the name, and one quiet contextual line. That line is not decoration: it
+    is the role label the app already computes (RoleService) plus the same
+    team expression the sidebar already renders (TeamName, falling back to
+    "צוות {ProjectNumber}"), so it repeats no fact the shell does not already
+    state and invents none.
+
+    Not built on MPageHeader: that component's layout is title-over-subtitle
+    with an optional TRAILING action slot, and this hero is an avatar LEADING
+    a name. Expressing it would have meant adding a leading slot to a
+    primitive five already-approved screens render, which is outside this
+    epic's regression boundary. It therefore reuses MPageHeader's tokens (the
+    same ambient wash, the same content inset, the same 25px/700 page-title
+    step) without reusing its markup.
+*@
+
+<header class="spf-hero">
+    <div class="spf-hero-inner">
+
+        @* ── Avatar ─────────────────────────────────────────────────────
+           The Master draws initials only. Upload/remove already exist and
+           are kept (they are working features), but as a quiet overlay on
+           the avatar itself rather than a card or a visible button row —
+           at rest this is the Master's chip, one size step larger. *@
+        <div class="spf-avatar-wrap">
+            @if (!string.IsNullOrEmpty(Profile.ProfileImageUrl))
+            {
+                <img class="spf-avatar-img" src="@Profile.ProfileImageUrl" alt="" />
+            }
+            else
+            {
+                <div class="spf-avatar-initials" aria-hidden="true">@Initials</div>
+            }
+
+            <label class="spf-avatar-overlay" for="spf-avatar-input" title="החלפת תמונת פרופיל">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                    <circle cx="12" cy="13" r="4"></circle>
+                </svg>
+                <span class="spf-sr-only">החלפת תמונת פרופיל</span>
+            </label>
+
+            @* The wrapper does the hiding, not a class on InputFile itself:
+               InputFile renders its own <input> root, which does not carry
+               this component's CSS-isolation scope attribute, so a class
+               passed to it would match no rule and the native "choose file"
+               control would show up in the middle of the hero. *@
+            <div class="spf-avatar-input-wrap">
+                <InputFile id="spf-avatar-input"
+                           OnChange="HandleAvatarUploadAsync"
+                           accept="image/jpeg,image/png,image/webp" />
+            </div>
+
+            @if (!string.IsNullOrEmpty(Profile.ProfileImageUrl))
+            {
+                <button type="button"
+                        class="spf-avatar-remove"
+                        title="הסרת תמונת פרופיל"
+                        aria-label="הסרת תמונת פרופיל"
+                        disabled="@_avatarBusy"
+                        @onclick="RemoveAvatarAsync">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M6 6l12 12M18 6 6 18"></path>
+                    </svg>
+                </button>
+            }
+
+            @if (_avatarBusy)
+            {
+                <span class="spf-avatar-busy" aria-hidden="true"></span>
+            }
+        </div>
+
+        @* ── Identity ───────────────────────────────────────────────── *@
+        <div class="spf-hero-body">
+            <h1 class="spf-hero-name">@FullName</h1>
+
+            @if (IdentityLine is not null)
+            {
+                <p class="spf-hero-context">@IdentityLine</p>
+            }
+
+            @if (_avatarError is not null)
+            {
+                <p class="spf-hero-error" role="alert">@_avatarError</p>
+            }
+        </div>
+    </div>
+</header>
+
+@code {
+    /// <summary>The loaded student profile. Mutated in place on a successful
+    /// avatar write so the parent page and this hero never disagree about the
+    /// current image.</summary>
+    [Parameter, EditorRequired] public StudentProfileDto Profile { get; set; } = default!;
+
+    /// <summary>Raised after any successful write so the page can re-render.</summary>
+    [Parameter] public EventCallback OnProfileChanged { get; set; }
+
+    /// <summary>Cascades in from App.razor — the same instance SettingsPage
+    /// used to decide this is a student at all. Read only for the role
+    /// label.</summary>
+    [CascadingParameter] private User? _user { get; set; }
+
+    private const long MaxAvatarBytes = 3 * 1024 * 1024;
+
+    private bool    _avatarBusy;
+    private string? _avatarError;
+
+    private string FullName => $"{Profile.FirstName} {Profile.LastName}".Trim();
+
+    /// <summary>Role · team, e.g. "סטודנט · צוות 15". Each half is dropped if
+    /// the data behind it is missing, and the whole line disappears rather
+    /// than printing a separator with nothing around it — so an unassigned
+    /// student sees a clean name, not an empty caption.
+    ///
+    /// <para>The team half repeats AppSideNav's own expression (TeamName, or
+    /// "צוות {ProjectNumber}") deliberately: two places naming the same team
+    /// must not name it two different ways.</para></summary>
+    private string? IdentityLine
+    {
+        get
+        {
+            var parts = new List<string>(2);
+
+            var role = RoleService.GetRoleLabel(_user);
+            if (!string.IsNullOrWhiteSpace(role)) parts.Add(role);
+
+            if (!string.IsNullOrWhiteSpace(Profile.TeamName))
+                parts.Add(Profile.TeamName!);
+            else if (Profile.ProjectNumber is int number)
+                parts.Add($"צוות {number}");
+
+            return parts.Count == 0 ? null : string.Join(" · ", parts);
+        }
+    }
+
+    private string Initials
+    {
+        get
+        {
+            var first = Profile.FirstName?.Trim() ?? "";
+            var last  = Profile.LastName?.Trim()  ?? "";
+            if (first.Length == 0 && last.Length == 0) return "?";
+            return (first.Length > 0 ? first[0].ToString() : "")
+                 + (last.Length  > 0 ? last[0].ToString()  : "");
+        }
+    }
+
+    // ── Avatar ───────────────────────────────────────────────────────────
+
+    private async Task HandleAvatarUploadAsync(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        _avatarError = null;
+
+        if (file.Size > MaxAvatarBytes)
+        {
+            _avatarError = "התמונה גדולה מדי. הגודל המרבי הוא 3MB.";
+            return;
+        }
+
+        _avatarBusy = true;
+
+        try
+        {
+            using var ms = new System.IO.MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: MaxAvatarBytes).CopyToAsync(ms);
+
+            var base64 = Convert.ToBase64String(ms.ToArray());
+            var ext    = System.IO.Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+
+            if (await ProfileService.UploadAvatarAsync(base64, ext))
+            {
+                // Re-read rather than guessing the URL: the server names the
+                // stored file itself, so the response path is the only
+                // authoritative source for it.
+                var updated = await ProfileService.GetProfileAsync();
+                if (updated is not null)
+                {
+                    Profile.ProfileImageUrl = updated.ProfileImageUrl;
+                    if (OnProfileChanged.HasDelegate) await OnProfileChanged.InvokeAsync();
+                }
+            }
+            else
+            {
+                _avatarError = "העלאת התמונה נכשלה. נסי שנית.";
+            }
+        }
+        catch
+        {
+            _avatarError = "העלאת התמונה נכשלה. נסי שנית.";
+        }
+        finally
+        {
+            _avatarBusy = false;
+        }
+    }
+
+    private async Task RemoveAvatarAsync()
+    {
+        _avatarBusy  = true;
+        _avatarError = null;
+
+        if (await ProfileService.RemoveAvatarAsync())
+        {
+            Profile.ProfileImageUrl = null;
+            if (OnProfileChanged.HasDelegate) await OnProfileChanged.InvokeAsync();
+        }
+        else
+        {
+            _avatarError = "הסרת התמונה נכשלה. נסי שנית.";
+        }
+
+        _avatarBusy = false;
+    }
+}

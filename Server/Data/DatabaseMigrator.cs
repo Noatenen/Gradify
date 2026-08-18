@@ -933,6 +933,119 @@ public static class DatabaseMigrator
                 FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
             )");
 
+        // ── GoogleCalendarConnections table ──────────────────────────────────
+        // One row per user — the SINGLE source of truth for "this user has
+        // authorized Motiva against their Google Calendar".
+        //
+        // UserPreferences.GoogleCalendarConnected is NOT that. It is a
+        // self-declared checkbox that predates any OAuth flow; it is left in
+        // place (nothing reads it for connection state) rather than dropped, so
+        // this migration stays additive.
+        //
+        //   AccessTokenProtected  — access token, ASP.NET Core Data Protection
+        //   RefreshTokenProtected — refresh token, same. NEVER plaintext: this
+        //                           is a long-lived credential and the SQLite
+        //                           file also ships as a demo DB.
+        //   AccessTokenExpiresAt  — UTC, SQLite datetime() text format
+        //   Scopes                — what Google actually granted (may differ
+        //                           from what was requested)
+        //   IsActive              — 0 on disconnect / invalid_grant. Both token
+        //                           columns are wiped at the same time, so an
+        //                           inactive row is inert, not dormant.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS GoogleCalendarConnections (
+                Id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId                INTEGER NOT NULL UNIQUE,
+                GoogleEmail           TEXT    NOT NULL DEFAULT '',
+                AccessTokenProtected  TEXT    NOT NULL DEFAULT '',
+                RefreshTokenProtected TEXT    NOT NULL DEFAULT '',
+                AccessTokenExpiresAt  TEXT,
+                Scopes                TEXT    NOT NULL DEFAULT '',
+                ConnectedAt           TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt             TEXT    NOT NULL DEFAULT (datetime('now')),
+                IsActive              INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // ── GoogleCalendarEventLinks table ───────────────────────────────────
+        // The durable link between a Motiva task and the Google Calendar event a
+        // user created for it. NOT a boolean "synced" flag: it stores the real
+        // Google event id, which is what makes later update and delete possible.
+        //
+        // PERSONAL BY DESIGN. The row is keyed on (UserId, TaskType, TaskId), so
+        // a team task can hold one row per team member and each one is that
+        // member's own event on their own calendar. Nobody is invited to anyone
+        // else's — shared invitations are the meetings phase.
+        //
+        //   GoogleEventId  — client-supplied id (base32hex), generated BEFORE the
+        //                    insert and reused on retry. Together with the UNIQUE
+        //                    index below this is what prevents duplicate events:
+        //                    a retry re-sends the same id and Google answers 409
+        //                    instead of creating a second event.
+        //   SyncState      — 'pending' until Google confirms, then 'synced'. Only
+        //                    'synced' may be shown to the user as "ביומן Google".
+        //   ScheduledStart — Israel WALL-CLOCK 'yyyy-MM-dd HH:mm', not UTC. The
+        //   ScheduledEnd     user picked a time on a clock, and the event is sent
+        //                    to Google with an explicit IANA zone rather than as
+        //                    an instant, so DST is Google's problem, not ours.
+        //
+        // No FK on TaskId: TaskType means the column can point at more than one
+        // table later. Deletion is handled explicitly instead — see
+        // GoogleCalendarEventService.RemoveLinksForDeletedTaskAsync.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS GoogleCalendarEventLinks (
+                Id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                UserId         INTEGER NOT NULL,
+                TaskId         INTEGER NOT NULL,
+                TaskType       TEXT    NOT NULL DEFAULT 'TeamTask',
+                GoogleEventId  TEXT    NOT NULL DEFAULT '',
+                CalendarId     TEXT    NOT NULL DEFAULT 'primary',
+                ScheduledStart TEXT    NOT NULL DEFAULT '',
+                ScheduledEnd   TEXT    NOT NULL DEFAULT '',
+                SyncState      TEXT    NOT NULL DEFAULT 'pending',
+                CreatedAt      TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt      TEXT    NOT NULL DEFAULT (datetime('now')),
+                IsActive       INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // One row per user per task — the mutex behind duplicate prevention. It
+        // covers inactive rows too, so a re-schedule reuses the row rather than
+        // racing a second one into existence.
+        await connection.ExecuteNonQueryAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS UX_GoogleCalendarEventLinks_User_Task " +
+            "ON GoogleCalendarEventLinks(UserId, TaskType, TaskId)");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_GoogleCalendarEventLinks_Task " +
+            "ON GoogleCalendarEventLinks(TaskType, TaskId)");
+
+        // ── OAuthStates table ────────────────────────────────────────────────
+        // Short-lived, single-use CSRF states for outbound OAuth flows.
+        //
+        // Only the SHA-256 hash of the state is kept, so the table cannot be
+        // read to forge a live authorization. The row — not the query string —
+        // is what binds a callback to a Motiva user, which is why the state
+        // itself carries no user id (unlike the older Slack Base64(userId)
+        // state, deliberately not reused here).
+        //
+        // Provider-keyed so a second integration can share the mechanism.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS OAuthStates (
+                Id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                Provider   TEXT    NOT NULL,
+                StateHash  TEXT    NOT NULL UNIQUE,
+                UserId     INTEGER NOT NULL,
+                CreatedAt  TEXT    NOT NULL DEFAULT (datetime('now')),
+                ExpiresAt  TEXT    NOT NULL,
+                ConsumedAt TEXT,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_OAuthStates_Provider_Expiry " +
+            "ON OAuthStates(Provider, ExpiresAt)");
+
         // ── UserPreferences table ─────────────────────────────────────────────
         // Per-user notification and integration preferences for the student
         // profile/settings page. UserId is the primary key so each user has at
@@ -2471,8 +2584,32 @@ public static class DatabaseMigrator
                 DueDate     TEXT,
                 IsDone      INTEGER NOT NULL DEFAULT 0,
                 CreatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+                ProjectId   INTEGER,
+                FOREIGN KEY (UserId)    REFERENCES users(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE SET NULL
             )");
+
+        // ── PersonalTasks.ProjectId — optional project context ───────────────
+        //
+        // Nullable by design: a personal reminder need not belong to a project,
+        // and every row that existed before this column keeps working untouched
+        // with ProjectId = NULL ("ללא שיוך").
+        //
+        // ON DELETE SET NULL rather than CASCADE: deleting a project must never
+        // delete a mentor's own work item — the note survives, it simply loses
+        // its context. FKs are enforced (DbRepository issues PRAGMA
+        // foreign_keys = ON), so this actually fires.
+        //
+        // The ALTER is what reaches EXISTING databases; the column in the CREATE
+        // above only covers a fresh one. SQLite permits adding a REFERENCES
+        // column precisely because its default is NULL. Data is never copied,
+        // rebuilt or destroyed.
+        var personalTaskColumns = await GetColumnsAsync(connection, "PersonalTasks");
+
+        if (!personalTaskColumns.Contains("ProjectId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE PersonalTasks ADD COLUMN ProjectId INTEGER " +
+                "REFERENCES Projects(Id) ON DELETE SET NULL");
 
         // ── TeamTasks — student-created work items, team-visible ────────────
         // Completely separate from the official Tasks table.
@@ -2496,6 +2633,115 @@ public static class DatabaseMigrator
                 FOREIGN KEY (TeamId)           REFERENCES Teams(Id)    ON DELETE CASCADE,
                 FOREIGN KEY (CreatedByUserId)  REFERENCES users(Id),
                 FOREIGN KEY (AssignedToUserId) REFERENCES users(Id)
+            )");
+
+        // ── ProjectTeamProfile — the team's own project identity ────────────
+        // The student-editable display name and description of a project, kept
+        // OUT of the Projects row on purpose.
+        //
+        // Projects.Title / Projects.Description are catalog fields: 108 of the
+        // 117 seeded projects are SourceType='Airtable', and AirtableService's
+        // sync overwrites both columns on every run (AirtableService.cs:957).
+        // Writing a student's edit there would be silently reverted by the next
+        // sync, and would also change what lecturers, mentors and the catalog
+        // see. This table is Motiva-owned, the sync never touches it, and the
+        // student-facing name resolves as
+        //     COALESCE(ptp.DisplayTitle, p.Title)
+        // so a project with no row here behaves exactly as it did before.
+        //
+        // One row per project (PK on ProjectId), because the identity belongs
+        // to the project, not to whichever team member last edited it.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectTeamProfile (
+                ProjectId       INTEGER PRIMARY KEY,
+                DisplayTitle    TEXT,
+                Description     TEXT,
+                UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedByUserId INTEGER,
+                FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
+            )");
+
+        // ── ProjectResources — the team's own links ─────────────────────────
+        // "משאבי הפרויקט": the Google Doc, the Drive folder, the Figma file,
+        // the repo. Team-owned and team-writable, exactly like TeamTasks, and
+        // deliberately NOT part of ResourceFiles — that table is the course's
+        // knowledge base, published by staff to every project.
+        //
+        // Only a label and a URL are stored. The resource's KIND (Figma /
+        // GitHub / Drive …) is derived from the URL at render time rather than
+        // persisted, so a stored kind can never disagree with the link it
+        // describes.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectResources (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ProjectId       INTEGER NOT NULL,
+                TeamId          INTEGER NOT NULL,
+                Label           TEXT    NOT NULL,
+                Url             TEXT    NOT NULL,
+                CreatedByUserId INTEGER NOT NULL,
+                CreatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (TeamId)          REFERENCES Teams(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (CreatedByUserId) REFERENCES users(Id)
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS ix_projectresources_project ON ProjectResources(ProjectId)");
+
+        // ── ProjectSubmissionStatuses — team progress on תוצרי ההגשה ────────
+        // Motiva's progress layer on top of the course's submission guidance.
+        //
+        // Only the STATUS is persisted. The guidance itself (what a "חוברת" or
+        // a "פוסטר" requires) is course content with no authoring UI behind it,
+        // so it lives in the client-side catalog
+        // (Client/Pages/ProjectWorkspace/SubmissionDeliverablesCatalog.cs) and
+        // is keyed from here by DeliverableKey. A key that disappears from the
+        // catalog leaves an orphan row that nothing reads — harmless — and a
+        // new key simply has no row until the team sets one.
+        //
+        // Deliberately NOT modelled on Tasks/TaskSubmissions: those are the
+        // milestone submission pipeline (submit → mentor approve → Moodle), and
+        // overloading them would corrupt /tasks, /submissions and the mentor
+        // review queue.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS ProjectSubmissionStatuses (
+                Id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ProjectId       INTEGER NOT NULL,
+                DeliverableKey  TEXT    NOT NULL,
+                Status          TEXT    NOT NULL,
+                UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedByUserId INTEGER,
+                UNIQUE (ProjectId, DeliverableKey),
+                FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
+            )");
+
+        // ── MentorDigestRuns — one daily digest per mentor per day ──────────
+        //
+        // The idempotency ledger for MentorDigestBackgroundService. RunDate is
+        // the ISRAEL-LOCAL calendar date as 'yyyy-MM-dd', not a UTC timestamp:
+        // the product promise is one digest per mentor per Israeli day, and a
+        // UTC date would split that promise at 03:00 local.
+        //
+        // UNIQUE (MentorUserId, RunDate) is the actual protection — the send
+        // path does INSERT-then-send, so a second attempt (a restart moments
+        // after the first run, two racing manual triggers) fails the constraint
+        // and is skipped rather than double-emailing a mentor. Checking with a
+        // SELECT first would leave the race open.
+        //
+        // ItemCount/Trigger are for support: they answer "did the 07:00 run
+        // fire, and what did it see" without re-deriving history.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS MentorDigestRuns (
+                Id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                MentorUserId INTEGER NOT NULL,
+                RunDate      TEXT    NOT NULL,
+                ItemCount    INTEGER NOT NULL DEFAULT 0,
+                Trigger      TEXT    NOT NULL DEFAULT 'Scheduled',
+                CreatedAt    TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (MentorUserId, RunDate),
+                FOREIGN KEY (MentorUserId) REFERENCES users(Id) ON DELETE CASCADE
             )");
 
         // ── Canonical reference-data seeds ──────────────────────────────────

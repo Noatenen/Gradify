@@ -64,7 +64,25 @@ namespace AuthWithAdmin.Client
                 }
             }
 
-            return new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(JwtParser.ParseClaimsFromJwt(token), "jwtAuthType")));
+            // Belt and braces around the LAST step of boot.
+            //
+            // Parsing is fixed (JwtParser now decodes Base64URL), but this line
+            // runs before a single component has rendered: anything it throws
+            // escapes the whole app and leaves the "Loading..." shell up forever,
+            // with no UI in existence to report it. A token we cannot read is
+            // simply a token we are not signed in with, so it resolves to the
+            // SAME anonymous state an absent token already produces — no second
+            // auth path, no bypass, and the stored value is left alone so a
+            // normal login can overwrite it.
+            try
+            {
+                return new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(JwtParser.ParseClaimsFromJwt(token), "jwtAuthType")));
+            }
+            catch
+            {
+                _httpClient.DefaultRequestHeaders.Authorization = null;
+                return _anonymous;
+            }
         }
 
         //הודעה שהשתנתה ההתחברות

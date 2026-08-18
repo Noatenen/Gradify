@@ -8,66 +8,192 @@
         icons appear on the LEFT (reading end).
    ───────────────────────────────────────────────────────────── *@
 
-<div class="atb-bar @(UsesAmbientMerge ? "atb-dash-merge" : "")">
+@if (!IsHidden)
+{
+    <div class="atb-bar">
 
-    <!-- RIGHT (RTL start): greeting, or the Tasks page's own title+subtitle -->
-    <div class="atb-start">
-        @if (IsTasksRoute)
-        {
-            <div class="atb-tasks-heading">
-                <h1 class="atb-tasks-title">המשימות שלי</h1>
-                <p class="atb-tasks-subtitle">כל המשימות, ההגשות והעדכונים במקום אחד</p>
-            </div>
-        }
-        else
-        {
+        <!-- RIGHT (RTL start): greeting -->
+        <div class="atb-start">
             <span class="atb-greeting">שלום, @(_user?.FirstName ?? "")</span>
-        }
-    </div>
+        </div>
 
-    <!-- LEFT (RTL end): notification + calendar quick-access -->
-    <div class="atb-end">
-        <NotificationBell />
-        <button class="atb-icon-btn"
-                @onclick="@(() => Nav.NavigateTo("/milestones"))"
-                title="לוח זמנים">
-            <span class="oi oi-calendar" aria-label="לוח זמנים"></span>
-        </button>
-    </div>
+        <!-- LEFT (RTL end): notification + calendar quick-access -->
+        <div class="atb-end">
+            @*
+                The Motiva shells (Student, and Mentor as of Epic 1) get the
+                bell in the sidebar header, where the System Master puts it
+                (see AppSideNav.razor). It stays here for Lecturer / Staff /
+                Admin, whose shell is unchanged.
 
-</div>
+                Rendering it in both places at once would mount two
+                instances, each polling the unread count independently — so
+                the two sites are driven by ONE predicate,
+                NavDefinitions.IsMotivaShell, read here negated and there
+                positive. There is no role for which both are true, and none
+                for which both are false.
+            *@
+            @if (ShowNotificationBell)
+            {
+                <NotificationBell />
+            }
+            <button class="atb-icon-btn"
+                    @onclick="@(() => Nav.NavigateTo(PlanningRoute))"
+                    title="לוח זמנים">
+                <span class="oi oi-calendar" aria-label="לוח זמנים"></span>
+            </button>
+        </div>
+
+    </div>
+}
 
 @code {
     [CascadingParameter] private User? _user { get; set; }
 
-    // Ambient-merge treatment (see .atb-dash-merge in AppTopBar.razor.css)
-    // only applies for students, only on /dashboard or /tasks — every other
-    // student route keeps the plain standalone bar; Mentor/Staff/Admin are
-    // never affected. Both routes place an ambient-gradient panel (the Hero,
-    // or TaskStatusOverview) directly under this bar, so the same merged
-    // treatment reads as one continuous surface on either page. AppTopBar is
-    // a persistent shell component that doesn't remount on navigation, so
-    // route changes are tracked explicitly via NavigationManager.LocationChanged
-    // rather than relying on parameters.
-    private bool UsesAmbientMerge => RoleService.IsStudent(_user) && (IsDashboardRoute(Nav.Uri) || IsTasksPath(Nav.Uri));
+    // AppTopBar is a persistent shell component that doesn't remount on
+    // navigation, so route changes are tracked explicitly via
+    // NavigationManager.LocationChanged rather than relying on parameters.
 
-    // Tasks page owns its own title/subtitle (matches the dashboard's own
-    // top-header language) — the generic greeting would be redundant right
-    // above it, so it's swapped out here rather than duplicated in-page.
-    // Gated the same way as UsesAmbientMerge: student-only, this route only,
-    // so every other role/route renders byte-identical to before.
-    private bool IsTasksRoute => RoleService.IsStudent(_user) && IsTasksPath(Nav.Uri);
+    // The bell moved into the sidebar header for students in Phase 2 of the
+    // System Master migration, and for mentors in Epic 1. It remains here for
+    // Lecturer / Staff / Admin.
+    //
+    // EXACTLY-ONE INVARIANT: this is the strict negation of the condition
+    // AppSideNav renders its bell under. Both call the same method rather
+    // than each testing roles for itself, which is what makes "one bell, one
+    // poller" a property of the code and not of two comments agreeing.
+    //
+    // The calendar button stays here for every role. It used to be the only
+    // student route to /milestones; students now reach that page from the
+    // "יומן ותכנון" nav item in NavDefinitions._studentMain instead, which is
+    // why hiding this bar on the student routes below costs them nothing.
+    // Nothing about the button or the /milestones route itself changed.
+    private bool ShowNotificationBell => !NavDefinitions.IsMotivaShell(_user);
 
-    private static bool IsDashboardRoute(string uri) =>
-        new Uri(uri).AbsolutePath.Trim('/').Equals("dashboard", StringComparison.OrdinalIgnoreCase);
+    // The bar renders NOTHING on the student Dashboard, Tasks, Requests,
+    // Knowledge Center and Planning routes.
+    //
+    // Everything it used to contribute there is now owned elsewhere: the
+    // page title moved into the page's own MPageHeader (Phase 4A/4B), the
+    // notification bell moved into the sidebar (Phase 2), and the greeting
+    // was already suppressed so it would not compete with the page title.
+    // That left a bar whose only visible control was the calendar
+    // shortcut, which neither finalized design includes — so the whole bar
+    // goes rather than an empty strip taking vertical space between the
+    // shell edge and the Hero.
+    //
+    // Requests joined the list in Phase 4B for exactly the same reason:
+    // its finalized screen opens on the ambient hero, whose h1 is a state
+    // summary ("יש לך תגובות חדשות…"). A greeting strip above that is a
+    // second, competing salutation.
+    //
+    // Knowledge Center joined in Phase 4C: same compact ambient hero as
+    // Tasks, and the finalized Motiva Resources screen likewise opens
+    // straight onto it. No layout compensation is needed when the bar
+    // disappears — MPageHeader's compact band carries its own 38px top
+    // padding, so the hero's title lands the same distance below the shell
+    // edge that it does on /tasks.
+    //
+    // Dashboard joined in Phase 4D. Motiva Student Dashboard V4 has no top
+    // bar at all: its ambient hero band opens the page and owns the greeting
+    // ("בוקר טוב, נועה", V4 line 89), which is now rendered by the page's own
+    // MPageHeader Hero. Leaving the bar would put a second, competing
+    // greeting directly above the first. The bar's ambient-merge treatment
+    // existed only to blend into that hero and is retired with it.
+    //
+    // Planning ("יומן ותכנון", /milestones) joined last, for the same reason
+    // as Tasks and Knowledge Center: StudentPlanningPage opens straight onto
+    // an MPageHeader/Compact ambient hero whose title IS the page title, and
+    // its subtitle carries the current-milestone context. The greeting strip
+    // above it was a competing header, and the strip's only control — the
+    // calendar shortcut — pointed at /milestones itself, i.e. at the page the
+    // student was already on. As on /tasks and /learning, no layout
+    // compensation is needed: MPageHeader/Compact brings its own 38px top
+    // padding, so the hero title keeps the same distance from the shell edge.
+    //
+    // Route- and role-scoped:
+    //   * every other student route keeps the bar unchanged, greeting and
+    //     calendar button included;
+    //   * Mentor / Lecturer / Staff / Admin keep it on every route,
+    //     /dashboard, /tasks, /requests, /learning and /milestones included.
+    //
+    // Profile ("הפרופיל שלי", /settings) joined last. The finalized Profile
+    // screen opens straight onto its own ambient hero, whose h1 IS the
+    // student's name and whose meta row carries their email and phone. The
+    // greeting strip above it was therefore a second salutation naming the
+    // same person twice, and its only control — the calendar shortcut — is
+    // already a nav item. As on /tasks and /learning, nothing needs to
+    // compensate for the removal: the Profile hero brings its own 38px top
+    // padding, so its avatar and name sit the same distance below the shell
+    // edge as every other student page's title.
+    //
+    // מרחב הפרויקט (/project) joins for the same reason as every entry above
+    // it: the page opens on its own ambient band whose h1 names the screen,
+    // so a greeting strip above it is a second header with nothing in it. It
+    // is also the only student route that would still have had one, which
+    // would have made the new page the odd one out in the workspace.
+    private static readonly string[] BarlessStudentRoutes = { "dashboard", "tasks", "requests", "learning", "milestones", "settings", "project" };
 
-    private static bool IsTasksPath(string uri) =>
-        new Uri(uri).AbsolutePath.Trim('/').Equals("tasks", StringComparison.OrdinalIgnoreCase);
+    // ── Who sees this bar ────────────────────────────────────────────────
+    //
+    // Student — unchanged: hidden on the seven finalized routes above, kept
+    // everywhere else. This list and this behaviour are the regression
+    // baseline and are deliberately untouched.
+    //
+    // Mentor — hidden EVERYWHERE, as of the mentor experience build. Not a
+    // route list, because there is no mentor route where this bar is right:
+    //
+    //   * Every mentor screen opens on its own MPageHeader ambient band whose
+    //     title names the page. The bar's greeting above it is a second,
+    //     competing header — exactly the reason each student route joined the
+    //     list above, one at a time.
+    //   * The bar's only control is a calendar shortcut pointing at
+    //     /milestones, which is StudentPlanningPage — a single-project student
+    //     screen. For a mentor that is not merely redundant, it is wrong: the
+    //     mentor's planning destination is "יומן ותכנון" in the rail.
+    //   * The bell already moved to the sidebar for this shell, so the bar has
+    //     nothing left to contribute.
+    //
+    // Doing it here rather than per page is what keeps the legacy mentor
+    // screens (which still have their own headers) consistent with the
+    // migrated ones for free.
+    //
+    // Lecturer / Staff / Admin — unchanged, on every route.
+    private bool IsHidden => NavDefinitions.GetShell(_user) switch
+    {
+        NavDefinitions.Shell.Mentor  => true,
+        NavDefinitions.Shell.Student => IsBarlessRoute(Nav.Uri),
+        _                            => false,
+    };
+
+    private static bool IsBarlessRoute(string uri) =>
+        BarlessStudentRoutes.Contains(
+            new Uri(uri).AbsolutePath.Trim('/'), StringComparer.OrdinalIgnoreCase);
 
     protected override void OnInitialized()
     {
         Nav.LocationChanged += OnLocationChanged;
+        // A dual-role (Staff + Mentor) user flipping the mode toggle moves the
+        // bell between this bar and the sidebar. Without this subscription the
+        // bar would keep its pre-flip decision until a full reload — which is
+        // precisely how you end up with two bells, or none. AppSideNav and
+        // AppLayout subscribe for the same reason.
+        UserModeService.CurrentModeChanged += OnModeChanged;
     }
+
+    private void OnModeChanged() => InvokeAsync(StateHasChanged);
+
+    /// <summary>Where the calendar shortcut goes, per shell.
+    ///
+    /// <para>This used to be a hardcoded "/milestones" — StudentPlanningPage,
+    /// which is single-project by construction and simply wrong for a mentor.
+    /// The mentor shell hides this bar entirely, so no mentor can reach the
+    /// button today; it is resolved by shell anyway so the route cannot become
+    /// wrong again the moment that decision changes.</para></summary>
+    private string PlanningRoute => NavDefinitions.GetShell(_user) switch
+    {
+        NavDefinitions.Shell.Mentor => "/mentor/calendar",
+        _                           => "/milestones",
+    };
 
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
         => InvokeAsync(StateHasChanged);
@@ -75,5 +201,6 @@
     public void Dispose()
     {
         Nav.LocationChanged -= OnLocationChanged;
+        UserModeService.CurrentModeChanged -= OnModeChanged;
     }
 }

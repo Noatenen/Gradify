@@ -18,7 +18,18 @@ public class ProjectsController : ControllerBase
 {
     private readonly DbRepository _db;
 
-    public ProjectsController(DbRepository db) => _db = db;
+    /// <summary>
+    /// Only used by DeleteTeamTask, to clean up any Google Calendar events the
+    /// deleted task left behind. Injecting the service — rather than reaching for
+    /// the Calendar API here — keeps every Google call inside that one service.
+    /// </summary>
+    private readonly GoogleCalendarEventService _calendarEvents;
+
+    public ProjectsController(DbRepository db, GoogleCalendarEventService calendarEvents)
+    {
+        _db             = db;
+        _calendarEvents = calendarEvents;
+    }
 
     // ── GET /api/projects/my-dashboard ───────────────────────────────────────
     // Returns the complete dashboard payload for the authenticated student.
@@ -185,6 +196,12 @@ public class ProjectsController : ControllerBase
         // ── 6. Open requests ──────────────────────────────────────────────────
         // Reads from ProjectRequests (unified requests module).
         // Maps CreatedAt → OpenedAt to satisfy OpenRequestDto column mapping.
+        //
+        // 'Resolved' AND 'Closed' are both terminal (RequestStatuses documents
+        // the lifecycle as New → InProgress → Resolved | Closed). Excluding only
+        // 'Closed' put handled requests into the dashboard's "דורש התייחסות"
+        // card labelled "ממתין לתגובה". ProjectOverviewController and
+        // LecturerDashboardController already filter on both.
         const string requestsSql = @"
             SELECT  r.Id,
                     r.Title,
@@ -193,7 +210,7 @@ public class ProjectsController : ControllerBase
                     r.CreatedAt AS OpenedAt
             FROM    ProjectRequests r
             WHERE   r.ProjectId = @ProjectId
-              AND   r.Status   != 'Closed'
+              AND   r.Status NOT IN ('Resolved', 'Closed')
             ORDER   BY r.CreatedAt DESC";
 
         var requests = await _db.GetRecordsAsync<OpenRequestDto>(
@@ -300,7 +317,11 @@ public class ProjectsController : ControllerBase
         const string projectSql = @"
             SELECT  p.Id                        AS ProjectId,
                     p.ProjectNumber,
-                    p.Title                     AS ProjectTitle,
+                    -- The team's own display name wins over the catalog title;
+                    -- see ProjectTeamProfile in DatabaseMigrator. A project
+                    -- with no row there resolves exactly as it did before.
+                    COALESCE(NULLIF(TRIM(ptp.DisplayTitle), ''), p.Title)
+                                                AS ProjectTitle,
                     t.Id                        AS TeamId,
                     t.TeamName                  AS TeamName,
                     pt.Name                     AS TrackName,
@@ -329,6 +350,7 @@ public class ProjectsController : ControllerBase
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId  = t.Id
             LEFT JOIN ProjectTypes pt ON pt.Id = p.ProjectTypeId
+            LEFT JOIN ProjectTeamProfile ptp ON ptp.ProjectId = p.Id
             JOIN    TeamMembers  tm  ON t.Id      = tm.TeamId
             WHERE   tm.UserId  = @UserId
               AND   tm.IsActive = 1
@@ -398,8 +420,14 @@ public class ProjectsController : ControllerBase
                      ?? milestones.FirstOrDefault(m => m.Status == "NotStarted");
 
         // ── Derive next task ──────────────────────────────────────────────────
-        var nextTask = tasks.FirstOrDefault(t => t.Status != "Done" && t.DueDate.HasValue)
-                    ?? tasks.FirstOrDefault(t => t.Status != "Done");
+        // Compare against the NORMALIZED status. Some legacy rows store
+        // "Completed" instead of "Done" (see NormalizeTaskStatus); a raw
+        // `Status != "Done"` test treats those as still open, which surfaced a
+        // task finished months ago as the student's next deadline and
+        // under-counted TasksDone. my-dashboard and my-tasks already normalize
+        // at their read boundary — this endpoint was the one that did not.
+        var nextTask = tasks.FirstOrDefault(t => NormalizeTaskStatus(t.Status) != "Done" && t.DueDate.HasValue)
+                    ?? tasks.FirstOrDefault(t => NormalizeTaskStatus(t.Status) != "Done");
 
         return Ok(new ProjectContextDto
         {
@@ -418,7 +446,7 @@ public class ProjectsController : ControllerBase
             CurrentMilestoneDueDate  = currentMs?.DueDate,
             MilestonesCompleted      = milestones.Count(m => IsMilestoneCompleted(m.Status)),
             MilestonesTotal          = milestones.Count,
-            TasksDone                = tasks.Count(t => t.Status == "Done"),
+            TasksDone                = tasks.Count(t => NormalizeTaskStatus(t.Status) == "Done"),
             TasksTotal               = tasks.Count,
             NextTaskTitle            = nextTask?.Title,
             NextTaskDueDate          = nextTask?.DueDate,
@@ -485,7 +513,11 @@ public class ProjectsController : ControllerBase
                     aym.DueDate,
                     pm.CompletedAt,
                     COUNT(t.Id)    AS TotalTasks,
-                    COALESCE(SUM(CASE WHEN t.Status = 'Done' THEN 1 ELSE 0 END), 0)
+                    -- IN ('Done','Completed'): legacy rows store 'Completed'
+                    -- for the same terminal state (see NormalizeTaskStatus).
+                    -- Matching only 'Done' under-counted milestone progress —
+                    -- a milestone with both tasks finished reported 1/2.
+                    COALESCE(SUM(CASE WHEN t.Status IN ('Done','Completed') THEN 1 ELSE 0 END), 0)
                                    AS CompletedTasks,
                     CASE WHEN (
                         SELECT COUNT(*)
@@ -1722,13 +1754,18 @@ public class ProjectsController : ControllerBase
     [HttpGet("my-project-details")]
     public async Task<IActionResult> GetMyProjectDetails(int authUserId)
     {
+        // Title and Description resolve through ProjectTeamProfile: the team's
+        // own display name / description wins where it exists, and the catalog
+        // value is the fallback. See the ProjectTeamProfile block in
+        // DatabaseMigrator for why the student's edit is not written into the
+        // Projects row itself (Airtable sync overwrites those two columns).
         const string sql = @"
             SELECT  p.Id,
                     p.ProjectNumber,
-                    p.Title,
+                    COALESCE(NULLIF(TRIM(ptp.DisplayTitle), ''), p.Title)       AS Title,
                     pt.Name   AS ProjectType,
                     ay.Name   AS AcademicYear,
-                    p.Description,
+                    COALESCE(NULLIF(TRIM(ptp.Description),  ''), p.Description) AS Description,
                     p.Goals,
                     p.TargetAudience,
                     p.OrganizationName,
@@ -1744,6 +1781,7 @@ public class ProjectsController : ControllerBase
             JOIN    AcademicYears ay  ON p.AcademicYearId = ay.Id
             JOIN    Teams         t   ON p.TeamId         = t.Id
             JOIN    TeamMembers   tm  ON t.Id             = tm.TeamId
+            LEFT JOIN ProjectTeamProfile ptp ON ptp.ProjectId = p.Id
             WHERE   tm.UserId   = @UserId
               AND   tm.IsActive = 1
             LIMIT 1";
@@ -1756,20 +1794,363 @@ public class ProjectsController : ControllerBase
         return Ok(row);
     }
 
+    // ── PUT /api/projects/my-project ─────────────────────────────────────────
+    // Updates the display name + description of the authenticated student's own
+    // project. This is the only project write a student can make.
+    //
+    // The values are stored in ProjectTeamProfile, NOT in the Projects row:
+    // Projects.Title / Projects.Description are catalog fields that
+    // AirtableService rewrites on every sync, and that lecturers and mentors
+    // read. See the ProjectTeamProfile block in DatabaseMigrator.
+    //
+    // Clearing a field (empty / whitespace) stores NULL, which makes the read
+    // queries fall back to the catalog value — so a team can always get back to
+    // the official title without an "undo" of its own.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-project")]
+    public async Task<IActionResult> UpdateMyProject(
+        [FromBody] UpdateMyProjectRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var title       = (req.Title       ?? "").Trim();
+        var description = (req.Description ?? "").Trim();
+
+        // Length guards mirror what the fields realistically hold; the client
+        // enforces the same numbers so an over-long value never round-trips.
+        if (title.Length > MaxProjectTitleLength)
+            return BadRequest($"שם הפרויקט ארוך מדי — עד {MaxProjectTitleLength} תווים");
+
+        if (description.Length > MaxProjectDescriptionLength)
+            return BadRequest($"תיאור הפרויקט ארוך מדי — עד {MaxProjectDescriptionLength} תווים");
+
+        var projectId = await GetProjectIdForUserAsync(authUserId);
+        if (projectId is null) return NotFound("פרויקט לא נמצא");
+
+        // One row per project, so the write is an upsert on the primary key.
+        const string sql = @"
+            INSERT INTO ProjectTeamProfile
+                        (ProjectId, DisplayTitle, Description, UpdatedAt, UpdatedByUserId)
+            VALUES      (@ProjectId, @Title, @Description, datetime('now'), @UserId)
+            ON CONFLICT(ProjectId) DO UPDATE SET
+                        DisplayTitle    = excluded.DisplayTitle,
+                        Description     = excluded.Description,
+                        UpdatedAt       = excluded.UpdatedAt,
+                        UpdatedByUserId = excluded.UpdatedByUserId";
+
+        await _db.SaveDataAsync(sql, new
+        {
+            ProjectId   = projectId.Value,
+            Title       = title.Length       == 0 ? null : title,
+            Description = description.Length == 0 ? null : description,
+            UserId      = authUserId,
+        });
+
+        return NoContent();
+    }
+
+    private const int MaxProjectTitleLength       = 120;
+    private const int MaxProjectDescriptionLength = 2000;
+
+    // ── GET /api/projects/my-resources ───────────────────────────────────────
+    // The team's own links (משאבי הפרויקט), newest last so the grid keeps a
+    // stable reading order as items are added.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("my-resources")]
+    public async Task<IActionResult> GetMyResources(int authUserId)
+    {
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return Ok(Enumerable.Empty<ProjectResourceDto>());
+
+        const string sql = @"
+            SELECT  Id, Label, Url
+            FROM    ProjectResources
+            WHERE   ProjectId = @ProjectId
+            ORDER   BY Id";
+
+        var rows = await _db.GetRecordsAsync<ProjectResourceDto>(
+            sql, new { ProjectId = ctx.ProjectId });
+
+        return Ok(rows ?? Enumerable.Empty<ProjectResourceDto>());
+    }
+
+    // ── POST /api/projects/my-resources ──────────────────────────────────────
+    // Adds a link to the caller's own project.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPost("my-resources")]
+    public async Task<IActionResult> CreateMyResource(
+        [FromBody] CreateProjectResourceRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var label = (req.Label ?? "").Trim();
+        var url   = (req.Url   ?? "").Trim();
+
+        if (label.Length == 0) return BadRequest("שם המשאב לא יכול להיות ריק");
+        if (label.Length > MaxResourceLabelLength)
+            return BadRequest($"שם המשאב ארוך מדי — עד {MaxResourceLabelLength} תווים");
+
+        if (!TryNormalizeResourceUrl(url, out var safeUrl))
+            return BadRequest("הקישור אינו תקין. יש להזין כתובת שמתחילה ב-http או ב-https");
+
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        const string sql = @"
+            INSERT INTO ProjectResources (ProjectId, TeamId, Label, Url, CreatedByUserId)
+            VALUES (@ProjectId, @TeamId, @Label, @Url, @UserId)";
+
+        int newId = await _db.InsertReturnIdAsync(sql, new
+        {
+            ctx.ProjectId,
+            ctx.TeamId,
+            Label  = label,
+            Url    = safeUrl,
+            UserId = authUserId,
+        });
+
+        return Ok(new ProjectResourceDto { Id = newId, Label = label, Url = safeUrl });
+    }
+
+    // ── PUT /api/projects/my-resources/{id} ──────────────────────────────────
+    // Edits a link the caller's team owns — the label, the URL, or both.
+    //
+    // Same validation as the POST above, deliberately: a resource must not be
+    // able to become unsafe by being edited into something the create path
+    // would have refused. The ProjectId predicate in the WHERE clause is the
+    // authorization — a row belonging to another team simply does not match.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-resources/{id:int}")]
+    public async Task<IActionResult> UpdateMyResource(
+        int id, [FromBody] CreateProjectResourceRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var label = (req.Label ?? "").Trim();
+        var url   = (req.Url   ?? "").Trim();
+
+        if (label.Length == 0) return BadRequest("שם המשאב לא יכול להיות ריק");
+        if (label.Length > MaxResourceLabelLength)
+            return BadRequest($"שם המשאב ארוך מדי — עד {MaxResourceLabelLength} תווים");
+
+        if (!TryNormalizeResourceUrl(url, out var safeUrl))
+            return BadRequest("הקישור אינו תקין. יש להזין כתובת שמתחילה ב-http או ב-https");
+
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        const string sql = @"
+            UPDATE ProjectResources
+            SET    Label = @Label,
+                   Url   = @Url
+            WHERE  Id        = @Id
+              AND  ProjectId = @ProjectId";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            Id = id,
+            ctx.ProjectId,
+            Label = label,
+            Url   = safeUrl,
+        });
+
+        if (affected == 0) return NotFound("המשאב לא נמצא");
+
+        return Ok(new ProjectResourceDto { Id = id, Label = label, Url = safeUrl });
+    }
+
+    // ── DELETE /api/projects/my-resources/{id} ───────────────────────────────
+    // Removes a link. The ProjectId predicate is the authorization: a row that
+    // belongs to another team simply does not match.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("my-resources/{id:int}")]
+    public async Task<IActionResult> DeleteMyResource(int id, int authUserId)
+    {
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        int affected = await _db.SaveDataAsync(
+            "DELETE FROM ProjectResources WHERE Id = @Id AND ProjectId = @ProjectId",
+            new { Id = id, ctx.ProjectId });
+
+        if (affected == 0) return NotFound("המשאב לא נמצא");
+        return NoContent();
+    }
+
+    // ── GET /api/projects/my-submission-progress ─────────────────────────────
+    // The team's status per submission category (תוצרי ההגשה). Only categories
+    // the team has actually touched have a row; everything else is
+    // "NotStarted" by absence, which is why no seeding is needed when the
+    // catalog gains an entry.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("my-submission-progress")]
+    public async Task<IActionResult> GetMySubmissionProgress(int authUserId)
+    {
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return Ok(Enumerable.Empty<SubmissionStatusDto>());
+
+        const string sql = @"
+            SELECT  DeliverableKey, Status
+            FROM    ProjectSubmissionStatuses
+            WHERE   ProjectId = @ProjectId";
+
+        var rows = await _db.GetRecordsAsync<SubmissionStatusDto>(
+            sql, new { ProjectId = ctx.ProjectId });
+
+        return Ok(rows ?? Enumerable.Empty<SubmissionStatusDto>());
+    }
+
+    // ── PUT /api/projects/my-submission-progress/{deliverableKey} ────────────
+    // Sets one category's status for the caller's team.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-submission-progress/{deliverableKey}")]
+    public async Task<IActionResult> UpdateMySubmissionProgress(
+        string deliverableKey, [FromBody] UpdateDeliverableStatusRequest req, int authUserId)
+    {
+        if (req is null) return BadRequest();
+
+        var key = (deliverableKey ?? "").Trim();
+        if (key.Length == 0 || key.Length > MaxDeliverableKeyLength)
+            return BadRequest("מזהה התוצר אינו תקין");
+
+        if (!SubmissionStatusValues.IsValid(req.Status))
+            return BadRequest("מצב לא חוקי");
+
+        var ctx = await GetProjectTeamForUserAsync(authUserId);
+        if (ctx is null) return NotFound("פרויקט לא נמצא");
+
+        const string sql = @"
+            INSERT INTO ProjectSubmissionStatuses
+                        (ProjectId, DeliverableKey, Status, UpdatedAt, UpdatedByUserId)
+            VALUES      (@ProjectId, @Key, @Status, datetime('now'), @UserId)
+            ON CONFLICT(ProjectId, DeliverableKey) DO UPDATE SET
+                        Status          = excluded.Status,
+                        UpdatedAt       = excluded.UpdatedAt,
+                        UpdatedByUserId = excluded.UpdatedByUserId";
+
+        await _db.SaveDataAsync(sql, new
+        {
+            ctx.ProjectId,
+            Key    = key,
+            req.Status,
+            UserId = authUserId,
+        });
+
+        return NoContent();
+    }
+
+    private const int MaxDeliverableKeyLength = 60;
+
+    private const int MaxResourceLabelLength = 80;
+    private const int MaxResourceUrlLength   = 2000;
+
+    /// <summary>
+    /// Accepts only an absolute http/https URL. A bare host ("figma.com/...")
+    /// is upgraded to https rather than rejected, because that is what a
+    /// student pasting from an address bar produces; everything else —
+    /// javascript:, data:, file:, mailto: — is refused, so nothing that reaches
+    /// an anchor's href can execute or exfiltrate.
+    /// </summary>
+    private static bool TryNormalizeResourceUrl(string raw, out string safeUrl)
+    {
+        safeUrl = "";
+
+        if (string.IsNullOrWhiteSpace(raw) || raw.Length > MaxResourceUrlLength)
+            return false;
+
+        var candidate = raw.Trim();
+
+        // Only add a scheme when there is none at all. A string that already
+        // carries a scheme must be judged on that scheme, never rewritten.
+        if (!candidate.Contains("://", StringComparison.Ordinal)
+            && !candidate.Contains(':', StringComparison.Ordinal))
+        {
+            candidate = "https://" + candidate;
+        }
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
+            return false;
+
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(uri.Host))
+            return false;
+
+        safeUrl = uri.ToString();
+        return safeUrl.Length <= MaxResourceUrlLength;
+    }
+
+    // Resolves the caller's project the same way my-project-details does —
+    // deliberately WITHOUT the AssignmentIsDraft filter that
+    // GetProjectTeamForUserAsync applies, so a student can always edit the
+    // project the workspace page just showed them.
+    private async Task<int?> GetProjectIdForUserAsync(int userId)
+    {
+        const string sql = @"
+            SELECT  p.Id
+            FROM    Projects    p
+            JOIN    Teams       t  ON p.TeamId = t.Id
+            JOIN    TeamMembers tm ON t.Id     = tm.TeamId
+            WHERE   tm.UserId   = @UserId
+              AND   tm.IsActive = 1
+            LIMIT   1";
+
+        var rows = await _db.GetRecordsAsync<SubTeamIdRow>(sql, new { UserId = userId });
+        return rows?.FirstOrDefault()?.Id;
+    }
+
     // ── GET /api/projects/personal-tasks ─────────────────────────────────────
     // Returns the authenticated user's personal task list, newest first.
     // ─────────────────────────────────────────────────────────────────────────
     [HttpGet("personal-tasks")]
     public async Task<IActionResult> GetPersonalTasks(int authUserId)
     {
+        // Project context is resolved through ProjectMentors, NOT through a
+        // plain join on Projects. That single condition is what makes a stale
+        // association safe: if the mentor no longer mentors the project, the
+        // join misses, ProjectId/ProjectTitle/TeamName all come back NULL, and
+        // the task renders as "ללא שיוך". The row itself is untouched and still
+        // belongs to its owner — access is lost, the work item is not.
         const string sql = @"
-            SELECT Id, Title, Description, DueDate, IsDone, CreatedAt
-            FROM   PersonalTasks
-            WHERE  UserId = @UserId
-            ORDER  BY CreatedAt DESC";
+            SELECT  pt.Id,
+                    pt.Title,
+                    pt.Description,
+                    pt.DueDate,
+                    pt.IsDone,
+                    pt.CreatedAt,
+                    pm.ProjectId          AS ProjectId,
+                    p.Title               AS ProjectTitle,
+                    t.TeamName            AS TeamName
+            FROM    PersonalTasks pt
+            LEFT JOIN ProjectMentors pm
+                        ON  pm.ProjectId = pt.ProjectId
+                        AND pm.UserId    = @UserId
+            LEFT JOIN Projects p ON p.Id     = pm.ProjectId
+            LEFT JOIN Teams    t ON t.Id     = p.TeamId
+            WHERE   pt.UserId = @UserId
+            ORDER   BY pt.CreatedAt DESC";
 
         var rows = await _db.GetRecordsAsync<PersonalTaskDto>(sql, new { UserId = authUserId });
         return Ok(rows ?? Enumerable.Empty<PersonalTaskDto>());
+    }
+
+    /// <summary>
+    /// True when the caller currently mentors this project.
+    ///
+    /// <para>The ONLY place a client-supplied ProjectId is allowed to become
+    /// trusted. It answers a bare existence question against ProjectMentors and
+    /// returns nothing about the project, so a crafted id for someone else's
+    /// project is refused without confirming that the project exists or
+    /// revealing a single field of it.</para>
+    /// </summary>
+    private async Task<bool> MentorsProjectAsync(int projectId, int userId)
+    {
+        var rows = await _db.GetRecordsAsync<int>(
+            "SELECT 1 FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId",
+            new { ProjectId = projectId, UserId = userId });
+
+        return rows?.Any() == true;
     }
 
     // ── POST /api/projects/personal-tasks ────────────────────────────────────
@@ -1782,9 +2163,14 @@ public class ProjectsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Title))
             return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
 
+        // A project may be attached only by someone who actually mentors it. The
+        // message says nothing about whether the id exists.
+        if (req.ProjectId is int wantedProject && !await MentorsProjectAsync(wantedProject, authUserId))
+            return BadRequest("לא ניתן לשייך את המשימה לפרויקט זה");
+
         const string sql = @"
-            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate)
-            VALUES (@UserId, @Title, @Description, @DueDate)";
+            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate, ProjectId)
+            VALUES (@UserId, @Title, @Description, @DueDate, @ProjectId)";
 
         int newId = await _db.InsertReturnIdAsync(sql, new
         {
@@ -1792,19 +2178,52 @@ public class ProjectsController : ControllerBase
             Title       = req.Title.Trim(),
             Description = req.Description?.Trim(),
             DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
+            ProjectId   = req.ProjectId,
         });
 
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
 
+        // Echo the project context back so the client can render the new row
+        // without refetching. Read through the same authorized path.
+        var context = req.ProjectId is int pid ? await GetProjectContextAsync(pid, authUserId) : null;
+
         return Ok(new PersonalTaskDto
         {
-            Id          = newId,
-            Title       = req.Title.Trim(),
-            Description = req.Description?.Trim(),
-            DueDate     = req.DueDate,
-            IsDone      = false,
-            CreatedAt   = DateTime.UtcNow,
+            Id           = newId,
+            Title        = req.Title.Trim(),
+            Description  = req.Description?.Trim(),
+            DueDate      = req.DueDate,
+            IsDone       = false,
+            CreatedAt    = DateTime.UtcNow,
+            ProjectId    = context is null ? null : req.ProjectId,
+            ProjectTitle = context?.ProjectTitle,
+            TeamName     = context?.TeamName,
         });
+    }
+
+    /// <summary>Project title/team for a project the caller mentors, or null.
+    /// Goes through ProjectMentors for the same reason the read query does.</summary>
+    private async Task<ProjectContextRow?> GetProjectContextAsync(int projectId, int userId)
+    {
+        const string sql = @"
+            SELECT  p.Title    AS ProjectTitle,
+                    t.TeamName AS TeamName
+            FROM    ProjectMentors pm
+            JOIN    Projects p ON p.Id = pm.ProjectId
+            LEFT JOIN Teams  t ON t.Id = p.TeamId
+            WHERE   pm.ProjectId = @ProjectId
+              AND   pm.UserId    = @UserId";
+
+        var rows = await _db.GetRecordsAsync<ProjectContextRow>(
+            sql, new { ProjectId = projectId, UserId = userId });
+
+        return rows?.FirstOrDefault();
+    }
+
+    private sealed class ProjectContextRow
+    {
+        public string? ProjectTitle { get; set; }
+        public string? TeamName     { get; set; }
     }
 
     // ── PATCH /api/projects/personal-tasks/{id}/toggle ───────────────────────
@@ -1816,6 +2235,73 @@ public class ProjectsController : ControllerBase
         const string sql = @"
             UPDATE PersonalTasks
             SET    IsDone = CASE WHEN IsDone = 1 THEN 0 ELSE 1 END
+            WHERE  Id     = @Id
+              AND  UserId = @UserId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, UserId = authUserId });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── PUT /api/projects/personal-tasks/{id} ────────────────────────────────
+    // Edits an existing personal task. Same ownership rule as the toggle above:
+    // the UPDATE carries `AND UserId = @UserId`, so another user's row matches
+    // zero rows and comes back 404 — the request never learns whether the id
+    // exists at all. Ownership is therefore structural, not a separate check
+    // that could be forgotten.
+    //
+    // Deliberately NOT editable here: IsDone, which has its own toggle endpoint,
+    // and UserId, which nothing may reassign.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("personal-tasks/{id:int}")]
+    public async Task<IActionResult> UpdatePersonalTask(
+        int id, [FromBody] UpdatePersonalTaskRequest req, int authUserId)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        // Same gate as create, re-run on every save: a mentor who lost access to
+        // a project cannot keep re-attaching it, and a crafted id is refused
+        // here too. Null clears the association, which needs no permission.
+        if (req.ProjectId is int wantedProject && !await MentorsProjectAsync(wantedProject, authUserId))
+            return BadRequest("לא ניתן לשייך את המשימה לפרויקט זה");
+
+        const string sql = @"
+            UPDATE PersonalTasks
+            SET    Title       = @Title,
+                   Description = @Description,
+                   DueDate     = @DueDate,
+                   ProjectId   = @ProjectId
+            WHERE  Id     = @Id
+              AND  UserId = @UserId";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            Id          = id,
+            UserId      = authUserId,
+            Title       = req.Title.Trim(),
+            Description = req.Description?.Trim(),
+            // Date-only, matching CreatePersonalTask — a due date is a date the
+            // user picked, never an instant, so it must not acquire a time here.
+            DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
+            ProjectId   = req.ProjectId,
+        });
+
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── DELETE /api/projects/personal-tasks/{id} ─────────────────────────────
+    // Removes one personal task. Same `AND UserId = @UserId` scoping, so a
+    // mentor can only ever delete their own row. Hard delete: a personal
+    // reminder has no history anyone depends on, and PersonalTasks is not
+    // referenced by any other table.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("personal-tasks/{id:int}")]
+    public async Task<IActionResult> DeletePersonalTask(int id, int authUserId)
+    {
+        const string sql = @"
+            DELETE FROM PersonalTasks
             WHERE  Id     = @Id
               AND  UserId = @UserId";
 
@@ -2002,6 +2488,14 @@ public class ProjectsController : ControllerBase
 
         int affected = await _db.SaveDataAsync(sql, new { Id = id, pt.TeamId, pt.ProjectId });
         if (affected == 0) return NotFound("המשימה לא נמצאה");
+
+        // Best-effort Google cleanup, AFTER the task is gone and deliberately not
+        // awaited for success: this never throws and never fails the delete. A
+        // task must not become undeletable because Google is unreachable. Every
+        // link row for the task is dropped regardless of what Google answered, so
+        // no row survives pointing at an id that no longer exists.
+        await _calendarEvents.RemoveLinksForDeletedTaskAsync(id);
+
         return Ok();
     }
 }

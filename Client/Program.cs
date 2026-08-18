@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using AuthWithAdmin.Client;
+using AuthWithAdmin.Client.ClientHelpers;
 using AuthWithAdmin.Client.Services;
 using Microsoft.AspNetCore.Components.Authorization;
 
@@ -15,6 +16,9 @@ builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<ITasksService, TasksService>();
 builder.Services.AddScoped<IMilestonesService, MilestonesService>();
 builder.Services.AddScoped<IProjectContextService, ProjectContextService>();
+
+// Student project workspace (/project) — identity, resources, deliverables
+builder.Services.AddScoped<IProjectWorkspaceService, ProjectWorkspaceService>();
 
 // Resource files (admin/lecturer knowledge-base uploads)
 builder.Services.AddScoped<IResourceFilesService, ResourceFilesService>();
@@ -50,8 +54,19 @@ builder.Services.AddScoped<IMentorPreferencesService, MentorPreferencesService>(
 // Integration settings (admin-configurable OAuth credentials)
 builder.Services.AddScoped<IIntegrationSettingsService, IntegrationSettingsService>();
 
+// Per-user Google Calendar connection on /settings (connect / status / disconnect).
+// Unrelated to Google LOGIN, which goes through AuthenticationService.
+builder.Services.AddScoped<IGoogleCalendarService, GoogleCalendarService>();
+
 // Mentor area
 builder.Services.AddScoped<IMentorProjectsService, MentorProjectsService>();
+// The single source of truth for "what needs my attention" — one GET whose
+// answer (waiting age, aging bucket, ordering, counts) is computed entirely
+// server-side and shared with the daily digest.
+builder.Services.AddScoped<IMentorAttentionService, MentorAttentionService>();
+// Cross-project snapshot shared by בית, המשימות שלי and יומן ותכנון. Composes
+// the services around it — it owns no endpoint of its own.
+builder.Services.AddScoped<IMentorWorkspaceService, MentorWorkspaceService>();
 
 // In-system notifications
 builder.Services.AddScoped<INotificationService, NotificationService>();
@@ -92,6 +107,8 @@ builder.Services.AddScoped<INotificationPreferencesService, NotificationPreferen
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 builder.Services.AddScoped<AuthenticationStateProvider, AuthStateProvider>();
 builder.Services.AddScoped<ILocalStorageService, LocalStorageService>();
+// Login-form preference ("זכור אותי"): an email and a boolean. Never a password.
+builder.Services.AddScoped<IRememberedLoginService, RememberedLoginService>();
 builder.Services.AddScoped<UserContextService>();
 builder.Services.AddScoped<IPersonalTasksService, PersonalTasksService>();
 builder.Services.AddScoped<ITeamTasksService, TeamTasksService>();
