@@ -62,20 +62,50 @@ public sealed record MentorCalendarEvent(
     /// <summary>
     /// Whether <see cref="Date"/> carries a SCHEDULED time-of-day.
     ///
-    /// <para><b>False for every entry this build produces, and that is the
-    /// honest answer.</b> A milestone, a deliverable and a personal task are
-    /// dated, not timed — nothing in the schema stores an hour for them. A
-    /// pending review does carry a real timestamp, but it is the moment the
-    /// submission ARRIVED, not a slot the mentor agreed to; placing it on an
-    /// hour line would read as "review this at 03:19", which nobody decided.
-    /// Those all belong in the day's ללא שעה area.</para>
+    /// <para><b>True for exactly one thing: a mentor personal task whose owner
+    /// filled in שעת התחלה / שעת סיום.</b> That is a slot they chose, so the
+    /// hour grid may state it. Everything else stays false and stays in the
+    /// day's ללא שעה band, because nothing else in the schema stores an hour
+    /// anyone decided:</para>
     ///
-    /// <para>The flag exists so the hour grid has a truthful way to receive
-    /// genuinely timed items later — a mentor-authored meeting being the
-    /// obvious one — without anyone having to invent a time to get there.</para>
+    /// <list type="bullet">
+    ///   <item>a milestone and a deliverable are dated, not timed;</item>
+    ///   <item>a personal task with no times is dated, not timed;</item>
+    ///   <item>a pending review DOES carry a real timestamp, but it is the
+    ///   moment the submission ARRIVED, not a slot the mentor agreed to.
+    ///   Placing it on an hour line would read as "review this at 03:19",
+    ///   which nobody decided.</item>
+    /// </list>
+    ///
+    /// <para>No entry ever acquires a time to get onto the grid — the grid is
+    /// what receives an entry that already had one.</para>
     /// </summary>
-    bool HasTime = false)
+    bool HasTime = false,
+
+    /// <summary>
+    /// End of the scheduled block, when there is one.
+    ///
+    /// <para>Null is NOT "one hour" and not "unknown" — it means the entry is a
+    /// DEADLINE AT AN HOUR rather than a block: due at 10:30, with no duration
+    /// anyone decided. The grid draws it as a marker on that hour instead of
+    /// inventing a length for it.</para>
+    /// </summary>
+    DateTime? EndsAt = null)
 {
+    /// <summary>"09:00–11:00" for a block, "10:30" for an hour-deadline, null
+    /// when the entry is date-only. The one place times are formatted, so the
+    /// day grid, the week grid and the detail modal cannot word one entry three
+    /// different ways.</summary>
+    public string? TimeRange =>
+        !HasTime          ? null
+        : EndsAt is DateTime ends ? $"{Date:HH:mm}–{ends:HH:mm}"
+        : $"{Date:HH:mm}";
+
+    /// <summary>True for an entry that names an hour but no duration. The grid
+    /// draws these as a marker rather than as an hour-long block, because an
+    /// hour-long block is a claim the entry does not make.</summary>
+    public bool IsPointInTime => HasTime && EndsAt is null;
+
     /// <summary>"פרויקט · צוות", or the personal-task marker. Never empty.</summary>
     public string Context =>
         ProjectId is null

@@ -37,6 +37,27 @@ public interface IGoogleCalendarService
 
     /// <summary>Removes the Google event and the link. The Motiva task is untouched.</summary>
     Task<TaskCalendarScheduleResultDto?> UnscheduleTaskAsync(int taskId);
+
+    // ── Mentor personal tasks ─────────────────────────────────────────────────
+    // A separate set of calls, not an extra argument on the ones above, because
+    // PersonalTasks.Id and TeamTasks.Id are independent sequences: task 7 means
+    // two different things, and one list keyed by TaskId could not tell them
+    // apart. The server keeps them apart on the same (UserId, TaskType, TaskId)
+    // triple.
+
+    /// <summary>Every personal-task calendar link the signed-in user owns.</summary>
+    Task<List<TaskCalendarScheduleDto>> GetPersonalTaskSchedulesAsync();
+
+    /// <summary>
+    /// Adds the personal task to the user's Google Calendar, or moves the
+    /// existing event. NO PAYLOAD: the server reads the title, description, date
+    /// and times off the task itself, so the calendar cannot drift from what was
+    /// just saved. Idempotent — repeated calls never create a second event.
+    /// </summary>
+    Task<TaskCalendarScheduleResultDto?> SchedulePersonalTaskAsync(int taskId);
+
+    /// <summary>Removes the Google event and the link. The Motiva task stays.</summary>
+    Task<TaskCalendarScheduleResultDto?> UnschedulePersonalTaskAsync(int taskId);
 }
 
 public class GoogleCalendarService : IGoogleCalendarService
@@ -109,6 +130,48 @@ public class GoogleCalendarService : IGoogleCalendarService
         try
         {
             var res = await _http.DeleteAsync($"api/google-calendar/tasks/{taskId}/schedule");
+            if (!res.IsSuccessStatusCode) return null;
+
+            return await res.Content.ReadFromJsonAsync<TaskCalendarScheduleResultDto>();
+        }
+        catch { return null; }
+    }
+
+    // ── Mentor personal tasks ─────────────────────────────────────────────────
+
+    public async Task<List<TaskCalendarScheduleDto>> GetPersonalTaskSchedulesAsync()
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<List<TaskCalendarScheduleDto>>(
+                       "api/google-calendar/personal-tasks/schedules")
+                   ?? new List<TaskCalendarScheduleDto>();
+        }
+        catch { return new List<TaskCalendarScheduleDto>(); }
+    }
+
+    public async Task<TaskCalendarScheduleResultDto?> SchedulePersonalTaskAsync(int taskId)
+    {
+        try
+        {
+            // No body by design — see the interface. The task row IS the payload.
+            var res = await _http.PutAsync(
+                $"api/google-calendar/personal-tasks/{taskId}/schedule", content: null);
+
+            // A Google failure comes back as 200 with Success=false — a product
+            // outcome, not a transport error. Only a real HTTP failure lands here.
+            if (!res.IsSuccessStatusCode) return null;
+
+            return await res.Content.ReadFromJsonAsync<TaskCalendarScheduleResultDto>();
+        }
+        catch { return null; }
+    }
+
+    public async Task<TaskCalendarScheduleResultDto?> UnschedulePersonalTaskAsync(int taskId)
+    {
+        try
+        {
+            var res = await _http.DeleteAsync($"api/google-calendar/personal-tasks/{taskId}/schedule");
             if (!res.IsSuccessStatusCode) return null;
 
             return await res.Content.ReadFromJsonAsync<TaskCalendarScheduleResultDto>();

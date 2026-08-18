@@ -185,6 +185,25 @@ public class PersonalTaskDto
     /// client. Null whenever ProjectId is null.</summary>
     public string?   ProjectTitle { get; set; }
     public string?   TeamName     { get; set; }
+
+    /// <summary>
+    /// Optional work block on <see cref="DueDate"/>, as Israel wall-clock
+    /// "HH:mm". Null means the item is date-only and belongs in the calendar's
+    /// ללא שעה band.
+    ///
+    /// <para><b>Not a due datetime.</b> DueDate answers "which day is this
+    /// for"; these answer "when on that day do I plan to sit with it". The two
+    /// never merge — a task can be due Thursday with no hour attached, which is
+    /// what every row created before this pair existed still looks like.</para>
+    ///
+    /// <para>Both are set together or both are null. The server refuses a
+    /// half-set pair and refuses an end that is not after the start, rather
+    /// than inventing the missing half.</para>
+    /// </summary>
+    public string?   StartTime   { get; set; }
+
+    /// <summary>End of the optional work block. See <see cref="StartTime"/>.</summary>
+    public string?   EndTime     { get; set; }
 }
 
 /// <summary>Payload for POST /api/projects/personal-tasks.</summary>
@@ -198,6 +217,25 @@ public class CreatePersonalTaskRequest
     /// re-checks this against the caller's own mentor assignments and refuses
     /// anything else — it is a request, never a grant.</summary>
     public int?      ProjectId   { get; set; }
+
+    /// <summary>
+    /// Optional work block on <see cref="DueDate"/>, as Israel wall-clock
+    /// "HH:mm". Null means the item is date-only and belongs in the calendar's
+    /// ללא שעה band.
+    ///
+    /// <para><b>Not a due datetime.</b> DueDate answers "which day is this
+    /// for"; these answer "when on that day do I plan to sit with it". The two
+    /// never merge — a task can be due Thursday with no hour attached, which is
+    /// what every row created before this pair existed still looks like.</para>
+    ///
+    /// <para>Both are set together or both are null. The server refuses a
+    /// half-set pair and refuses an end that is not after the start, rather
+    /// than inventing the missing half.</para>
+    /// </summary>
+    public string?   StartTime   { get; set; }
+
+    /// <summary>End of the optional work block. See <see cref="StartTime"/>.</summary>
+    public string?   EndTime     { get; set; }
 }
 
 /// <summary>
@@ -217,4 +255,23 @@ public class UpdatePersonalTaskRequest
     /// <summary>Optional project to associate, re-validated server-side exactly
     /// as on create. Sending null clears the association back to "ללא שיוך".</summary>
     public int?      ProjectId   { get; set; }
+
+    /// <summary>
+    /// Optional work block on <see cref="DueDate"/>, as Israel wall-clock
+    /// "HH:mm". Null means the item is date-only and belongs in the calendar's
+    /// ללא שעה band.
+    ///
+    /// <para><b>Not a due datetime.</b> DueDate answers "which day is this
+    /// for"; these answer "when on that day do I plan to sit with it". The two
+    /// never merge — a task can be due Thursday with no hour attached, which is
+    /// what every row created before this pair existed still looks like.</para>
+    ///
+    /// <para>Both are set together or both are null. The server refuses a
+    /// half-set pair and refuses an end that is not after the start, rather
+    /// than inventing the missing half.</para>
+    /// </summary>
+    public string?   StartTime   { get; set; }
+
+    /// <summary>End of the optional work block. See <see cref="StartTime"/>.</summary>
+    public string?   EndTime     { get; set; }
 }

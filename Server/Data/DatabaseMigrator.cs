@@ -2585,6 +2585,8 @@ public static class DatabaseMigrator
                 IsDone      INTEGER NOT NULL DEFAULT 0,
                 CreatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
                 ProjectId   INTEGER,
+                StartTime   TEXT,
+                EndTime     TEXT,
                 FOREIGN KEY (UserId)    REFERENCES users(Id)    ON DELETE CASCADE,
                 FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE SET NULL
             )");
@@ -2610,6 +2612,32 @@ public static class DatabaseMigrator
             await connection.ExecuteNonQueryAsync(
                 "ALTER TABLE PersonalTasks ADD COLUMN ProjectId INTEGER " +
                 "REFERENCES Projects(Id) ON DELETE SET NULL");
+
+        // ── PersonalTasks.StartTime / EndTime — optional work block ──────────
+        //
+        // DueDate STAYS A DATE. These two are a separate, optional concept: the
+        // slot on that day the owner plans to work the item. Keeping them apart
+        // is what lets a task be "due Thursday" without pretending anyone
+        // decided an hour for it — the calendar's ללא שעה band exists precisely
+        // for the rows where both are NULL, which is every row that existed
+        // before this column pair.
+        //
+        // TEXT 'HH:mm', Israel wall-clock, matching GoogleCalendarEventLinks'
+        // ScheduledStart/ScheduledEnd. Not an instant and not a UTC offset: the
+        // owner picked a time on a clock, and Google is handed that clock time
+        // with an explicit IANA zone (see GoogleCalendarEventService).
+        //
+        // Nullable with no default, so the ALTER cannot rewrite a single
+        // existing row — SQLite adds the column with NULL everywhere and copies
+        // nothing. Both are written together or not at all; the API refuses a
+        // half-set pair rather than inventing the missing half.
+        if (!personalTaskColumns.Contains("StartTime"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE PersonalTasks ADD COLUMN StartTime TEXT");
+
+        if (!personalTaskColumns.Contains("EndTime"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE PersonalTasks ADD COLUMN EndTime TEXT");
 
         // ── TeamTasks — student-created work items, team-visible ────────────
         // Completely separate from the official Tasks table.

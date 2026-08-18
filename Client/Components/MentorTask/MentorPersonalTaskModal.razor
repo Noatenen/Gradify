@@ -2,6 +2,8 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @inject IPersonalTasksService PersonalTasks
+@inject IGoogleCalendarService GoogleCalendar
+@inject NavigationManager Nav
 
 @*
     MentorPersonalTaskModal — create / edit / delete one mentor personal task.
@@ -43,12 +45,181 @@
                   placeholder="פרטים, החלטות או מה צריך להכין…"
                   disabled="@_saving" @bind="_formDescription"></textarea>
 
-        <label class="mpt-field-label" for="mpt-due">תאריך יעד (אופציונלי)</label>
-        <input id="mpt-due" class="mpt-field" type="date" disabled="@_saving" @bind="_formDue" />
+        @*
+            ── SCHEDULING ─────────────────────────────────────────────────────
+            One question at a time, each revealed only by answering the one
+            before it:
+
+                תאריך יעד            always
+              + הוספת שעה            once there is a date
+              + הוספת שעת סיום       once there is a time
+
+            A task is a thing that is DUE ON A DAY. Most are only that, so most
+            of this section never appears. Asking every task for a start hour
+            and an end hour — as this form did — asks two questions of a note
+            that needed none, and gives optional scheduling the same visual
+            weight as the task's own name.
+
+            The steps are text links, not fields: they are offers, and an offer
+            must not look like something waiting to be filled in.
+        *@
+        <label class="mpt-field-label" for="mpt-due">
+            תאריך יעד@(DateIsRequired ? "" : " (אופציונלי)")
+            @if (DateIsRequired)
+            {
+                <span class="mpt-required" aria-hidden="true">*</span>
+            }
+        </label>
+        <MDateField Value="@_formDue"
+                    ValueChanged="OnDueChangedAsync"
+                    Label="תאריך יעד"
+                    Placeholder="בחירת תאריך"
+                    Disabled="@_saving"
+                    Invalid="@(DateIsRequired && _formDue is null)" />
+
+        @if (_formDue is not null && !_showTime)
+        {
+            <button type="button" class="mpt-reveal" disabled="@_saving" @onclick="ShowTime">
+                <span aria-hidden="true">+</span> הוספת שעה
+            </button>
+        }
+
+        @if (_showTime)
+        {
+            @* ONE field while the task is just due at an hour. It becomes
+               שעת התחלה only once an end exists — a lone time is a deadline,
+               and calling it a start when nothing follows it is wrong. *@
+            <div class="mpt-times @(_showEnd ? "mpt-times-pair" : "")">
+                <div class="mpt-time">
+                    <label class="mpt-field-label">
+                        @(_showEnd ? "שעת התחלה" : "שעה")
+                        @if (TimesAreRequired)
+                        {
+                            <span class="mpt-required" aria-hidden="true">*</span>
+                        }
+                    </label>
+                    <MTimeField Value="@_formStart"
+                                ValueChanged="OnStartChangedAsync"
+                                Label="@(_showEnd ? "שעת התחלה" : "שעה")"
+                                Disabled="@_saving"
+                                Invalid="@(TimesAreRequired && string.IsNullOrEmpty(_formStart))" />
+                </div>
+
+                @if (_showEnd)
+                {
+                    <div class="mpt-time">
+                        <label class="mpt-field-label">
+                            שעת סיום
+                            @if (TimesAreRequired)
+                            {
+                                <span class="mpt-required" aria-hidden="true">*</span>
+                            }
+                        </label>
+                        <MTimeField Value="@_formEnd"
+                                    ValueChanged="OnEndChangedAsync"
+                                    Label="שעת סיום"
+                                    Disabled="@_saving"
+                                    Invalid="@(TimesAreRequired && string.IsNullOrEmpty(_formEnd))" />
+                    </div>
+                }
+            </div>
+
+            @* Duration is the third question, and only the tasks that are
+               really a scheduled block ever get asked it. Google needs one,
+               so switching the toggle on opens this by itself. *@
+            <div class="mpt-reveal-row">
+                @if (!_showEnd)
+                {
+                    <button type="button" class="mpt-reveal" disabled="@_saving" @onclick="ShowEnd">
+                        <span aria-hidden="true">+</span> הוספת שעת סיום
+                    </button>
+                }
+                <button type="button" class="mpt-reveal mpt-reveal-muted"
+                        disabled="@_saving" @onclick="ClearTimesAsync">
+                    הסרת השעה
+                </button>
+            </div>
+        }
+
+        @*
+            ── Google Calendar ────────────────────────────────────────────────
+            The same connect / toggle / confirm-removal pattern TeamTaskEditModal
+            uses, against the same OAuth grant and the same event service. It asks
+            for NOTHING extra: the event's date is תאריך and its hours are the two
+            fields above, so there is no second date to keep in sync and no way
+            for the calendar to disagree with the task.
+
+            Progressive disclosure: OFF is the default and reveals no fields, so a
+            task saved without touching this behaves exactly as it did before this
+            section existed.
+        *@
+        @if (_gcalStatus is null)
+        {
+            @* Status still loading. Rendering nothing — rather than a spinner or
+               a guessed state — keeps the modal from jumping and stops it ever
+               showing a toggle it may have to retract. *@
+        }
+        else if (!_gcalStatus.IsConnected)
+        {
+            <div class="mpt-gcal-notice">
+                <span class="mpt-gcal-notice-text">יומן Google לא מחובר</span>
+                <button type="button" class="mpt-gcal-connect"
+                        @onclick="ConnectCalendarAsync" disabled="@_saving">
+                    חיבור
+                </button>
+            </div>
+        }
+        else
+        {
+            <div class="mpt-gcal">
+                <div class="mpt-gcal-head">
+                    <span class="mpt-gcal-title">הוספה ליומן Google</span>
+                    @* Not disabled while the removal question is open: _addToCalendar
+                       stays true until the user answers, so the toggle keeps reading
+                       ON — which is the truth, the event is still in their calendar. *@
+                    <MToggle Checked="_addToCalendar"
+                             AriaLabel="הוספה ליומן Google"
+                             Disabled="@(_saving || _calBusy)"
+                             CheckedChanged="OnCalendarToggled" />
+                </div>
+
+                @if (_confirmRemove)
+                {
+                    @* Turning the toggle off on an already-synced task deletes a
+                       real event out of the mentor's personal calendar. Not a
+                       thing to do silently on a stray click. *@
+                    <div class="mpt-gcal-confirm" role="alertdialog" aria-label="הסרת המשימה מיומן Google">
+                        <p class="mpt-gcal-confirm-text">הסרת המשימה מיומן Google?</p>
+                        <div class="mpt-gcal-confirm-actions">
+                            <MButton Variant="MButton.ButtonVariant.Secondary"
+                                     Size="MButton.ButtonSize.Small"
+                                     Disabled="@_calBusy"
+                                     OnClick="@(() => _confirmRemove = false)">ביטול</MButton>
+                            <MButton Variant="MButton.ButtonVariant.Danger"
+                                     Size="MButton.ButtonSize.Small"
+                                     Loading="@_calBusy"
+                                     OnClick="ConfirmRemoveAsync">הסרה</MButton>
+                        </div>
+                    </div>
+                }
+                else if (_addToCalendar)
+                {
+                    <p class="mpt-gcal-hint">האירוע ייווצר בתאריך ובשעות שנבחרו למעלה.</p>
+                }
+            </div>
+        }
 
         @if (!string.IsNullOrEmpty(_error))
         {
             <p class="mpt-field-error" role="alert">@_error</p>
+        }
+
+        @if (_partialFailure)
+        {
+            @* The task IS saved. This block is why the footer can drop ביטול —
+               a cancel here would read as "undo the task", the opposite of what
+               happened. *@
+            <p class="mpt-gcal-partial" role="status">המשימה נשמרה, אך לא נוספה ליומן Google.</p>
         }
     </ChildContent>
 
@@ -57,7 +228,7 @@
            it — a destructive action belongs with the thing it destroys, not on
            the row where a mis-click costs a task. Only on edit; there is nothing
            to delete while creating. *@
-        @if (EditingTask is not null)
+        @if (EditingTask is not null && !_partialFailure)
         {
             @if (_confirmDelete)
             {
@@ -74,7 +245,15 @@
             }
         }
 
-        @if (!_confirmDelete)
+        @if (_partialFailure)
+        {
+            @* Retrying hits the same idempotent endpoint against the same stored
+               event id, so it cannot produce a second event. *@
+            <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_calBusy">סגירה</MButton>
+            <MButton Variant="MButton.ButtonVariant.Primary" OnClick="RetryCalendarAsync"
+                     Loading="@_calBusy" LoadingText="מנסה שוב…">ניסיון נוסף</MButton>
+        }
+        else if (!_confirmDelete)
         {
             <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_saving">ביטול</MButton>
             <MButton Variant="MButton.ButtonVariant.Primary"
@@ -114,18 +293,114 @@
     private int       _formProjectId;
     private DateTime? _formDue;
 
+    /// <summary>
+    /// The optional schedule, as the "HH:mm" strings the time fields speak.
+    /// Empty means date-only — never a default hour.
+    ///
+    /// <para>THREE VALID SHAPES, and the form only ever offers the next one:
+    /// no time at all (a task due on a day); a start alone (due at an hour);
+    /// or a start and an end (a scheduled block). A lone END is not a shape —
+    /// it would be a duration with no beginning.</para>
+    /// </summary>
+    private string _formStart = "";
+    private string _formEnd   = "";
+
+    /// <summary>Whether the time step has been revealed. Distinct from "there
+    /// is a time": the field is shown the moment it is asked for and stays
+    /// shown while it is still empty, or it would vanish under the cursor.</summary>
+    private bool _showTime;
+
+    /// <summary>Whether the duration step has been revealed. Same distinction.</summary>
+    private bool _showEnd;
+
     private bool    _saving;
     private bool    _confirmDelete;
     private string? _error;
+
+    // ── Google Calendar ───────────────────────────────────────────────────────
+    // Same grant, same event service and same UX pattern as TeamTaskEditModal.
+    // Nothing about OAuth happens here: connecting hands off to the one
+    // connect-url flow the settings page uses.
+
+    /// <summary>Null until the real server status arrives. Connection state is
+    /// never inferred locally — the browser leaves the app during consent, so
+    /// only the server row knows whether a grant exists.</summary>
+    private GoogleCalendarStatusDto? _gcalStatus;
+
+    private bool _addToCalendar;
+    private bool _calBusy;
+    private bool _confirmRemove;
+    private bool _partialFailure;
+
+    /// <summary>Whether a Google event currently EXISTS for this task — the
+    /// difference between "already in the calendar" (turning the toggle off
+    /// deletes it, so ask first) and "about to be added" (turning it off just
+    /// hides the hint).</summary>
+    private bool _hasSchedule;
+
+    /// <summary>The task id to sync against. Known up front on an edit; filled
+    /// in after create, which is what lets "ניסיון נוסף" retry the calendar step
+    /// alone without creating a second task.</summary>
+    private int? _syncTaskId;
+
+    /// <summary>
+    /// The row the last successful save produced — the thing callers are handed
+    /// through OnSaved.
+    ///
+    /// <para>Held rather than reported immediately because a save that commits
+    /// the task and then fails at Google leaves the modal open on "ניסיון נוסף".
+    /// Whichever way that ends — retry succeeds, or the mentor just closes — the
+    /// caller must still learn the task exists, or the list behind the modal
+    /// shows stale data for something that really is saved.</para>
+    /// </summary>
+    private PersonalTaskDto? _savedResult;
 
     // The open transition seeds the form. Re-seeding on every render would wipe
     // whatever the user has typed.
     private bool _wasOpen;
 
-    protected override void OnParametersSet()
+    protected override async Task OnParametersSetAsync()
     {
-        if (IsOpen && !_wasOpen) Seed();
+        if (IsOpen && !_wasOpen)
+        {
+            Seed();
+            _wasOpen = true;
+            await LoadCalendarStateAsync();
+            StateHasChanged();
+            return;
+        }
+
         _wasOpen = IsOpen;
+    }
+
+    /// <summary>
+    /// Connection state and this task's existing link, re-read on every open.
+    ///
+    /// <para>Not cached: the grant can be revoked from Google's side or from
+    /// /settings at any moment, and a stale "connected" would offer a toggle
+    /// that fails on save. The schedules endpoint returns nothing at all while
+    /// the grant is disconnected, so the modal cannot show a sync it can no
+    /// longer manage.</para>
+    /// </summary>
+    private async Task LoadCalendarStateAsync()
+    {
+        var statusTask    = GoogleCalendar.GetStatusAsync();
+        var schedulesTask = GoogleCalendar.GetPersonalTaskSchedulesAsync();
+        await Task.WhenAll(statusTask, schedulesTask);
+
+        _gcalStatus = statusTask.Result ?? new GoogleCalendarStatusDto { IsConnected = false };
+
+        if (EditingTask is null) return;
+
+        var existing = schedulesTask.Result.FirstOrDefault(s => s.TaskId == EditingTask.Id);
+        if (existing is null) return;
+
+        // An already-synced task opens with the toggle ON, so saving without
+        // touching anything patches the SAME event rather than creating a second
+        // one. The times are NOT read back from the link: the task's own
+        // StartTime/EndTime are the source of truth and are already on the form.
+        _hasSchedule   = true;
+        _addToCalendar = true;
     }
 
     /// <summary>
@@ -141,9 +416,159 @@
         _formDescription = EditingTask?.Description;
         _formProjectId   = EditingTask?.ProjectId ?? 0;
         _formDue         = EditingTask?.DueDate ?? (EditingTask is null ? InitialDueDate : null);
+        _formStart       = EditingTask?.StartTime ?? "";
+        _formEnd         = EditingTask?.EndTime   ?? "";
+
+        // A saved task reopens at the step it actually reached: a scheduled
+        // block shows both fields, an hour-deadline shows one, a plain task
+        // shows none. Nothing is disclosed that the task does not already use.
+        _showTime        = !string.IsNullOrEmpty(_formStart);
+        _showEnd         = !string.IsNullOrEmpty(_formEnd);
         _error           = null;
         _confirmDelete   = false;
         _saving          = false;
+
+        // Cleared here and filled in by LoadCalendarStateAsync — the modal starts
+        // from "nothing synced" and only claims otherwise once the server says so.
+        _gcalStatus     = null;
+        _addToCalendar  = false;
+        _hasSchedule    = false;
+        _calBusy        = false;
+        _confirmRemove  = false;
+        _partialFailure = false;
+        _syncTaskId     = EditingTask?.Id;
+        _savedResult    = null;
+    }
+
+    // ── The optional work block ───────────────────────────────────────────────
+
+    private Task OnDueChangedAsync(DateTime? value)
+    {
+        _formDue = value;
+        _error   = null;
+
+        // Clearing the date un-asks everything that depended on it rather than
+        // leaving hours stranded on no day at all.
+        if (value is null) { _showTime = false; _showEnd = false; _formStart = ""; _formEnd = ""; }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnStartChangedAsync(string value)
+    {
+        _formStart = value;
+        _error     = null;
+        return Task.CompletedTask;
+    }
+
+    private Task OnEndChangedAsync(string value)
+    {
+        _formEnd = value;
+        _error   = null;
+        return Task.CompletedTask;
+    }
+
+    private void ShowTime() { _showTime = true; _error = null; }
+
+    private void ShowEnd()  { _showEnd  = true; _error = null; }
+
+    /// <summary>
+    /// Puts the task back to date-only in one action.
+    ///
+    /// <para>Refused while Google sync is on, because the event cannot exist
+    /// without hours — the mentor is pointed at the toggle instead, which is
+    /// the control that actually governs it and which asks before deleting
+    /// anything out of their calendar.</para>
+    /// </summary>
+    private Task ClearTimesAsync()
+    {
+        if (_addToCalendar)
+        {
+            _error = "כדי להסיר את השעה יש לכבות תחילה את הסנכרון ליומן Google";
+            return Task.CompletedTask;
+        }
+
+        _formStart = _formEnd = "";
+        _showTime  = _showEnd = false;
+        _error     = null;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Which time fields must be filled before this can save.
+    ///
+    /// <para>A revealed-but-empty field is not an error on its own — the
+    /// mentor can always back out with הסרת השעה. It becomes required once the
+    /// END is in play (a duration needs both ends) or once Google sync is on
+    /// (an event needs a start and a finish).</para>
+    /// </summary>
+    private bool TimesAreRequired => _addToCalendar || _showEnd;
+
+    /// <summary>Hours need a day to sit on, and a Google event needs a date.</summary>
+    private bool DateIsRequired =>
+        _addToCalendar || !string.IsNullOrEmpty(_formStart) || !string.IsNullOrEmpty(_formEnd);
+
+    private static string FieldClass(bool invalid) =>
+        invalid ? "mpt-field mpt-field-invalid" : "mpt-field";
+
+    /// <summary>
+    /// Validates the work block before anything is written.
+    ///
+    /// <para>Mirrors the server rules exactly — both-or-neither, end after
+    /// start, and a date to hang them on. Run client-side first so a typo puts
+    /// the cursor back in the form instead of costing a round trip; the server
+    /// re-checks regardless, because these endpoints are reachable without the
+    /// UI.</para>
+    /// </summary>
+    private bool ValidateWorkBlock()
+    {
+        bool hasStart = !string.IsNullOrEmpty(_formStart);
+        bool hasEnd   = !string.IsNullOrEmpty(_formEnd);
+
+        // A Google event has a beginning and an end. Rather than refuse and
+        // leave the mentor hunting for the missing field, the step is opened
+        // for them and the message points at it.
+        if (_addToCalendar && !hasEnd)
+        {
+            _showTime = _showEnd = true;
+            _error = "אירוע ביומן Google צריך שעת התחלה ושעת סיום";
+            return false;
+        }
+
+        if (hasEnd && !hasStart)
+        {
+            _error = "יש להזין שעת התחלה";
+            return false;
+        }
+
+        if (hasStart && hasEnd)
+        {
+            var start = MotivaDates.ParseWallClock(_formStart);
+            var end   = MotivaDates.ParseWallClock(_formEnd);
+
+            if (start is null || end is null) { _error = "שעה לא תקינה"; return false; }
+
+            if (end <= start)
+            {
+                _error = "שעת הסיום חייבת להיות אחרי שעת ההתחלה";
+                return false;
+            }
+        }
+        else if (hasStart && MotivaDates.ParseWallClock(_formStart) is null)
+        {
+            _error = "שעה לא תקינה";
+            return false;
+        }
+
+        if (DateIsRequired && _formDue is null)
+        {
+            _error = _addToCalendar
+                ? "יש לבחור תאריך יעד כדי להוסיף את המשימה ליומן Google"
+                : "יש לבחור תאריך יעד כדי לקבוע שעה למשימה";
+            return false;
+        }
+
+        return true;
     }
 
     private static string ProjectOptionLabel(MentorProjectSummaryDto p) =>
@@ -153,29 +578,58 @@
     {
         if (_saving) return;
         _confirmDelete = false;
+
+        // _partialFailure means the TASK was written and only Google failed. The
+        // caller has not been told about it yet — it is told on the retry path —
+        // so closing here must report the save rather than a plain dismissal,
+        // otherwise the list behind the modal would quietly show stale data for
+        // a task that really is saved.
+        if (_savedResult is { } saved)
+        {
+            _partialFailure = false;
+            _savedResult    = null;
+            await OnSaved.InvokeAsync(saved);
+            return;
+        }
+
         await OnClose.InvokeAsync();
     }
 
+    /// <summary>
+    /// Save order is deliberate and is the whole failure story of this feature:
+    ///
+    ///   1. validate the task, including the work block
+    ///   2. save the Motiva task  ← committed here, and never rolled back
+    ///   3. only then talk to Google
+    ///
+    /// Step 1 runs before anything is written, so a bad time range just puts the
+    /// cursor back in the form. Step 3 runs after the commit, so a Google outage
+    /// costs the mentor a calendar event — never their task.
+    /// </summary>
     private async Task SaveAsync()
     {
         if (string.IsNullOrWhiteSpace(_formTitle)) return;
 
+        _error = null;
+        if (!ValidateWorkBlock()) return;
+
         _saving = true;
-        _error  = null;
 
         int?    projectId   = _formProjectId == 0 ? null : _formProjectId;
         string  title       = _formTitle.Trim();
         string? description = string.IsNullOrWhiteSpace(_formDescription) ? null : _formDescription.Trim();
+        string? start       = string.IsNullOrEmpty(_formStart) ? null : _formStart;
+        string? end         = string.IsNullOrEmpty(_formEnd)   ? null : _formEnd;
 
         if (EditingTask is { } editing)
         {
             var error = await PersonalTasks.UpdateAsync(editing.Id, new UpdatePersonalTaskRequest
             {
                 Title = title, Description = description, DueDate = _formDue, ProjectId = projectId,
+                StartTime = start, EndTime = end,
             });
 
-            _saving = false;
-            if (error is not null) { _error = error; return; }
+            if (error is not null) { _saving = false; _error = error; return; }
 
             // Mirror onto the instance the caller handed us, using the SAME
             // authorized list the select offered — so a label can never name a
@@ -185,10 +639,19 @@
             editing.Title        = title;
             editing.Description  = description;
             editing.DueDate      = _formDue;
+            editing.StartTime    = start;
+            editing.EndTime      = end;
             editing.ProjectId    = proj?.Id;
             editing.ProjectTitle = proj?.Title;
             editing.TeamName     = proj?.TeamName;
 
+            _syncTaskId  = editing.Id;
+            _savedResult = editing;
+
+            if (!await PushCalendarAsync()) { _saving = false; StateHasChanged(); return; }
+
+            _saving      = false;
+            _savedResult = null;
             await OnSaved.InvokeAsync(editing);
             return;
         }
@@ -196,17 +659,140 @@
         var (created, createError) = await PersonalTasks.CreateAsync(new CreatePersonalTaskRequest
         {
             Title = title, Description = description, DueDate = _formDue, ProjectId = projectId,
+            StartTime = start, EndTime = end,
         });
-
-        _saving = false;
 
         if (created is null)
         {
+            _saving = false;
             _error = createError ?? "לא הצלחנו לשמור את המשימה. אפשר לנסות שוב.";
             return;
         }
 
+        // The task exists now. Nothing below can undo it.
+        _syncTaskId  = created.Id;
+        _savedResult = created;
+
+        if (!await PushCalendarAsync()) { _saving = false; StateHasChanged(); return; }
+
+        _saving      = false;
+        _savedResult = null;
         await OnSaved.InvokeAsync(created);
+    }
+
+    // ── Google Calendar ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Sends the just-saved task to Google, when the toggle is on. True means
+    /// "carry on and close" — including when there was nothing to do.
+    ///
+    /// <para>The request carries no payload: the server reads the title,
+    /// description, date and hours off the row that was just written, so
+    /// editing any of them and saving MOVES or RETITLES the same event (same
+    /// link row, same Google event id, patched in place) instead of creating a
+    /// second one.</para>
+    /// </summary>
+    private async Task<bool> PushCalendarAsync()
+    {
+        if (!_addToCalendar) return true;
+        if (_syncTaskId is not int taskId) return true;
+
+        var result = await GoogleCalendar.SchedulePersonalTaskAsync(taskId);
+
+        if (result?.Success == true)
+        {
+            _partialFailure = false;
+            _hasSchedule    = true;
+            return true;
+        }
+
+        // The grant disappeared between opening the modal and saving. Say so
+        // plainly rather than offering a retry that cannot succeed.
+        if (result?.Outcome == CalendarScheduleOutcomes.NotConnected)
+            _gcalStatus = new GoogleCalendarStatusDto { IsConnected = false };
+
+        _partialFailure = true;
+        return false;
+    }
+
+    private async Task RetryCalendarAsync()
+    {
+        _calBusy = true;
+        StateHasChanged();
+
+        bool ok = await PushCalendarAsync();
+        _calBusy = false;
+
+        if (!ok) { StateHasChanged(); return; }
+
+        // The task was already saved before the first attempt; the caller is
+        // told about it now that the calendar has caught up.
+        var saved    = _savedResult;
+        _savedResult = null;
+
+        if (saved is not null) await OnSaved.InvokeAsync(saved);
+        else                   await OnClose.InvokeAsync();
+    }
+
+    /// <summary>
+    /// The toggle. Switching ON just arms the sync; switching OFF on a task that
+    /// already has an event asks first, because that click would delete
+    /// something out of the mentor's personal calendar.
+    /// </summary>
+    private void OnCalendarToggled(bool value)
+    {
+        // Toggling back on while the removal question is open is a change of
+        // mind — the same as pressing ביטול.
+        if (value && _confirmRemove) { _confirmRemove = false; return; }
+
+        if (!value && _hasSchedule) { _confirmRemove = true; return; }
+
+        _addToCalendar = value;
+        _error         = null;
+
+        // An event needs hours, so switching this on ASKS for them rather than
+        // waiting for the save to complain. Switching it off reveals nothing
+        // and hides nothing — whatever the task itself uses, it keeps.
+        if (value) { _showTime = true; _showEnd = true; }
+    }
+
+    private async Task ConfirmRemoveAsync()
+    {
+        if (_syncTaskId is not int taskId) { _confirmRemove = false; return; }
+
+        _calBusy = true;
+        _error   = null;
+        StateHasChanged();
+
+        var result = await GoogleCalendar.UnschedulePersonalTaskAsync(taskId);
+        _calBusy = false;
+
+        if (result?.Success == true)
+        {
+            // The event is gone; the Motiva task is untouched and the modal
+            // stays open for further editing.
+            _confirmRemove = false;
+            _addToCalendar = false;
+            _hasSchedule   = false;
+        }
+        else
+        {
+            // Keep the link and the question open — the event is still in the
+            // calendar, so the mentor must be able to try again.
+            _error = "לא הצלחנו להסיר את האירוע מיומן Google כרגע. אפשר לנסות שוב.";
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ConnectCalendarAsync()
+    {
+        // No OAuth logic here — the same connect-url flow the settings page and
+        // the team-task modal use. A second flow is exactly what this reuses.
+        var url = await GoogleCalendar.GetConnectUrlAsync();
+
+        if (url is not null) Nav.NavigateTo(url, forceLoad: true);
+        else                 _error = "האינטגרציה עם Google Calendar עדיין לא הוגדרה במערכת.";
     }
 
     private async Task DeleteAsync()

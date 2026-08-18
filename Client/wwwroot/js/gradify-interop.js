@@ -39,6 +39,27 @@ window.gradify = {
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     },
 
+    // Bring a just-opened in-flow popover fully into view.
+    //
+    // block:'end' rather than the 'nearest' above, and the difference matters:
+    // 'nearest' does nothing while ANY part of the target is on screen, which is
+    // exactly the state a panel is in the moment it opens under its trigger —
+    // its first row is visible and the rest is below the fold. Aligning the
+    // panel's END with the scroller's end reveals the whole thing.
+    //
+    // INSTANT, unlike the two above. A panel opens under the pointer and the
+    // user is already reaching for it — animating the page out from under that
+    // reach makes them chase it, and a smooth scroll is also frozen outright in
+    // a background tab, which would leave the panel half off-screen with no
+    // way to tell. The adjustment is small; it should simply be done.
+    //
+    // Silent when the id is gone: the panel may have closed between the render
+    // that scheduled this and the call itself.
+    revealPopover: function (id) {
+        var el = document.getElementById(id);
+        if (el) el.scrollIntoView({ behavior: 'instant', block: 'end' });
+    },
+
     focusElement: function (el) {
         if (el) el.focus();
     },

@@ -148,15 +148,33 @@ public class MentorWorkspaceService : IMentorWorkspaceService
             // mentor may not see.
             bool hasContext = t.ProjectId is int && !string.IsNullOrWhiteSpace(t.ProjectTitle);
 
+            // The optional schedule. A START is what makes an entry timed — a
+            // personal task is the only kind of entry whose hour someone
+            // actually chose. The END is separate and optional: with one, the
+            // entry is a block; without, it is a deadline AT an hour, and the
+            // grid draws it as a marker rather than guessing a duration.
+            //
+            // An end that is not after its start is discarded rather than
+            // trusted. The API refuses that pair, but an older row could still
+            // hold one, and a negative-length block would break the grid.
+            var  start   = ParseWallClock(t.StartTime);
+            var  end     = ParseWallClock(t.EndTime);
+            bool isTimed = start is not null;
+            bool hasEnd  = isTimed && end is TimeSpan e0 && e0 > start!.Value;
+
+            var date = isTimed ? t.DueDate!.Value.Date + start!.Value : t.DueDate!.Value;
+
             events.Add(new MentorCalendarEvent(
                 Id: $"pt-{t.Id}", Type: MentorEventType.PersonalTask,
-                Date: t.DueDate!.Value, Title: t.Title,
+                Date: date, Title: t.Title,
                 ProjectId:    hasContext ? t.ProjectId : null,
                 ProjectTitle: hasContext ? t.ProjectTitle : null,
                 TeamName:     hasContext ? t.TeamName : null,
                 Detail: t.Description,
                 // Straight to THIS task's editor, not the section.
-                Href: $"/mentor/tasks?editTask={t.Id}"));
+                Href: $"/mentor/tasks?editTask={t.Id}",
+                HasTime: isTimed,
+                EndsAt:  hasEnd ? t.DueDate!.Value.Date + end!.Value : null));
         }
 
         // ── Submissions already sitting with the mentor. Dated by ARRIVAL,
@@ -223,4 +241,10 @@ public class MentorWorkspaceService : IMentorWorkspaceService
 
         return events.OrderBy(e => e.Date).ToList();
     }
+
+    /// <summary>"HH:mm" as stored by the personal-task endpoints, or null.
+    /// One parser, shared with the time field that writes the value, so what
+    /// the editor accepts and what the calendar reads cannot diverge.</summary>
+    private static TimeSpan? ParseWallClock(string? value) =>
+        AuthWithAdmin.Client.Components.MotivaDates.ParseWallClock(value);
 }

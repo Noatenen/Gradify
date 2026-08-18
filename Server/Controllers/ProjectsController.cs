@@ -2117,6 +2117,8 @@ public class ProjectsController : ControllerBase
                     pt.Title,
                     pt.Description,
                     pt.DueDate,
+                    pt.StartTime,
+                    pt.EndTime,
                     pt.IsDone,
                     pt.CreatedAt,
                     pm.ProjectId          AS ProjectId,
@@ -2168,9 +2170,13 @@ public class ProjectsController : ControllerBase
         if (req.ProjectId is int wantedProject && !await MentorsProjectAsync(wantedProject, authUserId))
             return BadRequest("לא ניתן לשייך את המשימה לפרויקט זה");
 
+        if (!TryNormalizeWorkBlock(req.StartTime, req.EndTime, req.DueDate,
+                                   out var newStart, out var newEnd, out var timeError))
+            return BadRequest(timeError);
+
         const string sql = @"
-            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate, ProjectId)
-            VALUES (@UserId, @Title, @Description, @DueDate, @ProjectId)";
+            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate, ProjectId, StartTime, EndTime)
+            VALUES (@UserId, @Title, @Description, @DueDate, @ProjectId, @StartTime, @EndTime)";
 
         int newId = await _db.InsertReturnIdAsync(sql, new
         {
@@ -2179,6 +2185,8 @@ public class ProjectsController : ControllerBase
             Description = req.Description?.Trim(),
             DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
             ProjectId   = req.ProjectId,
+            StartTime   = newStart,
+            EndTime     = newEnd,
         });
 
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
@@ -2193,6 +2201,8 @@ public class ProjectsController : ControllerBase
             Title        = req.Title.Trim(),
             Description  = req.Description?.Trim(),
             DueDate      = req.DueDate,
+            StartTime    = newStart,
+            EndTime      = newEnd,
             IsDone       = false,
             CreatedAt    = DateTime.UtcNow,
             ProjectId    = context is null ? null : req.ProjectId,
@@ -2266,12 +2276,20 @@ public class ProjectsController : ControllerBase
         if (req.ProjectId is int wantedProject && !await MentorsProjectAsync(wantedProject, authUserId))
             return BadRequest("לא ניתן לשייך את המשימה לפרויקט זה");
 
+        // Same gate as create. Clearing both fields is always allowed and is how
+        // a scheduled task goes back to being date-only.
+        if (!TryNormalizeWorkBlock(req.StartTime, req.EndTime, req.DueDate,
+                                   out var editStart, out var editEnd, out var timeError))
+            return BadRequest(timeError);
+
         const string sql = @"
             UPDATE PersonalTasks
             SET    Title       = @Title,
                    Description = @Description,
                    DueDate     = @DueDate,
-                   ProjectId   = @ProjectId
+                   ProjectId   = @ProjectId,
+                   StartTime   = @StartTime,
+                   EndTime     = @EndTime
             WHERE  Id     = @Id
               AND  UserId = @UserId";
 
@@ -2283,8 +2301,11 @@ public class ProjectsController : ControllerBase
             Description = req.Description?.Trim(),
             // Date-only, matching CreatePersonalTask — a due date is a date the
             // user picked, never an instant, so it must not acquire a time here.
+            // The optional work block lives in its own two columns instead.
             DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
             ProjectId   = req.ProjectId,
+            StartTime   = editStart,
+            EndTime     = editEnd,
         });
 
         if (affected == 0) return NotFound("המשימה לא נמצאה");
@@ -2307,8 +2328,105 @@ public class ProjectsController : ControllerBase
 
         int affected = await _db.SaveDataAsync(sql, new { Id = id, UserId = authUserId });
         if (affected == 0) return NotFound("המשימה לא נמצאה");
+
+        // Best-effort Google cleanup, AFTER the row is gone — the identical
+        // lifecycle DeleteTeamTask uses, and for the identical reason: this
+        // never throws and never fails the delete, so a task cannot become
+        // undeletable because Google is unreachable. Running it after the
+        // scoped DELETE is also what keeps it safe: only a row this caller
+        // actually owned can reach this line, so no other user's link is ever
+        // touched.
+        await _calendarEvents.RemoveLinksForDeletedTaskAsync(
+            id, GoogleCalendarEventService.PersonalTaskType);
+
         return Ok();
     }
+
+    /// <summary>
+    /// Validates and normalizes the optional schedule on a personal task.
+    ///
+    /// <para>THREE VALID SHAPES, and no other:</para>
+    /// <list type="bullet">
+    ///   <item><b>nothing</b> — a task due on a day. The default, and what
+    ///   every row written before these columns existed still is;</item>
+    ///   <item><b>start alone</b> — due AT an hour. A deadline is a point in
+    ///   time and genuinely has no end, so demanding one would force the user
+    ///   to invent a duration that nobody decided;</item>
+    ///   <item><b>start and end</b> — a scheduled block. This is the shape a
+    ///   Google Calendar event needs, which is why the sync toggle asks for
+    ///   it and this method does not.</item>
+    /// </list>
+    ///
+    /// <para>An END WITHOUT A START is not a shape — it is a duration with no
+    /// beginning — and a time of any kind needs a day to sit on. Both are
+    /// refusals rather than repairs: nothing here invents a value.</para>
+    ///
+    /// <para>Enforced here and not only in the modal: these endpoints are
+    /// reachable without the UI, and an inverted range would go on to become a
+    /// Google event that silently ends before it begins.</para>
+    /// </summary>
+    private static bool TryNormalizeWorkBlock(
+        string? rawStart, string? rawEnd, DateTime? dueDate,
+        out string? start, out string? end, out string error)
+    {
+        start = end = null;
+        error = "";
+
+        bool hasStart = !string.IsNullOrWhiteSpace(rawStart);
+        bool hasEnd   = !string.IsNullOrWhiteSpace(rawEnd);
+
+        if (!hasStart && !hasEnd) return true;      // date-only, the default
+
+        if (!hasStart)
+        {
+            error = "יש להזין שעת התחלה";
+            return false;
+        }
+
+        if (!TryParseWallClock(rawStart!, out var parsedStart))
+        {
+            error = "שעה לא תקינה";
+            return false;
+        }
+
+        TimeSpan? parsedEnd = null;
+
+        if (hasEnd)
+        {
+            if (!TryParseWallClock(rawEnd!, out var e))
+            {
+                error = "שעה לא תקינה";
+                return false;
+            }
+
+            if (e <= parsedStart)
+            {
+                error = "שעת הסיום חייבת להיות אחרי שעת ההתחלה";
+                return false;
+            }
+
+            parsedEnd = e;
+        }
+
+        if (dueDate is null)
+        {
+            error = "יש לבחור תאריך יעד כדי לקבוע שעה למשימה";
+            return false;
+        }
+
+        start = FormatWallClock(parsedStart);
+        end   = parsedEnd is TimeSpan pe ? FormatWallClock(pe) : null;
+        return true;
+    }
+
+    /// <summary>"HH:mm" is what &lt;input type="time"&gt; submits; "HH:mm:ss" is
+    /// accepted so a non-browser caller is not tripped up by a seconds
+    /// component. Same pair GoogleCalendarTasksController parses.</summary>
+    private static bool TryParseWallClock(string value, out TimeSpan time) =>
+        TimeSpan.TryParseExact(value.Trim(), new[] { @"hh\:mm", @"hh\:mm\:ss" },
+                               System.Globalization.CultureInfo.InvariantCulture, out time);
+
+    private static string FormatWallClock(TimeSpan t) => $"{t.Hours:D2}:{t.Minutes:D2}";
 
     // ═══════════════════════════════════════════════════════════════════════════
     //  TEAM TASKS

@@ -1,0 +1,237 @@
+@namespace AuthWithAdmin.Client.Components
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+
+@*
+    MTimeField — a Motiva time field with a Motiva time panel.
+
+    REPLACES <input type="time">, which renders the browser's own spinner: two
+    unlabeled numeric columns, native chrome, and on some platforms an overlay
+    that lands on top of whatever field comes next. Nothing about it can be
+    styled, and none of it looks like Motiva.
+
+    ── ONE VALUE, ONE FIELD ─────────────────────────────────────────────────
+    The field shows "10:30" — a single time, typed or picked. It is a real text
+    input, so a specific value like 10:05 is simply typed; the panel exists for
+    the common case, not as the only way in.
+
+    ── THE PANEL LABELS ITS TWO HALVES ──────────────────────────────────────
+    The complaint against the native control is UNLABELED columns. So the panel
+    says שעה and דקות out loud, and lays each out as a grid of comfortable
+    chips rather than a scrolling column of numbers. Everything is visible at
+    once: 15 hours and 4 common minute steps, no scrolling to reach 17:00.
+
+    Picking an hour with no minute set yields the round hour, so the common
+    times (09:00, 09:30, 10:00, 10:30 …) are one or two taps away.
+
+    ── IN FLOW, NOT ON TOP ──────────────────────────────────────────────────
+    Same as MDateField, and for the same two reasons: MModal's dialog is
+    overflow:hidden with a scrolling body, so an absolute panel would be
+    clipped; and a panel that pushes content down never covers a field the user
+    is still reading.
+*@
+
+<div class="mtf">
+
+    <div class="@FieldClass">
+        @* type=text, not type=time: the moment it is type=time the browser
+           supplies its own picker button and its own segmented editing, which
+           is the thing being replaced. *@
+        <input class="mtf-input"
+               type="text"
+               inputmode="numeric"
+               maxlength="5"
+               placeholder="--:--"
+               autocomplete="off"
+               disabled="@Disabled"
+               aria-label="@Label"
+               value="@_text"
+               @oninput="OnTypedAsync"
+               @onblur="OnBlur" />
+
+        <button type="button" class="mtf-open"
+                disabled="@Disabled"
+                aria-haspopup="dialog"
+                aria-expanded="@(_open ? "true" : "false")"
+                aria-label="@($"בחירת {Label}")"
+                @onclick="TogglePanel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+            </svg>
+        </button>
+    </div>
+
+    @if (_open)
+    {
+        <div class="mtf-panel" id="@_panelId" role="dialog" aria-label="@($"בחירת {Label}")">
+
+            <div class="mtf-group">
+                <span class="mtf-group-label" id="@($"{_id}-h")">שעה</span>
+                <div class="mtf-chips" role="group" aria-labelledby="@($"{_id}-h")">
+                    @foreach (var hour in Hours)
+                    {
+                        var h = hour;
+                        <button type="button"
+                                class="mtf-chip @(SelectedHour == h ? "mtf-chip-on" : "")"
+                                aria-pressed="@(SelectedHour == h ? "true" : "false")"
+                                @onclick="@(() => SetHourAsync(h))">
+                            @h.ToString("00")
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="mtf-group">
+                <span class="mtf-group-label" id="@($"{_id}-m")">דקות</span>
+                <div class="mtf-chips mtf-chips-minutes" role="group" aria-labelledby="@($"{_id}-m")">
+                    @foreach (var minute in Minutes)
+                    {
+                        var m = minute;
+                        <button type="button"
+                                class="mtf-chip @(SelectedMinute == m ? "mtf-chip-on" : "")"
+                                aria-pressed="@(SelectedMinute == m ? "true" : "false")"
+                                @onclick="@(() => SetMinuteAsync(m))">
+                            @m.ToString("00")
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="mtf-foot">
+                <span class="mtf-hint">אפשר גם להקליד שעה מדויקת בשדה</span>
+                <button type="button" class="mtf-done" @onclick="@(() => _open = false)">סיום</button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>"HH:mm", or empty for no time. Empty is a first-class value —
+    /// this field never invents one.</summary>
+    [Parameter] public string Value { get; set; } = "";
+
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+
+    [Parameter] public bool Disabled { get; set; }
+
+    [Parameter] public bool Invalid { get; set; }
+
+    /// <summary>Accessible name — "שעת התחלה", "שעה". The visible label is the
+    /// form's, so this only names the control for assistive tech.</summary>
+    [Parameter] public string Label { get; set; } = "שעה";
+
+    /// <summary>
+    /// A working day, 07:00–21:00, laid out in full. Deliberately not 24: the
+    /// panel's promise is that everything is visible without scrolling, and the
+    /// small hours are what the typed field is for.
+    /// </summary>
+    private static IEnumerable<int> Hours => Enumerable.Range(7, 15);
+
+    /// <summary>Quarters. Anything else is typed — which is exactly the escape
+    /// hatch that lets this list stay short.</summary>
+    private static readonly int[] Minutes = { 0, 15, 30, 45 };
+
+    private bool   _open;
+    private string _text = "";
+    private readonly string _id      = $"mtf-{Guid.NewGuid():N}";
+    private readonly string _panelId = $"mtfp-{Guid.NewGuid():N}";
+
+    private void TogglePanel()
+    {
+        if (!_open) _justOpened = true;
+        _open = !_open;
+    }
+
+    /// <summary>
+    /// Scrolls a freshly-opened panel fully into view.
+    ///
+    /// <para>The panel opens BELOW its trigger inside a modal body that scrolls,
+    /// so on a long form it lands mostly under the fold — the user would see its
+    /// first row and have to scroll to find the rest, which is worse than the
+    /// native control this replaces. One call after the render that opened it
+    /// puts the whole panel on screen.</para>
+    /// </summary>
+    private bool _justOpened;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_justOpened) return;
+        _justOpened = false;
+
+        try   { await JS.InvokeVoidAsync("gradify.revealPopover", _panelId); }
+        catch { /* Scrolling is a courtesy; the panel is usable without it. */ }
+    }
+
+
+    /// <summary>Mirrors Value into the editable buffer, but only when the two
+    /// have actually diverged — re-seeding on every render would fight the user
+    /// mid-keystroke.</summary>
+    protected override void OnParametersSet()
+    {
+        if (!string.Equals(Normalized(_text), Value, StringComparison.Ordinal))
+            _text = Value;
+    }
+
+    private string FieldClass =>
+        "mtf-field"
+        + (_open ? " mtf-field-open" : "")
+        + (Invalid ? " mtf-field-invalid" : "");
+
+    private TimeSpan? Parsed => MotivaDates.ParseWallClock(Value);
+
+    private int? SelectedHour   => Parsed?.Hours;
+    private int? SelectedMinute => Parsed?.Minutes;
+
+    /// <summary>
+    /// Accepts what a person types. Digits are punctuated as they go — "1030"
+    /// becomes "10:30" — so the field never asks anyone to type the colon, and
+    /// a partial entry is left alone until it means something.
+    /// </summary>
+    private async Task OnTypedAsync(ChangeEventArgs e)
+    {
+        var raw    = e.Value?.ToString() ?? "";
+        var digits = new string(raw.Where(char.IsDigit).Take(4).ToArray());
+
+        _text = digits.Length <= 2 ? digits : $"{digits[..2]}:{digits[2..]}";
+
+        // Only a complete, legal time is published upward. Half-typed input is
+        // not an edit to the task — it is someone still typing.
+        var value = Normalized(_text);
+        if (value != Value) await ValueChanged.InvokeAsync(value);
+    }
+
+    /// <summary>On leaving the field, the buffer snaps back to the committed
+    /// value — so a half-typed "09" does not linger as text that means nothing,
+    /// and a complete entry is simply left as it is.</summary>
+    private void OnBlur() => _text = Value;
+
+    /// <summary>"" unless the buffer holds a real 24-hour time.</summary>
+    private static string Normalized(string text)
+    {
+        var parts = text.Split(':');
+        if (parts.Length != 2) return "";
+        if (!int.TryParse(parts[0], out var h) || !int.TryParse(parts[1], out var m)) return "";
+        if (parts[1].Length != 2) return "";
+        if (h is < 0 or > 23 || m is < 0 or > 59) return "";
+
+        return $"{h:D2}:{m:D2}";
+    }
+
+    /// <summary>Picking an hour keeps whatever minute is already chosen, and
+    /// defaults to the round hour when there is none — which is what makes
+    /// 09:00 a single tap.</summary>
+    private Task SetHourAsync(int hour) => EmitAsync(hour, SelectedMinute ?? 0);
+
+    /// <summary>Picking a minute before an hour is not a decision yet: it
+    /// attaches to the hour once one is chosen, defaulting to the current one
+    /// so the panel is never stuck.</summary>
+    private Task SetMinuteAsync(int minute) => EmitAsync(SelectedHour ?? DateTime.Now.Hour, minute);
+
+    private async Task EmitAsync(int hour, int minute)
+    {
+        var value = $"{hour:D2}:{minute:D2}";
+        _text = value;
+        await ValueChanged.InvokeAsync(value);
+    }
+}

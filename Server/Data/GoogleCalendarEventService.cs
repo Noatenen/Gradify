@@ -53,10 +53,22 @@ public class GoogleCalendarEventService
     /// <summary>This phase writes to the connected user's primary calendar only.</summary>
     public const string PrimaryCalendarId = "primary";
 
-    /// <summary>Discriminator on the link row. Only team tasks are schedulable in
-    /// this phase; the column exists so personal tasks and meetings can join later
-    /// without a schema change.</summary>
-    private const string TeamTaskType = "TeamTask";
+    /// <summary>
+    /// Discriminator on the link row — the thing that lets ONE service and ONE
+    /// table serve more than one kind of Motiva work item.
+    ///
+    /// <para>It is not decoration: TeamTasks.Id and PersonalTasks.Id are
+    /// independent autoincrement sequences, so team task 7 and personal task 7
+    /// are different rows that happen to share a number. Every query in this
+    /// file therefore filters on (UserId, TaskType, TaskId) — the same triple
+    /// the UNIQUE index is built on — and no read, write or delete can reach
+    /// across the two kinds.</para>
+    /// </summary>
+    public const string TeamTaskType = "TeamTask";
+
+    /// <summary>A mentor's own personal task. Joined in without a schema change,
+    /// exactly as the TaskType column was designed for.</summary>
+    public const string PersonalTaskType = "PersonalTask";
 
     private const string EventsEndpoint =
         "https://www.googleapis.com/calendar/v3/calendars/primary/events";
@@ -92,7 +104,13 @@ public class GoogleCalendarEventService
     /// A link still awaiting a retry is included with IsScheduled=false, so the
     /// modal can prefill the form without the list claiming the event exists.
     /// </summary>
-    public async Task<List<TaskCalendarScheduleDto>> GetSchedulesForUserAsync(int userId)
+    public Task<List<TaskCalendarScheduleDto>> GetSchedulesForUserAsync(int userId) =>
+        GetSchedulesForUserAsync(userId, TeamTaskType);
+
+    /// <summary>Same, for one kind of work item. Personal-task links are never
+    /// mixed into the team-task list: the ids collide across the two tables, so
+    /// a combined list keyed by TaskId would be ambiguous by construction.</summary>
+    public async Task<List<TaskCalendarScheduleDto>> GetSchedulesForUserAsync(int userId, string taskType)
     {
         // A user who disconnected Google still has their link rows — the Google
         // events themselves survive a revoke, so the rows are worth keeping for a
@@ -107,14 +125,15 @@ public class GoogleCalendarEventService
                    ScheduledStart, ScheduledEnd, SyncState, IsActive
               FROM GoogleCalendarEventLinks
              WHERE UserId = @UserId AND TaskType = @TaskType AND IsActive = 1",
-            new { UserId = userId, TaskType = TeamTaskType });
+            new { UserId = userId, TaskType = taskType });
 
         return (rows ?? Enumerable.Empty<LinkRow>()).Select(ToDto).ToList();
     }
 
-    public async Task<TaskCalendarScheduleDto?> GetScheduleAsync(int userId, int taskId)
+    public async Task<TaskCalendarScheduleDto?> GetScheduleAsync(
+        int userId, int taskId, string taskType = TeamTaskType)
     {
-        var row = await GetLinkAsync(userId, taskId);
+        var row = await GetLinkAsync(userId, taskId, taskType);
         return row is null || row.IsActive != 1 ? null : ToDto(row);
     }
 
@@ -125,8 +144,19 @@ public class GoogleCalendarEventService
     /// or moves the existing event if there already is one. Safe to call
     /// repeatedly with the same values — see the idempotency notes on the class.
     /// </summary>
-    public async Task<TaskCalendarScheduleResultDto> ScheduleTeamTaskAsync(
+    public Task<TaskCalendarScheduleResultDto> ScheduleTeamTaskAsync(
         int userId, int taskId, string title, string? description,
+        DateTime calendarDate, TimeSpan start, TimeSpan end) =>
+        ScheduleAsync(userId, taskId, TeamTaskType, title, description, calendarDate, start, end);
+
+    /// <summary>
+    /// The generic form. Identical behaviour for every work-item kind — the only
+    /// thing <paramref name="taskType"/> changes is which link row is claimed,
+    /// which is what keeps one mentor's personal task and one student's team
+    /// task from ever sharing an event.
+    /// </summary>
+    public async Task<TaskCalendarScheduleResultDto> ScheduleAsync(
+        int userId, int taskId, string taskType, string title, string? description,
         DateTime calendarDate, TimeSpan start, TimeSpan end)
     {
         // The token check comes first so a disconnected user never leaves a link
@@ -135,7 +165,7 @@ public class GoogleCalendarEventService
         if (!token.IsConnected || token.AccessToken is null)
             return Fail(CalendarScheduleOutcomes.NotConnected);
 
-        var existing = await GetLinkAsync(userId, taskId);
+        var existing = await GetLinkAsync(userId, taskId, taskType);
         var payload  = BuildEventPayload(title, description, calendarDate, start, end);
 
         // ── Already synced: patch in place, or do nothing at all ──────────────
@@ -155,7 +185,7 @@ public class GoogleCalendarEventService
 
             if (patched == GoogleCallOutcome.Ok)
             {
-                await UpsertLinkAsync(userId, taskId, existing.GoogleEventId,
+                await UpsertLinkAsync(userId, taskId, taskType, existing.GoogleEventId,
                                       calendarDate, start, end, StateSynced);
                 return Ok(CalendarScheduleOutcomes.Synced,
                           BuildDto(taskId, true, calendarDate, start, end));
@@ -178,13 +208,13 @@ public class GoogleCalendarEventService
 
         // Written BEFORE the call: if the process dies mid-insert, the retry finds
         // this row and reuses the id.
-        await UpsertLinkAsync(userId, taskId, eventId, calendarDate, start, end, StatePending);
+        await UpsertLinkAsync(userId, taskId, taskType, eventId, calendarDate, start, end, StatePending);
 
         var inserted = await InsertEventAsync(token.AccessToken, eventId, payload);
 
         if (inserted is GoogleCallOutcome.Ok or GoogleCallOutcome.AlreadyExists)
         {
-            await MarkSyncedAsync(userId, taskId);
+            await MarkSyncedAsync(userId, taskId, taskType);
 
             if (inserted == GoogleCallOutcome.AlreadyExists)
                 _log.LogInformation(
@@ -208,9 +238,14 @@ public class GoogleCalendarEventService
     /// never touched. An event Google says is already gone still gets cleaned up
     /// locally.
     /// </summary>
-    public async Task<TaskCalendarScheduleResultDto> UnscheduleTeamTaskAsync(int userId, int taskId)
+    public Task<TaskCalendarScheduleResultDto> UnscheduleTeamTaskAsync(int userId, int taskId) =>
+        UnscheduleAsync(userId, taskId, TeamTaskType);
+
+    /// <summary>The generic form. See <see cref="ScheduleAsync"/>.</summary>
+    public async Task<TaskCalendarScheduleResultDto> UnscheduleAsync(
+        int userId, int taskId, string taskType)
     {
-        var existing = await GetLinkAsync(userId, taskId);
+        var existing = await GetLinkAsync(userId, taskId, taskType);
         if (existing is null || existing.IsActive != 1)
             return Ok(CalendarScheduleOutcomes.Removed);   // nothing to do
 
@@ -221,7 +256,7 @@ public class GoogleCalendarEventService
             // The grant is gone, so Motiva has no way to reach the event. Keeping
             // a link it can never manage is worse than dropping it; the caller is
             // told the difference so the UI can be honest about the leftover.
-            await DeleteLinkAsync(userId, taskId);
+            await DeleteLinkAsync(userId, taskId, taskType);
             return Ok(CalendarScheduleOutcomes.RemovedLocallyOnly);
         }
 
@@ -230,7 +265,7 @@ public class GoogleCalendarEventService
         // Gone == already deleted in Google. Clean up locally either way.
         if (deleted is GoogleCallOutcome.Ok or GoogleCallOutcome.Gone)
         {
-            await DeleteLinkAsync(userId, taskId);
+            await DeleteLinkAsync(userId, taskId, taskType);
             return Ok(CalendarScheduleOutcomes.Removed);
         }
 
@@ -251,7 +286,7 @@ public class GoogleCalendarEventService
     /// The link rows are dropped unconditionally, so no row survives pointing at
     /// a task id that no longer exists (and could later be reissued).</para>
     /// </summary>
-    public async Task RemoveLinksForDeletedTaskAsync(int taskId)
+    public async Task RemoveLinksForDeletedTaskAsync(int taskId, string taskType = TeamTaskType)
     {
         try
         {
@@ -260,7 +295,7 @@ public class GoogleCalendarEventService
                        ScheduledStart, ScheduledEnd, SyncState, IsActive
                   FROM GoogleCalendarEventLinks
                  WHERE TaskId = @TaskId AND TaskType = @TaskType",
-                new { TaskId = taskId, TaskType = TeamTaskType });
+                new { TaskId = taskId, TaskType = taskType });
 
             foreach (var row in rows ?? Enumerable.Empty<LinkRow>())
             {
@@ -274,7 +309,7 @@ public class GoogleCalendarEventService
 
             await _db.SaveDataAsync(
                 "DELETE FROM GoogleCalendarEventLinks WHERE TaskId = @TaskId AND TaskType = @TaskType",
-                new { TaskId = taskId, TaskType = TeamTaskType });
+                new { TaskId = taskId, TaskType = taskType });
         }
         catch (Exception ex)
         {
@@ -390,14 +425,14 @@ public class GoogleCalendarEventService
 
     // ── Link rows ─────────────────────────────────────────────────────────────
 
-    private async Task<LinkRow?> GetLinkAsync(int userId, int taskId)
+    private async Task<LinkRow?> GetLinkAsync(int userId, int taskId, string taskType)
     {
         var rows = await _db.GetRecordsAsync<LinkRow>(@"
             SELECT Id, UserId, TaskId, TaskType, GoogleEventId, CalendarId,
                    ScheduledStart, ScheduledEnd, SyncState, IsActive
               FROM GoogleCalendarEventLinks
              WHERE UserId = @UserId AND TaskId = @TaskId AND TaskType = @TaskType",
-            new { UserId = userId, TaskId = taskId, TaskType = TeamTaskType });
+            new { UserId = userId, TaskId = taskId, TaskType = taskType });
 
         return rows?.FirstOrDefault();
     }
@@ -408,7 +443,7 @@ public class GoogleCalendarEventService
     /// racing to insert two.
     /// </summary>
     private Task UpsertLinkAsync(
-        int userId, int taskId, string googleEventId,
+        int userId, int taskId, string taskType, string googleEventId,
         DateTime date, TimeSpan start, TimeSpan end, string syncState) =>
         _db.SaveDataAsync(@"
             INSERT INTO GoogleCalendarEventLinks
@@ -429,7 +464,7 @@ public class GoogleCalendarEventService
             {
                 UserId         = userId,
                 TaskId         = taskId,
-                TaskType       = TeamTaskType,
+                TaskType       = taskType,
                 GoogleEventId  = googleEventId,
                 CalendarId     = PrimaryCalendarId,
                 ScheduledStart = StampOf(date, start),
@@ -437,17 +472,17 @@ public class GoogleCalendarEventService
                 SyncState      = syncState,
             });
 
-    private Task MarkSyncedAsync(int userId, int taskId) =>
+    private Task MarkSyncedAsync(int userId, int taskId, string taskType) =>
         _db.SaveDataAsync(@"
             UPDATE GoogleCalendarEventLinks
                SET SyncState = @State, UpdatedAt = datetime('now')
              WHERE UserId = @UserId AND TaskId = @TaskId AND TaskType = @TaskType",
-            new { State = StateSynced, UserId = userId, TaskId = taskId, TaskType = TeamTaskType });
+            new { State = StateSynced, UserId = userId, TaskId = taskId, TaskType = taskType });
 
-    private Task DeleteLinkAsync(int userId, int taskId) =>
+    private Task DeleteLinkAsync(int userId, int taskId, string taskType) =>
         _db.SaveDataAsync(
             "DELETE FROM GoogleCalendarEventLinks WHERE UserId = @UserId AND TaskId = @TaskId AND TaskType = @TaskType",
-            new { UserId = userId, TaskId = taskId, TaskType = TeamTaskType });
+            new { UserId = userId, TaskId = taskId, TaskType = taskType });
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

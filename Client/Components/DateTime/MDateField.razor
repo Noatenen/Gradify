@@ -1,0 +1,198 @@
+@namespace AuthWithAdmin.Client.Components
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+
+@*
+    MDateField — a Motiva date field with a Motiva calendar.
+
+    REPLACES <input type="date">. That control renders the BROWSER's calendar:
+    Chrome's own chrome, Chrome's own typography, Chrome's own selected state,
+    and on Windows a completely different one again. It is the single most
+    visually foreign thing that can appear inside a Motiva form, and no amount
+    of styling reaches inside it.
+
+    ── THE PANEL OPENS IN FLOW, NOT ON TOP ──────────────────────────────────
+    It is drawn as an elevated Motiva surface directly BELOW its trigger, in
+    normal document flow, rather than absolutely positioned over the form.
+
+    Two reasons, and the first is not a preference:
+
+      1. Every host of this field is a modal, and MModal's dialog is
+         `overflow: hidden` with a scrolling body. An absolutely positioned
+         panel is CLIPPED by that — it would be cut off exactly when the form
+         is long enough to need it.
+      2. A panel that pushes content down never covers a field the user is
+         still reading. Covering unrelated fields is precisely the complaint
+         against the native picker.
+
+    ── RTL ──────────────────────────────────────────────────────────────────
+    The grid flows from the reading edge on its own, so Sunday lands on the
+    right with no direction-conditional rule. Only the two arrows are mirrored,
+    because "previous" points right in an RTL calendar.
+*@
+
+<div class="mdf">
+
+    @* The trigger states the value, it does not merely hold it: a date field
+       that reads "19.08.2026" makes the user parse a number, while
+       "רביעי, 19 באוגוסט 2026" is already the answer. *@
+    <button type="button"
+            class="@TriggerClass"
+            disabled="@Disabled"
+            aria-haspopup="dialog"
+            aria-expanded="@(_open ? "true" : "false")"
+            aria-label="@($"{Label}: {(Value is DateTime v ? MotivaDates.FullDate(v) : "לא נבחר תאריך")}")"
+            @onclick="Toggle">
+        <span class="mdf-value @(Value is null ? "mdf-placeholder" : "")">
+            @(Value is DateTime shown ? MotivaDates.FullDate(shown) : Placeholder)
+        </span>
+        <svg class="mdf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="16" rx="2" />
+            <path d="M3 10h18M8 3v4M16 3v4" />
+        </svg>
+    </button>
+
+    @if (_open)
+    {
+        <div class="mdf-panel" id="@_panelId" role="dialog" aria-label="בחירת תאריך">
+
+            <div class="mdf-panel-head">
+                <button type="button" class="mdf-nav" aria-label="חודש קודם"
+                        @onclick="@(() => _month = _month.AddMonths(-1))">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m9 6 6 6-6 6" />
+                    </svg>
+                </button>
+                <span class="mdf-month" aria-live="polite">@MotivaDates.MonthAndYear(_month)</span>
+                <button type="button" class="mdf-nav" aria-label="חודש הבא"
+                        @onclick="@(() => _month = _month.AddMonths(1))">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m15 6-6 6 6 6" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="mdf-grid" role="grid">
+                @foreach (var name in MotivaDates.ShortDayNames)
+                {
+                    <span class="mdf-dayname" role="columnheader">@name</span>
+                }
+
+                @foreach (var day in Cells)
+                {
+                    var d = day;
+                    <button type="button" role="gridcell"
+                            class="mdf-day @(d.Month != _month.Month ? "mdf-day-out" : "") @(d == Today ? "mdf-day-today" : "") @(Value?.Date == d ? "mdf-day-on" : "")"
+                            aria-label="@MotivaDates.FullDate(d)"
+                            aria-current="@(d == Today ? "date" : null)"
+                            aria-pressed="@(Value?.Date == d ? "true" : "false")"
+                            @onclick="@(() => PickAsync(d))">
+                        @d.Day
+                    </button>
+                }
+            </div>
+
+            @* היום is a shortcut, not a second way to express the value —
+               it selects and closes exactly as a cell does. ניקוי appears only
+               when there IS something to clear. *@
+            <div class="mdf-panel-foot">
+                <button type="button" class="mdf-quick" @onclick="@(() => PickAsync(Today))">היום</button>
+                @if (Value is not null && AllowClear)
+                {
+                    <button type="button" class="mdf-quick mdf-quick-muted" @onclick="ClearAsync">ניקוי</button>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>The selected date, or null. Date-only by contract — this field
+    /// never attaches a time, which is the whole reason the time input beside
+    /// it is a separate, optional decision.</summary>
+    [Parameter] public DateTime? Value { get; set; }
+
+    [Parameter] public EventCallback<DateTime?> ValueChanged { get; set; }
+
+    [Parameter] public bool Disabled { get; set; }
+
+    /// <summary>Draws the error edge. The message itself belongs to the form —
+    /// a field that both reddens and explains says the same thing twice.</summary>
+    [Parameter] public bool Invalid { get; set; }
+
+    [Parameter] public string Placeholder { get; set; } = "בחירת תאריך";
+
+    /// <summary>Used only to build the accessible name, so the trigger announces
+    /// which date it holds rather than just "button".</summary>
+    [Parameter] public string Label { get; set; } = "תאריך";
+
+    [Parameter] public bool AllowClear { get; set; } = true;
+
+    private bool     _open;
+    private DateTime _month = DateTime.Now.Date;
+    private readonly string _panelId = $"mdf-{Guid.NewGuid():N}";
+
+    /// <summary>
+    /// Scrolls a freshly-opened panel fully into view.
+    ///
+    /// <para>The panel opens BELOW its trigger inside a modal body that scrolls,
+    /// so on a long form it lands mostly under the fold — the user would see its
+    /// first row and have to scroll to find the rest, which is worse than the
+    /// native control this replaces. One call after the render that opened it
+    /// puts the whole panel on screen.</para>
+    /// </summary>
+    private bool _justOpened;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_justOpened) return;
+        _justOpened = false;
+
+        try   { await JS.InvokeVoidAsync("gradify.revealPopover", _panelId); }
+        catch { /* Scrolling is a courtesy; the panel is usable without it. */ }
+    }
+
+
+    private static DateTime Today => DateTime.Now.Date;
+
+    private string TriggerClass =>
+        "mdf-trigger"
+        + (_open ? " mdf-trigger-open" : "")
+        + (Invalid ? " mdf-trigger-invalid" : "");
+
+    /// <summary>Six weeks from the Sunday on or before the 1st. A fixed cell
+    /// count keeps the panel from changing height as months change, which would
+    /// make the form below it jump.</summary>
+    private IEnumerable<DateTime> Cells
+    {
+        get
+        {
+            var first = new DateTime(_month.Year, _month.Month, 1);
+            var start = first.AddDays(-(int)first.DayOfWeek);
+            return Enumerable.Range(0, 42).Select(i => start.AddDays(i));
+        }
+    }
+
+    /// <summary>Opening lands on the month of the CURRENT value, so a user
+    /// editing a task in November does not start paging from today.</summary>
+    private void Toggle()
+    {
+        if (!_open) { _month = (Value ?? Today).Date; _justOpened = true; }
+        _open = !_open;
+    }
+
+    private async Task PickAsync(DateTime d)
+    {
+        _open = false;
+        await ValueChanged.InvokeAsync(d.Date);
+    }
+
+    private async Task ClearAsync()
+    {
+        _open = false;
+        await ValueChanged.InvokeAsync(null);
+    }
+}
