@@ -1,49 +1,513 @@
+@page "/lecturer/submissions"
 @page "/lecturer-submissions"
 @layout AppLayout
-@using AuthWithAdmin.Shared.AuthSharedModels
-@inject NavigationManager Nav
 @attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Submissions
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IPendingMentorApprovalsService SubmissionsService
+@inject NavigationManager Nav
 
 @*
-    Lecturer Submissions — DEPRECATED 2026-05-17.
+    ── הגשות ובקרה — Lecturer Submissions ────────────────────────────────────
+    Visual source:  design-reference/LecturerSide/Motiva Lecturer Submissions.dc.html
+    Data source:    GET /api/task-submissions/lecturer-overview
+                    → List<LecturerSubmissionOverviewRowDto>
 
-    The lecturer-final-review flow was retired. Final deliverables now go
-    through Moodle (external); inside Gradify we only handle mentor review.
+    Shows the course-wide submission health across all projects in the
+    Lecturer's scope. Replaces the deprecated "תהליך הבדיקה הסופית הוסר"
+    placeholder that was shown before 2026-08.
 
-    The route still resolves so existing bookmarks don't 404, but the page
-    body is just a card explaining where to find the equivalent surfaces:
-    mentor feedback lives inside each project's overview page, and project
-    health monitoring lives on the dashboard.
+    Status vocabulary (mirrors the same underlying Student/Mentor workflow):
+      missing          — no submission + past due
+      late             — has submission, past due, not approved
+      awaiting_lecturer— EscalatedToLecturer=1, not yet approved (actionable)
+      awaiting_mentor  — MentorStatus='Pending', not past due
+      approved         — MentorStatus='Approved'
+
+    Lecturer Home "הגשות לאישורך" = escalated count = same as "לאישור מרצה"
+    KPI here (filtered from PendingMentorApprovals where EscalatedToLecturer=true).
 *@
 
-<div class="lsub-deprecated-wrap" dir="rtl">
-    <div class="lsub-deprecated-card">
-        <div class="lsub-deprecated-icon" aria-hidden="true">
-            <span class="oi oi-info"></span>
-        </div>
-        <div class="lsub-deprecated-body">
-            <h1 class="lsub-deprecated-title">תהליך הבדיקה הסופית הוסר</h1>
-            <p class="lsub-deprecated-lead">
-                ההגשה הרשמית של תוצרי הפרויקט מתבצעת כעת ב-<strong>מודל</strong>
-                בלבד, ולכן הסרנו את ממשק הבדיקה הסופית מהמערכת.
-            </p>
-            <p class="lsub-deprecated-lead">
-                ניתן עדיין לצפות בסקירת מנחה ובמשובי המנחה דרך עמודי הפרויקטים,
-                ולעקוב אחר סטטוס ההגשות והבריאות במסך הבית.
-            </p>
+@* ── HERO — gradient band with KPI cards ──────────────────────────────── *@
+@{
+    int countMissing  = _rows.Count(r => r.ComputedStatus == "missing");
+    int countLate     = _rows.Count(r => r.ComputedStatus == "late");
+    int countLecturer = _rows.Count(r => r.ComputedStatus == "awaiting_lecturer");
+    int countMentor   = _rows.Count(r => r.ComputedStatus == "awaiting_mentor");
+}
+<div class="ls-hero">
+    <h1 class="ls-hero-title">הגשות ובקרה</h1>
+    <p class="ls-hero-sub">עמידה בדרישות הקורס לרוחב כל הפרויקטים</p>
 
-            <div class="lsub-deprecated-actions">
-                <button class="lsub-deprecated-btn lsub-deprecated-btn-primary"
-                        @onclick="@(() => Nav.NavigateTo("/dashboard/lecturer"))">
-                    <span class="oi oi-pulse" aria-hidden="true"></span>
-                    מעבר לדשבורד
-                </button>
-                <button class="lsub-deprecated-btn lsub-deprecated-btn-secondary"
-                        @onclick="@(() => Nav.NavigateTo("/management"))">
-                    <span class="oi oi-list-rich" aria-hidden="true"></span>
-                    מעבר לאיזור הניהול
-                </button>
+    @if (!_loading)
+    {
+        <div class="ls-kpi-grid">
+
+            @* הגשות חסרות — red *@
+            <button type="button"
+                    class="ls-kpi @(_statusFilter == "missing" ? "ls-kpi-active" : "")"
+                    style="--ls-accent:rgba(217,56,100,.45)"
+                    aria-pressed="@(_statusFilter == "missing" ? "true" : "false")"
+                    @onclick="@(() => ToggleStatus("missing"))">
+                <div class="ls-kpi-ic" style="background:rgba(217,56,100,.08);color:#D93864">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 8v4M12 16h.01"/><circle cx="12" cy="12" r="9"/>
+                    </svg>
+                </div>
+                <div class="ls-kpi-body">
+                    <strong class="ls-kpi-num" style="color:#D93864">@countMissing</strong>
+                    <span class="ls-kpi-lab">הגשות חסרות</span>
+                </div>
+            </button>
+
+            @* באיחור — orange *@
+            <button type="button"
+                    class="ls-kpi @(_statusFilter == "late" ? "ls-kpi-active" : "")"
+                    style="--ls-accent:rgba(217,118,26,.45)"
+                    aria-pressed="@(_statusFilter == "late" ? "true" : "false")"
+                    @onclick="@(() => ToggleStatus("late"))">
+                <div class="ls-kpi-ic" style="background:rgba(217,118,26,.10);color:#D9761A">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="9"/>
+                        <path d="M12 8v4.5l3 2"/>
+                    </svg>
+                </div>
+                <div class="ls-kpi-body">
+                    <strong class="ls-kpi-num" style="color:#D9761A">@countLate</strong>
+                    <span class="ls-kpi-lab">באיחור</span>
+                </div>
+            </button>
+
+            @* לאישור מרצה — indigo *@
+            <button type="button"
+                    class="ls-kpi @(_statusFilter == "awaiting_lecturer" ? "ls-kpi-active" : "")"
+                    style="--ls-accent:rgba(79,70,229,.45)"
+                    aria-pressed="@(_statusFilter == "awaiting_lecturer" ? "true" : "false")"
+                    @onclick="@(() => ToggleStatus("awaiting_lecturer"))">
+                <div class="ls-kpi-ic" style="background:rgba(79,70,229,.09);color:#4F46E5">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <path d="M14 3v5h5"/>
+                    </svg>
+                </div>
+                <div class="ls-kpi-body">
+                    <strong class="ls-kpi-num" style="color:#4F46E5">@countLecturer</strong>
+                    <span class="ls-kpi-lab">לאישור מרצה</span>
+                </div>
+            </button>
+
+            @* בבדיקת מנחה — dark *@
+            <button type="button"
+                    class="ls-kpi @(_statusFilter == "awaiting_mentor" ? "ls-kpi-active" : "")"
+                    style="--ls-accent:rgba(26,24,32,.35)"
+                    aria-pressed="@(_statusFilter == "awaiting_mentor" ? "true" : "false")"
+                    @onclick="@(() => ToggleStatus("awaiting_mentor"))">
+                <div class="ls-kpi-ic" style="background:rgba(26,24,32,.045);color:#1A1820">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 6h16M4 12h16M4 18h10"/>
+                    </svg>
+                </div>
+                <div class="ls-kpi-body">
+                    <strong class="ls-kpi-num" style="color:#1A1820">@countMentor</strong>
+                    <span class="ls-kpi-lab">בבדיקת מנחה</span>
+                </div>
+            </button>
+
+        </div>
+    }
+</div>
+
+@* ── BODY ──────────────────────────────────────────────────────────────── *@
+<div class="ls-body">
+
+    @if (_loading)
+    {
+        <div class="ls-state" role="status" aria-live="polite">
+            <span class="ls-spinner" aria-hidden="true"></span>
+            <span>טוענת הגשות…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="ls-error" role="alert">שגיאה בטעינת הנתונים. נסה לרענן את הדף.</div>
+    }
+    else if (_rows.Count == 0)
+    {
+        <div class="ls-empty-page">
+            <strong class="ls-empty-title">אין הגשות בטווח הנוכחי.</strong>
+            <p class="ls-empty-desc">כשיוגשו משימות הגשה הן יופיעו כאן.</p>
+        </div>
+    }
+    else
+    {
+        @* ── Bottleneck card — shown when there are missing/late submissions ─ *@
+        @if (Bottlenecks is { Count: > 0 } bottlenecks)
+        {
+            <div class="ls-bottleneck">
+                <p class="ls-bottleneck-cap">היכן התהליך נתקע</p>
+                <div class="ls-bottleneck-list">
+                    @foreach (var b in bottlenecks)
+                    {
+                        <div class="ls-bottleneck-row">
+                            <span class="ls-bottleneck-text">@b.Text</span>
+                            <span class="ls-bottleneck-val" style="color:@b.Color">@b.Value</span>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+
+        @* ── Submission list ─────────────────────────────────────────────── *@
+        <div id="ls-list" style="scroll-margin-top:20px">
+            <p class="ls-list-label">רשימת ההגשות</p>
+
+            @* Active filter banner *@
+            @if (HasActiveFilter)
+            {
+                <div class="ls-filter-banner">
+                    <div class="ls-filter-banner-start">
+                        <span class="ls-filter-word">מסנן פעיל:</span>
+                        <span class="ls-filter-tag" style="@FilterTagStyle">@FilterLabel</span>
+                    </div>
+                    <button type="button" class="ls-filter-clear" @onclick="ClearFilters">✕ נקה סינון</button>
+                </div>
+            }
+
+            @* Filter dropdowns *@
+            <div class="ls-filters">
+                <select class="ls-select"
+                        value="@_milestoneFilter"
+                        @onchange="@(e => _milestoneFilter = e.Value?.ToString() ?? "all")">
+                    <option value="all">כל אבני הדרך</option>
+                    @foreach (var ms in MilestoneOptions)
+                    {
+                        <option value="@ms">@ms</option>
+                    }
+                </select>
+
+                <select class="ls-select"
+                        value="@_mentorFilter"
+                        @onchange="@(e => _mentorFilter = e.Value?.ToString() ?? "all")">
+                    <option value="all">כל המנחים</option>
+                    @foreach (var m in MentorOptions)
+                    {
+                        <option value="@m">@m</option>
+                    }
+                </select>
+
+                <select class="ls-select"
+                        value="@_typeFilter"
+                        @onchange="@(e => _typeFilter = e.Value?.ToString() ?? "all")">
+                    <option value="all">כל סוגי ההגשה</option>
+                    @foreach (var t in TypeOptions)
+                    {
+                        <option value="@t">@t</option>
+                    }
+                </select>
+            </div>
+
+            @* Submission rows *@
+            <div class="ls-list-card">
+                @{
+                    var filtered = Filtered;
+                }
+                @if (filtered.Count == 0)
+                {
+                    <div class="ls-empty-list">אין הגשות בסינון הנוכחי.</div>
+                }
+                else
+                {
+                    @foreach (var row in filtered)
+                    {
+                        var r          = row;
+                        var isLate     = r.ComputedStatus is "missing" or "late";
+                        var meta       = StatusMeta(r.ComputedStatus);
+                        var isApproving = _approvingId == r.SubmissionId;
+
+                        <div class="ls-row">
+                            @* Primary content *@
+                            <div class="ls-row-content">
+                                <strong class="ls-row-title">
+                                    @r.TaskTitle — @r.ProjectTitle
+                                </strong>
+                                <small class="ls-row-sub">
+                                    אבן דרך @r.MilestoneTitle · מנחה: @(string.IsNullOrWhiteSpace(r.MentorName) ? "לא שויך" : r.MentorName)
+                                </small>
+                            </div>
+
+                            @* Right: due label + status pill + optional approve button *@
+                            <div class="ls-row-end">
+                                @if (isLate && r.DaysLate > 0)
+                                {
+                                    <span class="ls-row-due ls-row-due-late">באיחור @r.DaysLate ימים</span>
+                                }
+                                else if (r.EffectiveDueDate.HasValue)
+                                {
+                                    <span class="ls-row-due">יעד @r.EffectiveDueDate.Value.ToString("dd/MM/yy")</span>
+                                }
+
+                                <span class="ls-status-pill"
+                                      style="color:@meta.Color;background:@meta.Tint">
+                                    <span class="ls-status-dot" style="background:@meta.Color"></span>
+                                    @meta.Label
+                                </span>
+
+                                @if (r.ComputedStatus == "awaiting_lecturer" && r.SubmissionId.HasValue)
+                                {
+                                    <button type="button"
+                                            class="ls-approve-btn"
+                                            disabled="@isApproving"
+                                            @onclick="@(async () => await ApproveAsync(r))">
+                                        @(isApproving ? "…" : "אישור")
+                                    </button>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
             </div>
         </div>
-    </div>
+    }
 </div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "status")]
+    private string? StatusParam { get; set; }
+
+    private List<LecturerSubmissionOverviewRowDto> _rows = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    private string _statusFilter    = "all";
+    private string _milestoneFilter = "all";
+    private string _mentorFilter    = "all";
+    private string _typeFilter      = "all";
+
+    private int? _approvingId;   // which submission is currently being approved
+    private string? _approveError;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(StatusParam))
+            _statusFilter = StatusParam.Trim().ToLowerInvariant();
+
+        try
+        {
+            var data = await SubmissionsService.GetOverviewAsync();
+            if (data is null)
+            {
+                _loadError = true;
+            }
+            else
+            {
+                // Design sort: missing → late → awaiting_lecturer → awaiting_mentor → approved
+                // within each bucket, most overdue first
+                _rows = data
+                    .OrderBy(r => StatusRank(r.ComputedStatus))
+                    .ThenByDescending(r => r.DaysLate)
+                    .ToList();
+            }
+        }
+        catch
+        {
+            _loadError = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // ── Filtering ──────────────────────────────────────────────────────────────
+
+    private List<LecturerSubmissionOverviewRowDto> Filtered =>
+        _rows.Where(r =>
+            (_statusFilter    == "all" || r.ComputedStatus   == _statusFilter) &&
+            (_milestoneFilter == "all" || r.MilestoneTitle   == _milestoneFilter) &&
+            (_mentorFilter    == "all" || MentorNamesOf(r).Contains(_mentorFilter)) &&
+            (_typeFilter      == "all" || r.TaskTitle         == _typeFilter)
+        ).ToList();
+
+    private void ToggleStatus(string value)
+    {
+        _statusFilter = _statusFilter == value ? "all" : value;
+    }
+
+    private void ClearFilters()
+    {
+        _statusFilter    = "all";
+        _milestoneFilter = "all";
+        _mentorFilter    = "all";
+        _typeFilter      = "all";
+    }
+
+    // ── Approve action ─────────────────────────────────────────────────────────
+
+    private async Task ApproveAsync(LecturerSubmissionOverviewRowDto row)
+    {
+        if (row.SubmissionId is null) return;
+        _approvingId  = row.SubmissionId;
+        _approveError = null;
+
+        var err = await SubmissionsService.OverrideApproveAsync(
+            row.SubmissionId.Value, "אישור ישיר על-ידי מרצה");
+
+        if (err is null)
+        {
+            // Optimistic update: flip status in-place without reloading
+            // (LecturerSubmissionOverviewRowDto is a class, so mutate directly)
+            row.ComputedStatus      = "approved";
+            row.MentorStatus        = "Approved";
+            row.EscalatedToLecturer = false;
+        }
+        else
+        {
+            _approveError = err;
+        }
+
+        _approvingId = null;
+    }
+
+    // ── Dropdown options ───────────────────────────────────────────────────────
+
+    private IEnumerable<string> MilestoneOptions =>
+        _rows.Select(r => r.MilestoneTitle)
+             .Where(v => !string.IsNullOrWhiteSpace(v))
+             .Distinct(StringComparer.OrdinalIgnoreCase)
+             .OrderBy(v => v);
+
+    private IEnumerable<string> MentorOptions =>
+        _rows.SelectMany(r => MentorNamesOf(r))
+             .Distinct(StringComparer.OrdinalIgnoreCase)
+             .OrderBy(v => v);
+
+    private IEnumerable<string> TypeOptions =>
+        _rows.Select(r => r.TaskTitle)
+             .Where(v => !string.IsNullOrWhiteSpace(v))
+             .Distinct(StringComparer.OrdinalIgnoreCase)
+             .OrderBy(v => v);
+
+    // ── Bottleneck analysis ────────────────────────────────────────────────────
+
+    private sealed record BottleneckItem(string Text, string Value, string Color);
+
+    private List<BottleneckItem> Bottlenecks
+    {
+        get
+        {
+            var problematic = _rows
+                .Where(r => r.ComputedStatus is "missing" or "late")
+                .ToList();
+
+            if (problematic.Count == 0) return new();
+
+            var result = new List<BottleneckItem>();
+
+            // Top milestone(s) with most issues
+            var byMilestone = problematic
+                .GroupBy(r => r.MilestoneTitle)
+                .OrderByDescending(g => g.Count())
+                .Take(2);
+            foreach (var g in byMilestone)
+                result.Add(new($"אבן הדרך \"{g.Key}\" — הגשות חסרות או באיחור",
+                               $"{g.Count()} הגשות", "#D9761A"));
+
+            // Projects with >1 issue
+            var repeatProjects = problematic
+                .GroupBy(r => r.ProjectTitle)
+                .Where(g => g.Count() > 1)
+                .ToList();
+            if (repeatProjects.Count > 0)
+                result.Add(new(
+                    $"פרויקטים עם יותר מחריגה אחת: {string.Join(", ", repeatProjects.Select(g => g.Key))}",
+                    $"{repeatProjects.Count} פרויקטים", "#D93864"));
+
+            // Mentor with most issues
+            var topMentor = problematic
+                .Where(r => !string.IsNullOrWhiteSpace(r.MentorName))
+                .GroupBy(r => r.MentorName!)
+                .OrderByDescending(g => g.Count())
+                .FirstOrDefault();
+            if (topMentor is not null)
+                result.Add(new($"ריכוז חריגות אצל המנחה {topMentor.Key}",
+                               $"{topMentor.Count()} הגשות", "#2F6FD0"));
+
+            return result;
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private bool HasActiveFilter =>
+        _statusFilter    is not "all"
+        || _milestoneFilter is not "all"
+        || _mentorFilter    is not "all"
+        || _typeFilter      is not "all";
+
+    private string FilterLabel
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (_statusFilter    is not "all") parts.Add(StatusLabel(_statusFilter));
+            if (_milestoneFilter is not "all") parts.Add($"אבן דרך: {_milestoneFilter}");
+            if (_mentorFilter    is not "all") parts.Add($"מנחה: {_mentorFilter}");
+            if (_typeFilter      is not "all") parts.Add(_typeFilter);
+            return string.Join(" · ", parts);
+        }
+    }
+
+    private string FilterTagStyle
+    {
+        get
+        {
+            var meta = StatusMeta(_statusFilter);
+            return $"font-size:12.5px;font-weight:600;color:{meta.Color};background:{meta.Tint};padding:5px 12px;border-radius:99px;white-space:nowrap";
+        }
+    }
+
+    private static IReadOnlyList<string> MentorNamesOf(LecturerSubmissionOverviewRowDto r)
+    {
+        if (string.IsNullOrWhiteSpace(r.MentorName)) return Array.Empty<string>();
+        return r.MentorName.Split(", ", StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private static int StatusRank(string status) => status switch
+    {
+        "missing"           => 0,
+        "late"              => 1,
+        "awaiting_lecturer" => 2,
+        "awaiting_mentor"   => 3,
+        _                   => 4, // approved
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "missing"           => "הגשות חסרות",
+        "late"              => "באיחור",
+        "awaiting_lecturer" => "לאישור מרצה",
+        "awaiting_mentor"   => "בבדיקת מנחה",
+        "approved"          => "אושרה",
+        _                   => status,
+    };
+
+    private sealed record StatusDisplay(string Label, string Color, string Tint);
+
+    private static StatusDisplay StatusMeta(string status) => status switch
+    {
+        "missing"           => new("חסרה",          "#D93864", "rgba(217,56,100,.08)"),
+        "late"              => new("באיחור",         "#D9761A", "rgba(217,118,26,.10)"),
+        "awaiting_lecturer" => new("לאישורך",        "#4F46E5", "rgba(79,70,229,.08)"),
+        "awaiting_mentor"   => new("בבדיקת מנחה",   "#1A1820", "rgba(26,24,32,.05)"),
+        "approved"          => new("אושרה",          "#0D9C9A", "rgba(13,156,154,.07)"),
+        _                   => new(status,           "#8B8698", "rgba(26,24,32,.06)"),
+    };
+}

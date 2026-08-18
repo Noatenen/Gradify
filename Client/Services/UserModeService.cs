@@ -126,7 +126,11 @@ public static class UserModeService
         mode switch
         {
             UserModes.Mentor => "/dashboard/mentor",
-            _                => "/dashboard/lecturer",
+            // Staff/Lecturer lands on the Motiva Lecturer Home, not the legacy
+            // Admin overview (/dashboard/lecturer). The legacy page still resolves
+            // at its own URL for Admin users — this only changes where the
+            // mode-toggle sends a dual-role (Staff + Mentor) user.
+            _                => "/lecturer/home",
         };
 
     // ── internals ─────────────────────────────────────────────────────────

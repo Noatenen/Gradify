@@ -1272,6 +1272,153 @@ public class TaskSubmissionsController : ControllerBase
                ?.FirstOrDefault();
     }
 
+    // ── GET /api/task-submissions/lecturer-overview ──────────────────────────
+    //
+    // Course-wide submission health for the Lecturer Submissions page.
+    // Returns one row per submission task within the Lecturer scope (same project
+    // filter as /api/dashboard?scope=lecturer): tasks that are either past their
+    // due date OR have at least one submission record. "Not yet due, never
+    // submitted" tasks are excluded — they have no monitoring value yet.
+    //
+    // ComputedStatus is resolved server-side so the client renders status chips
+    // without re-implementing the priority logic:
+    //   missing          — no submission + past due
+    //   awaiting_lecturer— has submission + EscalatedToLecturer=1 + not approved
+    //   approved         — MentorStatus='Approved'
+    //   late             — has submission + past due + not approved
+    //   awaiting_mentor  — has submission + MentorStatus='Pending' + not past due
+    //
+    // NOTE: "הגשות לאישורך" on Lecturer Home derives from PendingMentorApprovals
+    // filtered to EscalatedToLecturer=true — the same records that appear here as
+    // "awaiting_lecturer". Both surfaces are therefore always consistent.
+    [HttpGet("lecturer-overview")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> GetLecturerOverview(int authUserId)
+    {
+        // Current academic year (same approach as LecturerDashboardController)
+        const string yearSql = @"
+            SELECT Id FROM AcademicYears WHERE IsCurrent = 1
+            UNION ALL
+            SELECT Id FROM AcademicYears ORDER BY Id DESC
+            LIMIT 1";
+        var yearId = (await _db.GetRecordsAsync<int>(yearSql))?.FirstOrDefault() ?? 0;
+
+        const string sql = @"
+            SELECT
+                t.Id                                       AS TaskId,
+                t.Title                                    AS TaskTitle,
+                p.Id                                       AS ProjectId,
+                p.ProjectNumber,
+                p.Title                                    AS ProjectTitle,
+                tm.TeamName,
+                mt.Title                                   AS MilestoneTitle,
+                COALESCE(tto.OverrideDueDate,
+                         mo.OverrideDueDate,
+                         t.DueDate)                        AS EffectiveDueDate,
+                s.Id                                       AS SubmissionId,
+                s.SubmittedAt,
+                s.MentorStatus,
+                COALESCE(s.EscalatedToLecturer, 0)         AS EscalatedToLecturer,
+                (SELECT GROUP_CONCAT(u.FirstName || ' ' || u.LastName, ', ')
+                 FROM   ProjectMentors pmm
+                 JOIN   users          u  ON u.Id = pmm.UserId
+                 WHERE  pmm.ProjectId = p.Id)              AS MentorName
+            FROM   Tasks                           t
+            JOIN   ProjectMilestones               pm  ON pm.Id  = t.ProjectMilestoneId
+            JOIN   Projects                        p   ON p.Id   = pm.ProjectId
+            JOIN   AcademicYearMilestones          aym ON aym.Id = pm.AcademicYearMilestoneId
+            JOIN   MilestoneTemplates              mt  ON mt.Id  = aym.MilestoneTemplateId
+            LEFT JOIN Teams                        tm  ON tm.Id  = p.TeamId
+            LEFT JOIN TeamTaskDueDateOverrides     tto ON tto.TeamId = p.TeamId
+                                                      AND tto.TaskId = t.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo  ON mo.TeamId = p.TeamId
+                                                       AND mo.ProjectMilestoneId = pm.Id
+            LEFT JOIN TaskSubmissions              s   ON s.TaskId = t.Id
+                                                     AND s.Id = (
+                                                         SELECT MAX(s2.Id)
+                                                         FROM   TaskSubmissions s2
+                                                         WHERE  s2.TaskId = t.Id)
+            WHERE  p.AcademicYearId                = @YearId
+              AND  COALESCE(p.AssignmentIsDraft, 0) = 0
+              AND  p.TeamId IS NOT NULL
+              AND  p.Status NOT IN ('Available', 'Unavailable')
+              AND  t.IsSubmission                   = 1
+              AND  (
+                s.Id IS NOT NULL
+                OR date(COALESCE(tto.OverrideDueDate,
+                                 mo.OverrideDueDate,
+                                 t.DueDate)) < date('now')
+              )
+            ORDER  BY p.ProjectNumber, mt.OrderIndex, t.Id";
+
+        var rawRows = (await _db.GetRecordsAsync<OverviewRawRow>(
+            sql, new { YearId = yearId }))?.ToList() ?? new();
+
+        var today = DateTime.Today;
+        var result = new List<LecturerSubmissionOverviewRowDto>(rawRows.Count);
+
+        foreach (var row in rawRows)
+        {
+            bool isPastDue = row.EffectiveDueDate.HasValue
+                             && row.EffectiveDueDate.Value.Date < today;
+
+            string status;
+            int daysLate = 0;
+
+            if (row.SubmissionId is null)
+            {
+                // No submission + past due (WHERE clause guarantees this)
+                status   = "missing";
+                daysLate = isPastDue
+                    ? (int)(today - row.EffectiveDueDate!.Value.Date).TotalDays
+                    : 0;
+            }
+            else if (row.EscalatedToLecturer == 1
+                     && !string.Equals(row.MentorStatus, "Approved",
+                                       StringComparison.OrdinalIgnoreCase))
+            {
+                status = "awaiting_lecturer";
+            }
+            else if (string.Equals(row.MentorStatus, "Approved",
+                                    StringComparison.OrdinalIgnoreCase))
+            {
+                status = "approved";
+            }
+            else if (isPastDue)
+            {
+                status   = "late";
+                daysLate = (int)(today - row.EffectiveDueDate!.Value.Date).TotalDays;
+            }
+            else
+            {
+                status = "awaiting_mentor";
+            }
+
+            result.Add(new LecturerSubmissionOverviewRowDto
+            {
+                TaskId              = row.TaskId,
+                TaskTitle           = row.TaskTitle,
+                ProjectId           = row.ProjectId,
+                ProjectNumber       = row.ProjectNumber,
+                ProjectTitle        = row.ProjectTitle,
+                TeamName            = string.IsNullOrWhiteSpace(row.TeamName)
+                                        ? null : row.TeamName,
+                MentorName          = string.IsNullOrWhiteSpace(row.MentorName)
+                                        ? null : row.MentorName,
+                MilestoneTitle      = row.MilestoneTitle,
+                EffectiveDueDate    = row.EffectiveDueDate,
+                SubmissionId        = row.SubmissionId,
+                SubmittedAt         = row.SubmittedAt,
+                MentorStatus        = row.MentorStatus,
+                EscalatedToLecturer = row.EscalatedToLecturer == 1,
+                ComputedStatus      = status,
+                DaysLate            = daysLate,
+            });
+        }
+
+        return Ok(result);
+    }
+
     // ── GET /api/task-submissions/pending-mentor-approvals ────────────────────
     //
     // Lecturer/admin supervision inbox — surfaces submissions waiting on a
@@ -1299,6 +1446,8 @@ public class TaskSubmissionsController : ControllerBase
                 CAST((julianday('now') - julianday(s.SubmittedAt)) AS INTEGER) AS DaysWaiting,
                 s.MentorStatus,
                 s.LastMentorReminderAt,
+                COALESCE(s.EscalatedToLecturer, 0)    AS EscalatedToLecturer,
+                s.EscalationReason,
                 (SELECT GROUP_CONCAT(mu.FirstName || ' ' || mu.LastName, ', ')
                  FROM   ProjectMentors pmm
                  JOIN   users          mu ON mu.Id = pmm.UserId
@@ -1477,6 +1626,23 @@ public class TaskSubmissionsController : ControllerBase
     }
 
     // ── Private Dapper row types ─────────────────────────────────────────────
+
+    private sealed class OverviewRawRow
+    {
+        public int       TaskId              { get; set; }
+        public string    TaskTitle           { get; set; } = "";
+        public int       ProjectId           { get; set; }
+        public int       ProjectNumber       { get; set; }
+        public string    ProjectTitle        { get; set; } = "";
+        public string?   TeamName            { get; set; }
+        public string    MilestoneTitle      { get; set; } = "";
+        public DateTime? EffectiveDueDate    { get; set; }
+        public int?      SubmissionId        { get; set; }
+        public DateTime? SubmittedAt         { get; set; }
+        public string?   MentorStatus        { get; set; }
+        public int       EscalatedToLecturer { get; set; }
+        public string?   MentorName          { get; set; }
+    }
 
     private sealed class RemindMentorContext
     {

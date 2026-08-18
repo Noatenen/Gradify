@@ -235,6 +235,14 @@ public class LecturerDashboardController : ControllerBase
                                  && currentMs.DueDate is not null
                                  && currentMs.DueDate.Value.Date < DateTime.Today;
 
+            // Next future milestone — the nearest upcoming deadline regardless
+            // of status (InProgress past-due still counts as "current" above,
+            // but we want the real next future one for the upcoming-events list).
+            MilestoneRow? nextMs = msList?
+                .Where(m => m.DueDate is not null && m.DueDate.Value.Date >= DateTime.Today)
+                .OrderBy(m => m.DueDate)
+                .FirstOrDefault();
+
             // Health formula (per spec).
             int score = 100
                       - (overdue      * 10)
@@ -253,6 +261,17 @@ public class LecturerDashboardController : ControllerBase
                 MentorNames             = string.IsNullOrWhiteSpace(p.MentorNames) ? null : p.MentorNames,
                 CurrentMilestoneTitle   = currentMs?.MilestoneTitle,
                 CurrentMilestoneDueDate = currentMs?.DueDate,
+                NextMilestoneTitle      = nextMs?.MilestoneTitle,
+                NextMilestoneDueDate    = nextMs?.DueDate,
+                MilestoneSteps          = msList?
+                    .OrderBy(m => m.OrderIndex)
+                    .Select(m => new MilestoneStepDto
+                    {
+                        Title      = m.MilestoneTitle,
+                        Status     = m.Status,
+                        OrderIndex = m.OrderIndex,
+                    })
+                    .ToList() ?? new(),
                 OverdueTaskCount        = overdue,
                 MissingSubmissionCount  = missing,
                 OpenRequestCount        = openRequests,

@@ -94,6 +94,10 @@ builder.Services.AddScoped<IRoleSettingsManagementService, RoleSettingsManagemen
 // Lecturer / Mentor dashboard
 builder.Services.AddScoped<IDashboardOverviewService, DashboardOverviewService>();
 
+// Lecturer Home workspace — composes existing dashboard + requests + pending
+// approvals endpoints into one snapshot, same pattern as MentorWorkspaceService.
+builder.Services.AddScoped<ILecturerHomeService, LecturerHomeService>();
+
 // Lecturer / Mentor milestones overview
 builder.Services.AddScoped<IMilestonesOverviewService, MilestonesOverviewService>();
 

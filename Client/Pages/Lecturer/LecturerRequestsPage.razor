@@ -1,0 +1,613 @@
+@page "/lecturer/requests"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Lecturer
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IProjectRequestsService RequestsService
+@inject NavigationManager Nav
+
+@*
+    ── בקשות — Lecturer Requests ──────────────────────────────────────────────
+    Visual source:  design-reference/LecturerSide/Motiva Lecturer Requests.dc.html
+    Data source:    GET /api/project-requests → List<ProjectRequestRowDto>
+                    GET /api/project-requests/{id} → ProjectRequestDetailDto (lazy, on expand)
+
+    Three groups (matching the approved Motiva design):
+      ממתינות להחלטתך  = PendingLecturerDecision         (actionable, orange)
+      בטיפול מנחה או צוות = everything else that is open   (dark/indigo)
+      טופלו             = Resolved | Closed               (teal, collapsible)
+
+    Lecturer Home "בקשות להחלטתך" count = LecturerGroup.Count (same filter).
+*@
+
+@* ── KPI counts (computed before render) ───────────────────────────────── *@
+@{
+    int cntLecturer = LecturerGroup.Count;
+    int cntOthers   = OthersGroup.Count;
+    int cntResolved = ResolvedGroup.Count;
+}
+
+@* ── HERO ───────────────────────────────────────────────────────────────── *@
+<div class="lr-hero">
+    <h1 class="lr-hero-title">בקשות</h1>
+    <p class="lr-hero-sub">בקשות שהגיעו לטיפול מרצה, ובקשות שממתינות לצדדים אחרים</p>
+
+    @if (!_loading)
+    {
+        <div class="lr-kpi-grid">
+
+            @* ממתינות להחלטתך — orange *@
+            <button type="button"
+                    class="lr-kpi @(_filter == "lecturer" ? "lr-kpi-active" : "")"
+                    style="--lr-accent:rgba(217,118,26,.45)"
+                    aria-pressed="@(_filter == "lecturer" ? "true" : "false")"
+                    @onclick="@(() => ToggleFilter("lecturer"))">
+                <div class="lr-kpi-ic" style="background:rgba(217,118,26,.10);color:#D9761A">
+                    <span class="lr-dot" style="background:#D9761A"></span>
+                </div>
+                <div class="lr-kpi-body">
+                    <strong class="lr-kpi-num" style="color:#D9761A">@cntLecturer</strong>
+                    <span class="lr-kpi-lab">ממתינות להחלטתך</span>
+                </div>
+            </button>
+
+            @* בטיפול מנחה או צוות — dark *@
+            <button type="button"
+                    class="lr-kpi @(_filter == "others" ? "lr-kpi-active" : "")"
+                    style="--lr-accent:rgba(26,24,32,.35)"
+                    aria-pressed="@(_filter == "others" ? "true" : "false")"
+                    @onclick="@(() => ToggleFilter("others"))">
+                <div class="lr-kpi-ic" style="background:rgba(26,24,32,.045);color:#1A1820">
+                    <span class="lr-dot" style="background:#1A1820"></span>
+                </div>
+                <div class="lr-kpi-body">
+                    <strong class="lr-kpi-num" style="color:#1A1820">@cntOthers</strong>
+                    <span class="lr-kpi-lab">בטיפול מנחה או צוות</span>
+                </div>
+            </button>
+
+            @* טופלו — teal *@
+            <button type="button"
+                    class="lr-kpi @(_filter == "resolved" ? "lr-kpi-active" : "")"
+                    style="--lr-accent:rgba(13,156,154,.45)"
+                    aria-pressed="@(_filter == "resolved" ? "true" : "false")"
+                    @onclick="@(() => ToggleFilter("resolved"))">
+                <div class="lr-kpi-ic" style="background:rgba(13,156,154,.08);color:#0D9C9A">
+                    <span class="lr-dot" style="background:#0D9C9A"></span>
+                </div>
+                <div class="lr-kpi-body">
+                    <strong class="lr-kpi-num" style="color:#0D9C9A">@cntResolved</strong>
+                    <span class="lr-kpi-lab">טופלו</span>
+                </div>
+            </button>
+
+        </div>
+    }
+</div>
+
+@* ── BODY ────────────────────────────────────────────────────────────────── *@
+<div class="lr-body">
+
+    @if (_loading)
+    {
+        <div class="lr-state" role="status" aria-live="polite">
+            <span class="lr-spinner" aria-hidden="true"></span>
+            <span>טוענת בקשות…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="lr-error" role="alert">שגיאה בטעינת הנתונים. נסה לרענן את הדף.</div>
+    }
+    else if (_rows.Count == 0)
+    {
+        <div class="lr-empty-page">
+            <strong class="lr-empty-title">אין בקשות בקורס.</strong>
+            <p class="lr-empty-desc">כאשר תלמידים יגישו בקשות הן יופיעו כאן.</p>
+        </div>
+    }
+    else
+    {
+        @* Active filter banner *@
+        @if (_filter != "all")
+        {
+            <div class="lr-filter-banner">
+                <div class="lr-filter-banner-start">
+                    <span class="lr-filter-word">מסנן פעיל:</span>
+                    <span class="lr-filter-tag">@FilterLabel</span>
+                </div>
+                <button type="button" class="lr-filter-clear" @onclick="@(() => _filter = "all")">✕ נקה סינון</button>
+            </div>
+        }
+
+        @* ── Group 1: ממתינות להחלטתך ──────────────────────────────── *@
+        @if (_filter is "all" or "lecturer")
+        {
+            <div class="lr-group">
+                <div class="lr-group-header" style="cursor:default">
+                    <p class="lr-group-label">ממתינות להחלטתך</p>
+                    <span class="lr-group-count">· @cntLecturer</span>
+                </div>
+                <div class="lr-card">
+                    @if (cntLecturer == 0)
+                    {
+                        <div class="lr-empty-group">אין בקשות הממתינות להחלטתך.</div>
+                    }
+                    else
+                    {
+                        @foreach (var row in LecturerGroup)
+                        {
+                            @RequestRow(row, actionable: true)
+                        }
+                    }
+                </div>
+            </div>
+        }
+
+        @* ── Group 2: בטיפול מנחה או צוות ──────────────────────────── *@
+        @if (_filter is "all" or "others")
+        {
+            <div class="lr-group">
+                <div class="lr-group-header" style="cursor:default">
+                    <p class="lr-group-label">בטיפול מנחה או צוות</p>
+                    <span class="lr-group-count">· @cntOthers</span>
+                </div>
+                <div class="lr-card">
+                    @if (cntOthers == 0)
+                    {
+                        <div class="lr-empty-group">אין בקשות בטיפול כרגע.</div>
+                    }
+                    else
+                    {
+                        @foreach (var row in OthersGroup)
+                        {
+                            @RequestRow(row, actionable: false)
+                        }
+                    }
+                </div>
+            </div>
+        }
+
+        @* ── Group 3: טופלו (collapsible) ───────────────────────────── *@
+        @if (_filter is "all" or "resolved")
+        {
+            <div class="lr-group">
+                <div class="lr-group-header lr-group-header-toggle"
+                     @onclick="@(() => _resolvedOpen = !_resolvedOpen)">
+                    <p class="lr-group-label">טופלו</p>
+                    <span class="lr-group-count">· @cntResolved</span>
+                    <span class="lr-chevron" style="transform:@(_resolvedOpen ? "rotate(180deg)" : "rotate(0deg)")">⌄</span>
+                </div>
+
+                @if (_resolvedOpen)
+                {
+                    <div class="lr-card">
+                        @if (cntResolved == 0)
+                        {
+                            <div class="lr-empty-group">אין בקשות שטופלו עדיין.</div>
+                        }
+                        else
+                        {
+                            @foreach (var row in ResolvedGroup)
+                            {
+                                @RequestRow(row, actionable: false)
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+</div>
+
+@* ── Row render fragment ─────────────────────────────────────────────────── *@
+@code {
+    private RenderFragment RequestRow(ProjectRequestRowDto row, bool actionable) => __builder =>
+    {
+        var open      = _openId == row.Id;
+        var days      = (DateTime.Today - row.CreatedAt.Date).Days;
+        var isResolved = row.Status is RequestStatuses.Resolved or RequestStatuses.Closed;
+        var urgent    = row.Status == RequestStatuses.PendingLecturerDecision && days >= 3;
+        var waitLabel = isResolved ? "הושלמה" : days == 0 ? "התקבלה היום" : $"ממתינה {days} ימים";
+        var meta      = StatusMeta(row.Status);
+        var mentor    = row.MentorNames.Count > 0 ? string.Join(", ", row.MentorNames) : "לא שויך";
+        var isActioning = _actioning.TryGetValue(row.Id, out var a) && a;
+
+        <div class="lr-row-wrap">
+            @* Row header — always visible, click to expand *@
+            <div class="lr-row-head" @onclick="@(async () => await ToggleRow(row.Id))">
+                <div class="lr-row-content">
+                    <strong class="lr-row-title">
+                        @RequestTypes.Label(row.RequestType) — @row.Title
+                    </strong>
+                    <small class="lr-row-sub">
+                        @row.ProjectTitle · @(row.TeamName ?? "") · מנחה: @mentor
+                    </small>
+                </div>
+                <div class="lr-row-end">
+                    <span class="lr-wait-label" style="color:@(urgent ? "#D93864" : "#8B8698")">
+                        @waitLabel
+                    </span>
+                    <span class="lr-status-pill"
+                          style="color:@meta.Color;background:@meta.Tint">
+                        <span class="lr-dot" style="background:@meta.Color"></span>
+                        @meta.Label
+                    </span>
+                    <span class="lr-chevron" style="transform:@(open ? "rotate(180deg)" : "rotate(0deg)")">⌄</span>
+                </div>
+            </div>
+
+            @* Expanded detail panel *@
+            @if (open)
+            {
+                <div class="lr-expanded">
+                    @if (_detailLoading.TryGetValue(row.Id, out var loading) && loading)
+                    {
+                        <div class="lr-detail-loading">
+                            <span class="lr-spinner" aria-hidden="true"></span>
+                        </div>
+                    }
+                    else if (_detailError.TryGetValue(row.Id, out var err) && err != null)
+                    {
+                        <p class="lr-detail-error">@err</p>
+                    }
+                    else if (_details.TryGetValue(row.Id, out var detail) && detail != null)
+                    {
+                        var hasEscalation = actionable && row.Status == RequestStatuses.PendingLecturerDecision;
+                        var escalation    = EscalationText(detail);
+                        var ownerNote     = OwnerNote(row.Status);
+                        var actionErr     = _actionError.TryGetValue(row.Id, out var ae) ? ae : null;
+
+                        <div class="lr-detail-grid">
+                            @* Left column *@
+                            <div>
+                                @if (hasEscalation)
+                                {
+                                    <div class="lr-detail-section">
+                                        <p class="lr-detail-cap">למה הגיעה אליך</p>
+                                        <p class="lr-detail-text">@escalation</p>
+                                    </div>
+                                    <div class="lr-detail-section">
+                                        <p class="lr-detail-cap">ההחלטה הנדרשת</p>
+                                        <p class="lr-detail-text">אשר או דחה את הבקשה בהתאם להמלצת המנחה ושיקוליך האקדמיים.</p>
+                                    </div>
+                                    @if (detail.Extension is not null)
+                                    {
+                                        <div class="lr-detail-section">
+                                            <p class="lr-detail-cap">תאריך מבוקש</p>
+                                            <p class="lr-detail-text">@detail.Extension.RequestedDueDate.ToString("dd/MM/yyyy")</p>
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <p class="lr-detail-text lr-owner-note">@ownerNote</p>
+                                    @if (!string.IsNullOrWhiteSpace(detail.Description))
+                                    {
+                                        <div class="lr-detail-section" style="margin-top:12px">
+                                            <p class="lr-detail-cap">תיאור הבקשה</p>
+                                            <p class="lr-detail-text">@detail.Description</p>
+                                        </div>
+                                    }
+                                }
+                            </div>
+
+                            @* Right column — event history *@
+                            <div>
+                                <p class="lr-detail-cap">היסטוריית טיפול</p>
+                                @if (detail.Events.Count == 0)
+                                {
+                                    <p class="lr-detail-text" style="color:#B7B2C2">אין אירועים עדיין.</p>
+                                }
+                                else
+                                {
+                                    <div class="lr-history">
+                                        @foreach (var ev in detail.Events.OrderBy(e => e.CreatedAt))
+                                        {
+                                            <div class="lr-history-row">
+                                                <span class="lr-dot" style="background:#D6D2DE;flex-shrink:0;margin-top:6px"></span>
+                                                <div style="min-width:0">
+                                                    <p class="lr-history-text">@FormatEvent(ev)</p>
+                                                    <small class="lr-history-time">@ev.UserName · @ev.CreatedAt.ToString("dd/MM/yy HH:mm")</small>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+
+                        @* Action buttons — only for PendingLecturerDecision *@
+                        @if (actionable && row.Status == RequestStatuses.PendingLecturerDecision)
+                        {
+                            <div class="lr-actions">
+                                <button type="button" class="lr-btn-approve"
+                                        disabled="@isActioning"
+                                        @onclick:stopPropagation="true"
+                                        @onclick="@(async () => await ApproveAsync(row, detail))">
+                                    @(isActioning ? "…" : "אישור הבקשה")
+                                </button>
+                                <button type="button" class="lr-btn-secondary"
+                                        disabled="@isActioning"
+                                        @onclick:stopPropagation="true"
+                                        @onclick="@(async () => await ReturnToMentorAsync(row))">
+                                    החזרה למנחה
+                                </button>
+                                <button type="button" class="lr-btn-reject"
+                                        disabled="@isActioning"
+                                        @onclick:stopPropagation="true"
+                                        @onclick="@(async () => await RejectAsync(row))">
+                                    דחייה
+                                </button>
+                            </div>
+                        }
+
+                        @if (!string.IsNullOrWhiteSpace(actionErr))
+                        {
+                            <p class="lr-action-error" role="alert">@actionErr</p>
+                        }
+                    }
+                </div>
+            }
+        </div>
+    };
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "status")]
+    private string? StatusParam { get; set; }
+
+    // ── State ──────────────────────────────────────────────────────────────────
+
+    private List<ProjectRequestRowDto> _rows = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    private string _filter       = "all"; // "all" | "lecturer" | "others" | "resolved"
+    private bool   _resolvedOpen = false;
+    private int?   _openId       = null;
+
+    // Per-row detail cache
+    private Dictionary<int, ProjectRequestDetailDto?> _details      = new();
+    private Dictionary<int, bool>                     _detailLoading = new();
+    private Dictionary<int, string?>                  _detailError  = new();
+
+    // Per-row action state
+    private Dictionary<int, bool>    _actioning   = new();
+    private Dictionary<int, string?> _actionError = new();
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Deep-link: ?status=awaiting_lecturer from Lecturer Home
+        if (StatusParam?.Equals("awaiting_lecturer", StringComparison.OrdinalIgnoreCase) == true)
+            _filter = "lecturer";
+
+        try
+        {
+            var data = await RequestsService.GetAllAsync();
+            if (data is null)
+                _loadError = true;
+            else
+                _rows = data;
+        }
+        catch
+        {
+            _loadError = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // ── Groups ─────────────────────────────────────────────────────────────────
+
+    private List<ProjectRequestRowDto> LecturerGroup =>
+        _rows
+            .Where(r => r.Status == RequestStatuses.PendingLecturerDecision)
+            .OrderByDescending(r => (DateTime.Today - r.CreatedAt.Date).Days)
+            .ToList();
+
+    private List<ProjectRequestRowDto> OthersGroup =>
+        _rows
+            .Where(r => r.Status != RequestStatuses.PendingLecturerDecision
+                     && r.Status != RequestStatuses.Resolved
+                     && r.Status != RequestStatuses.Closed)
+            .OrderByDescending(r => r.UpdatedAt)
+            .ToList();
+
+    private List<ProjectRequestRowDto> ResolvedGroup =>
+        _rows
+            .Where(r => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed)
+            .OrderByDescending(r => r.UpdatedAt)
+            .ToList();
+
+    // ── Filter helpers ─────────────────────────────────────────────────────────
+
+    private void ToggleFilter(string key)
+        => _filter = _filter == key ? "all" : key;
+
+    private string FilterLabel => _filter switch
+    {
+        "lecturer" => "ממתינות להחלטתך",
+        "others"   => "בטיפול מנחה או צוות",
+        "resolved" => "טופלו",
+        _          => ""
+    };
+
+    // ── Row toggle / detail loading ────────────────────────────────────────────
+
+    private async Task ToggleRow(int id)
+    {
+        if (_openId == id)
+        {
+            _openId = null;
+            return;
+        }
+
+        _openId = id;
+
+        // Load detail if not already cached
+        if (!_details.ContainsKey(id))
+        {
+            _detailLoading[id] = true;
+            _detailError[id]   = null;
+            StateHasChanged();
+
+            var detail = await RequestsService.GetByIdAsync(id);
+            _details[id]       = detail;
+            _detailLoading[id] = false;
+            _detailError[id]   = detail is null ? "לא ניתן לטעון את פרטי הבקשה." : null;
+
+            // Mark as read (best-effort)
+            if (detail is not null)
+                _ = RequestsService.MarkReadAsync(id);
+        }
+    }
+
+    // ── Actions ────────────────────────────────────────────────────────────────
+
+    private async Task ApproveAsync(ProjectRequestRowDto row, ProjectRequestDetailDto? detail)
+    {
+        SetActioning(row.Id, true);
+
+        var approvedDate = detail?.Extension?.RequestedDueDate;
+        var req = new ExtensionDecisionRequest
+        {
+            Stage           = "Lecturer",
+            Decision        = ExtensionDecisionStatuses.Approved,
+            ApprovedDueDate = approvedDate,
+            Notes           = "אושר על-ידי מרצה"
+        };
+
+        var err = await RequestsService.SubmitExtensionDecisionAsync(row.Id, req);
+        if (err is null)
+            OptimisticResolve(row.Id);
+        else
+            SetActionError(row.Id, err);
+
+        SetActioning(row.Id, false);
+    }
+
+    private async Task RejectAsync(ProjectRequestRowDto row)
+    {
+        SetActioning(row.Id, true);
+
+        var req = new ExtensionDecisionRequest
+        {
+            Stage    = "Lecturer",
+            Decision = ExtensionDecisionStatuses.Rejected,
+            Notes    = "נדחה על-ידי מרצה"
+        };
+
+        var err = await RequestsService.SubmitExtensionDecisionAsync(row.Id, req);
+        if (err is null)
+            OptimisticResolve(row.Id);
+        else
+            SetActionError(row.Id, err);
+
+        SetActioning(row.Id, false);
+    }
+
+    private async Task ReturnToMentorAsync(ProjectRequestRowDto row)
+    {
+        SetActioning(row.Id, true);
+
+        var req = new HandleProjectRequestRequest
+        {
+            NewStatus    = RequestStatuses.PendingMentorRecommendation,
+            NewPriority  = row.Priority,
+            Comment      = "הוחזרה למנחה על-ידי מרצה"
+        };
+
+        var err = await RequestsService.HandleAsync(row.Id, req);
+        if (err is null)
+        {
+            // Move row from lecturer group → others group
+            row.Status = RequestStatuses.PendingMentorRecommendation;
+            _details.Remove(row.Id); // invalidate cached detail
+            _openId = null;
+        }
+        else
+        {
+            SetActionError(row.Id, err);
+        }
+
+        SetActioning(row.Id, false);
+    }
+
+    /// <summary>Optimistically moves a row to Resolved and collapses it.</summary>
+    private void OptimisticResolve(int id)
+    {
+        var row = _rows.FirstOrDefault(r => r.Id == id);
+        if (row is not null)
+        {
+            row.Status = RequestStatuses.Resolved;
+            _details.Remove(id); // invalidate so next expand reloads
+        }
+        _openId = null;
+        _resolvedOpen = true; // open the resolved group so the user can see it
+    }
+
+    private void SetActioning(int id, bool value)  { _actioning[id] = value; }
+    private void SetActionError(int id, string? e) { _actionError[id] = e; }
+
+    // ── Display helpers ────────────────────────────────────────────────────────
+
+    private sealed record StatusDisplay(string Label, string Color, string Tint);
+
+    private static StatusDisplay StatusMeta(string status) => status switch
+    {
+        RequestStatuses.PendingLecturerDecision    => new("ממתינה להחלטתך", "#D9761A", "rgba(217,118,26,.10)"),
+        RequestStatuses.PendingMentorRecommendation => new("בטיפול מנחה",    "#4F46E5", "rgba(79,70,229,.08)"),
+        RequestStatuses.NeedsInfo                  => new("ממתינה לצוות",   "#1A1820", "rgba(26,24,32,.05)"),
+        RequestStatuses.WaitingForStaff            => new("ממתינה לאישור",  "#1A1820", "rgba(26,24,32,.05)"),
+        RequestStatuses.New                        => new("חדש",             "#4F46E5", "rgba(79,70,229,.08)"),
+        RequestStatuses.InProgress                 => new("בטיפול",          "#4F46E5", "rgba(79,70,229,.08)"),
+        RequestStatuses.Resolved or
+        RequestStatuses.Closed                     => new("טופלה",           "#0D9C9A", "rgba(13,156,154,.07)"),
+        _                                          => new(status,            "#8B8698", "rgba(26,24,32,.06)"),
+    };
+
+    private static string EscalationText(ProjectRequestDetailDto detail)
+    {
+        var ext = detail.Extension;
+        if (ext is null) return detail.Description ?? "הבקשה הועברה למרצה לקבלת החלטה סופית.";
+
+        var mentorLine = ext.MentorDecision switch
+        {
+            ExtensionDecisionStatuses.Recommended    => "המנחה ממליץ לאשר.",
+            ExtensionDecisionStatuses.NotRecommended => "המנחה לא ממליץ לאשר.",
+            _                                        => ""
+        };
+
+        var notes = string.IsNullOrWhiteSpace(ext.MentorNotes) ? "" : " " + ext.MentorNotes.Trim();
+        var reason = string.IsNullOrWhiteSpace(ext.Reason) ? "" : $" סיבת הבקשה: {ext.Reason.Trim()}";
+
+        return (mentorLine + notes + reason).Trim();
+    }
+
+    private static string OwnerNote(string status) => status switch
+    {
+        RequestStatuses.PendingMentorRecommendation => "הבקשה בטיפול המנחה. אין צורך בהחלטת מרצה בשלב זה.",
+        RequestStatuses.NeedsInfo                   => "הבקשה הוחזרה לסטודנט להשלמת פרטים.",
+        RequestStatuses.WaitingForStaff             => "הסטודנט השיב. הבקשה ממתינה למענה אקדמי.",
+        RequestStatuses.New                         => "הבקשה התקבלה ועוד לא נכנסה לטיפול.",
+        RequestStatuses.InProgress                  => "הבקשה בטיפול הצוות האקדמי.",
+        RequestStatuses.Resolved or
+        RequestStatuses.Closed                      => "הבקשה נסגרה. ההחלטה יושמה.",
+        _                                           => "הבקשה בטיפול."
+    };
+
+    private static string FormatEvent(ProjectRequestEventDto e) => e.EventType switch
+    {
+        RequestEventTypes.StatusChange   => $"סטטוס שונה ל-{e.NewValue ?? ""}",
+        RequestEventTypes.PriorityChange => $"עדיפות שונתה ל-{e.NewValue ?? ""}",
+        RequestEventTypes.AssigneeChange => $"שויך ל-{e.NewValue ?? "לא שויך"}",
+        _                                => e.Content ?? ""
+    };
+}

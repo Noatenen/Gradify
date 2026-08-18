@@ -61,8 +61,12 @@ public static class RoleService
         if (UserModeService.IsDualRole(user))
             return UserModeService.DashboardRouteFor(UserModeService.EffectiveMode(user));
 
-        if (IsAdminOrStaff(user)) return "dashboard/lecturer";
-        if (IsMentor(user))       return "dashboard/mentor";
+        // Both Staff and Admin land on the Motiva Lecturer Home.
+        // GetShell resolves both to Shell.Lecturer via UserModeService.EffectiveMode,
+        // so the landing route must match. The legacy /dashboard/lecturer page
+        // remains accessible by direct URL for Admin users who need it.
+        if (IsStaff(user) || IsAdmin(user)) return "lecturer/home";
+        if (IsMentor(user)) return "dashboard/mentor";
         return PageRoutes.Dashboard;
     }
 }

@@ -76,6 +76,14 @@ public class MilestoneOverdueBarDto
     public int    OverdueTaskCount           { get; set; }
 }
 
+/// <summary>One milestone step for the Lecturer Projects expanded-row progress list.</summary>
+public class MilestoneStepDto
+{
+    public string Title      { get; set; } = "";
+    public string Status     { get; set; } = "";
+    public int    OrderIndex { get; set; }
+}
+
 /// <summary>One row in the project-list table, ready for display.</summary>
 public class DashboardProjectRowDto
 {
@@ -87,9 +95,17 @@ public class DashboardProjectRowDto
     public string?   MentorNames          { get; set; }
     public string?   CurrentMilestoneTitle { get; set; }
     public DateTime? CurrentMilestoneDueDate { get; set; }
+    /// <summary>The nearest future milestone for this project (any status),
+    /// used to populate the "מועדים קרובים בקורס" section. Null when no
+    /// milestone with a future due date exists.</summary>
+    public string?   NextMilestoneTitle   { get; set; }
+    public DateTime? NextMilestoneDueDate { get; set; }
     public int       OverdueTaskCount     { get; set; }
     public int       MissingSubmissionCount { get; set; }
     public int       OpenRequestCount     { get; set; }
     public int       HealthScore          { get; set; }
     public string    HealthBucket         { get; set; } = HealthBuckets.Healthy;
+    /// <summary>All milestones for this project, ordered by template OrderIndex.
+    /// Used by the Lecturer Projects page to render the milestone-progress column.</summary>
+    public List<MilestoneStepDto> MilestoneSteps { get; set; } = new();
 }

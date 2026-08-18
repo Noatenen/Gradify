@@ -13,6 +13,7 @@ namespace AuthWithAdmin.Client.Services;
 public interface IPendingMentorApprovalsService
 {
     Task<List<PendingMentorApprovalRowDto>?> GetPendingAsync();
+    Task<List<LecturerSubmissionOverviewRowDto>?> GetOverviewAsync();
     Task<string?>                            RemindMentorAsync(int submissionId);
     Task<string?>                            OverrideApproveAsync(int submissionId, string overrideReason);
 }
@@ -28,6 +29,16 @@ public class PendingMentorApprovalsService : IPendingMentorApprovalsService
         {
             return await _http.GetFromJsonAsync<List<PendingMentorApprovalRowDto>>(
                 "api/task-submissions/pending-mentor-approvals");
+        }
+        catch { return null; }
+    }
+
+    public async Task<List<LecturerSubmissionOverviewRowDto>?> GetOverviewAsync()
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<List<LecturerSubmissionOverviewRowDto>>(
+                "api/task-submissions/lecturer-overview");
         }
         catch { return null; }
     }

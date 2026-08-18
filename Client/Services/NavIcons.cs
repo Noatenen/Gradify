@@ -98,4 +98,31 @@ public static class NavIcons
         "M7 7V5.6a1 1 0 0 1 1-1h2.7a1 1 0 0 1 .8.4l.9 1.2a1 1 0 0 0 .8.4H18a1 1 0 0 1 1 1V9",
         "M3 10.5a1 1 0 0 1 1-1h2.7a1 1 0 0 0 .8-.4l.9-1.2a1 1 0 0 1 .8-.4H20a1 1 0 0 1 1 1v10.9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z",
     };
+
+    // ── Lecturer additions ───────────────────────────────────────────────
+    // Same family, same grid, same open-path construction.
+
+    /// <summary>Clipboard with a tick — "הגשות ובקרה". A document that has
+    /// been acted on: more specific than a plain page and more specific than
+    /// an inbox, which is what distinguishes submissions-and-control from the
+    /// general requests icon.</summary>
+    public static readonly IReadOnlyList<string> Submissions = new[]
+    {
+        "M9 2h6a1 1 0 0 1 1 1v1H8V3a1 1 0 0 1 1-1z",
+        "M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2",
+        "m8 14 2 2 4-4",
+    };
+
+    /// <summary>Three bulleted lines — "ניהול". Reads as a structured list
+    /// of administrative items, which is what the management area is: a
+    /// collection of configuration surfaces, not a single destination.</summary>
+    public static readonly IReadOnlyList<string> Management = new[]
+    {
+        "M4 5h2v2H4z",
+        "M9 6h11",
+        "M4 11h2v2H4z",
+        "M9 12h11",
+        "M4 17h2v2H4z",
+        "M9 18h11",
+    };
 }

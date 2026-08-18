@@ -1,0 +1,547 @@
+@page "/lecturer/projects"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Lecturer
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IDashboardOverviewService DashboardService
+@inject NavigationManager Nav
+
+@*
+    ── Lecturer Projects — פרויקטים ──────────────────────────────────────────
+    Visual source:  design-reference/LecturerSide/Motiva Lecturer Projects.dc.html
+    Data source:    GET /api/dashboard?scope=lecturer  (same as Lecturer Home)
+                    → DashboardOverviewDto.Projects: List<DashboardProjectRowDto>
+
+    Uses the SAME underlying data as Lecturer Home so health counts are
+    always consistent between the two screens.
+
+    Supports ?status=on_track|attention|at_risk query param so that the
+    Lecturer Home health KPI cards deep-link into a pre-filtered view.
+*@
+
+@* ── HERO ──────────────────────────────────────────────────────────────── *@
+<div class="lpr-hero">
+    <h1 class="lpr-hero-title">פרויקטים</h1>
+    @if (_loading)
+    {
+        <p class="lpr-hero-sub" aria-live="polite">טוענת נתונים…</p>
+    }
+    else
+    {
+        <p class="lpr-hero-sub">@_all.Count פרויקטי גמר · @MentorCount מנחים</p>
+    }
+</div>
+
+@* ── BODY ──────────────────────────────────────────────────────────────── *@
+<div class="lpr-body">
+
+    @if (_loading)
+    {
+        <div class="lpr-state" role="status" aria-live="polite">
+            <span class="lpr-spinner" aria-hidden="true"></span>
+            <span>טוענת פרויקטים…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <div class="lpr-error" role="alert">שגיאה בטעינת הפרויקטים. נסה לרענן את הדף.</div>
+    }
+    else if (_all.Count == 0)
+    {
+        <div class="lpr-empty-page">
+            <strong class="lpr-empty-title">אין פרויקטים פעילים בקורס כרגע.</strong>
+            <p class="lpr-empty-desc">כשפרויקטים יוקצו לצוותים הם יופיעו כאן.</p>
+        </div>
+    }
+    else
+    {
+        @* ── Controls row ────────────────────────────────────────────────── *@
+        <div class="lpr-controls">
+            <input class="lpr-search"
+                   type="search"
+                   placeholder="חיפוש פרויקט, צוות או מנחה…"
+                   value="@_query"
+                   @oninput="@(e => _query = e.Value?.ToString() ?? "")" />
+
+            <select class="lpr-select"
+                    value="@_mentorFilter"
+                    @onchange="@(e => _mentorFilter = e.Value?.ToString() ?? "all")">
+                <option value="all">כל המנחים</option>
+                @foreach (var m in MentorOptions)
+                {
+                    <option value="@m">@m</option>
+                }
+            </select>
+
+            <select class="lpr-select"
+                    value="@_milestoneFilter"
+                    @onchange="@(e => _milestoneFilter = e.Value?.ToString() ?? "all")">
+                <option value="all">כל אבני הדרך</option>
+                @foreach (var ms in MilestoneOptions)
+                {
+                    <option value="@ms">@ms</option>
+                }
+            </select>
+        </div>
+
+        @* ── Status chips ─────────────────────────────────────────────────── *@
+        <div class="lpr-chips" role="group" aria-label="סינון לפי מצב">
+            @{
+                var allCount  = _all.Count;
+                var riskCount = _all.Count(p => p.HealthBucket == HealthBuckets.AtRisk);
+                var attnCount = _all.Count(p => p.HealthBucket == HealthBuckets.Attention);
+                var okCount   = _all.Count(p => p.HealthBucket == HealthBuckets.Healthy);
+            }
+
+            <button type="button" class="lpr-chip @(_statusFilter == "all"      ? "lpr-chip-active" : "")"
+                    @onclick="@(() => SetStatus("all"))">
+                הכול · @allCount
+            </button>
+            <button type="button" class="lpr-chip lpr-chip-risk @(_statusFilter == "at_risk"   ? "lpr-chip-active" : "")"
+                    @onclick="@(() => SetStatus("at_risk"))">
+                <span class="lpr-dot" style="background:#D93864"></span>
+                בסיכון · @riskCount
+            </button>
+            <button type="button" class="lpr-chip lpr-chip-attn @(_statusFilter == "attention" ? "lpr-chip-active" : "")"
+                    @onclick="@(() => SetStatus("attention"))">
+                <span class="lpr-dot" style="background:#2F6FD0"></span>
+                דורש תשומת לב · @attnCount
+            </button>
+            <button type="button" class="lpr-chip lpr-chip-ok @(_statusFilter == "on_track"  ? "lpr-chip-active" : "")"
+                    @onclick="@(() => SetStatus("on_track"))">
+                <span class="lpr-dot" style="background:#0D9C9A"></span>
+                תקין · @okCount
+            </button>
+        </div>
+
+        @* ── Active-filter banner ─────────────────────────────────────────── *@
+        @if (HasActiveFilter)
+        {
+            <div class="lpr-filter-banner" role="status">
+                <div class="lpr-filter-banner-start">
+                    <span class="lpr-filter-word">מסנן פעיל:</span>
+                    <span class="lpr-filter-tag">@ActiveFilterLabel</span>
+                </div>
+                <button type="button" class="lpr-filter-clear" @onclick="ClearAllFilters">✕ נקה סינון</button>
+            </div>
+        }
+
+        @* ── Project list card (gradient border) ─────────────────────────── *@
+        <div class="lpr-list-card">
+            @{
+                var filtered = Filtered;
+            }
+            @if (filtered.Count == 0)
+            {
+                <div class="lpr-empty-list">לא נמצאו פרויקטים בסינון הנוכחי.</div>
+            }
+            else
+            {
+                @foreach (var p in filtered)
+                {
+                    var proj     = p;
+                    var isOpen   = _openId == proj.ProjectId;
+                    var dotColor = DotColor(proj.HealthBucket);
+                    var flagText = FlagText(proj);
+                    var flagCss  = FlagCss(proj);
+                    var deadline = DeadlineText(proj.NextMilestoneDueDate);
+
+                    <div class="lpr-row @(isOpen ? "lpr-row-open" : "")">
+                        @* Row header — click toggles expand *@
+                        <button type="button"
+                                class="lpr-row-hdr"
+                                aria-expanded="@(isOpen ? "true" : "false")"
+                                @onclick="@(() => ToggleRow(proj.ProjectId))">
+
+                            <div class="lpr-row-identity">
+                                <span class="lpr-row-dot" style="background:@dotColor" aria-hidden="true"></span>
+                                <div class="lpr-row-text">
+                                    <strong class="lpr-row-name">@proj.ProjectTitle</strong>
+                                    <small class="lpr-row-sub">
+                                        @(string.IsNullOrWhiteSpace(proj.TeamName) ? "" : $"{proj.TeamName} · ")מנחה:
+                                        @(string.IsNullOrWhiteSpace(proj.MentorNames) ? "לא שויך" : proj.MentorNames)
+                                    </small>
+                                </div>
+                            </div>
+
+                            <div class="lpr-row-meta">
+                                @if (!string.IsNullOrWhiteSpace(proj.CurrentMilestoneTitle))
+                                {
+                                    <span class="lpr-row-milestone">@proj.CurrentMilestoneTitle</span>
+                                }
+                                <span class="lpr-row-flag @flagCss">@flagText</span>
+                                @if (!string.IsNullOrWhiteSpace(deadline))
+                                {
+                                    <span class="lpr-row-deadline">יעד @deadline</span>
+                                }
+                                <span class="lpr-row-chevron @(isOpen ? "lpr-row-chevron-open" : "")"
+                                      aria-hidden="true">⌄</span>
+                            </div>
+                        </button>
+
+                        @* Expanded panel *@
+                        @if (isOpen)
+                        {
+                            <div class="lpr-expanded" role="region" aria-label="@($"פרטי פרויקט: {proj.ProjectTitle}")">
+                                <div class="lpr-expanded-grid">
+
+                                    @* Left — milestone progress *@
+                                    <div>
+                                        <p class="lpr-expanded-cap">התקדמות אבני הדרך</p>
+                                        @if (proj.MilestoneSteps.Count == 0)
+                                        {
+                                            <p class="lpr-expanded-none">אין מידע על אבני הדרך.</p>
+                                        }
+                                        else
+                                        {
+                                            <div class="lpr-steps">
+                                                @foreach (var step in proj.MilestoneSteps)
+                                                {
+                                                    var s = step;
+                                                    <div class="lpr-step">
+                                                        <span class="lpr-step-dot" style="background:@StepDotColor(s.Status, proj.HealthBucket)"
+                                                              aria-hidden="true"></span>
+                                                        <span class="lpr-step-label @StepLabelCss(s.Status)">@s.Title</span>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+
+                                    @* Right — facts *@
+                                    <div>
+                                        <p class="lpr-expanded-cap">תמונת מצב</p>
+                                        <div class="lpr-facts">
+                                            <div class="lpr-fact">
+                                                <span class="lpr-fact-label">הגשות חסרות</span>
+                                                @if (proj.MissingSubmissionCount > 0)
+                                                {
+                                                    <span class="lpr-fact-val lpr-fact-val-warn">@proj.MissingSubmissionCount ממתינות</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="lpr-fact-val lpr-fact-val-none">אין</span>
+                                                }
+                                            </div>
+                                            <div class="lpr-fact">
+                                                <span class="lpr-fact-label">בקשות פתוחות</span>
+                                                @if (proj.OpenRequestCount > 0)
+                                                {
+                                                    <span class="lpr-fact-val">@proj.OpenRequestCount פתוחות</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="lpr-fact-val lpr-fact-val-none">אין</span>
+                                                }
+                                            </div>
+                                            <div class="lpr-fact">
+                                                <span class="lpr-fact-label">משימות באיחור</span>
+                                                @if (proj.OverdueTaskCount > 0)
+                                                {
+                                                    <span class="lpr-fact-val lpr-fact-val-risk">@proj.OverdueTaskCount</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="lpr-fact-val lpr-fact-val-none">אין</span>
+                                                }
+                                            </div>
+                                            <div class="lpr-fact">
+                                                <span class="lpr-fact-label">התערבות מרצה</span>
+                                                <span class="lpr-fact-val @InterventionCss(proj.HealthBucket)">
+                                                    @InterventionText(proj.HealthBucket)
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                @* Attention note — shown for non-healthy projects *@
+                                @{
+                                    var note = AttentionNote(proj);
+                                }
+                                @if (!string.IsNullOrEmpty(note))
+                                {
+                                    <p class="lpr-attention-note">@note</p>
+                                }
+
+                                @* Action buttons *@
+                                <div class="lpr-actions">
+                                    <a class="lpr-btn lpr-btn-primary"
+                                       href="@($"/projects/{proj.ProjectId}/overview")">
+                                        לסקירת הפרויקט
+                                    </a>
+                                    <a class="lpr-btn lpr-btn-secondary"
+                                       href="/management/requests">
+                                        בקשות הפרויקט
+                                    </a>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "status")]
+    private string? StatusParam { get; set; }
+
+    private DashboardOverviewDto _overview = new() { Summary = new(), Charts = new(), Projects = new() };
+    private List<DashboardProjectRowDto> _all = new();
+    private bool _loading   = true;
+    private bool _loadError;
+
+    private string _statusFilter    = "all";
+    private string _mentorFilter    = "all";
+    private string _milestoneFilter = "all";
+    private string _query           = "";
+    private int?   _openId;
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Apply the incoming ?status query param before loading so the filter
+        // is visible immediately (not added after the data arrives).
+        if (!string.IsNullOrWhiteSpace(StatusParam))
+            _statusFilter = StatusParam.Trim().ToLowerInvariant();
+
+        try
+        {
+            _overview = await DashboardService.GetAsync("lecturer")
+                        ?? new DashboardOverviewDto { Summary = new(), Charts = new(), Projects = new() };
+
+            // Worst health first, then soonest next deadline — same sort logic as the design.
+            _all = _overview.Projects
+                .OrderBy(p => HealthRank(p.HealthBucket))
+                .ThenBy(p => p.NextMilestoneDueDate ?? DateTime.MaxValue)
+                .ToList();
+        }
+        catch
+        {
+            _loadError = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // ── Filtering ──────────────────────────────────────────────────────────
+
+    private List<DashboardProjectRowDto> Filtered
+    {
+        get
+        {
+            var q = _query.Trim();
+            return _all.Where(p =>
+            {
+                // Status chip filter (maps query-string values to HealthBuckets)
+                if (_statusFilter is not "all")
+                {
+                    var wanted = StatusToHealthBucket(_statusFilter);
+                    if (p.HealthBucket != wanted) return false;
+                }
+
+                // Mentor dropdown filter
+                if (_mentorFilter is not "all")
+                {
+                    var names = MentorNamesOf(p);
+                    if (!names.Contains(_mentorFilter)) return false;
+                }
+
+                // Milestone dropdown filter — any step whose title matches
+                if (_milestoneFilter is not "all")
+                {
+                    if (!p.MilestoneSteps.Any(s => s.Title == _milestoneFilter)) return false;
+                }
+
+                // Free-text search: project title, team name, mentor names
+                if (q.Length > 0)
+                {
+                    if (!(p.ProjectTitle ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)
+                        && !(p.TeamName   ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)
+                        && !(p.MentorNames?? "").Contains(q, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+
+                return true;
+            }).ToList();
+        }
+    }
+
+    private void SetStatus(string value)
+    {
+        _statusFilter = value;
+        // Update the URL so the filter survives a refresh and is shareable.
+        var uri = Nav.GetUriWithQueryParameter("status", value == "all" ? null : value);
+        Nav.NavigateTo(uri, replace: true);
+    }
+
+    private void ClearAllFilters()
+    {
+        _statusFilter    = "all";
+        _mentorFilter    = "all";
+        _milestoneFilter = "all";
+        _query           = "";
+        Nav.NavigateTo("/lecturer/projects", replace: true);
+    }
+
+    private void ToggleRow(int id) =>
+        _openId = _openId == id ? null : id;
+
+    // ── Computed summaries ────────────────────────────────────────────────
+
+    private bool HasActiveFilter =>
+        _statusFilter    is not "all"
+        || _mentorFilter    is not "all"
+        || _milestoneFilter is not "all"
+        || _query.Trim().Length > 0;
+
+    private string ActiveFilterLabel
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (_statusFilter    is not "all") parts.Add(StatusLabel(_statusFilter));
+            if (_mentorFilter    is not "all") parts.Add($"מנחה: {_mentorFilter}");
+            if (_milestoneFilter is not "all") parts.Add($"אבן דרך: {_milestoneFilter}");
+            if (_query.Trim().Length > 0)      parts.Add($"חיפוש: {_query.Trim()}");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    // Unique mentor names across all projects (parsed from comma-separated MentorNames).
+    private IEnumerable<string> MentorOptions =>
+        _all.SelectMany(p => MentorNamesOf(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x);
+
+    // Unique milestone names across all projects (from MilestoneSteps).
+    private IEnumerable<string> MilestoneOptions =>
+        _all.SelectMany(p => p.MilestoneSteps.Select(s => s.Title))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x);
+
+    private int MentorCount =>
+        _all.SelectMany(p => MentorNamesOf(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    private static IReadOnlyList<string> MentorNamesOf(DashboardProjectRowDto p)
+    {
+        if (string.IsNullOrWhiteSpace(p.MentorNames)) return Array.Empty<string>();
+        return p.MentorNames.Split(", ", StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    /// <summary>Map query-string status token to HealthBuckets constant.</summary>
+    private static string StatusToHealthBucket(string token) => token switch
+    {
+        "on_track"  => HealthBuckets.Healthy,
+        "attention" => HealthBuckets.Attention,
+        "at_risk"   => HealthBuckets.AtRisk,
+        _           => token, // pass through (safe — no rows match an unknown value)
+    };
+
+    private static string StatusLabel(string token) => token switch
+    {
+        "on_track"  => "תקין",
+        "attention" => "דורש תשומת לב",
+        "at_risk"   => "בסיכון",
+        _           => token,
+    };
+
+    private static int HealthRank(string bucket) => bucket switch
+    {
+        HealthBuckets.AtRisk    => 0,
+        HealthBuckets.Attention => 1,
+        _                       => 2,
+    };
+
+    // ── Row display helpers ────────────────────────────────────────────────
+
+    private static string DotColor(string bucket) => bucket switch
+    {
+        HealthBuckets.AtRisk    => "#D93864",
+        HealthBuckets.Attention => "#2F6FD0",
+        _                       => "#0D9C9A",
+    };
+
+    private static string FlagText(DashboardProjectRowDto p) => p.HealthBucket switch
+    {
+        HealthBuckets.AtRisk    => "בסיכון",
+        HealthBuckets.Attention => "דורש תשומת לב",
+        _ => p.MissingSubmissionCount > 0
+             ? $"{p.MissingSubmissionCount} הגשות חסרות"
+             : "ללא חריגות",
+    };
+
+    private static string FlagCss(DashboardProjectRowDto p) => p.HealthBucket switch
+    {
+        HealthBuckets.AtRisk    => "lpr-flag-risk",
+        HealthBuckets.Attention => "lpr-flag-attn",
+        _                       => "lpr-flag-ok",
+    };
+
+    private static string DeadlineText(DateTime? dt)
+    {
+        if (dt is null) return "";
+        return dt.Value.ToString("dd/MM/yy");
+    }
+
+    // ── Step helpers ──────────────────────────────────────────────────────
+
+    private static string StepDotColor(string stepStatus, string projectBucket) => stepStatus switch
+    {
+        "Completed"  => "#0D9C9A",
+        "InProgress" => DotColor(projectBucket),
+        "Delayed"    => "#D93864",
+        _            => "#E2DEE9",
+    };
+
+    private static string StepLabelCss(string stepStatus) => stepStatus switch
+    {
+        "Completed"  => "lpr-step-done",
+        "InProgress" or "Delayed" => "lpr-step-current",
+        _            => "lpr-step-future",
+    };
+
+    // ── Expanded-panel helpers ────────────────────────────────────────────
+
+    private static string InterventionText(string bucket) => bucket switch
+    {
+        HealthBuckets.AtRisk    => "נדרשת",
+        HealthBuckets.Attention => "לשקול",
+        _                       => "לא נדרשת",
+    };
+
+    private static string InterventionCss(string bucket) => bucket switch
+    {
+        HealthBuckets.AtRisk    => "lpr-fact-val-risk",
+        HealthBuckets.Attention => "lpr-fact-val-attn",
+        _                       => "",
+    };
+
+    private static string AttentionNote(DashboardProjectRowDto p)
+    {
+        if (p.HealthBucket == HealthBuckets.Healthy) return "";
+
+        var issues = new List<string>();
+        if (p.OverdueTaskCount        > 0) issues.Add($"{p.OverdueTaskCount} משימות באיחור");
+        if (p.MissingSubmissionCount  > 0) issues.Add($"{p.MissingSubmissionCount} הגשות חסרות");
+        if (p.OpenRequestCount        > 0) issues.Add($"{p.OpenRequestCount} בקשות פתוחות");
+
+        if (issues.Count == 0) return "";
+
+        var prefix = p.HealthBucket == HealthBuckets.AtRisk
+            ? "הפרויקט בסיכון"
+            : "הפרויקט דורש תשומת לב";
+        return $"{prefix}: {string.Join(", ", issues)}.";
+    }
+}
