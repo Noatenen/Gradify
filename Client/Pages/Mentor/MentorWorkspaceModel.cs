@@ -221,35 +221,32 @@ public static class MentorRequestBuckets
 // ── Relative-time wording ───────────────────────────────────────────────────
 
 /// <summary>
-/// The design's ageing vocabulary — "התקבלה היום", "ממתינה 3 ימים", "באיחור
-/// 5 ימים". A mentor screen measures time SINCE something arrived, where a
-/// student screen measures time UNTIL something is due, so this deliberately
-/// does not reuse the student's TimeFormat helpers.
+/// DEADLINE wording for the mentor screens — "יעד היום", "בעוד 4 ימים",
+/// "באיחור 3 ימים".
+///
+/// <para><b>Deadlines only. Waiting age is not here any more.</b> This class
+/// used to own both, and that was the source of the drift the attention model
+/// exists to remove: <c>WaitingLabel</c> and <c>DaysSince</c> computed a
+/// browser-local calendar age that four Razor call sites then compared against
+/// two different hardcoded thresholds (4 for submissions, 3 for requests), while
+/// the server's own supervision inbox computed a third answer in SQL. Waiting
+/// age is now computed once on the server in Israel-local calendar days
+/// (IsraelTime) and worded once in Shared (<see cref="MentorAging"/>), which the
+/// daily digest reads too.</para>
+///
+/// <para>What remains is genuinely different and correctly lives here: time
+/// UNTIL a real due date, for personal tasks and milestones. Those have actual
+/// deadlines, so — unlike a submission or a request — they may legitimately read
+/// as באיחור. Nothing else in the mentor area may.</para>
 /// </summary>
 public static class MentorTime
 {
-    /// <summary>Whole days between <paramref name="from"/> and now, floored at 0.</summary>
-    public static int DaysSince(DateTime from) =>
-        Math.Max(0, (int)(DateTime.Now.Date - from.ToLocalTime().Date).TotalDays);
-
-    /// <summary>"התקבלה היום" / "ממתינה יום" / "ממתינה 3 ימים".</summary>
-    public static string WaitingLabel(DateTime since, string todayText = "התקבלה היום")
-    {
-        var d = DaysSince(since);
-        return d switch
-        {
-            0 => todayText,
-            1 => "ממתינה יום",
-            2 => "ממתינה יומיים",
-            _ => $"ממתינה {d} ימים",
-        };
-    }
-
-    /// <summary>"היום" / "לפני יומיים" / "לפני 9 ימים" — for an event that
-    /// already happened.</summary>
+    /// <summary>"היום" / "אתמול" / "לפני 9 ימים" — for an event that already
+    /// happened, such as a request's last activity. Not a waiting age: it
+    /// reports when something last moved, never how long anyone has held it.</summary>
     public static string AgoLabel(DateTime when)
     {
-        var d = DaysSince(when);
+        var d = Math.Max(0, (int)(DateTime.Now.Date - when.ToLocalTime().Date).TotalDays);
         return d switch
         {
             0 => "היום",

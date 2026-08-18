@@ -2106,14 +2106,51 @@ public class ProjectsController : ControllerBase
     [HttpGet("personal-tasks")]
     public async Task<IActionResult> GetPersonalTasks(int authUserId)
     {
+        // Project context is resolved through ProjectMentors, NOT through a
+        // plain join on Projects. That single condition is what makes a stale
+        // association safe: if the mentor no longer mentors the project, the
+        // join misses, ProjectId/ProjectTitle/TeamName all come back NULL, and
+        // the task renders as "ללא שיוך". The row itself is untouched and still
+        // belongs to its owner — access is lost, the work item is not.
         const string sql = @"
-            SELECT Id, Title, Description, DueDate, IsDone, CreatedAt
-            FROM   PersonalTasks
-            WHERE  UserId = @UserId
-            ORDER  BY CreatedAt DESC";
+            SELECT  pt.Id,
+                    pt.Title,
+                    pt.Description,
+                    pt.DueDate,
+                    pt.IsDone,
+                    pt.CreatedAt,
+                    pm.ProjectId          AS ProjectId,
+                    p.Title               AS ProjectTitle,
+                    t.TeamName            AS TeamName
+            FROM    PersonalTasks pt
+            LEFT JOIN ProjectMentors pm
+                        ON  pm.ProjectId = pt.ProjectId
+                        AND pm.UserId    = @UserId
+            LEFT JOIN Projects p ON p.Id     = pm.ProjectId
+            LEFT JOIN Teams    t ON t.Id     = p.TeamId
+            WHERE   pt.UserId = @UserId
+            ORDER   BY pt.CreatedAt DESC";
 
         var rows = await _db.GetRecordsAsync<PersonalTaskDto>(sql, new { UserId = authUserId });
         return Ok(rows ?? Enumerable.Empty<PersonalTaskDto>());
+    }
+
+    /// <summary>
+    /// True when the caller currently mentors this project.
+    ///
+    /// <para>The ONLY place a client-supplied ProjectId is allowed to become
+    /// trusted. It answers a bare existence question against ProjectMentors and
+    /// returns nothing about the project, so a crafted id for someone else's
+    /// project is refused without confirming that the project exists or
+    /// revealing a single field of it.</para>
+    /// </summary>
+    private async Task<bool> MentorsProjectAsync(int projectId, int userId)
+    {
+        var rows = await _db.GetRecordsAsync<int>(
+            "SELECT 1 FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId",
+            new { ProjectId = projectId, UserId = userId });
+
+        return rows?.Any() == true;
     }
 
     // ── POST /api/projects/personal-tasks ────────────────────────────────────
@@ -2126,9 +2163,14 @@ public class ProjectsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Title))
             return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
 
+        // A project may be attached only by someone who actually mentors it. The
+        // message says nothing about whether the id exists.
+        if (req.ProjectId is int wantedProject && !await MentorsProjectAsync(wantedProject, authUserId))
+            return BadRequest("לא ניתן לשייך את המשימה לפרויקט זה");
+
         const string sql = @"
-            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate)
-            VALUES (@UserId, @Title, @Description, @DueDate)";
+            INSERT INTO PersonalTasks (UserId, Title, Description, DueDate, ProjectId)
+            VALUES (@UserId, @Title, @Description, @DueDate, @ProjectId)";
 
         int newId = await _db.InsertReturnIdAsync(sql, new
         {
@@ -2136,19 +2178,52 @@ public class ProjectsController : ControllerBase
             Title       = req.Title.Trim(),
             Description = req.Description?.Trim(),
             DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
+            ProjectId   = req.ProjectId,
         });
 
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת המשימה");
 
+        // Echo the project context back so the client can render the new row
+        // without refetching. Read through the same authorized path.
+        var context = req.ProjectId is int pid ? await GetProjectContextAsync(pid, authUserId) : null;
+
         return Ok(new PersonalTaskDto
         {
-            Id          = newId,
-            Title       = req.Title.Trim(),
-            Description = req.Description?.Trim(),
-            DueDate     = req.DueDate,
-            IsDone      = false,
-            CreatedAt   = DateTime.UtcNow,
+            Id           = newId,
+            Title        = req.Title.Trim(),
+            Description  = req.Description?.Trim(),
+            DueDate      = req.DueDate,
+            IsDone       = false,
+            CreatedAt    = DateTime.UtcNow,
+            ProjectId    = context is null ? null : req.ProjectId,
+            ProjectTitle = context?.ProjectTitle,
+            TeamName     = context?.TeamName,
         });
+    }
+
+    /// <summary>Project title/team for a project the caller mentors, or null.
+    /// Goes through ProjectMentors for the same reason the read query does.</summary>
+    private async Task<ProjectContextRow?> GetProjectContextAsync(int projectId, int userId)
+    {
+        const string sql = @"
+            SELECT  p.Title    AS ProjectTitle,
+                    t.TeamName AS TeamName
+            FROM    ProjectMentors pm
+            JOIN    Projects p ON p.Id = pm.ProjectId
+            LEFT JOIN Teams  t ON t.Id = p.TeamId
+            WHERE   pm.ProjectId = @ProjectId
+              AND   pm.UserId    = @UserId";
+
+        var rows = await _db.GetRecordsAsync<ProjectContextRow>(
+            sql, new { ProjectId = projectId, UserId = userId });
+
+        return rows?.FirstOrDefault();
+    }
+
+    private sealed class ProjectContextRow
+    {
+        public string? ProjectTitle { get; set; }
+        public string? TeamName     { get; set; }
     }
 
     // ── PATCH /api/projects/personal-tasks/{id}/toggle ───────────────────────
@@ -2160,6 +2235,73 @@ public class ProjectsController : ControllerBase
         const string sql = @"
             UPDATE PersonalTasks
             SET    IsDone = CASE WHEN IsDone = 1 THEN 0 ELSE 1 END
+            WHERE  Id     = @Id
+              AND  UserId = @UserId";
+
+        int affected = await _db.SaveDataAsync(sql, new { Id = id, UserId = authUserId });
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── PUT /api/projects/personal-tasks/{id} ────────────────────────────────
+    // Edits an existing personal task. Same ownership rule as the toggle above:
+    // the UPDATE carries `AND UserId = @UserId`, so another user's row matches
+    // zero rows and comes back 404 — the request never learns whether the id
+    // exists at all. Ownership is therefore structural, not a separate check
+    // that could be forgotten.
+    //
+    // Deliberately NOT editable here: IsDone, which has its own toggle endpoint,
+    // and UserId, which nothing may reassign.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("personal-tasks/{id:int}")]
+    public async Task<IActionResult> UpdatePersonalTask(
+        int id, [FromBody] UpdatePersonalTaskRequest req, int authUserId)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.Title))
+            return BadRequest("כותרת המשימה לא יכולה להיות ריקה");
+
+        // Same gate as create, re-run on every save: a mentor who lost access to
+        // a project cannot keep re-attaching it, and a crafted id is refused
+        // here too. Null clears the association, which needs no permission.
+        if (req.ProjectId is int wantedProject && !await MentorsProjectAsync(wantedProject, authUserId))
+            return BadRequest("לא ניתן לשייך את המשימה לפרויקט זה");
+
+        const string sql = @"
+            UPDATE PersonalTasks
+            SET    Title       = @Title,
+                   Description = @Description,
+                   DueDate     = @DueDate,
+                   ProjectId   = @ProjectId
+            WHERE  Id     = @Id
+              AND  UserId = @UserId";
+
+        int affected = await _db.SaveDataAsync(sql, new
+        {
+            Id          = id,
+            UserId      = authUserId,
+            Title       = req.Title.Trim(),
+            Description = req.Description?.Trim(),
+            // Date-only, matching CreatePersonalTask — a due date is a date the
+            // user picked, never an instant, so it must not acquire a time here.
+            DueDate     = req.DueDate?.ToString("yyyy-MM-dd"),
+            ProjectId   = req.ProjectId,
+        });
+
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
+    // ── DELETE /api/projects/personal-tasks/{id} ─────────────────────────────
+    // Removes one personal task. Same `AND UserId = @UserId` scoping, so a
+    // mentor can only ever delete their own row. Hard delete: a personal
+    // reminder has no history anyone depends on, and PersonalTasks is not
+    // referenced by any other table.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("personal-tasks/{id:int}")]
+    public async Task<IActionResult> DeletePersonalTask(int id, int authUserId)
+    {
+        const string sql = @"
+            DELETE FROM PersonalTasks
             WHERE  Id     = @Id
               AND  UserId = @UserId";
 

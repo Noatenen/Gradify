@@ -1,40 +1,64 @@
 using AuthWithAdmin.Client.Pages.Mentor;
 using AuthWithAdmin.Shared.AuthSharedModels;
+using System.Net.Http.Json;
 
 namespace AuthWithAdmin.Client.Services;
 
 /// <summary>
 /// One snapshot of everything the cross-project mentor screens read.
 ///
-/// <para>בית and המשימות שלי are two views over the SAME four collections —
-/// the projects the mentor guides, the submissions awaiting their review, the
-/// requests on their projects, and their own personal reminders. Fetching that
-/// set in one place means the two pages cannot disagree about a count, and the
-/// joins the design needs (a submission's team name, a project's open-request
-/// count) are computed once instead of twice.</para>
+/// <para><b>Attention is the centre of this record.</b> בית, המשימות שלי and
+/// יומן ותכנון all read <see cref="Attention"/> for anything that involves
+/// "what is waiting on me", "how long has it waited" and "how urgent is it".
+/// None of them filters by status, computes an age or applies a threshold any
+/// more — the server did all three, once, in MentorAttentionService, and the
+/// daily digest reads the same model from the same place. That is what stops an
+/// email and a screen disagreeing about a count.</para>
+///
+/// <para>The other three collections remain because they answer questions
+/// attention does not: the projects the mentor guides, every request on those
+/// projects (not just the ones awaiting the mentor), and the mentor's complete
+/// personal-task list including undated and completed rows.</para>
 /// </summary>
 public sealed record MentorWorkspace(
-    IReadOnlyList<MentorProjectSummaryDto>   Projects,
-    IReadOnlyList<MentorPendingSubmissionDto> PendingSubmissions,
-    IReadOnlyList<ProjectRequestRowDto>       Requests,
-    IReadOnlyList<PersonalTaskDto>            PersonalTasks)
+    MentorAttentionDto                      Attention,
+    IReadOnlyList<MentorProjectSummaryDto>  Projects,
+    IReadOnlyList<ProjectRequestRowDto>     Requests,
+    IReadOnlyList<PersonalTaskDto>          PersonalTasks)
 {
     public static readonly MentorWorkspace Empty =
-        new(Array.Empty<MentorProjectSummaryDto>(),
-            Array.Empty<MentorPendingSubmissionDto>(),
+        new(new MentorAttentionDto(),
+            Array.Empty<MentorProjectSummaryDto>(),
             Array.Empty<ProjectRequestRowDto>(),
             Array.Empty<PersonalTaskDto>());
 
-    /// <summary>Team name for a project id — the design labels every submission
-    /// row with its team ("ניווט לעיוורים · צוות רועי כהן"), but the submissions
-    /// endpoint returns only the project. Resolved from the projects list the
-    /// same snapshot already holds rather than by adding a server field.</summary>
+    // ── Attention views ─────────────────────────────────────────────────────
+    // Items arrives already in canonical worst-first order (NeedsAttention →
+    // Waiting → New, oldest first inside each), and filtering preserves order,
+    // so these are projections and never re-sorts.
+
+    /// <summary>Submissions awaiting this mentor's review.</summary>
+    public IReadOnlyList<MentorAttentionItemDto> Reviews =>
+        Attention.Items.Where(i => i.Kind == MentorAttentionKind.Submission).ToList();
+
+    /// <summary>Requests awaiting this mentor's recommendation.</summary>
+    public IReadOnlyList<MentorAttentionItemDto> AwaitingMe =>
+        Attention.Items.Where(i => i.Kind == MentorAttentionKind.Request).ToList();
+
+    /// <summary>The single most pressing item across every kind — the first
+    /// entry of an already worst-first list.</summary>
+    public MentorAttentionItemDto? TopPriority => Attention.Items.FirstOrDefault();
+
+    /// <summary>Team name for a project id — used where a payload names the
+    /// project but not the team. Attention items already carry TeamName, so this
+    /// is only for the project-level surfaces.</summary>
     public string? TeamNameFor(int projectId) =>
         Projects.FirstOrDefault(p => p.Id == projectId)?.TeamName;
 
-    /// <summary>Open (non-terminal) requests filed against one project. Real
-    /// data, grouped client-side — the mentor projects endpoint has no
-    /// per-project request count of its own.</summary>
+    /// <summary>Open (non-terminal) requests filed against one project.
+    /// Deliberately NOT the same question as <see cref="AwaitingMe"/>: this
+    /// counts everything still live on the project, including requests the
+    /// lecturer or the team currently holds.</summary>
     public int OpenRequestsFor(int projectId) =>
         Requests.Count(r => r.ProjectId == projectId
                             && r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed));
@@ -42,85 +66,121 @@ public sealed record MentorWorkspace(
 
 public interface IMentorWorkspaceService
 {
-    /// <summary>Every dated thing across the mentor's projects, for יומן ותכנון.
-    /// Costs one call per project on top of the snapshot, because milestone and
-    /// deliverable dates live in the per-project detail payload and no
-    /// cross-project endpoint returns them — see MentorCalendarPage.</summary>
-    Task<IReadOnlyList<MentorCalendarEvent>> LoadCalendarAsync();
+    /// <summary>
+    /// Every dated thing across the mentor's projects, for יומן ותכנון.
+    ///
+    /// <para>Takes the snapshot rather than fetching it: the calendar page
+    /// already holds one (it needs Projects for the filter chips), and loading a
+    /// second copy here meant every visit fetched attention, requests and
+    /// personal tasks TWICE. Composing from what the caller already has is what
+    /// makes the page cost one snapshot instead of two.</para>
+    ///
+    /// <para>Still costs one call per project on top of that, because milestone
+    /// and deliverable dates live only in the per-project detail payload and no
+    /// cross-project endpoint returns them — see MentorCalendarPage.</para>
+    /// </summary>
+    Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(MentorWorkspace snapshot);
 
-    /// <summary>Loads all four collections concurrently. Never throws and never
-    /// returns null — each underlying service already swallows transport errors
-    /// and yields an empty list, so a partial outage degrades one section of a
-    /// page rather than blanking the whole screen.</summary>
+    /// <summary>Loads the snapshot. Never throws and never returns null — each
+    /// underlying call already swallows transport errors and yields an empty
+    /// result, so a partial outage degrades one section of a page rather than
+    /// blanking the whole screen.</summary>
     Task<MentorWorkspace> LoadAsync();
 }
 
 public class MentorWorkspaceService : IMentorWorkspaceService
 {
+    private readonly IMentorAttentionService _attention;
     private readonly IMentorProjectsService _projects;
     private readonly IProjectRequestsService _requests;
     private readonly IPersonalTasksService _personal;
 
     public MentorWorkspaceService(
+        IMentorAttentionService attention,
         IMentorProjectsService projects,
         IProjectRequestsService requests,
         IPersonalTasksService personal)
     {
-        _projects = projects;
-        _requests = requests;
-        _personal = personal;
+        _attention = attention;
+        _projects  = projects;
+        _requests  = requests;
+        _personal  = personal;
     }
 
     public async Task<MentorWorkspace> LoadAsync()
     {
-        // Concurrent, not sequential: these are four independent GETs and the
-        // mentor shell should not pay for them one after another.
-        var projectsTask    = _projects.GetProjectsAsync();
-        var submissionsTask = _projects.GetPendingSubmissionsAsync();
-        var requestsTask    = _requests.GetAllAsync();
-        var personalTask    = _personal.GetAsync();
+        // Concurrent, not sequential: four independent GETs, and the mentor
+        // shell should not pay for them one after another.
+        var attentionTask = _attention.GetAsync();
+        var projectsTask  = _projects.GetProjectsAsync();
+        var requestsTask  = _requests.GetAllAsync();
+        var personalTask  = _personal.GetAsync();
 
-        await Task.WhenAll(projectsTask, submissionsTask, requestsTask, personalTask);
+        await Task.WhenAll(attentionTask, projectsTask, requestsTask, personalTask);
 
         return new MentorWorkspace(
+            await attentionTask,
             await projectsTask,
-            await submissionsTask,
-            // GetAllAsync is the only one that can answer null (it returns
-            // null on a non-success response rather than an empty list).
-            // Server-side this endpoint is already scoped to the caller's own
-            // projects for a mentor-only user, so no client-side filter is
-            // needed or wanted here.
+            // GetAllAsync is the only one that can answer null (it returns null
+            // on a non-success response rather than an empty list). Server-side
+            // this endpoint is already scoped to the caller's own projects for a
+            // mentor-only user, so no client-side filter is needed or wanted.
             await requestsTask ?? new List<ProjectRequestRowDto>(),
             await personalTask);
     }
 
-    public async Task<IReadOnlyList<MentorCalendarEvent>> LoadCalendarAsync()
+    public async Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(MentorWorkspace snapshot)
     {
-        var snapshot = await LoadAsync();
         var events = new List<MentorCalendarEvent>();
 
         // ── Personal reminders. The only entries with no project. ──
+        //
+        //    Read from the FULL personal list rather than from Attention:
+        //    attention holds only what is due today or earlier, and a planner
+        //    whose personal tasks vanish until their due date is not a planner.
         foreach (var t in snapshot.PersonalTasks.Where(t => !t.IsDone && t.DueDate is not null))
         {
+            // Project context only when the SERVER supplied it — it resolves the
+            // association through ProjectMentors, so a task pointing at a project
+            // the mentor has lost arrives with these null and renders as
+            // "משימה אישית". A stale or deleted ProjectId therefore degrades to
+            // no context instead of breaking the row or naming a project the
+            // mentor may not see.
+            bool hasContext = t.ProjectId is int && !string.IsNullOrWhiteSpace(t.ProjectTitle);
+
             events.Add(new MentorCalendarEvent(
                 Id: $"pt-{t.Id}", Type: MentorEventType.PersonalTask,
                 Date: t.DueDate!.Value, Title: t.Title,
-                ProjectId: null, ProjectTitle: null, TeamName: null,
-                Detail: t.Description, Href: "/mentor/tasks?focus=personal"));
+                ProjectId:    hasContext ? t.ProjectId : null,
+                ProjectTitle: hasContext ? t.ProjectTitle : null,
+                TeamName:     hasContext ? t.TeamName : null,
+                Detail: t.Description,
+                // Straight to THIS task's editor, not the section.
+                Href: $"/mentor/tasks?editTask={t.Id}"));
         }
 
         // ── Submissions already sitting with the mentor. Dated by ARRIVAL,
-        //    which is the only real date there is: nothing stores a
-        //    review-by deadline. ──
-        foreach (var r in snapshot.PendingSubmissions)
+        //    which is the only real date there is: nothing stores a review-by
+        //    deadline. Age and state come straight from the attention model, so
+        //    a review reads identically here and on המשימות שלי. ──
+        foreach (var r in snapshot.Reviews)
         {
             events.Add(new MentorCalendarEvent(
-                Id: $"rv-{r.SubmissionId}", Type: MentorEventType.Review,
-                Date: r.SubmittedAt, Title: $"התקבלה לבדיקה — {r.TaskTitle}",
+                Id: $"rv-{r.EntityId}", Type: MentorEventType.Review,
+                Date: r.WaitingSince ?? DateTime.Now, Title: $"התקבלה לבדיקה — {r.Title}",
                 ProjectId: r.ProjectId, ProjectTitle: r.ProjectTitle,
-                TeamName: snapshot.TeamNameFor(r.ProjectId),
+                TeamName: r.TeamName ?? (r.ProjectId is int pid ? snapshot.TeamNameFor(pid) : null),
                 Detail: string.IsNullOrWhiteSpace(r.MilestoneTitle) ? null : $"אבן דרך: {r.MilestoneTitle}",
-                Href: $"/mentor/projects/{r.ProjectId}"));
+                // Deep link to THIS submission's review drawer rather than the
+                // project page. EntityId is the TaskSubmissions row id (see
+                // MentorAttentionService), which is exactly what the drawer
+                // takes. Falls back to the attention model's own project-level
+                // Href when there is no project to hang the drawer on.
+                Href: r.ProjectId is int rpid
+                          ? $"/mentor/projects/{rpid}?submissionId={r.EntityId}"
+                          : r.Href,
+                Age: r.Age,
+                WaitingLabel: r.WaitingLabel));
         }
 
         // ── Milestones and dated deliverables, per project.

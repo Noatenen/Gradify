@@ -1,0 +1,115 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@* ─────────────────────────────────────────────────────────────
+   AttentionItemsCard — "דורש תשומת לב"
+
+   The student's own work that is off track: a submission returned for
+   revision, a task past its due date, or a submission the mentor approved
+   that has not been confirmed in Moodle yet. Exactly the three conditions
+   StudentDashboardModel.AttentionKind already defines, and exactly the
+   conditions the focus card has always labelled "דורש תשומת לב" — so this
+   card names the same idea the same way rather than inventing a second
+   vocabulary for it.
+
+   WHAT CHANGED, AND WHY
+   This replaces the lower half of the old ActionCenterCard, which put these
+   task exceptions and the student's open requests together inside ONE
+   rose-filled band. Two problems with that: the two are different kinds of
+   information — one is "your work needs fixing", the other is "someone owes
+   you an answer" — and a solid rose surface made the whole block read as an
+   alarm, which is far louder than a pending Moodle confirmation deserves.
+
+   So: the ordinary Motiva ambient card, the same shell as
+   "עדכונים אחרונים" and "הגשות ומועדים קרובים", and rose reduced to what it
+   should always have been — a per-item accent (a small dot, the state text)
+   rather than the background of a section.
+
+   Row language is MRowList/MRow, the same list the deadlines card uses, so
+   the four cards in the two-column rhythm read as one system.
+   ───────────────────────────────────────────────────────────── *@
+
+<MCard Variant="MCard.CardVariant.AmbientEdge"
+       Padding="MCard.CardPadding.None"
+       Class="aic-card"
+       Fill="true">
+    <div class="aic-body">
+        <div class="aic-head">
+            <h2 class="aic-title">דורש תשומת לב</h2>
+        </div>
+
+        @if (_rows.Count == 0)
+        {
+            <MEmptyState Title="אין משימות שדורשות תשומת לב"
+                         Description="כשמשימה תוחזר לתיקון או תעבור את מועד ההגשה, היא תופיע כאן." />
+        }
+        else
+        {
+            <MRowList Class="aic-list" AriaLabel="דורש תשומת לב">
+                @foreach (var row in _rows)
+                {
+                    var captured = row;
+                    <MRow Class="aic-row"
+                          Primary="@row.Title"
+                          Secondary="@row.MilestoneTitle"
+                          Meta="@row.StateText"
+                          MetaTone="MRow.RowMetaTone.Rose"
+                          OnClick="@(() => Open(captured))"
+                          AriaLabel="@($"פתיחת {row.Title} — {row.StateText}")">
+                        <Leading>
+                            @* The semantic accent, at item level. The card
+                               surface itself stays neutral. *@
+                            <MStatusDot Tone="MStatusDot.DotTone.Rose" AriaLabel="@row.StateText" />
+                        </Leading>
+                    </MRow>
+                }
+            </MRowList>
+        }
+
+        <div class="aic-foot">
+            <a class="aic-all" href="/tasks">לכל המשימות</a>
+        </div>
+    </div>
+</MCard>
+
+@code {
+    [Parameter, EditorRequired] public List<MilestoneSummaryDto> Milestones { get; set; } = new();
+    [Parameter]                 public EventCallback<int>        OnOpenTask { get; set; }
+
+    /// <summary>Task the focus card already shows in full, with its own
+    /// "דורש תשומת לב" flag. Excluded by identity so one exception is never
+    /// stated twice on a single screen.</summary>
+    [Parameter] public int? ExcludeTaskId { get; set; }
+
+    /// <summary>Bounded for density, like every other list on this page. The
+    /// footer link carries the remainder — the old card's "עוד N" counter is
+    /// gone because the two-column rhythm gives every card the same footer.</summary>
+    private const int MaxRows = 3;
+
+    private sealed record Row(string Title, string MilestoneTitle, string StateText, int TaskId);
+
+    private List<Row> _rows => StudentDashboardModel
+        .AttentionTasks(Milestones, ExcludeTaskId)
+        .Take(MaxRows)
+        .Select(x => new Row(x.Task.Title, x.Milestone.Title, StateText(x.Task, x.Kind), x.Task.Id))
+        .ToList();
+
+    /// <summary>The item's state, in the words the dashboard already uses for
+    /// it. Overdue reports the real number of days from the real due date —
+    /// this is a genuine deadline the student missed, so unlike the mentor
+    /// area's waiting ages, "באיחור" is the correct word here.</summary>
+    private static string StateText(TaskSummaryDto task, StudentDashboardModel.AttentionKind kind) =>
+        kind switch
+        {
+            StudentDashboardModel.AttentionKind.Returned      => "הוחזר לתיקון",
+            StudentDashboardModel.AttentionKind.Overdue       => OverdueText(task),
+            _                                                 => "ממתין לאישור במודל",
+        };
+
+    private static string OverdueText(TaskSummaryDto task)
+    {
+        var days = (int)(DateTime.Today - task.DueDate!.Value.Date).TotalDays;
+        return days == 1 ? "יום אחד באיחור" : $"{days} ימים באיחור";
+    }
+
+    private async Task Open(Row row) => await OnOpenTask.InvokeAsync(row.TaskId);
+}

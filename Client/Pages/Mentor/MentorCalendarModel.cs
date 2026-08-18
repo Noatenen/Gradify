@@ -1,4 +1,5 @@
 using AuthWithAdmin.Client.Components;
+using AuthWithAdmin.Shared.AuthSharedModels;
 
 namespace AuthWithAdmin.Client.Pages.Mentor;
 
@@ -49,7 +50,31 @@ public sealed record MentorCalendarEvent(
     string? ProjectTitle,
     string? TeamName,
     string? Detail,
-    string? Href)
+    string? Href,
+    /// <summary>Attention state — populated for Review entries only, straight
+    /// from the shared attention model. A milestone or a deliverable has a
+    /// deadline rather than a waiting age, so it has no bucket.</summary>
+    MentorAttentionAge? Age = null,
+    /// <summary>Pre-rendered waiting phrase from the shared wording source, so
+    /// a review reads identically on the calendar, on המשימות שלי and in the
+    /// daily digest.</summary>
+    string? WaitingLabel = null,
+    /// <summary>
+    /// Whether <see cref="Date"/> carries a SCHEDULED time-of-day.
+    ///
+    /// <para><b>False for every entry this build produces, and that is the
+    /// honest answer.</b> A milestone, a deliverable and a personal task are
+    /// dated, not timed — nothing in the schema stores an hour for them. A
+    /// pending review does carry a real timestamp, but it is the moment the
+    /// submission ARRIVED, not a slot the mentor agreed to; placing it on an
+    /// hour line would read as "review this at 03:19", which nobody decided.
+    /// Those all belong in the day's ללא שעה area.</para>
+    ///
+    /// <para>The flag exists so the hour grid has a truthful way to receive
+    /// genuinely timed items later — a mentor-authored meeting being the
+    /// obvious one — without anyone having to invent a time to get there.</para>
+    /// </summary>
+    bool HasTime = false)
 {
     /// <summary>"פרויקט · צוות", or the personal-task marker. Never empty.</summary>
     public string Context =>

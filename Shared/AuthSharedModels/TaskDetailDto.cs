@@ -167,6 +167,24 @@ public class PersonalTaskDto
     public DateTime? DueDate     { get; set; }
     public bool      IsDone      { get; set; }
     public DateTime  CreatedAt   { get; set; }
+
+    /// <summary>
+    /// Optional project context. Null means "ללא שיוך".
+    ///
+    /// <para><b>Only ever populated when the caller still mentors that
+    /// project.</b> The read query joins through ProjectMentors, so a task whose
+    /// project the mentor has since lost access to comes back with this null and
+    /// the titles below null — the row keeps working and simply shows no
+    /// association. That is a deliberate one-way degradation: ownership of the
+    /// task is never affected, and no project or team name can leak through a
+    /// stale reference.</para>
+    /// </summary>
+    public int?      ProjectId    { get; set; }
+
+    /// <summary>Resolved server-side alongside ProjectId, never sent by the
+    /// client. Null whenever ProjectId is null.</summary>
+    public string?   ProjectTitle { get; set; }
+    public string?   TeamName     { get; set; }
 }
 
 /// <summary>Payload for POST /api/projects/personal-tasks.</summary>
@@ -175,4 +193,28 @@ public class CreatePersonalTaskRequest
     public string    Title       { get; set; } = "";
     public string?   Description { get; set; }
     public DateTime? DueDate     { get; set; }
+
+    /// <summary>Optional project to associate. Null = "ללא שיוך". The server
+    /// re-checks this against the caller's own mentor assignments and refuses
+    /// anything else — it is a request, never a grant.</summary>
+    public int?      ProjectId   { get; set; }
+}
+
+/// <summary>
+/// Payload for PUT /api/projects/personal-tasks/{id}.
+///
+/// <para>Carries the editable fields only. IsDone is absent on purpose — it has
+/// its own toggle endpoint, and letting a save also flip completion would give
+/// two ways to change one bit. UserId is absent because nothing may reassign a
+/// task to a different owner.</para>
+/// </summary>
+public class UpdatePersonalTaskRequest
+{
+    public string    Title       { get; set; } = "";
+    public string?   Description { get; set; }
+    public DateTime? DueDate     { get; set; }
+
+    /// <summary>Optional project to associate, re-validated server-side exactly
+    /// as on create. Sending null clears the association back to "ללא שיוך".</summary>
+    public int?      ProjectId   { get; set; }
 }

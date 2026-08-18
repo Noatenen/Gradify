@@ -60,8 +60,12 @@ builder.Services.AddScoped<IGoogleCalendarService, GoogleCalendarService>();
 
 // Mentor area
 builder.Services.AddScoped<IMentorProjectsService, MentorProjectsService>();
-// Cross-project snapshot shared by בית and המשימות שלי. Composes the three
-// services above/below it — it owns no endpoint of its own.
+// The single source of truth for "what needs my attention" — one GET whose
+// answer (waiting age, aging bucket, ordering, counts) is computed entirely
+// server-side and shared with the daily digest.
+builder.Services.AddScoped<IMentorAttentionService, MentorAttentionService>();
+// Cross-project snapshot shared by בית, המשימות שלי and יומן ותכנון. Composes
+// the services around it — it owns no endpoint of its own.
 builder.Services.AddScoped<IMentorWorkspaceService, MentorWorkspaceService>();
 
 // In-system notifications

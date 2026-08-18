@@ -12,9 +12,68 @@ namespace AuthWithAdmin.Server.Controllers;
 [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
 public class MentorController : ControllerBase
 {
-    private readonly DbRepository _db;
+    private readonly DbRepository           _db;
+    private readonly MentorAttentionService _attention;
+    private readonly MentorDigestService    _digests;
 
-    public MentorController(DbRepository db) => _db = db;
+    public MentorController(
+        DbRepository db,
+        MentorAttentionService attention,
+        MentorDigestService digests)
+    {
+        _db        = db;
+        _attention = attention;
+        _digests   = digests;
+    }
+
+    // ── GET /api/mentor/attention ────────────────────────────────────────────
+    //
+    // THE single source of truth for "what currently requires my attention".
+    // בית, המשימות שלי and יומן ותכנון all read this and none of them computes
+    // a waiting age, a threshold or an ordering of its own any more.
+    //
+    // Scoped to the CALLER — the mentor is always the authenticated user, never
+    // a route parameter, so there is no way to read another mentor's queue.
+    [HttpGet("attention")]
+    public async Task<IActionResult> GetAttention(int authUserId)
+        => Ok(await _attention.GetAsync(authUserId));
+
+    // ── POST /api/mentor/digest/run ──────────────────────────────────────────
+    //
+    // Admin-only manual trigger, for verifying the digest without waiting for
+    // the scheduled morning run. It calls the SAME MentorDigestService the
+    // scheduler calls — there is deliberately no separate "test digest" logic,
+    // because a test that exercises a different path proves nothing about the
+    // real one.
+    //
+    //   ?mentorUserId=  run for one mentor; omitted → every active mentor
+    //   ?force=true     clears today's ledger row first so a digest can be
+    //                   re-sent while testing. Does NOT bypass the empty rule.
+    //
+    // The response carries each mentor's outcome and the composed text, so the
+    // counts, the wording and the skip reasons are all verifiable from one call.
+    [HttpPost("digest/run")]
+    [Authorize(Roles = Roles.Admin)]
+    public async Task<IActionResult> RunDigest(
+        [FromQuery] int? mentorUserId = null,
+        [FromQuery] bool force = false)
+    {
+        var results = mentorUserId is int id
+            ? new List<MentorDigestService.DigestResult>
+              {
+                  await _digests.SendForMentorAsync(id, MentorDigestService.Triggers.Manual, force),
+              }
+            : await _digests.SendForAllMentorsAsync(MentorDigestService.Triggers.Manual, force);
+
+        return Ok(new
+        {
+            runDateIsrael = IsraelTime.Today.ToString("yyyy-MM-dd"),
+            timezone      = IsraelTime.ZoneDisplayName,
+            sent          = results.Count(r => r.Sent),
+            evaluated     = results.Count,
+            results,
+        });
+    }
 
     // ── GET /api/mentor/projects ─────────────────────────────────────────────
     [HttpGet("projects")]

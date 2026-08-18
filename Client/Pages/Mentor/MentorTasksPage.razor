@@ -16,17 +16,32 @@
     UX / IA source:  design-reference/mentor-experience/project/
                      Motiva Mentor Tasks.dc.html
     Visual source:   the implemented student experience.
-    Data source:     IMentorWorkspaceService — pending submissions, project
-                     requests, and the mentor's own personal tasks.
+    Data source:     IMentorWorkspaceService.
 
     THE POINT OF THE PAGE
     A student's "המשימות שלי" is a list of assigned project tasks. A mentor's
     is three different feeds that happen to share one question — what needs me
     — so the page is a queue, not a list:
 
-        הגשות לבדיקה           GET api/mentor/submissions
-        בקשות הדורשות פעולה     GET api/project-requests  (mentor-scoped server-side)
+        הגשות לבדיקה           GET api/mentor/attention  (Kind = Submission)
+        בקשות הדורשות פעולה     GET api/mentor/attention  (Kind = Request)
         משימות אישיות           GET api/projects/personal-tasks
+
+    WHERE THE URGENCY COMES FROM
+    The first two feeds arrive already filtered, aged and ordered worst-first
+    (NEEDS ATTENTION → WAITING → NEW, oldest first inside each band). This page
+    holds no status filter, no day arithmetic and no threshold: it used to carry
+    two different magic numbers for one idea — a review escalated at 4 days, a
+    request at 3 — and both are now the single server-side
+    MentorAttention.AttentionThresholdDays, which the daily digest reads too.
+
+    NEEDS ATTENTION IS THE ONLY STATE THAT ESCALATES VISUALLY. An item that
+    arrived today reads calmly on purpose: there is no deadline in this product,
+    so nothing is late and "new" is not an alarm.
+
+    "משימות באיחור" MEANS PERSONAL TASKS, AND ONLY PERSONAL TASKS. They are the
+    one kind here that carries a real DueDate the mentor set, so they are the one
+    kind that may legitimately read as באיחור.
 
     THE KPI ROW IS THE FILTER
     Each card scopes the page to its own section, exactly as the KPI row does
@@ -52,19 +67,19 @@
         {
             <MKpiGrid Columns="4" AriaLabel="תמונת מצב ומסננים">
                 <MKpiCard Accent="MKpiCard.KpiAccent.Violet"
-                          Value="@_reviews.Count.ToString()"
+                          Value="@Counts.PendingSubmissions.ToString()"
                           Label="הגשות לבדיקה"
                           Pressed="@(_focus == Section.Reviews)"
                           OnClick="@(() => ToggleFocus(Section.Reviews))"
-                          AriaLabel="@($"{_reviews.Count} הגשות לבדיקה — סינון")">
+                          AriaLabel="@($"{Counts.PendingSubmissions} הגשות לבדיקה — סינון")">
                     <Icon><MentorGlyph Kind="MentorGlyph.GlyphKind.Review" /></Icon>
                 </MKpiCard>
                 <MKpiCard Accent="MKpiCard.KpiAccent.Amber"
-                          Value="@_awaitingMe.Count.ToString()"
+                          Value="@Counts.AwaitingRequests.ToString()"
                           Label="בקשות ממתינות לך"
                           Pressed="@(_focus == Section.Requests)"
                           OnClick="@(() => ToggleFocus(Section.Requests))"
-                          AriaLabel="@($"{_awaitingMe.Count} בקשות ממתינות לך — סינון")">
+                          AriaLabel="@($"{Counts.AwaitingRequests} בקשות ממתינות לך — סינון")">
                     <Icon><MentorGlyph Kind="MentorGlyph.GlyphKind.Request" /></Icon>
                 </MKpiCard>
                 <MKpiCard Accent="MKpiCard.KpiAccent.Periwinkle"
@@ -75,10 +90,14 @@
                           AriaLabel="@($"{_openPersonal.Count} משימות אישיות לביצוע — סינון")">
                     <Icon><MentorGlyph Kind="MentorGlyph.GlyphKind.Personal" /></Icon>
                 </MKpiCard>
+                @* PERSONAL tasks only, and the label says so. These carry a real
+                   DueDate, so באיחור is a true statement about them; it would
+                   not be about a submission or a request, neither of which has a
+                   deadline to miss. *@
                 <MKpiCard Accent="MKpiCard.KpiAccent.Rose"
-                          Value="@OverdueCount.ToString()"
-                          Label="משימות באיחור"
-                          AriaLabel="@($"{OverdueCount} משימות אישיות באיחור")">
+                          Value="@Counts.PersonalTasksOverdue.ToString()"
+                          Label="משימות אישיות באיחור"
+                          AriaLabel="@($"{Counts.PersonalTasksOverdue} משימות אישיות באיחור")">
                     <Icon><MentorGlyph Kind="MentorGlyph.GlyphKind.Overdue" /></Icon>
                 </MKpiCard>
             </MKpiGrid>
@@ -122,17 +141,17 @@
                         <MRowList Inset="true" AriaLabel="הגשות לבדיקה">
                             @foreach (var r in _reviews)
                             {
-                                <MRow Href="@($"/mentor/projects/{r.ProjectId}")"
-                                      Primary="@r.TaskTitle"
-                                      Secondary="@ReviewContext(r)"
-                                      Meta="@MentorTime.WaitingLabel(r.SubmittedAt, "התקבלה היום")"
-                                      MetaTone="@(MentorTime.DaysSince(r.SubmittedAt) >= 4 ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default)"
+                                <MRow Href="@r.Href"
+                                      Primary="@r.Title"
+                                      Secondary="@ItemContext(r)"
+                                      Meta="@r.WaitingLabel"
+                                      MetaTone="@ToneFor(r)"
                                       AriaLabel="@($"פתיחת הפרויקט {r.ProjectTitle} לבדיקת ההגשה")">
                                     <Leading>
                                         <span class="mt-avatar" aria-hidden="true">@Initials(r.ProjectTitle)</span>
                                     </Leading>
                                     <Status>
-                                        <MStatusDot Tone="MStatusDot.DotTone.Violet" Label="ממתינה לבדיקה" />
+                                        <MStatusDot Tone="@DotToneFor(r)" Label="@StatusLabelFor(r, "ממתינה לבדיקה")" />
                                     </Status>
                                 </MRow>
                             }
@@ -160,18 +179,18 @@
                         <MRowList Inset="true" AriaLabel="בקשות הדורשות פעולה">
                             @foreach (var q in _awaitingMe)
                             {
-                                var id = q.Id;
+                                var id = q.EntityId;
                                 <MRow OnClick="@(() => _openRequestId = id)"
                                       Primary="@q.Title"
-                                      Secondary="@($"{q.ProjectTitle} · {q.CreatedByName}")"
-                                      Meta="@MentorTime.WaitingLabel(q.CreatedAt)"
-                                      MetaTone="@(MentorTime.DaysSince(q.CreatedAt) >= 3 ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default)"
+                                      Secondary="@ItemContext(q)"
+                                      Meta="@q.WaitingLabel"
+                                      MetaTone="@ToneFor(q)"
                                       AriaLabel="@($"פתיחת הבקשה {q.Title}")">
                                     <Leading>
-                                        <MStatusBadge Text="@RequestTypes.Label(q.RequestType)" />
+                                        <MStatusBadge Text="@RequestTypes.Label(q.RequestType ?? "")" />
                                     </Leading>
                                     <Status>
-                                        <MStatusDot Tone="MStatusDot.DotTone.Rose" Label="דורש את פעולתך" />
+                                        <MStatusDot Tone="@DotToneFor(q)" Label="@StatusLabelFor(q, "דורש את פעולתך")" />
                                     </Status>
                                 </MRow>
                             }
@@ -231,14 +250,38 @@
                                         </button>
                                     </Leading>
                                     <PrimaryContent>
-                                        <span class="mt-task-title">@t.Title</span>
+                                        @* The title opens the editor. A personal task is the
+                                           mentor's OWN item, so unlike a submission or a
+                                           request it is editable in place — the checkbox
+                                           stays a separate hit target so completing a task
+                                           never risks opening a dialog. *@
+                                        <button type="button" class="mt-task-title mt-task-edit"
+                                                @onclick="@(() => OpenEditTask(t))"
+                                                aria-label="@($"עריכת \"{t.Title}\"")">
+                                            @t.Title
+                                        </button>
+                                        @* Project context, when the mentor still has access
+                                           to it. Quiet secondary text on the existing row —
+                                           the same "פרויקט · צוות" phrasing every other
+                                           mentor surface uses. Absent means "ללא שיוך", which
+                                           needs no label of its own. *@
+                                        @if (!string.IsNullOrWhiteSpace(t.ProjectTitle))
+                                        {
+                                            <span class="mt-task-project">@PersonalTaskContext(t)</span>
+                                        }
                                     </PrimaryContent>
                                 </MRow>
                             }
                         </MRowList>
                     }
 
-                    @if (_openPersonal.Count + _donePersonal.Count > PersonalCollapsedCount)
+                    @* Show the toggle whenever the collapsed view is actually
+                       hiding something. The old test compared the COMBINED count
+                       against the cap, but the collapsed list only ever shows
+                       OPEN tasks — so completing the only task left it counted,
+                       hidden, and with no control to reveal it. It could then be
+                       neither reopened, edited nor deleted. *@
+                    @if (_openPersonal.Count > PersonalCollapsedCount || _donePersonal.Count > 0)
                     {
                         <div class="mt-expand">
                             <button type="button" class="mt-expand-btn" @onclick="TogglePersonalExpanded">
@@ -254,42 +297,21 @@
 
 @* ── Request details, opened in place ── *@
 <MentorRequestModal RequestId="@_openRequestId"
+                    WaitingLabel="@OpenRequestWaitingLabel"
                     OnClose="@(() => _openRequestId = null)"
                     OnChanged="ReloadAsync" />
 
-@* ── New personal task ── *@
-<MModal IsOpen="@_taskModalOpen" Size="MModal.ModalSize.Small" Title="משימה חדשה"
-        OnClose="CloseTaskModal">
-    <ChildContent>
-        <label class="mt-field-label" for="mt-task-title">שם המשימה</label>
-        <input id="mt-task-title" class="mt-field" maxlength="200"
-               placeholder="למשל: סיכום פגישה עם הצוות"
-               disabled="@_savingTask" @bind="_formTitle" @bind:event="oninput" />
-
-        <label class="mt-field-label" for="mt-task-due">תאריך יעד (אופציונלי)</label>
-        <input id="mt-task-due" class="mt-field" type="date"
-               disabled="@_savingTask" @bind="_formDue" />
-
-        @if (!string.IsNullOrEmpty(_taskError))
-        {
-            <p class="mt-field-error" role="alert">@_taskError</p>
-        }
-
-    </ChildContent>
-
-    <FooterContent>
-        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseTaskModal" Disabled="@_savingTask">
-            ביטול
-        </MButton>
-        <MButton Variant="MButton.ButtonVariant.Primary"
-                 OnClick="SaveTaskAsync"
-                 Loading="@_savingTask"
-                 LoadingText="שומרת…"
-                 Disabled="@(_savingTask || string.IsNullOrWhiteSpace(_formTitle))">
-            שמירה
-        </MButton>
-    </FooterContent>
-</MModal>
+@* ── New / edit personal task ──
+     The shared component, not an inline copy: /mentor/calendar opens the SAME
+     editor, so create, update, delete, validation and the delete confirmation
+     exist once. Mirrors how TeamTaskEditModal already serves both the student
+     tasks page and the student planner. *@
+<MentorPersonalTaskModal IsOpen="@_taskModalOpen"
+                         EditingTask="@_editingTask"
+                         Projects="@_ws.Projects"
+                         OnClose="CloseTaskModal"
+                         OnSaved="OnTaskSaved"
+                         OnDeleted="OnTaskDeleted" />
 
 @code {
     /// <summary>The three feeds. Also the filter vocabulary — one enum, so a
@@ -301,11 +323,22 @@
     private MentorWorkspace _ws = MentorWorkspace.Empty;
     private bool _loading = true;
 
-    private List<MentorPendingSubmissionDto> _reviews    = new();
-    private List<ProjectRequestRowDto>       _awaitingMe = new();
+    private IReadOnlyList<MentorAttentionItemDto> _reviews    = Array.Empty<MentorAttentionItemDto>();
+    private IReadOnlyList<MentorAttentionItemDto> _awaitingMe = Array.Empty<MentorAttentionItemDto>();
     private List<PersonalTaskDto>            _openPersonal = new();
     private List<PersonalTaskDto>            _donePersonal = new();
     private List<PersonalTaskDto>            _visiblePersonal = new();
+
+    /// <summary>Server-computed counts, so the KPI row and the section headings
+    /// cannot drift apart or disagree with the daily digest.</summary>
+    private MentorAttentionCountsDto Counts => _ws.Attention.Counts;
+
+    /// <summary>Waiting phrase for the request currently open in the modal,
+    /// taken from the same attention item the row rendered.</summary>
+    private string? OpenRequestWaitingLabel =>
+        _openRequestId is int id
+            ? _awaitingMe.FirstOrDefault(r => r.EntityId == id)?.WaitingLabel
+            : null;
 
     private Section? _focus;
     private bool     _personalExpanded;
@@ -313,18 +346,23 @@
     private int?     _togglingId;
 
     private bool    _taskModalOpen;
-    private bool    _savingTask;
-    private string  _formTitle = "";
-    private DateTime? _formDue;
-    private string? _taskError;
 
-    private int OverdueCount => _openPersonal.Count(t => MentorTime.IsOverdue(t.DueDate));
+    /// <summary>Null while creating, the task id while editing. The one flag the
+    /// shared modal reads to decide its title, whether delete exists, and which
+    /// endpoint a save calls.</summary>
+    /// <summary>Null while creating, the task instance while editing. Handed
+    /// straight to the shared modal, which owns all form state.</summary>
+    private PersonalTaskDto? _editingTask;
 
     protected override async Task OnInitializedAsync()
     {
         Nav.LocationChanged += OnLocationChanged;
         ApplyFocusFromQuery();
         await ReloadAsync();
+
+        // AFTER the load: the calendar links here with ?editTask={id}, and the
+        // editor can only be seeded once that task's data actually exists.
+        OpenTaskFromQuery();
     }
 
     public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
@@ -341,19 +379,43 @@
     /// <summary>Reads ?focus= without Microsoft.AspNetCore.WebUtilities, which
     /// this project does not reference. One parameter, one known shape — a
     /// full query parser would be more code than the thing it parses.</summary>
-    private void ApplyFocusFromQuery()
+    /// <summary>One query value by name, or null. Same hand-rolled reader the
+    /// focus parameter already used — one shape, no parser dependency.</summary>
+    private string? QueryValue(string key)
     {
         var query = new Uri(Nav.Uri).Query.TrimStart('?');
 
-        string? value = null;
         foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             var eq = pair.IndexOf('=');
             if (eq <= 0) continue;
-            if (!pair.AsSpan(0, eq).Equals("focus", StringComparison.OrdinalIgnoreCase)) continue;
-            value = Uri.UnescapeDataString(pair[(eq + 1)..]);
-            break;
+            if (!pair.AsSpan(0, eq).Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+            return Uri.UnescapeDataString(pair[(eq + 1)..]);
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Opens the editor for ?editTask={id}, the calendar's personal-task link.
+    ///
+    /// <para>Looks the id up in the list this mentor just loaded, so it can only
+    /// ever open one of their OWN tasks — an id belonging to someone else simply
+    /// is not found and nothing opens. No extra fetch and no second modal.</para>
+    /// </summary>
+    private void OpenTaskFromQuery()
+    {
+        if (!int.TryParse(QueryValue("editTask"), out var wantedId)) return;
+
+        var task = _openPersonal.Concat(_donePersonal).FirstOrDefault(t => t.Id == wantedId);
+        if (task is null) return;
+
+        OpenEditTask(task);
+    }
+
+    private void ApplyFocusFromQuery()
+    {
+        string? value = QueryValue("focus");
 
         _focus = (value ?? "").ToLowerInvariant() switch
         {
@@ -369,12 +431,12 @@
         _loading = true;
         _ws = await Workspace.LoadAsync();
 
-        _reviews = _ws.PendingSubmissions.OrderBy(s => s.SubmittedAt).ToList();
-
-        _awaitingMe = _ws.Requests
-            .Where(r => MentorRequestBuckets.Of(r.Status) == MentorRequestBucket.AwaitingMentor)
-            .OrderBy(r => r.CreatedAt)
-            .ToList();
+        // Both queues arrive filtered, aged and ordered worst-first. The three
+        // things this method used to do — pick the awaiting-mentor status, sort
+        // by timestamp, and let each row decide its own urgency — are all the
+        // server's job now.
+        _reviews    = _ws.Reviews;
+        _awaitingMe = _ws.AwaitingMe;
 
         SplitPersonal(_ws.PersonalTasks);
         _loading = false;
@@ -422,17 +484,37 @@
 
     // ── Rows ────────────────────────────────────────────────────────────
 
-    /// <summary>Project · team · milestone — team resolved from the projects
-    /// list in the same snapshot, since the submissions endpoint returns only
-    /// the project.</summary>
-    private string ReviewContext(MentorPendingSubmissionDto r) =>
+    /// <summary>Project · team · milestone · who. Every field comes from the
+    /// attention item itself — the endpoint already joins the team and the
+    /// milestone, so nothing has to be resolved from a second list.</summary>
+    private static string ItemContext(MentorAttentionItemDto i) =>
         string.Join(" · ", new[]
         {
-            r.ProjectTitle,
-            _ws.TeamNameFor(r.ProjectId),
-            string.IsNullOrWhiteSpace(r.MilestoneTitle) ? null : $"אבן דרך: {r.MilestoneTitle}",
-            string.IsNullOrWhiteSpace(r.SubmittedBy)    ? null : $"הוגש ע\"י {r.SubmittedBy}",
+            i.ProjectTitle,
+            i.TeamName,
+            string.IsNullOrWhiteSpace(i.MilestoneTitle) ? null : $"אבן דרך: {i.MilestoneTitle}",
+            string.IsNullOrWhiteSpace(i.ActorName)      ? null
+                : i.Kind == MentorAttentionKind.Submission ? $"הוגש ע\"י {i.ActorName}"
+                : i.ActorName,
         }.Where(s => !string.IsNullOrWhiteSpace(s)));
+
+    /// <summary>Rose ONLY at NEEDS ATTENTION — a NEW item must not read as an
+    /// alarm.</summary>
+    private static MRow.RowMetaTone ToneFor(MentorAttentionItemDto i) =>
+        i.Age == MentorAttentionAge.NeedsAttention
+            ? MRow.RowMetaTone.Rose
+            : MRow.RowMetaTone.Default;
+
+    private static MStatusDot.DotTone DotToneFor(MentorAttentionItemDto i) =>
+        i.Age == MentorAttentionAge.NeedsAttention
+            ? MStatusDot.DotTone.Rose
+            : MStatusDot.DotTone.Violet;
+
+    /// <summary>The status chip. At NEEDS ATTENTION it becomes the shared
+    /// "דורש תשומת לב" from MentorAging, so the escalation is stated in words
+    /// rather than carried by colour alone.</summary>
+    private static string StatusLabelFor(MentorAttentionItemDto i, string restingLabel) =>
+        MentorAging.StateLabel(i.Age) ?? restingLabel;
 
     private static string Initials(string? text)
     {
@@ -459,39 +541,47 @@
         SplitPersonal(all);
     }
 
+    /// <summary>"פרויקט · צוות" for a row. Only ever called when the server
+    /// supplied a title, i.e. when access to that project still exists.</summary>
+    private static string PersonalTaskContext(PersonalTaskDto t) =>
+        string.IsNullOrWhiteSpace(t.TeamName) ? t.ProjectTitle! : $"{t.ProjectTitle} · {t.TeamName}";
+
     private void OpenNewTask()
     {
-        _formTitle = "";
-        _formDue   = null;
-        _taskError = null;
+        _editingTask   = null;
         _taskModalOpen = true;
     }
 
-    private void CloseTaskModal() => _taskModalOpen = false;
-
-    private async Task SaveTaskAsync()
+    private void OpenEditTask(PersonalTaskDto task)
     {
-        if (string.IsNullOrWhiteSpace(_formTitle)) return;
-
-        _savingTask = true;
-        _taskError = null;
-
-        var (created, error) = await PersonalTasks.CreateAsync(new CreatePersonalTaskRequest
-        {
-            Title   = _formTitle.Trim(),
-            DueDate = _formDue,
-        });
-
-        _savingTask = false;
-
-        if (created is null)
-        {
-            _taskError = error ?? "לא הצלחנו לשמור את המשימה. אפשר לנסות שוב.";
-            return;
-        }
-
-        SplitPersonal(_openPersonal.Concat(_donePersonal).Append(created));
-        _taskModalOpen = false;
+        _editingTask   = task;
+        _taskModalOpen = true;
     }
 
+    private void CloseTaskModal()
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+    }
+
+    /// <summary>Create or update finished. The modal already mirrored an edit
+    /// onto the instance it was given, so an update just needs re-splitting;
+    /// a create is appended.</summary>
+    private void OnTaskSaved(PersonalTaskDto saved)
+    {
+        var all = _openPersonal.Concat(_donePersonal).ToList();
+
+        if (!all.Any(t => t.Id == saved.Id)) all.Add(saved);
+
+        SplitPersonal(all);
+        _taskModalOpen = false;
+        _editingTask   = null;
+    }
+
+    private void OnTaskDeleted(int deletedId)
+    {
+        SplitPersonal(_openPersonal.Concat(_donePersonal).Where(t => t.Id != deletedId));
+        _taskModalOpen = false;
+        _editingTask   = null;
+    }
 }

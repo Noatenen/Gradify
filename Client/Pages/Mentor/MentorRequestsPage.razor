@@ -7,6 +7,7 @@
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IProjectRequestsService RequestsService
+@inject IMentorAttentionService Attention
 
 @*
     ── בקשות — the mentor's request queue ──────────────────────────────────
@@ -204,6 +205,7 @@
                                             <div class="mrq-detail">
                                                 <MentorRequestDetail RequestId="@req.Id"
                                                                      ShowHeader="false"
+                                                                     WaitingLabel="@AttentionFor(req)?.WaitingLabel"
                                                                      OnChanged="OnRequestChangedAsync" />
                                             </div>
                                         }
@@ -225,6 +227,10 @@
     public int? DeepLinkRequestId { get; set; }
 
     private List<ProjectRequestRowDto> _all = new();
+    /// <summary>Waiting ages for the requests that are actually on this mentor.
+    /// One extra GET, and the reason this page cannot word or escalate a request
+    /// differently from the rest of the mentor experience.</summary>
+    private MentorAttentionDto _attention = new();
     private bool _loading = true;
     private bool _loadError;
 
@@ -255,8 +261,14 @@
         _loading = true;
         _loadError = false;
 
-        var rows = await RequestsService.GetAllAsync();
+        var rowsTask      = RequestsService.GetAllAsync();
+        var attentionTask = Attention.GetAsync();
+        await Task.WhenAll(rowsTask, attentionTask);
+
+        var rows = await rowsTask;
         if (rows is null) { _loadError = true; _loading = false; return; }
+
+        _attention = await attentionTask;
 
         // Newest activity first, the ordering the legacy inbox used.
         _all = rows.OrderByDescending(r => r.UpdatedAt).ToList();
@@ -341,21 +353,33 @@
         string.Join(" · ", new[] { r.ProjectTitle, r.TeamName, r.CreatedByName }
             .Where(s => !string.IsNullOrWhiteSpace(s)));
 
-    /// <summary>Ageing, written from the mentor's side. Only a request actually
-    /// waiting on them gets a "how long you have held it" reading; everything
-    /// else reports when it last moved.</summary>
-    private static string SlaLabel(ProjectRequestRowDto r) =>
-        MentorRequestBuckets.Of(r.Status) == MentorRequestBucket.AwaitingMentor
-            ? MentorTime.WaitingLabel(r.CreatedAt)
-            : $"עודכנה {MentorTime.AgoLabel(r.UpdatedAt)}";
+    /// <summary>
+    /// Ageing, written from the mentor's side. Only a request actually waiting
+    /// on them gets a "how long it has been waiting" reading; everything else
+    /// reports when it last moved.
+    ///
+    /// <para>The waiting phrase is looked up in the attention snapshot rather
+    /// than computed here. This page used to derive it from CreatedAt with its
+    /// own <c>&gt;= 3</c> comparison — the last of the four scattered thresholds
+    /// — and could therefore word or escalate the same request differently from
+    /// בית, המשימות שלי and the daily digest.</para>
+    /// </summary>
+    private string SlaLabel(ProjectRequestRowDto r) =>
+        AttentionFor(r)?.WaitingLabel ?? $"עודכנה {MentorTime.AgoLabel(r.UpdatedAt)}";
 
-    /// <summary>Rose past three days, and only for the ones the mentor is
-    /// holding — the design escalates exactly that case.</summary>
-    private static MRow.RowMetaTone SlaTone(ProjectRequestRowDto r) =>
-        MentorRequestBuckets.Of(r.Status) == MentorRequestBucket.AwaitingMentor
-        && MentorTime.DaysSince(r.CreatedAt) >= 3
+    /// <summary>Rose only at NEEDS ATTENTION, and only for requests the mentor
+    /// is actually holding.</summary>
+    private MRow.RowMetaTone SlaTone(ProjectRequestRowDto r) =>
+        AttentionFor(r)?.Age == MentorAttentionAge.NeedsAttention
             ? MRow.RowMetaTone.Rose
             : MRow.RowMetaTone.Default;
+
+    /// <summary>The attention item for a request, or null when it is not waiting
+    /// on this mentor. Null is the normal case — most rows on this page are with
+    /// the lecturer, with the team, or closed.</summary>
+    private MentorAttentionItemDto? AttentionFor(ProjectRequestRowDto r) =>
+        _attention.Items.FirstOrDefault(
+            i => i.Kind == MentorAttentionKind.Request && i.EntityId == r.Id);
 
     /// <summary>KPI accents. Amber for "waiting on you" is the presentation hue
     /// the finalized student Requests screen already uses for the same idea;

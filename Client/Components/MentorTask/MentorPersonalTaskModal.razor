@@ -1,0 +1,232 @@
+@namespace AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@inject IPersonalTasksService PersonalTasks
+
+@*
+    MentorPersonalTaskModal — create / edit / delete one mentor personal task.
+
+    Extracted from MentorTasksPage so the calendar can offer the SAME editor
+    rather than growing a second one. The precedent is TeamTaskEditModal, which
+    the student tasks page and the student planner already share for exactly this
+    reason: one component, one set of validation rules, one delete confirmation,
+    and no way for two screens to drift apart.
+
+    It owns its form state and calls IPersonalTasksService itself. Callers pass
+    the task to edit (or null to create), the projects they may associate, and
+    react to the result — they never reimplement create, update or delete.
+*@
+
+<MModal IsOpen="@IsOpen" Size="MModal.ModalSize.Small"
+        Title="@(EditingTask is null ? "משימה חדשה" : "עריכת משימה")"
+        OnClose="CloseAsync">
+    <ChildContent>
+        <label class="mpt-field-label" for="mpt-title">שם המשימה</label>
+        <input id="mpt-title" class="mpt-field" maxlength="200"
+               placeholder="למשל: סיכום פגישה עם הצוות"
+               disabled="@_saving" @bind="_formTitle" @bind:event="oninput" />
+
+        @* Options come from the caller's own authorized project list, so the
+           select cannot offer a project this mentor may not use. The server
+           re-validates every save regardless. *@
+        <label class="mpt-field-label" for="mpt-project">פרויקט משויך (אופציונלי)</label>
+        <select id="mpt-project" class="mpt-field" disabled="@_saving" @bind="_formProjectId">
+            <option value="0">ללא שיוך</option>
+            @foreach (var p in Projects)
+            {
+                <option value="@p.Id">@ProjectOptionLabel(p)</option>
+            }
+        </select>
+
+        <label class="mpt-field-label" for="mpt-notes">תיאור / הערות (אופציונלי)</label>
+        <textarea id="mpt-notes" class="mpt-field mpt-field-notes" rows="3" maxlength="1000"
+                  placeholder="פרטים, החלטות או מה צריך להכין…"
+                  disabled="@_saving" @bind="_formDescription"></textarea>
+
+        <label class="mpt-field-label" for="mpt-due">תאריך יעד (אופציונלי)</label>
+        <input id="mpt-due" class="mpt-field" type="date" disabled="@_saving" @bind="_formDue" />
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <p class="mpt-field-error" role="alert">@_error</p>
+        }
+    </ChildContent>
+
+    <FooterContent>
+        @* Delete lives inside the editor, the same place TeamTaskEditModal puts
+           it — a destructive action belongs with the thing it destroys, not on
+           the row where a mis-click costs a task. Only on edit; there is nothing
+           to delete while creating. *@
+        @if (EditingTask is not null)
+        {
+            @if (_confirmDelete)
+            {
+                <span class="mpt-delete-confirm">למחוק את המשימה?</span>
+                <MButton Variant="MButton.ButtonVariant.Secondary"
+                         OnClick="@(() => _confirmDelete = false)" Disabled="@_saving">ביטול</MButton>
+                <MButton Variant="MButton.ButtonVariant.Danger"
+                         OnClick="DeleteAsync" Loading="@_saving" LoadingText="מוחקת…">מחיקה</MButton>
+            }
+            else
+            {
+                <MButton Variant="MButton.ButtonVariant.Danger"
+                         OnClick="@(() => _confirmDelete = true)" Disabled="@_saving">מחיקה</MButton>
+            }
+        }
+
+        @if (!_confirmDelete)
+        {
+            <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_saving">ביטול</MButton>
+            <MButton Variant="MButton.ButtonVariant.Primary"
+                     OnClick="SaveAsync" Loading="@_saving" LoadingText="שומרת…"
+                     Disabled="@(_saving || string.IsNullOrWhiteSpace(_formTitle))">שמירה</MButton>
+        }
+    </FooterContent>
+</MModal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Task to edit, or null to create.</summary>
+    [Parameter] public PersonalTaskDto? EditingTask { get; set; }
+
+    /// <summary>Projects this mentor may associate. Empty is valid — the select
+    /// then offers only "ללא שיוך".</summary>
+    [Parameter] public IReadOnlyList<MentorProjectSummaryDto> Projects { get; set; }
+        = Array.Empty<MentorProjectSummaryDto>();
+
+    /// <summary>Seeds תאריך יעד when CREATING. This is how the calendar hands
+    /// over the day the mentor selected; the field stays editable, so the date
+    /// is a starting point and never a decision the caller locks in.</summary>
+    [Parameter] public DateTime? InitialDueDate { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised after a successful create or update, with the resulting
+    /// task. Callers refresh from this rather than re-implementing the save.</summary>
+    [Parameter] public EventCallback<PersonalTaskDto> OnSaved { get; set; }
+
+    /// <summary>Raised after a successful delete, with the removed id.</summary>
+    [Parameter] public EventCallback<int> OnDeleted { get; set; }
+
+    private string    _formTitle = "";
+    private string?   _formDescription;
+    private int       _formProjectId;
+    private DateTime? _formDue;
+
+    private bool    _saving;
+    private bool    _confirmDelete;
+    private string? _error;
+
+    // The open transition seeds the form. Re-seeding on every render would wipe
+    // whatever the user has typed.
+    private bool _wasOpen;
+
+    protected override void OnParametersSet()
+    {
+        if (IsOpen && !_wasOpen) Seed();
+        _wasOpen = IsOpen;
+    }
+
+    /// <summary>
+    /// Fills the form for the task being edited, or for a fresh one.
+    ///
+    /// <para>A task whose project the mentor no longer mentors arrives with
+    /// ProjectId null — the server resolves association through ProjectMentors —
+    /// so the select shows "ללא שיוך" and saving cannot silently re-attach it.</para>
+    /// </summary>
+    private void Seed()
+    {
+        _formTitle       = EditingTask?.Title ?? "";
+        _formDescription = EditingTask?.Description;
+        _formProjectId   = EditingTask?.ProjectId ?? 0;
+        _formDue         = EditingTask?.DueDate ?? (EditingTask is null ? InitialDueDate : null);
+        _error           = null;
+        _confirmDelete   = false;
+        _saving          = false;
+    }
+
+    private static string ProjectOptionLabel(MentorProjectSummaryDto p) =>
+        string.IsNullOrWhiteSpace(p.TeamName) ? p.Title : $"{p.Title} — {p.TeamName}";
+
+    private async Task CloseAsync()
+    {
+        if (_saving) return;
+        _confirmDelete = false;
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_formTitle)) return;
+
+        _saving = true;
+        _error  = null;
+
+        int?    projectId   = _formProjectId == 0 ? null : _formProjectId;
+        string  title       = _formTitle.Trim();
+        string? description = string.IsNullOrWhiteSpace(_formDescription) ? null : _formDescription.Trim();
+
+        if (EditingTask is { } editing)
+        {
+            var error = await PersonalTasks.UpdateAsync(editing.Id, new UpdatePersonalTaskRequest
+            {
+                Title = title, Description = description, DueDate = _formDue, ProjectId = projectId,
+            });
+
+            _saving = false;
+            if (error is not null) { _error = error; return; }
+
+            // Mirror onto the instance the caller handed us, using the SAME
+            // authorized list the select offered — so a label can never name a
+            // project this mentor lost access to.
+            var proj = projectId is int pid ? Projects.FirstOrDefault(p => p.Id == pid) : null;
+
+            editing.Title        = title;
+            editing.Description  = description;
+            editing.DueDate      = _formDue;
+            editing.ProjectId    = proj?.Id;
+            editing.ProjectTitle = proj?.Title;
+            editing.TeamName     = proj?.TeamName;
+
+            await OnSaved.InvokeAsync(editing);
+            return;
+        }
+
+        var (created, createError) = await PersonalTasks.CreateAsync(new CreatePersonalTaskRequest
+        {
+            Title = title, Description = description, DueDate = _formDue, ProjectId = projectId,
+        });
+
+        _saving = false;
+
+        if (created is null)
+        {
+            _error = createError ?? "לא הצלחנו לשמור את המשימה. אפשר לנסות שוב.";
+            return;
+        }
+
+        await OnSaved.InvokeAsync(created);
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (EditingTask is not { } target) return;
+
+        _saving = true;
+        _error  = null;
+
+        bool ok = await PersonalTasks.DeleteAsync(target.Id);
+        _saving = false;
+
+        if (!ok)
+        {
+            _error         = "לא הצלחנו למחוק את המשימה. אפשר לנסות שוב.";
+            _confirmDelete = false;
+            return;
+        }
+
+        _confirmDelete = false;
+        await OnDeleted.InvokeAsync(target.Id);
+    }
+}

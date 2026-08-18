@@ -85,6 +85,14 @@ builder.Services.AddDataProtection()
 //Mail
 builder.Services.AddSingleton<EmailHelper>();
 
+//Mentor attention + daily digest
+// Scoped, because both depend on the scoped DbRepository (one SqliteConnection
+// per instance). The background scheduler resolves them inside its own scope
+// per run — never from the root provider.
+builder.Services.AddScoped<MentorAttentionService>();
+builder.Services.AddScoped<MentorDigestService>();
+builder.Services.AddHostedService<MentorDigestBackgroundService>();
+
 
 //JWT
 var jwtSettings = builder.Configuration.GetSection("JWTSettings");

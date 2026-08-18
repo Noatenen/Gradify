@@ -7,11 +7,11 @@ namespace AuthWithAdmin.Client.Pages.Dashboard;
 ///
 /// <para><b>Why this exists.</b> Before Phase 4D the same four rules —
 /// "is this task complete", "is this task an exception", the current-milestone
-/// priority chain, and the next-submission pick — were copy-pasted across
-/// StudentDashboardHero, ActionCenterCard and UpcomingSubmissionsCard, each
-/// with a comment explaining that it had to stay byte-identical to the others.
-/// The V4 rebuild adds two more consumers, so the rules move here once. The
-/// logic is unchanged: every method below is a verbatim lift, not a rewrite.</para>
+/// priority chain, and the next-submission pick — were copy-pasted across the
+/// dashboard's sections, each with a comment explaining that it had to stay
+/// byte-identical to the others. The rules moved here once, and every consumer
+/// since (the focus card, both attention cards, the deadlines card and the page
+/// itself) reads them from here.</para>
 ///
 /// <para>Pure functions over DTOs. No service calls, no state, no sample data,
 /// and nothing server-side is touched.</para>
@@ -74,14 +74,38 @@ public static class StudentDashboardModel
     public static bool IsAttentionItem(TaskSummaryDto t) =>
         IsReturned(t) || IsOverdue(t) || IsPendingMoodle(t);
 
-    /// <summary>Which kind a task is, using the same precedence the old
-    /// ActionCenterCard used (returned beats overdue beats pending-Moodle).
+    /// <summary>Which kind a task is, using the precedence the dashboard has
+    /// always used (returned beats overdue beats pending-Moodle).
     /// Null when the task is not an exception.</summary>
     public static AttentionKind? KindOf(TaskSummaryDto t) =>
         IsReturned(t)      ? AttentionKind.Returned
         : IsOverdue(t)     ? AttentionKind.Overdue
         : IsPendingMoodle(t) ? AttentionKind.PendingMoodle
         : null;
+
+    /// <summary>
+    /// Every task-level exception across the project, worst kind first.
+    ///
+    /// <para>Stated here rather than inside the card that draws it because the
+    /// page itself also needs the answer — it decides whether to render the
+    /// attention row at all, and a second copy of the filter in Dashboard.razor
+    /// could drift from the card's. The card maps these to rows; nothing else
+    /// re-derives them.</para>
+    ///
+    /// <para><paramref name="excludeTaskId"/> drops the task the focus card
+    /// already shows in full, so one exception is never stated twice on a
+    /// single screen.</para>
+    /// </summary>
+    public static List<(MilestoneSummaryDto Milestone, TaskSummaryDto Task, AttentionKind Kind)>
+        AttentionTasks(IReadOnlyList<MilestoneSummaryDto> milestones, int? excludeTaskId = null) =>
+        milestones
+            .SelectMany(ms => ms.Tasks.Select(t => (Milestone: ms, Task: t)))
+            .Where(x => x.Task.Id != excludeTaskId)
+            .Select(x => (x.Milestone, x.Task, Kind: KindOf(x.Task)))
+            .Where(x => x.Kind is not null)
+            .Select(x => (x.Milestone, x.Task, Kind: x.Kind!.Value))
+            .OrderBy(x => (int)x.Kind)
+            .ToList();
 
     // ── Next submission ──────────────────────────────────────────────────────
 

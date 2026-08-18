@@ -359,9 +359,27 @@ public class TaskSubmissionsController : ControllerBase
                 string title   = "הגשה חדשה התקבלה";
                 string message = $"צוות {ctx.TeamName} הגיש לבדיקה את המשימה {ctx.TaskTitle}";
 
-                await NotificationHelper.CreateForUsersAsync(
-                    _db, mentorIds, title, message,
-                    type: "SubmissionReceived",
+                // Dispatcher, not NotificationHelper, and NotificationTypes
+                // .SubmissionSubmitted rather than the ad-hoc string
+                // "SubmissionReceived".
+                //
+                // WHAT WAS BROKEN. "SubmissionReceived" is not a member of
+                // NotificationTypes, so it matched no row in
+                // UserNotificationPreferences and never reached the dispatcher's
+                // email path: a real new submission produced an in-app row only.
+                // Meanwhile the mentor's settings screen DOES show a "הגשה חדשה"
+                // toggle — bound to SubmissionSubmitted, which until now was
+                // written solely by the lecturer's manual "remind mentor"
+                // action. The mentor's own new-submission email preference
+                // therefore controlled nothing.
+                //
+                // Using the canonical type makes that toggle real and routes the
+                // notification through the same preference check every other
+                // notification already uses. The in-app row is still always
+                // written first, so nothing that worked before stops working.
+                await NotificationDispatcher.DispatchAsync(
+                    _db, _email, mentorIds, title, message,
+                    type: NotificationTypes.SubmissionSubmitted,
                     relatedEntityType: "TaskSubmission",
                     relatedEntityId: req.TaskId);  // TaskId so mentor page can deep-link
             }
@@ -701,6 +719,47 @@ public class TaskSubmissionsController : ControllerBase
             ?.FirstOrDefault();
 
         if (subRow is null) return NotFound("ההגשה לא נמצאה");
+
+        // ── Ownership gate ───────────────────────────────────────────────────
+        //
+        // The [Authorize] attribute above proves the caller holds the Mentor
+        // role — it proves NOTHING about which projects are theirs. Without the
+        // check below, any mentor in the programme could approve or return any
+        // submission in the database, including for teams they have never met.
+        // Approving is not a soft action: it sets Tasks.Status to
+        // 'ApprovedForSubmission' and unlocks the student's Moodle confirmation
+        // step, and returning notifies the whole team.
+        //
+        // This is the same rule, resolved the same way, that
+        // ProjectRequestsController.SubmitMentorRecommendation already applies
+        // to the mentor's other decision endpoint ("never trust the role
+        // alone"). Stated here so the two mentor write paths agree.
+        //
+        // Admin/Staff are intentionally unscoped, exactly as before: they hold
+        // the lecturer-override endpoint on this same controller and are the
+        // programme-wide authority. Their behaviour is unchanged.
+        bool isMentorOnly = User.IsInRole(Roles.Mentor)
+                            && !User.IsInRole(Roles.Admin)
+                            && !User.IsInRole(Roles.Staff);
+
+        if (isMentorOnly)
+        {
+            // Joined from the submission rather than taken from the request, so
+            // the caller cannot nominate the project they are checked against.
+            const string ownershipSql = @"
+                SELECT 1
+                FROM   TaskSubmissions ts
+                JOIN   Tasks           t   ON t.Id  = ts.TaskId
+                JOIN   ProjectMentors  pm  ON pm.ProjectId = t.ProjectId
+                WHERE  ts.Id     = @Id
+                  AND  pm.UserId = @UserId
+                LIMIT  1";
+
+            var owns = (await _db.GetRecordsAsync<int>(
+                ownershipSql, new { Id = id, UserId = authUserId }))?.FirstOrDefault();
+
+            if (owns != 1) return Forbid();
+        }
 
         const string sql = @"
             UPDATE TaskSubmissions

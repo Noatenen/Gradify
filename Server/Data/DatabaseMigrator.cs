@@ -2584,8 +2584,32 @@ public static class DatabaseMigrator
                 DueDate     TEXT,
                 IsDone      INTEGER NOT NULL DEFAULT 0,
                 CreatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+                ProjectId   INTEGER,
+                FOREIGN KEY (UserId)    REFERENCES users(Id)    ON DELETE CASCADE,
+                FOREIGN KEY (ProjectId) REFERENCES Projects(Id) ON DELETE SET NULL
             )");
+
+        // ── PersonalTasks.ProjectId — optional project context ───────────────
+        //
+        // Nullable by design: a personal reminder need not belong to a project,
+        // and every row that existed before this column keeps working untouched
+        // with ProjectId = NULL ("ללא שיוך").
+        //
+        // ON DELETE SET NULL rather than CASCADE: deleting a project must never
+        // delete a mentor's own work item — the note survives, it simply loses
+        // its context. FKs are enforced (DbRepository issues PRAGMA
+        // foreign_keys = ON), so this actually fires.
+        //
+        // The ALTER is what reaches EXISTING databases; the column in the CREATE
+        // above only covers a fresh one. SQLite permits adding a REFERENCES
+        // column precisely because its default is NULL. Data is never copied,
+        // rebuilt or destroyed.
+        var personalTaskColumns = await GetColumnsAsync(connection, "PersonalTasks");
+
+        if (!personalTaskColumns.Contains("ProjectId"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE PersonalTasks ADD COLUMN ProjectId INTEGER " +
+                "REFERENCES Projects(Id) ON DELETE SET NULL");
 
         // ── TeamTasks — student-created work items, team-visible ────────────
         // Completely separate from the official Tasks table.
@@ -2691,6 +2715,33 @@ public static class DatabaseMigrator
                 UNIQUE (ProjectId, DeliverableKey),
                 FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
                 FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
+            )");
+
+        // ── MentorDigestRuns — one daily digest per mentor per day ──────────
+        //
+        // The idempotency ledger for MentorDigestBackgroundService. RunDate is
+        // the ISRAEL-LOCAL calendar date as 'yyyy-MM-dd', not a UTC timestamp:
+        // the product promise is one digest per mentor per Israeli day, and a
+        // UTC date would split that promise at 03:00 local.
+        //
+        // UNIQUE (MentorUserId, RunDate) is the actual protection — the send
+        // path does INSERT-then-send, so a second attempt (a restart moments
+        // after the first run, two racing manual triggers) fails the constraint
+        // and is skipped rather than double-emailing a mentor. Checking with a
+        // SELECT first would leave the race open.
+        //
+        // ItemCount/Trigger are for support: they answer "did the 07:00 run
+        // fire, and what did it see" without re-deriving history.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS MentorDigestRuns (
+                Id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                MentorUserId INTEGER NOT NULL,
+                RunDate      TEXT    NOT NULL,
+                ItemCount    INTEGER NOT NULL DEFAULT 0,
+                Trigger      TEXT    NOT NULL DEFAULT 'Scheduled',
+                CreatedAt    TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (MentorUserId, RunDate),
+                FOREIGN KEY (MentorUserId) REFERENCES users(Id) ON DELETE CASCADE
             )");
 
         // ── Canonical reference-data seeds ──────────────────────────────────
