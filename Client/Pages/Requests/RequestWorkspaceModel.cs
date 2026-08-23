@@ -66,12 +66,12 @@ public static class RequestBuckets
         _                      => DoneFilterId,
     };
 
-    /// <summary>Group heading in the workspace ("ממתין לתגובתך").</summary>
+    /// <summary>Group heading in the workspace.</summary>
     public static string GroupLabel(RequestBucket bucket) => bucket switch
     {
-        RequestBucket.Waiting  => "ממתין לתגובתך",
-        RequestBucket.Lecturer => "בטיפול מרצה",
-        _                      => "הושלמו",
+        RequestBucket.Waiting  => "דורש ממך פעולה",
+        RequestBucket.Lecturer => "בטיפול",
+        _                      => "טופלו",
     };
 
     /// <summary>Per-row status chip ("תגובה חדשה"). Deliberately shorter and
