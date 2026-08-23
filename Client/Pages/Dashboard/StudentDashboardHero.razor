@@ -1,137 +1,57 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 
 @* ─────────────────────────────────────────────────────────────
-   StudentDashboardHero — the finalized Dashboard's ambient hero band.
-   Visual source: design-reference/motiva/project/Motiva Student
-   Dashboard V4.dc.html:85-126.
+   StudentDashboardHero — how the finalized Dashboard opens.
+   Visual source: design-reference/motiva-student-final/README.md,
+   "Dashboard" and "Journey stepper" (Motiva Student dashboard final).
 
-   V4 opens the page on a full-bleed ambient band carrying exactly three
-   things, in this order:
-     1. the greeting              (17px/700, quiet — not a page title)
-     2. a two-ended context line  (current milestone ⟷ overall progress)
-     3. the milestone stepper     + one label per step, the active one
-                                    expandable into a task checklist
+   The finalized screen opens with TWO things, not one band:
 
-   It is rendered with MPageHeader Variant="Hero" — the variant built in
-   Phase 3 from this exact band (ambient-hero wash, 40/30 block padding,
-   the greeting styled quieter than a page title) and unused until now.
+     1. an h1 greeting sitting directly on the canvas — no ambient
+        band, no context line beside it
+     2. a "מסע הפרויקט" section card holding the journey stepper
 
-   READ-ONLY CHECKLIST (decision M.3): V4's prototype lets a student tick a
-   project task done straight from this list. No API supports that — project
-   tasks complete through the submission pipeline (submit → mentor approve →
-   Moodle confirm), never a checkbox. The list therefore renders the real
-   completion state and nothing more. Richer milestone detail stays reachable
-   through the existing MilestoneDetailModal, opened from the stepper dot.
+   That is the whole header. The context the old band carried in a
+   two-ended line (current milestone ⟷ overall progress) is now read
+   off the stepper itself: the current stage is the only violet one and
+   it states its own percentage.
+
+   WHAT MOVED, NOT WHAT WENT
+   The expandable per-milestone checklist is gone from here — the
+   finalized stepper is one line with one label per stage and no
+   disclosure. Nothing was lost: clicking a stage still opens the full
+   MilestoneDetailModal, which is the richer view the checklist was
+   always a preview of.
    ───────────────────────────────────────────────────────────── *@
 
-<div class="sdh-bleed">
+@* The wrapper is not decoration: scoped-CSS ::deep needs an element that
+   belongs to THIS component to hang off, and both children here are
+   components with their own roots. *@
+<div class="sdh-open">
+
     <MPageHeader Variant="MPageHeader.HeaderVariant.Hero"
                  Class="sdh-header"
-                 Title="@Greeting">
-        <SubtitleContent>
-            <div class="sdh-context">
-                <span class="sdh-context-milestone">
-                    @if (_current is not null)
-                    {
-                        <strong class="sdh-context-label">אבן דרך נוכחית:</strong>
-                        <span class="sdh-context-value">@_current.Title</span>
-                    }
-                    else
-                    {
-                        <span class="sdh-context-value">לא נמצאה אבן דרך פעילה בפרויקט</span>
-                    }
-                </span>
+                 Title="@Greeting" />
 
-                @if (Milestones.Count > 0)
-                {
-                    <span class="sdh-context-progress">
-                        <strong class="sdh-progress-label">התקדמות כללית</strong>
-                        <span class="sdh-progress-sep" aria-hidden="true"></span>
-                        <strong class="sdh-progress-value">@_overallPct%</strong>
-                    </span>
-                }
-            </div>
-        </SubtitleContent>
+@if (Milestones.Count > 0)
+{
+    <MCard Padding="MCard.CardPadding.Large" Class="sdh-journey">
+        <MSectionHeading Text="מסע הפרויקט" Class="sdh-journey-heading">
+            <Trailing>
+                <span class="sdh-journey-count">@_completedCount מתוך @Milestones.Count אבני דרך הושלמו</span>
+            </Trailing>
+        </MSectionHeading>
 
-        <ChildContent>
-            @if (Milestones.Count > 0)
-            {
-                <MProgressStepper Steps="@_steps"
-                                  AriaLabel="מסלול אבני הדרך"
-                                  OnSelect="OpenMilestoneAt">
-                    <LabelTemplate Context="cell">
-                        @{
-                            var milestone = Milestones[cell.Index];
-                            var hasTasks  = milestone.Tasks.Count > 0;
-                            var isOpen    = _openMilestoneId == milestone.ProjectMilestoneId && hasTasks;
-                        }
-                        <button type="button"
-                                class="sdh-ms-label @(cell.Step.State == MProgressStepper.StepState.Current ? "sdh-ms-label-current" : "")"
-                                title="@milestone.Title"
-                                disabled="@(!hasTasks)"
-                                aria-expanded="@(hasTasks ? (isOpen ? "true" : "false") : null)"
-                                aria-controls="@(hasTasks ? ChecklistId : null)"
-                                @onclick="@(() => ToggleMilestone(milestone.ProjectMilestoneId))">
-                            <span class="sdh-ms-label-text">@milestone.Title</span>
-                            @if (hasTasks)
-                            {
-                                <span class="sdh-ms-chevron @(isOpen ? "sdh-ms-chevron-open" : "")" aria-hidden="true">▾</span>
-                            }
-                        </button>
-                    </LabelTemplate>
-                </MProgressStepper>
+        <MJourneyStepper Stages="@_stages" OnStageClick="OpenMilestoneAt" />
+    </MCard>
+}
 
-                @*
-                    ── Expanded checklist ──
-                    DELIBERATE DEVIATION FROM V4: the Design nests this panel
-                    inside the milestone's own stepper column, which works only
-                    because its prototype has exactly four columns. Real projects
-                    here run to fourteen milestones, where a column is ~72px and
-                    an in-column checklist is unreadable. The panel is therefore
-                    full width, directly under the rail, and names the milestone
-                    it belongs to. The interaction V4 specifies — click a stage
-                    label, reveal that stage's tasks inline, read-only — is
-                    unchanged.
-                *@
-                @if (_openMilestone is { } open)
-                {
-                    <div class="sdh-ms-panel" id="@ChecklistId">
-                        <p class="sdh-ms-panel-title">@open.Title</p>
-                        <ul class="sdh-ms-tasklist">
-                            @foreach (var task in open.Tasks)
-                            {
-                                var done = StudentDashboardModel.IsComplete(task);
-                                <li class="sdh-ms-task">
-                                    <span class="sdh-ms-check @(done ? "sdh-ms-check-done" : "")" aria-hidden="true">
-                                        @(done ? "✓" : "")
-                                    </span>
-                                    <span class="sdh-ms-task-title @(done ? "sdh-ms-task-done" : "")">@task.Title</span>
-                                    <span class="sdh-sr-only">@(done ? "הושלם" : "טרם הושלם")</span>
-                                </li>
-                            }
-                        </ul>
-                    </div>
-                }
-            }
-        </ChildContent>
-    </MPageHeader>
 </div>
 
 @code {
     [Parameter, EditorRequired] public List<MilestoneSummaryDto>          Milestones      { get; set; } = new();
     [Parameter]                 public string?                            FirstName       { get; set; }
     [Parameter]                 public EventCallback<MilestoneSummaryDto> OnOpenMilestone { get; set; }
-
-    private const string ChecklistId = "sdh-milestone-tasks";
-
-    /// <summary>Which milestone's checklist is expanded. One at a time, the
-    /// Design's own toggle semantics.</summary>
-    private int? _openMilestoneId;
-
-    private MilestoneSummaryDto? _openMilestone =>
-        _openMilestoneId is { } id
-            ? Milestones.FirstOrDefault(m => m.ProjectMilestoneId == id && m.Tasks.Count > 0)
-            : null;
 
     private MilestoneSummaryDto? _current => StudentDashboardModel.CurrentMilestone(Milestones);
 
@@ -152,21 +72,39 @@
         }
     }
 
-    private IReadOnlyList<MProgressStepper.Step> _steps =>
+    private int _completedCount => Milestones.Count(m => m.Status == "Completed");
+
+    /// <summary>The milestones, mapped onto the journey the design draws.
+    ///
+    /// <para>Exactly one stage can be Current — StudentDashboardModel.CurrentMilestone
+    /// is the single source of truth for which, the same one the focus card and
+    /// the tasks page read, so the stepper can never disagree with them about
+    /// where the project is.</para></summary>
+    private IReadOnlyList<MJourneyStepper.JourneyStage> _stages =>
         Milestones
-            .Select(m => new MProgressStepper.Step(m.Title, StateOf(m)))
+            .Select(m => new MJourneyStepper.JourneyStage(
+                Label:   m.Title,
+                State:   StateOf(m),
+                Percent: StateOf(m) == MJourneyStepper.JourneyState.Current ? PercentOf(m) : 0))
             .ToList();
 
-    private MProgressStepper.StepState StateOf(MilestoneSummaryDto m)
+    private MJourneyStepper.JourneyState StateOf(MilestoneSummaryDto m)
     {
-        if (m.Status == "Completed") return MProgressStepper.StepState.Done;
+        if (m.Status == "Completed") return MJourneyStepper.JourneyState.Complete;
         if (_current is not null && m.ProjectMilestoneId == _current.ProjectMilestoneId)
-            return MProgressStepper.StepState.Current;
-        return MProgressStepper.StepState.Upcoming;
+            return MJourneyStepper.JourneyState.Current;
+        return MJourneyStepper.JourneyState.Future;
     }
 
-    private void ToggleMilestone(int projectMilestoneId) =>
-        _openMilestoneId = _openMilestoneId == projectMilestoneId ? null : projectMilestoneId;
+    /// <summary>Completion of the current stage, from its own tasks. A stage
+    /// with no tasks reports 0 rather than 100 — "nothing to do yet" is not
+    /// "finished", and showing it full would misreport the project.</summary>
+    private static int PercentOf(MilestoneSummaryDto m)
+    {
+        if (m.Tasks.Count == 0) return 0;
+        var done = m.Tasks.Count(StudentDashboardModel.IsComplete);
+        return (int)Math.Round(done * 100.0 / m.Tasks.Count);
+    }
 
     // Clicking the dot itself opens the full milestone detail — the richer
     // view (dates, every task's submission state, what caused an attention

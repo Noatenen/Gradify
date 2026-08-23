@@ -6,104 +6,259 @@
 @inject NavigationManager Nav
 @attribute [Authorize(Roles = Roles.Student)]
 
-<!-- ══ Project details modal ═══════════════════════════════════════════════ -->
-@if (_modalProject is not null)
-{
-    <div class="sc-modal-backdrop" @onclick="CloseModal"></div>
-    <div class="sc-modal" dir="rtl" role="dialog" aria-modal="true">
+@*
+    ── Project catalog (קטלוג פרויקטים) ─────────────────────────────────────
+    Migrated to the finalized Motiva student experience. Data, filters,
+    favourites and every API call (api/student/catalog, api/student/favorites)
+    are untouched — this pass changes the surfaces the student sees:
 
-        <!-- Modal header -->
-        <div class="sc-modal-head">
-            <div class="sc-modal-head-meta">
-                <span class="sc-modal-num">#@_modalProject.ProjectNumber</span>
-                <span class="sc-type-badge">@_modalProject.ProjectType</span>
-                @if (!string.IsNullOrWhiteSpace(_modalProject.ProjectTopic))
+      hand-rolled header      -> MPageHeader / Compact, with the "לבחירת
+                                 שיבוצים" CTA in its Actions slot
+      hand-rolled search box  -> MSearchField, the same field /learning uses
+      .sc-card divs           -> MCard Interactive
+      hand-rolled pills       -> MStatusBadge (teal = פנוי, neutral = תפוס)
+      hand-rolled state boxes -> MLoadingState / MEmptyState
+      hand-rolled modal       -> MModal (Escape + backdrop close come with it)
+
+    Favourite stars stay ★/☆ text: they are the affordance students already
+    know here, and the Master has no star glyph to replace them with.
+*@
+
+<div class="sc-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Class="sc-header"
+                 Title="קטלוג פרויקטים"
+                 Subtitle="עיינו בפרויקטים הזמינים, סמנו מועדפים, ולאחר מכן הגישו טופס שיבוץ">
+        <Actions>
+            <a class="sc-assignment-btn motiva-cta" href="/@PageRoutes.StudentAssignment">
+                <span>לבחירת שיבוצים</span>
+                <span class="sc-arrow" aria-hidden="true">←</span>
+            </a>
+        </Actions>
+        <ChildContent>
+            @if (!_loadError)
+            {
+                <div class="sc-toolbar">
+                    <MSearchField @bind-Value="_search"
+                                  MaxWidth="420px"
+                                  Placeholder="חיפוש לפי שם, תיאור, סוג, ארגון…"
+                                  AriaLabel="חיפוש בקטלוג הפרויקטים" />
+
+                    <label class="sc-filter">
+                        <span class="sc-filter-label">סוג</span>
+                        <select class="sc-filter-select" @bind="_typeFilter">
+                            <option value="">הכל</option>
+                            @foreach (var t in _projectTypes)
+                            {
+                                <option value="@t">@t</option>
+                            }
+                        </select>
+                    </label>
+
+                    <button type="button"
+                            class="sc-fav-toggle @(_showFavoritesOnly ? "sc-fav-toggle--active" : "")"
+                            @onclick="ToggleFavoritesFilter"
+                            aria-pressed="@_showFavoritesOnly"
+                            title="@(_showFavoritesOnly ? "הצג הכל" : "המועדפים שלי")">
+                        <span class="sc-star-icon" aria-hidden="true">★</span>
+                        @(_showFavoritesOnly ? "הכל" : "המועדפים שלי")
+                        @if (_favoriteCount > 0)
+                        {
+                            <span class="sc-fav-count">@_favoriteCount</span>
+                        }
+                    </button>
+
+                    <span class="sc-count" role="status" aria-live="polite">@_filtered.Count פרויקטים</span>
+                </div>
+            }
+        </ChildContent>
+    </MPageHeader>
+</div>
+
+<div class="sc-body">
+
+    @if (_loading)
+    {
+        <MLoadingState Label="טוענת פרויקטים…" />
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Live="true"
+                     Title="שגיאה בטעינת הקטלוג"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב." />
+    }
+    else if (!_projects.Any())
+    {
+        <MEmptyState Title="לא נמצאו פרויקטים זמינים כרגע"
+                     Description="כשצוות הקורס יפרסם פרויקטים לבחירה, הם יופיעו כאן." />
+    }
+    else if (_filtered.Count == 0)
+    {
+        @if (_showFavoritesOnly)
+        {
+            <MEmptyState Live="true"
+                         Title="טרם סימנת פרויקטים כמועדפים"
+                         Description="אפשר לסמן פרויקט בכוכב כדי לשמור אותו לרשימה הזו." />
+        }
+        else
+        {
+            <MEmptyState Live="true"
+                         Title="לא נמצאו פרויקטים התואמים את החיפוש"
+                         Description="אפשר לנסות מונח אחר או לנקות את הסינון." />
+        }
+    }
+    else
+    {
+        <div class="sc-grid">
+            @foreach (var p in _filtered)
+            {
+                var project = p;
+                bool isFav = _favoriteIds.Contains(project.Id);
+
+                <MCard
+                       Padding="MCard.CardPadding.Medium"
+                       Interactive="true"
+                       Class="sc-card"
+                       OnClick="@(() => OpenModal(project))">
+
+                    <div class="sc-card-head">
+                        <span class="sc-card-num">#@project.ProjectNumber</span>
+                        <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@project.ProjectType" />
+                        @if (project.Availability == "Taken")
+                        {
+                            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="תפוס" />
+                        }
+                        else
+                        {
+                            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="פנוי" />
+                        }
+                        <button type="button"
+                                class="sc-fav-btn @(isFav ? "sc-fav-btn--active" : "")"
+                                @onclick:stopPropagation="true"
+                                @onclick="() => ToggleFavorite(project)"
+                                title="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")"
+                                aria-label="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")">
+                            @(isFav ? "★" : "☆")
+                        </button>
+                    </div>
+
+                    <h3 class="sc-card-title">@project.Title</h3>
+
+                    @if (!string.IsNullOrWhiteSpace(project.Description))
+                    {
+                        <p class="sc-card-desc">@Truncate(project.Description, 100)</p>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(project.OrganizationName))
+                    {
+                        <div class="sc-card-org">
+                            <span class="oi oi-building" aria-hidden="true"></span>
+                            @project.OrganizationName
+                        </div>
+                    }
+
+                    <div class="sc-card-footer">
+                        <span class="sc-card-open-hint">לחצו לפרטים נוספים</span>
+                    </div>
+
+                </MCard>
+            }
+        </div>
+    }
+
+</div>
+
+@* ── Project details ─────────────────────────────────────────────────────
+   MModal brings the overlay, Escape and backdrop-close behaviour that the
+   hand-rolled dialog here did not have. Its own header renders the title;
+   the chips row and the favourite toggle sit at the top of the body, where
+   MModal's header has no slot for them. *@
+<MModal IsOpen="_modalProject is not null"
+        Title="@(_modalProject?.Title)"
+        Size="MModal.ModalSize.Large"
+        Class="sc-modal"
+        OnClose="CloseModal">
+    <ChildContent>
+        @if (_modalProject is not null)
+        {
+            var mp = _modalProject;
+            bool isFav      = _favoriteIds.Contains(mp.Id);
+            bool hasOrg     = !string.IsNullOrWhiteSpace(mp.OrganizationName);
+            bool hasContact = !string.IsNullOrWhiteSpace(mp.ContactPerson);
+            bool hasMentors = !string.IsNullOrWhiteSpace(mp.Mentors);
+
+            <div class="sc-modal-meta">
+                <span class="sc-modal-num">#@mp.ProjectNumber</span>
+                <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@mp.ProjectType" />
+                @if (!string.IsNullOrWhiteSpace(mp.ProjectTopic))
                 {
-                    <span class="sc-topic-badge">@_modalProject.ProjectTopic</span>
+                    <MStatusBadge Variant="MStatusBadge.BadgeVariant.Violet" Text="@mp.ProjectTopic" />
                 }
-                @if (_modalProject.Availability == "Taken")
+                @if (mp.Availability == "Taken")
                 {
-                    <span class="sc-avail-badge sc-avail-badge--taken">תפוס</span>
+                    <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="תפוס" />
                 }
                 else
                 {
-                    <span class="sc-avail-badge sc-avail-badge--free">פנוי</span>
+                    <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="פנוי" />
                 }
-            </div>
-            <div class="sc-modal-head-actions">
-                <button class="sc-modal-fav @(_favoriteIds.Contains(_modalProject.Id) ? "sc-modal-fav--active" : "")"
-                        @onclick="() => ToggleFavorite(_modalProject)"
-                        @onclick:stopPropagation="true"
-                        title="@(_favoriteIds.Contains(_modalProject.Id) ? "הסר ממועדפים" : "הוסף למועדפים")">
-                    @(_favoriteIds.Contains(_modalProject.Id) ? "★" : "☆")
-                </button>
-                <button class="sc-modal-close" @onclick="CloseModal" title="סגירה">
-                    <span class="oi oi-x" aria-hidden="true"></span>
+                <button type="button"
+                        class="sc-modal-fav @(isFav ? "sc-modal-fav--active" : "")"
+                        @onclick="() => ToggleFavorite(mp)"
+                        title="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")"
+                        aria-label="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")">
+                    @(isFav ? "★" : "☆")
                 </button>
             </div>
-        </div>
 
-        <h2 class="sc-modal-title">@_modalProject.Title</h2>
-
-        <!-- Scrollable body -->
-        <div class="sc-modal-body">
-
-            <!-- פרטי הפרויקט -->
-            @if (!string.IsNullOrWhiteSpace(_modalProject.Description))
+            @if (!string.IsNullOrWhiteSpace(mp.Description))
             {
-                <div class="sc-modal-section">
-                    <h3 class="sc-modal-section-title">תיאור הפרויקט</h3>
-                    <p class="sc-modal-text">@_modalProject.Description</p>
-                </div>
+                <section class="sc-modal-section">
+                    <MSectionHeading Text="תיאור הפרויקט" />
+                    <p class="sc-modal-text">@mp.Description</p>
+                </section>
             }
 
-            <!-- תוכן / היקף -->
-            @if (!string.IsNullOrWhiteSpace(_modalProject.Contents))
+            @if (!string.IsNullOrWhiteSpace(mp.Contents))
             {
-                <div class="sc-modal-section">
-                    <h3 class="sc-modal-section-title">תוכן הפרויקט</h3>
-                    <p class="sc-modal-text">@_modalProject.Contents</p>
-                </div>
+                <section class="sc-modal-section">
+                    <MSectionHeading Text="תוכן הפרויקט" />
+                    <p class="sc-modal-text">@mp.Contents</p>
+                </section>
             }
 
-            <!-- מטרות -->
-            @if (!string.IsNullOrWhiteSpace(_modalProject.Goals))
+            @if (!string.IsNullOrWhiteSpace(mp.Goals))
             {
-                <div class="sc-modal-section">
-                    <h3 class="sc-modal-section-title">מטרות</h3>
-                    <p class="sc-modal-text">@_modalProject.Goals</p>
-                </div>
+                <section class="sc-modal-section">
+                    <MSectionHeading Text="מטרות" />
+                    <p class="sc-modal-text">@mp.Goals</p>
+                </section>
             }
 
-            <!-- קהל יעד -->
-            @if (!string.IsNullOrWhiteSpace(_modalProject.TargetAudience))
+            @if (!string.IsNullOrWhiteSpace(mp.TargetAudience))
             {
-                <div class="sc-modal-section">
-                    <h3 class="sc-modal-section-title">קהל יעד</h3>
-                    <p class="sc-modal-text">@_modalProject.TargetAudience</p>
-                </div>
+                <section class="sc-modal-section">
+                    <MSectionHeading Text="קהל יעד" />
+                    <p class="sc-modal-text">@mp.TargetAudience</p>
+                </section>
             }
 
-            <!-- ארגון ואיש קשר -->
-            @{
-                bool hasOrg     = !string.IsNullOrWhiteSpace(_modalProject.OrganizationName);
-                bool hasContact = !string.IsNullOrWhiteSpace(_modalProject.ContactPerson);
-                bool hasMentors = !string.IsNullOrWhiteSpace(_modalProject.Mentors);
-            }
-            @if (hasOrg || hasContact || hasMentors)
+            @if (hasOrg || hasContact || hasMentors
+                 || !string.IsNullOrWhiteSpace(mp.ContactEmail)
+                 || !string.IsNullOrWhiteSpace(mp.ContactPhone))
             {
-                <div class="sc-modal-section">
-                    <h3 class="sc-modal-section-title">ארגון ואיש קשר</h3>
+                <section class="sc-modal-section">
+                    <MSectionHeading Text="ארגון ואיש קשר" />
                     <div class="sc-modal-info-grid">
                         @if (hasOrg)
                         {
                             <div class="sc-modal-info-row">
                                 <span class="sc-modal-info-label">ארגון</span>
                                 <span class="sc-modal-info-val">
-                                    @_modalProject.OrganizationName
-                                    @if (!string.IsNullOrWhiteSpace(_modalProject.OrganizationType))
+                                    @mp.OrganizationName
+                                    @if (!string.IsNullOrWhiteSpace(mp.OrganizationType))
                                     {
-                                        <span class="sc-modal-info-sub">(@_modalProject.OrganizationType)</span>
+                                        <span class="sc-modal-info-sub">(@mp.OrganizationType)</span>
                                     }
                                 </span>
                             </div>
@@ -113,195 +268,55 @@
                             <div class="sc-modal-info-row">
                                 <span class="sc-modal-info-label">איש קשר</span>
                                 <span class="sc-modal-info-val">
-                                    @_modalProject.ContactPerson
-                                    @if (!string.IsNullOrWhiteSpace(_modalProject.ContactRole))
+                                    @mp.ContactPerson
+                                    @if (!string.IsNullOrWhiteSpace(mp.ContactRole))
                                     {
-                                        <span class="sc-modal-info-sub">— @_modalProject.ContactRole</span>
+                                        <span class="sc-modal-info-sub">— @mp.ContactRole</span>
                                     }
                                 </span>
                             </div>
                         }
-                        @if (!string.IsNullOrWhiteSpace(_modalProject.ContactEmail))
+                        @if (!string.IsNullOrWhiteSpace(mp.ContactEmail))
                         {
                             <div class="sc-modal-info-row">
                                 <span class="sc-modal-info-label">אימייל</span>
-                                <a class="sc-modal-info-val sc-modal-link"
-                                   href="mailto:@_modalProject.ContactEmail">
-                                    @_modalProject.ContactEmail
+                                <a class="sc-modal-info-val sc-modal-link" href="mailto:@mp.ContactEmail">
+                                    @mp.ContactEmail
                                 </a>
                             </div>
                         }
-                        @if (!string.IsNullOrWhiteSpace(_modalProject.ContactPhone))
+                        @if (!string.IsNullOrWhiteSpace(mp.ContactPhone))
                         {
                             <div class="sc-modal-info-row">
                                 <span class="sc-modal-info-label">טלפון</span>
-                                <span class="sc-modal-info-val">@_modalProject.ContactPhone</span>
+                                <span class="sc-modal-info-val">@mp.ContactPhone</span>
                             </div>
                         }
                         @if (hasMentors)
                         {
                             <div class="sc-modal-info-row">
                                 <span class="sc-modal-info-label">מנחים</span>
-                                <span class="sc-modal-info-val">@_modalProject.Mentors</span>
+                                <span class="sc-modal-info-val">@mp.Mentors</span>
                             </div>
                         }
                     </div>
-                </div>
+                </section>
             }
-
-        </div>
-
-        <!-- Modal footer -->
-        <div class="sc-modal-footer">
-            <button class="sc-modal-fav-btn @(_favoriteIds.Contains(_modalProject.Id) ? "sc-modal-fav-btn--active" : "")"
-                    @onclick="() => ToggleFavorite(_modalProject)">
-                @(_favoriteIds.Contains(_modalProject.Id) ? "★ במועדפים" : "☆ הוסף למועדפים")
+        }
+    </ChildContent>
+    <FooterContent>
+        @if (_modalProject is not null)
+        {
+            var mp = _modalProject;
+            <button type="button"
+                    class="sc-modal-fav-btn @(_favoriteIds.Contains(mp.Id) ? "sc-modal-fav-btn--active" : "")"
+                    @onclick="() => ToggleFavorite(mp)">
+                @(_favoriteIds.Contains(mp.Id) ? "★ במועדפים" : "☆ הוסף למועדפים")
             </button>
-            <button class="sc-modal-close-btn" @onclick="CloseModal">סגירה</button>
-        </div>
-    </div>
-}
-
-<!-- ══ Page ═════════════════════════════════════════════════════════════════ -->
-<div class="sc-page">
-
-    <!-- ══ Top bar ══════════════════════════════════════════════════════════ -->
-    <div class="sc-topbar">
-        <div class="sc-topbar-text">
-            <h1 class="sc-page-title">קטלוג פרויקטים</h1>
-            <p class="sc-page-sub">עיינו בפרויקטים הזמינים, סמנו מועדפים, ולאחר מכן הגישו טופס שיבוץ</p>
-        </div>
-        <a class="sc-assignment-btn" href="/@PageRoutes.StudentAssignment">
-            <span>לבחירת שיבוצים</span>
-            <span class="sc-arrow">←</span>
-        </a>
-    </div>
-
-    <!-- ══ Search / filter bar ══════════════════════════════════════════════ -->
-    <div class="sc-toolbar">
-        <div class="sc-search-wrap">
-            <span class="sc-search-icon">🔍</span>
-            <input class="sc-search-input"
-                   type="text"
-                   placeholder="חיפוש לפי שם, תיאור, סוג, ארגון…"
-                   @bind="_search"
-                   @bind:event="oninput" />
-        </div>
-        <div class="sc-filter-wrap">
-            <label class="sc-filter-label">סוג:</label>
-            <select class="sc-filter-select" @bind="_typeFilter">
-                <option value="">הכל</option>
-                @foreach (var t in _projectTypes)
-                {
-                    <option value="@t">@t</option>
-                }
-            </select>
-        </div>
-        <button class="sc-fav-toggle @(_showFavoritesOnly ? "sc-fav-toggle--active" : "")"
-                @onclick="ToggleFavoritesFilter"
-                title="@(_showFavoritesOnly ? "הצג הכל" : "המועדפים שלי")">
-            <span class="sc-star-icon" aria-hidden="true">★</span>
-            @(_showFavoritesOnly ? "הכל" : "המועדפים שלי")
-            @if (_favoriteCount > 0)
-            {
-                <span class="sc-fav-count">@_favoriteCount</span>
-            }
-        </button>
-        <div class="sc-count-badge">@_filtered.Count פרויקטים</div>
-    </div>
-
-    <!-- ══ Content ══════════════════════════════════════════════════════════ -->
-    @if (_loading)
-    {
-        <div class="sc-state-box">
-            <div class="sc-spinner"></div>
-            <span>טוענת פרויקטים…</span>
-        </div>
-    }
-    else if (_loadError)
-    {
-        <div class="sc-state-box sc-state-box--error">
-            <span>⚠</span>
-            <span>שגיאה בטעינת הקטלוג. נסי לרענן את הדף.</span>
-        </div>
-    }
-    else if (!_projects.Any())
-    {
-        <div class="sc-state-box">
-            <span class="sc-empty-icon">📂</span>
-            <span>לא נמצאו פרויקטים זמינים כרגע</span>
-        </div>
-    }
-    else if (_filtered.Count == 0)
-    {
-        <div class="sc-state-box">
-            <span class="sc-empty-icon">@(_showFavoritesOnly ? "★" : "🔍")</span>
-            <span>
-                @if (_showFavoritesOnly)
-                { <span>טרם סימנת פרויקטים כמועדפים</span> }
-                else
-                { <span>לא נמצאו פרויקטים התואמים את החיפוש</span> }
-            </span>
-        </div>
-    }
-    else
-    {
-        <div class="sc-grid">
-            @foreach (var p in _filtered)
-            {
-                bool isFav = _favoriteIds.Contains(p.Id);
-
-                <div class="sc-card" @onclick="() => OpenModal(p)">
-
-                    <!-- Card head: number · type · availability · star -->
-                    <div class="sc-card-head">
-                        <span class="sc-card-num">#@p.ProjectNumber</span>
-                        <span class="sc-type-badge">@p.ProjectType</span>
-                        @if (p.Availability == "Taken")
-                        {
-                            <span class="sc-avail-badge sc-avail-badge--taken">תפוס</span>
-                        }
-                        else
-                        {
-                            <span class="sc-avail-badge sc-avail-badge--free">פנוי</span>
-                        }
-                        <button class="sc-fav-btn @(isFav ? "sc-fav-btn--active" : "")"
-                                @onclick:stopPropagation="true"
-                                @onclick="() => ToggleFavorite(p)"
-                                title="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")"
-                                aria-label="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")">
-                            @(isFav ? "★" : "☆")
-                        </button>
-                    </div>
-
-                    <!-- Title -->
-                    <h3 class="sc-card-title">@p.Title</h3>
-
-                    <!-- Short description (distinct from full description shown in modal) -->
-                    @if (!string.IsNullOrWhiteSpace(p.Description))
-                    {
-                        <p class="sc-card-desc">@Truncate(p.Description, 100)</p>
-                    }
-
-                    <!-- Quick org info if available -->
-                    @if (!string.IsNullOrWhiteSpace(p.OrganizationName))
-                    {
-                        <div class="sc-card-org">
-                            <span class="oi oi-building" aria-hidden="true"></span>
-                            @p.OrganizationName
-                        </div>
-                    }
-
-                    <div class="sc-card-footer">
-                        <span class="sc-card-open-hint">לחץ לפרטים נוספים</span>
-                    </div>
-
-                </div>
-            }
-        </div>
-    }
-
-</div>
+        }
+        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseModal">סגירה</MButton>
+    </FooterContent>
+</MModal>
 
 @code {
 

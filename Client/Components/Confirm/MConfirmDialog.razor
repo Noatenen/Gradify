@@ -1,0 +1,171 @@
+@namespace AuthWithAdmin.Client.Components
+@*
+    MConfirmDialog — the student experience's one "are you sure?" dialog.
+
+    This is the finalized dialog that already ships on /tasks (.tsk-confirm-*)
+    lifted into a component, not a new design: same 440px width, same
+    icon + title head, same body line, same inline error strip, same
+    cancel/confirm pair with the confirm carrying `.motiva-cta`. /submissions
+    and TaskDetailModal each held a legacy-token copy of exactly this markup;
+    they now call this instead.
+
+    WHY IT DOES NOT WRAP MModal
+    MModal is the *content* modal — it draws a divider under its header and
+    above its footer, and its body scrolls. A confirmation is one sentence
+    and two buttons; those dividers cut it into three strips of nothing. The
+    finalized student dialog deliberately has no rules and no scroll area, so
+    wrapping MModal would mean overriding away most of what MModal is. What
+    IS shared is the behaviour contract — overlay click, Escape, tabindex=-1
+    focus — reproduced here the same way MModal reproduces it from
+    MentorProfileModal, with no new JS interop.
+*@
+@if (IsOpen)
+{
+    <div class="m-confirm-overlay"
+         @ref="_overlayRef"
+         tabindex="-1"
+         @onclick="CancelAsync"
+         @onkeydown="HandleKeyDownAsync">
+        <div class="m-confirm-dialog"
+             dir="rtl"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="@_titleId"
+             @onclick:stopPropagation="true">
+
+            <div class="m-confirm-head">
+                <span class="oi @IconClass @ToneIconClass" aria-hidden="true"></span>
+                <h3 class="m-confirm-title" id="@_titleId">@Title</h3>
+            </div>
+
+            @if (ChildContent is not null)
+            {
+                <div class="m-confirm-body">@ChildContent</div>
+            }
+            else if (!string.IsNullOrWhiteSpace(Message))
+            {
+                <p class="m-confirm-body">@Message</p>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(Error))
+            {
+                <div class="m-confirm-error" role="alert">@Error</div>
+            }
+
+            <div class="m-confirm-actions">
+                <button type="button"
+                        class="m-confirm-cancel"
+                        @onclick="CancelAsync"
+                        disabled="@Busy">
+                    @CancelText
+                </button>
+                <button type="button"
+                        class="@ConfirmClass"
+                        @onclick="ConfirmAsync"
+                        disabled="@Busy">
+                    @if (Busy)
+                    {
+                        <span class="m-confirm-spinner" aria-hidden="true"></span>
+                        <span>@(BusyText ?? "שומר…")</span>
+                    }
+                    else
+                    {
+                        @if (!string.IsNullOrWhiteSpace(ConfirmIcon))
+                        {
+                            <span class="oi @ConfirmIcon" aria-hidden="true"></span>
+                        }
+                        <span>@ConfirmText</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>What kind of answer the confirm button commits to. Violet =
+    /// a normal forward action; Danger = something destructive, which takes
+    /// the Master's rose fill instead of the brand gradient.</summary>
+    public enum ConfirmTone { Primary, Danger }
+
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string? Title { get; set; }
+
+    /// <summary>The one-line question. Use <see cref="ChildContent"/> instead
+    /// when the body needs markup.</summary>
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>Server-side failure text, rendered in the dialog rather than
+    /// as a toast — the same place the finalized /tasks dialog puts it, so
+    /// the student reads the error next to the button that produced it.</summary>
+    [Parameter] public string? Error { get; set; }
+
+    [Parameter] public ConfirmTone Tone { get; set; } = ConfirmTone.Primary;
+
+    /// <summary>open-iconic class for the head glyph. Defaults per tone:
+    /// a question mark for Primary, a warning triangle for Danger.</summary>
+    [Parameter] public string? Icon { get; set; }
+
+    /// <summary>Optional open-iconic class rendered inside the confirm button.</summary>
+    [Parameter] public string? ConfirmIcon { get; set; }
+
+    [Parameter] public string ConfirmText { get; set; } = "אישור";
+    [Parameter] public string CancelText { get; set; } = "ביטול";
+
+    /// <summary>True while the confirm request is in flight — both buttons
+    /// disable and the confirm swaps to a spinner. The caller owns the flag;
+    /// this component never guesses when the work finished.</summary>
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? BusyText { get; set; }
+
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private readonly string _titleId = $"m-confirm-title-{Guid.NewGuid():N}";
+    private ElementReference _overlayRef;
+    private bool _wasOpen;
+
+    private string IconClass => Icon ?? (Tone == ConfirmTone.Danger ? "oi-warning" : "oi-question-mark");
+
+    private string ToneIconClass =>
+        Tone == ConfirmTone.Danger ? "m-confirm-icon-danger" : "m-confirm-icon-primary";
+
+    // Danger takes the rose fill; Primary opts into the shared `.motiva-cta`
+    // gradient declared once in motiva-base.css, exactly as /tasks does.
+    private string ConfirmClass =>
+        Tone == ConfirmTone.Danger ? "m-confirm-ok m-confirm-danger" : "m-confirm-ok motiva-cta";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Focus on the closed→open transition only — same reason MModal does
+        // it that way: re-focusing on every render would fight any control
+        // the caller renders inside the body.
+        if (IsOpen && !_wasOpen)
+        {
+            try { await _overlayRef.FocusAsync(); }
+            catch { /* not attached yet */ }
+        }
+        _wasOpen = IsOpen;
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await CancelAsync();
+    }
+
+    // A dismiss while the confirm is in flight would leave the caller's Busy
+    // flag set with no dialog to clear it, so it is ignored — the same guard
+    // the disabled cancel button expresses for the click path.
+    private async Task CancelAsync()
+    {
+        if (Busy) return;
+        if (OnCancel.HasDelegate) await OnCancel.InvokeAsync();
+    }
+
+    private async Task ConfirmAsync()
+    {
+        if (Busy) return;
+        if (OnConfirm.HasDelegate) await OnConfirm.InvokeAsync();
+    }
+}

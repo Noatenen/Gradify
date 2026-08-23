@@ -7,6 +7,7 @@
 @using AuthWithAdmin.Client.Components
 @inject IProjectWorkspaceService Workspace
 @inject IProjectContextService ProjectContext
+@inject IDashboardService DashboardService
 @attribute [Authorize]
 
 @*
@@ -35,11 +36,33 @@
     prose max-widths inside the cards instead.
 *@
 
-<div class="pw-header-bleed">
-    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
-                 Title="מרחב הפרויקט"
-                 Subtitle="הבית של הפרויקט שלכם במוטיבה — הפרטים, המשאבים והתוצרים להגשה" />
-</div>
+@*
+    The reference composes the project's identity INTO the title row: the h1,
+    then the project name in gradient text, a separator dot and the tagline —
+    with the team/track chip pushed to the reading end. The editable details
+    stay in the card below, where the reference also keeps them.
+*@
+<MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="הפרויקט שלי">
+    <SubtitleContent>
+        @if (_project is not null)
+        {
+            <span class="pw-identity">
+                <span class="pw-project-name">@ProjectDisplayName</span>
+                @if (!string.IsNullOrWhiteSpace(_project.ProjectTopic))
+                {
+                    <span class="pw-identity-dot" aria-hidden="true"></span>
+                    <span class="pw-project-tagline">@_project.ProjectTopic</span>
+                }
+            </span>
+        }
+    </SubtitleContent>
+    <Actions>
+        @if (_project is not null)
+        {
+            <span class="pw-team-chip">@TeamChipText</span>
+        }
+    </Actions>
+</MPageHeader>
 
 <div class="pw-body">
 
@@ -72,6 +95,23 @@
     }
     else
     {
+        @* מסע הפרויקט — the same stepper the dashboard draws, on the same real
+           milestone data. The reference puts it directly under the title on
+           this screen too. It renders only once milestones have loaded; a
+           failed load simply omits it rather than blocking the page. *@
+        @if (_journeyStages.Count > 0)
+        {
+            <MCard Padding="MCard.CardPadding.Large" Class="pw-journey">
+                <MSectionHeading Text="מסע הפרויקט">
+                    <Trailing>
+                        <span class="pw-journey-count">@_completedMilestones מתוך @_milestones.Count אבני דרך הושלמו</span>
+                    </Trailing>
+                </MSectionHeading>
+
+                <MJourneyStepper Stages="@_journeyStages" />
+            </MCard>
+        }
+
         <ProjectIdentityCard Project="_project"
                              Context="_context"
                              OnProjectChanged="StateHasChanged" />
@@ -87,8 +127,65 @@
     private StudentProjectDetailsDto? _project;
     private ProjectContextDto?        _context;
 
+    // Milestones for the journey stepper. Read through IDashboardService —
+    // GET api/projects/my-dashboard, the SAME endpoint and service the
+    // dashboard's own stepper uses — so both screens draw one truth and no
+    // new API surface was added for this.
+    private List<MilestoneSummaryDto> _milestones = new();
+
     private ProjectLoadState _state = ProjectLoadState.Loaded;
     private bool             _loading = true;
+
+    /// <summary>The team-edited name when there is one, else the catalogue
+    /// title — the same precedence ProjectIdentityCard applies.</summary>
+    private string ProjectDisplayName =>
+        !string.IsNullOrWhiteSpace(_context?.ProjectTitle)
+            ? _context!.ProjectTitle
+            : (_project?.Title ?? "");
+
+    private string TeamChipText
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (_project is not null) parts.Add($"צוות {_project.ProjectNumber}");
+            if (!string.IsNullOrWhiteSpace(_context?.TrackName)) parts.Add(_context!.TrackName!);
+            if (!string.IsNullOrWhiteSpace(_project?.AcademicYear)) parts.Add(_project!.AcademicYear);
+            return string.Join(" · ", parts);
+        }
+    }
+
+    private int _completedMilestones => _milestones.Count(m => m.Status == "Completed");
+
+    /// <summary>Identical mapping to StudentDashboardHero's — one Current
+    /// stage, chosen by the shared StudentDashboardModel, so the two steppers
+    /// can never disagree about where the project is.</summary>
+    private IReadOnlyList<MJourneyStepper.JourneyStage> _journeyStages =>
+        _milestones
+            .Select(m => new MJourneyStepper.JourneyStage(
+                Label:   m.Title,
+                State:   JourneyStateOf(m),
+                Percent: JourneyStateOf(m) == MJourneyStepper.JourneyState.Current ? PercentOf(m) : 0,
+                Meta:    JourneyStateOf(m) == MJourneyStepper.JourneyState.Current && m.DueDate.HasValue
+                             ? $"יעד {m.DueDate.Value:dd.MM}"
+                             : null))
+            .ToList();
+
+    private MJourneyStepper.JourneyState JourneyStateOf(MilestoneSummaryDto m)
+    {
+        if (m.Status == "Completed") return MJourneyStepper.JourneyState.Complete;
+        var current = AuthWithAdmin.Client.Pages.Dashboard.StudentDashboardModel.CurrentMilestone(_milestones);
+        if (current is not null && m.ProjectMilestoneId == current.ProjectMilestoneId)
+            return MJourneyStepper.JourneyState.Current;
+        return MJourneyStepper.JourneyState.Future;
+    }
+
+    private static int PercentOf(MilestoneSummaryDto m)
+    {
+        if (m.Tasks.Count == 0) return 0;
+        var done = m.Tasks.Count(AuthWithAdmin.Client.Pages.Dashboard.StudentDashboardModel.IsComplete);
+        return (int)Math.Round(done * 100.0 / m.Tasks.Count);
+    }
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
@@ -108,11 +205,28 @@
         _state   = result.State;
         _project = result.Project;
 
-        // A failed context load must not fail the page: the roster strip is
-        // simply absent, while the project's own details still render.
-        _context = _state == ProjectLoadState.Loaded
-            ? await ProjectContext.GetAsync()
-            : null;
+        // The roster and the milestones are independent of each other, so they
+        // are fetched CONCURRENTLY. Awaiting them in sequence added a third
+        // serial round-trip to this page's first paint when the stepper was
+        // introduced; WhenAll puts it back to two.
+        //
+        // Both are tolerant: a failed context costs the roster strip, a failed
+        // dashboard costs the stepper, and neither fails the page — the
+        // project's own details still render.
+        if (_state == ProjectLoadState.Loaded)
+        {
+            var contextTask   = ProjectContext.GetAsync();
+            var dashboardTask = DashboardService.GetDashboardAsync();
+            await Task.WhenAll(contextTask, dashboardTask);
+
+            _context    = contextTask.Result;
+            _milestones = dashboardTask.Result?.Milestones ?? new();
+        }
+        else
+        {
+            _context    = null;
+            _milestones = new();
+        }
 
         _loading = false;
     }

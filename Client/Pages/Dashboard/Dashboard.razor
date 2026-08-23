@@ -11,36 +11,23 @@
 
 @*
     ── Student Dashboard ────────────────────────────────────────────────────
-    Visual source of truth: design-reference/motiva/project/
-                            Motiva Student Dashboard V4.dc.html
+    Visual source of truth: design-reference/motiva-student-final
+                            (Motiva Student dashboard final)
     Data source of truth:   GET api/projects/my-dashboard  (DashboardDto)
                           + GET api/notifications          (recent updates)
-                          + GET api/student/resources      (milestone material)
                           + GET api/projects/team-tasks    (team tasks)
 
-    V4's hierarchy, top to bottom, is reproduced exactly:
+    The reference's composition, top to bottom:
 
-        1. ambient hero      — greeting, current milestone ⟷ progress,
-                               milestone stepper with an expandable
-                               read-only checklist
-        2. focus card        — the single recommended next action
-        3. attention row     — דורש תשומת לב | דורש התייחסות (see below)
-        4. recommendations   — material attached to the current milestone
-        5. activity row      — עדכונים אחרונים | הגשות ומועדים קרובים
-        6. team tasks        — full width
+        1. h1 greeting + מסע הפרויקט journey stepper   (StudentDashboardHero)
+        2. compact two-column row — 1fr / 1.4fr:
+             לשים לב (focus)  |  בקשות (open requests)
+        3. four-card glance row — team tasks at ~1.6x, then three equal cards
 
-    The one addition to V4 is (3). The Design collapses every exception into
-    the focus card's flag; the application has a real exception engine whose
-    output a student can see nowhere else on this page, so it is kept — but
-    it renders only when it has something to say.
-
-    (3) WAS ONE ROSE-FILLED BAND holding both the task exceptions and the
-    student's open requests. That merged two different kinds of information
-    — "your work needs fixing" and "someone owes you an answer" — into a
-    single alarm-coloured surface. It is now two ordinary ambient cards side
-    by side, on the SAME two-column rhythm as (5), so the page reads as one
-    system of four cards rather than one loud block plus two calm ones.
-    Rose survives only as a per-item accent inside the left card.
+    Two deliberate differences from the reference, both documented at their
+    site: the glance row's fourth card is the attention list rather than a
+    calendar week-strip (no data source for one here), and the
+    recommended-material section was withdrawn because /learning owns it.
     ─────────────────────────────────────────────────────────────────────── *@
 
 @if (_isLoading)
@@ -75,45 +62,51 @@ else
                               FirstName="@_user?.FirstName"
                               OnOpenMilestone="OpenMilestoneDetail" />
 
-        <div class="sdash-stack">
-
-            @* 2 · FOCUS — the one recommended action *@
+        @* ── ROW 2 — the reference's compact two-column middle section.
+             1fr / 1.4fr: the focus card is deliberately the narrower of
+             the two, because it holds one item and the requests card
+             holds a list. ── *@
+        <div class="sdash-row-mid">
             <DashboardFocusCard Milestones="@_milestones"
                                 OnOpenTask="OpenDetail"
                                 OnOpenLearning="@(() => Nav.NavigateTo("/learning"))" />
 
-            @* 3 · ATTENTION — two equal columns, same rhythm as the activity
-                 row below. Rendered only when at least one side has something
-                 to say: a student with nothing wrong and no open request
-                 should not be shown two empty cards. When only one side has
-                 items the other still renders, with its own empty state, so
-                 the pair stays balanced and the same height. *@
-            @if (_hasAttentionRow)
-            {
-                <div class="sdash-duo">
-                    <AttentionItemsCard Milestones="@_milestones"
-                                        ExcludeTaskId="@_focusTaskId"
-                                        OnOpenTask="OpenDetail" />
-                    <OpenRequestsCard OpenRequests="@(_data.OpenRequests ?? new())" />
-                </div>
-            }
+            <OpenRequestsCard OpenRequests="@(_data.OpenRequests ?? new())" />
+        </div>
 
-            @* 4 · RECOMMENDED MATERIAL for the current milestone *@
-            <DashboardResourcesSection MilestoneTitle="@_currentMilestoneTitle" />
-
-            @* 5 · ACTIVITY — two equal columns, stacking at 900px *@
-            <div class="sdash-duo">
-                <RecentUpdatesSection />
-                <UpcomingSubmissionsCard Milestones="@_milestones"
-                                         NextDeadline="@_data.NextDeadline"
-                                         ExcludeTaskId="@_focusTaskId"
-                                         OnOpenTask="OpenDetail" />
-            </div>
-
-            @* 6 · TEAM TASKS *@
+        @* ── ROW 3 — the reference's four-card bottom row. Team tasks take
+             roughly 1.6x the width of each glance card and wrap first;
+             the three glance cards are equal. ── *@
+        <div class="sdash-row-glance">
             <TeamTasksCard TeamMembers="@(_data.TeamMembers ?? new())" />
 
+            <RecentUpdatesSection />
+
+            <UpcomingSubmissionsCard Milestones="@_milestones"
+                                     NextDeadline="@_data.NextDeadline"
+                                     ExcludeTaskId="@_focusTaskId"
+                                     OnOpenTask="OpenDetail" />
+
+            @* The reference's fourth card is a calendar week-strip, which
+               has no data source on this page. Rather than fake one, the
+               slot holds the attention list — real, already-loaded, and the
+               same "glance at what needs me" job. It renders only when it
+               has something to say; the row simply becomes three cards
+               otherwise, which the flex basis already handles. *@
+            @if (_hasAttentionItems)
+            {
+                <AttentionItemsCard Milestones="@_milestones"
+                                    ExcludeTaskId="@_focusTaskId"
+                                    OnOpenTask="OpenDetail" />
+            }
         </div>
+
+        @* The recommended-material section was removed here: the reference
+           dashboard has no such block, and every resource it listed is
+           reachable from משאבים (/learning), a primary nav destination. The
+           component and its API are untouched — only this placement is
+           withdrawn, so no functionality leaves the product. *@
+
     </div>
 }
 
@@ -137,21 +130,24 @@ else
 
     private List<MilestoneSummaryDto> _milestones => _data?.Milestones ?? new();
 
-    private string? _currentMilestoneTitle =>
-        StudentDashboardModel.CurrentMilestone(_milestones)?.Title;
-
     // The task the focus card shows in full. Passed to the attention band and
     // the deadline list so the same task is never stated twice on one screen —
     // by identity, not by list position, because the focus pick is very often
     // the same task the attention rules flag.
     private int? _focusTaskId => StudentDashboardModel.FocusTask(_milestones)?.Id;
 
-    /// <summary>Whether the attention row renders at all. Uses the shared model
-    /// rather than asking the two cards, so the page and the cards cannot
-    /// disagree about whether there is anything to show.</summary>
-    private bool _hasAttentionRow =>
-        StudentDashboardModel.AttentionTasks(_milestones, _focusTaskId).Count > 0
-        || (_data?.OpenRequests?.Count ?? 0) > 0;
+    /// <summary>Whether the attention card has anything to say.
+    ///
+    /// <para>This used to be an OR with "…or there are open requests",
+    /// because attention and requests shared one two-column row and the pair
+    /// rendered together. They are in different rows now — requests sit in
+    /// the middle section and always render — so the OR would put an empty
+    /// "אין משימות שדורשות תשומת לב" card in the glance row whenever a
+    /// request happened to be open. The glance row simply becomes three cards
+    /// when there is no attention item, which its flex basis already
+    /// handles.</para></summary>
+    private bool _hasAttentionItems =>
+        StudentDashboardModel.AttentionTasks(_milestones, _focusTaskId).Count > 0;
 
     // The cascading _user is hydrated asynchronously by App.razor, so it can be
     // null on the first parameter-set. The load is gated on _user being

@@ -42,39 +42,41 @@ public static class NavDefinitions
     };
 
     // ── Student ──────────────────────────────────────────────────────
-    // Aligned in Phase 4D with the System Master's student nav, which lists
-    // exactly five destinations (Motiva Student Dashboard V4.dc.html:68-72):
-    // דשבורד · המשימות שלי · יומן ותכנון · בקשות · מרכז ידע.
+    // The six destinations of the FINAL student design — every one of the
+    // eight `… final.dc.html` screens draws the same pill bar:
     //
-    // Removed here (routes, pages, services and APIs all left intact):
-    //   • "התראות ועדכונים" (/notifications) — the notification bell in the
-    //     sidebar header is the live notifications surface; the page it
-    //     pointed at is a self-declared placeholder, so this was a duplicate
-    //     destination for something the bell already owns.
-    //   • "צוות החדשנות" (/external-requests) — not in the Master's nav. The
-    //     page, its webhook integration and api/external-requests stay exactly
-    //     as they are; only this entry point is withdrawn, to be re-surfaced
-    //     from the Requests experience in a later phase.
+    //     בית · משימות · בקשות② · יומן · משאבים · הפרויקט שלי
     //
-    // Added: "יומן ותכנון" → the EXISTING /milestones page. This is a nav
-    // entry for a route that already shipped, not a new screen. It also
-    // replaces the calendar shortcut that AppTopBar used to provide, which
-    // disappears for students now that the bar is hidden on /dashboard.
-    // Each entry carries BOTH icons: the open-iconic class, which is what it
-    // always had, and the stroked SVG the student rail draws instead (see
-    // NavIcons for why). The open-iconic value is deliberately left in place
-    // rather than deleted — it is the fallback the rail falls back to for any
-    // item without path data, and removing it would make this list role-
-    // specific when it is not.
+    // Three things changed from the previous list, all of them from the
+    // design rather than from preference:
+    //
+    //   • "הפרויקט שלי" (/project) JOINS the primary nav. It was reachable
+    //     only from the sidebar's project row, which the final design does
+    //     not have — there is no sidebar at all now.
+    //   • "מרכז ידע" is renamed "משאבים". Same route (/learning), same page,
+    //     the design's own label.
+    //   • "דשבורד" -> "בית", "המשימות שלי" -> "משימות", "יומן ותכנון" ->
+    //     "יומן". The bar is centred and space-constrained; the final
+    //     screens use the short forms.
+    //
+    // NOTHING WAS REMOVED. /notifications and /external-requests are still
+    // withdrawn from the nav exactly as before (the bell popover owns
+    // notifications; the innovation-team page keeps its route and webhook).
+    //
+    // Each entry still carries BOTH icons. The pill bar is text-only, so the
+    // SVG path data is unused there today — it is kept because the icons are
+    // the same six destinations and dropping them would make re-adding an
+    // icon later a data change rather than a rendering one.
     private static readonly IReadOnlyList<NavItem> _studentMain = new[]
     {
-        new NavItem("דשבורד",      "dashboard",  "oi-dashboard",       NavLinkMatch.All,    NavIcons.Dashboard),
-        new NavItem("המשימות שלי", "tasks",      "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
-        // Match.All, not Prefix: the admin/mentor "milestones-overview" route
-        // would otherwise light this item up as active under a prefix match.
-        new NavItem("יומן ותכנון", "milestones", "oi-calendar",        NavLinkMatch.All,    NavIcons.Calendar),
-        new NavItem("בקשות",       "requests",   "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
-        new NavItem("מרכז ידע",    "learning",   "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
+        new NavItem("בית",           "dashboard",  "oi-home",            NavLinkMatch.All,    NavIcons.Home),
+        new NavItem("משימות",        "tasks",      "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
+        new NavItem("בקשות",         "requests",   "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
+        // Match.All, not Prefix: the admin/mentor "milestones-overview"
+        // route would otherwise light this item up under a prefix match.
+        new NavItem("יומן",          "milestones", "oi-calendar",        NavLinkMatch.All,    NavIcons.Calendar),
+        new NavItem("משאבים",        "learning",   "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
+        new NavItem("הפרויקט שלי",   "project",    "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
     };
 
     // Empty: students reach /settings via the profile card at the bottom

@@ -1,0 +1,179 @@
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Models
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Pages.Requests
+@inject IAuthenticationService _Auth
+@inject IProjectRequestsService _Requests
+@inject NavigationManager Nav
+@implements IDisposable
+
+@*
+    ── StudentTopNav ────────────────────────────────────────────────────────
+    The chrome of the FINAL student experience: logo, one centred pill nav,
+    and a cluster of round icon buttons. It replaces the 248px sidebar for
+    students only — AppSideNav is untouched and still serves Mentor,
+    Lecturer, Staff and Admin.
+
+    Source: every screen in design-reference/motiva-student-final (the eight
+    `… final.dc.html` files) draws exactly this bar, unchanged, at the top of
+    the canvas.
+
+    WHAT IS DELIBERATELY NOT HERE
+    The design's cluster also shows a magnifier. The product has no global
+    search — no endpoint, no index, no results surface — so rendering the
+    circle would put an inert control in the one place a student expects
+    chrome to work. It is left out rather than faked, and the note stays here
+    so it is re-added the day search exists.
+
+    The calendar circle IS rendered: /milestones is a real destination, and
+    the design shows the shortcut on the dashboard and project screens.
+*@
+
+<header class="stn-bar">
+
+    <a class="stn-logo" href="/dashboard" aria-label="Motiva — לדף הבית">
+        <img src="/images/motiva-logo.png" alt="Motiva" class="stn-logo-img" />
+    </a>
+
+    <nav class="stn-nav" aria-label="ניווט ראשי">
+        @foreach (var item in _navMain)
+        {
+            <NavLink class="stn-nav-item"
+                     ActiveClass="stn-nav-item-active"
+                     href="@item.Href"
+                     Match="@item.Match">
+                <span class="stn-nav-label">@item.Label</span>
+                @if (item.Href == "requests" && _actionRequestCount > 0)
+                {
+                    <span class="stn-nav-count" aria-label="@($"{_actionRequestCount} בקשות ממתינות לתגובתך")">
+                        @_actionRequestCount
+                    </span>
+                }
+            </NavLink>
+        }
+    </nav>
+
+    <div class="stn-actions">
+
+        <a class="stn-icon-btn" href="/milestones" title="יומן ותכנון" aria-label="יומן ותכנון">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                <path d="M16 2v4M8 2v4M3 10h18"></path>
+            </svg>
+        </a>
+
+        @* The bell owns its own popover. Same component, same polling, same
+           role-aware target routing — only its appearance changes, and that
+           is applied from this component's stylesheet via ::deep so the
+           bell stays valid for AppTopBar (Lecturer / Staff / Admin). *@
+        <NotificationBell Icon="NotificationBell.BellIcon.Stroked" />
+
+        <a class="stn-avatar @(IsProfileRoute ? "stn-avatar-active" : "")"
+           href="/settings"
+           title="הפרופיל שלי"
+           aria-label="הפרופיל שלי">
+            @GetInitials()
+        </a>
+
+        <button type="button"
+                class="stn-icon-btn stn-logout"
+                @onclick="HandleLogout"
+                title="התנתקות"
+                aria-label="התנתקות">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3"></path>
+                <path d="M16 17l5-5-5-5M21 12H9"></path>
+            </svg>
+        </button>
+    </div>
+</header>
+
+@code {
+    [CascadingParameter] private User? _user { get; set; }
+
+    private IReadOnlyList<NavItem> _navMain = Array.Empty<NavItem>();
+
+    // "דורש ממך פעולה" — the count the design puts on the בקשות pill. Real,
+    // from GET api/project-requests/mine, bucketed by the same
+    // RequestBuckets.Of() the Requests page uses, so the badge and the page
+    // can never disagree about what "waiting on you" means.
+    private int _actionRequestCount;
+
+    private bool IsProfileRoute =>
+        new Uri(Nav.Uri).AbsolutePath.Trim('/').Equals("settings", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocationChanged;
+        UserModeService.CurrentModeChanged += OnModeChanged;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        (_navMain, _) = NavDefinitions.GetNavItems(_user);
+
+        // Only load once per session on first resolve of the user; the bar is
+        // a persistent shell component and does not remount on navigation.
+        if (_user is not null && !_countLoaded)
+        {
+            _countLoaded = true;
+            await RefreshRequestCountAsync();
+        }
+    }
+
+    private bool _countLoaded;
+
+    private async Task RefreshRequestCountAsync()
+    {
+        var mine = await _Requests.GetMyRequestsAsync();
+        if (mine is null) return;
+
+        _actionRequestCount = mine.Count(r => RequestBuckets.Of(r.Status) == RequestBucket.Waiting);
+        StateHasChanged();
+    }
+
+    // Leaving /requests is the one navigation that can have changed the
+    // count (a reply moves a request out of "waiting on you"). Refreshing
+    // only there keeps the badge honest without an API call per page.
+    private string _lastPath = "";
+
+    private async void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        var path = new Uri(Nav.Uri).AbsolutePath.Trim('/');
+        bool leftRequests = _lastPath.Equals("requests", StringComparison.OrdinalIgnoreCase)
+                            && !path.Equals("requests", StringComparison.OrdinalIgnoreCase);
+        _lastPath = path;
+
+        await InvokeAsync(StateHasChanged);
+        if (leftRequests) await InvokeAsync(RefreshRequestCountAsync);
+    }
+
+    private async void OnModeChanged()
+    {
+        (_navMain, _) = NavDefinitions.GetNavItems(_user);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private string GetInitials()
+    {
+        var first = _user?.FirstName?.Trim() ?? "";
+        var last  = _user?.LastName?.Trim()  ?? "";
+        var a = first.Length > 0 ? first[..1] : "";
+        var b = last.Length  > 0 ? last[..1]  : "";
+        return (a + b) is { Length: > 0 } s ? s : "?";
+    }
+
+    private async Task HandleLogout()
+    {
+        await _Auth.Logout();
+        Nav.NavigateTo(PageRoutes.Login, forceLoad: true);
+    }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+        UserModeService.CurrentModeChanged -= OnModeChanged;
+    }
+}

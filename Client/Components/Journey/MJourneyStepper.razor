@@ -1,0 +1,144 @@
+@namespace AuthWithAdmin.Client.Components
+@*
+    MJourneyStepper — "מסע הפרויקט"
+
+    The signature element of the finalized student experience. It appears
+    twice, identically: on the dashboard (read-only) and on the project
+    screen (each stage clickable, opening an inline detail strip).
+    Source: design-reference/motiva-student-final/README.md, "Journey stepper".
+
+    One row, one line. Completed stages carry a filled dot and a gradient
+    connector that walks the journey palette from cyan to violet; the
+    current stage is a hollow violet ring whose connector is a part-filled
+    track; future stages are grey rings on a flat track. The last stage has
+    no connector, because there is nothing after it.
+
+    The design draws six stages. This takes however many the project has —
+    the colour for each completed stage is sampled from the five journey
+    stops by position, so three stages or nine both walk the same ramp.
+*@
+
+<div class="m-journey" role="list">
+    @for (int i = 0; i < Stages.Count; i++)
+    {
+        var index   = i;
+        var stage   = Stages[index];
+        var isLast  = index == Stages.Count - 1;
+        var clickable = OnStageClick.HasDelegate;
+
+        <div class="@StageClass(stage, isLast)"
+             role="listitem"
+             @onclick="@(() => clickable ? OnStageClick.InvokeAsync(index) : Task.CompletedTask)">
+
+            <div class="m-journey-track">
+                <span class="m-journey-dot" style="@DotStyle(stage, index)">
+                    @if (stage.State == JourneyState.Complete)
+                    {
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m5 12.5 4.5 4.5L19 7"></path>
+                        </svg>
+                    }
+                </span>
+
+                @if (!isLast)
+                {
+                    @if (stage.State == JourneyState.Complete)
+                    {
+                        <span class="m-journey-line" style="@LineStyle(index)"></span>
+                    }
+                    else if (stage.State == JourneyState.Current)
+                    {
+                        <span class="m-journey-line m-journey-line-current">
+                            <span class="m-journey-line-fill" style="width: @(Clamp(stage.Percent))%"></span>
+                        </span>
+                    }
+                    else
+                    {
+                        <span class="m-journey-line m-journey-line-future"></span>
+                    }
+                }
+            </div>
+
+            <p class="m-journey-label">
+                @stage.Label
+                @if (stage.State == JourneyState.Current)
+                {
+                    <span class="m-journey-percent">— @Clamp(stage.Percent)%</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(stage.Meta))
+                {
+                    <span class="m-journey-meta">· @stage.Meta</span>
+                }
+            </p>
+        </div>
+    }
+</div>
+
+@code {
+    public enum JourneyState { Complete, Current, Future }
+
+    /// <summary>One stage of the journey. `Percent` is read only for the
+    /// current stage; `Meta` is the optional trailing note the project
+    /// screen shows ("יעד 30.08") and the dashboard omits.</summary>
+    public sealed record JourneyStage(
+        string Label,
+        JourneyState State,
+        int Percent = 0,
+        string? Meta = null);
+
+    [Parameter, EditorRequired] public IReadOnlyList<JourneyStage> Stages { get; set; } = Array.Empty<JourneyStage>();
+
+    /// <summary>Fired with the stage index. When no handler is supplied the
+    /// stepper renders inert — no pointer cursor, no hit area — which is
+    /// what the dashboard wants.</summary>
+    [Parameter] public EventCallback<int> OnStageClick { get; set; }
+
+    // The five journey stops, in order. Kept as token NAMES rather than
+    // literals so the ramp stays editable in one place.
+    private static readonly string[] Stops =
+    {
+        "var(--motiva-journey-1)",
+        "var(--motiva-journey-2)",
+        "var(--motiva-journey-3)",
+        "var(--motiva-journey-4)",
+        "var(--motiva-journey-5)",
+    };
+
+    private static int Clamp(int percent) => Math.Clamp(percent, 0, 100);
+
+    /// <summary>Samples the ramp by position, so the palette spans the whole
+    /// journey no matter how many stages the project actually has.</summary>
+    private string StopAt(int index)
+    {
+        if (Stages.Count <= 1) return Stops[0];
+        var t = (double)index / (Stages.Count - 1);
+        var slot = (int)Math.Round(t * (Stops.Length - 1));
+        return Stops[Math.Clamp(slot, 0, Stops.Length - 1)];
+    }
+
+    private string StageClass(JourneyStage stage, bool isLast)
+    {
+        var state = stage.State switch
+        {
+            JourneyState.Complete => "m-journey-stage-complete",
+            JourneyState.Current  => "m-journey-stage-current",
+            _                     => "m-journey-stage-future",
+        };
+
+        return $"m-journey-stage {state}"
+             + (isLast ? " m-journey-stage-last" : "")
+             + (OnStageClick.HasDelegate ? " m-journey-stage-clickable" : "");
+    }
+
+    private string DotStyle(JourneyStage stage, int index) =>
+        stage.State == JourneyState.Complete
+            ? $"background: {StopAt(index)};"
+            : "";
+
+    // The connector leaving a completed stage runs from its own colour to
+    // the next stage's — which is what makes the row read as one continuous
+    // ramp rather than a series of coloured segments.
+    private string LineStyle(int index) =>
+        $"background: linear-gradient(to left, {StopAt(index)}, {StopAt(index + 1)});";
+}
