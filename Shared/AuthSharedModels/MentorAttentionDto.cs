@@ -201,7 +201,14 @@ public class MentorAttentionItemDto
     public bool IsOverdue { get; set; }
 
     /// <summary>Where this item opens in the mentor experience. Server-owned so
-    /// the digest, the notification and the row all agree.</summary>
+    /// the digest, the notification and the row all agree.
+    ///
+    /// <para>Always a deep link to THIS entity, never to the list it lives in:
+    /// a submission opens its review drawer (<c>?submissionId=</c>), a request
+    /// its own row (<c>?requestId=</c>) and a personal task its editor
+    /// (<c>?editTask=</c>). A caller that renders one specific item must send
+    /// the mentor here rather than to a filtered queue, or the mentor has to
+    /// find the item a second time.</para></summary>
     public string Href { get; set; } = "";
 
     /// <summary>Pre-rendered waiting phrase, so a caller with no access to the

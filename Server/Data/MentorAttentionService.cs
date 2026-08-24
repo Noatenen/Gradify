@@ -181,11 +181,14 @@ public class MentorAttentionService
                 WaitingDays    = days,
                 Age            = age,
                 WaitingLabel   = MentorAging.WaitingLabel(MentorAttentionKind.Submission, days),
-                // The safest destination that exists TODAY. It is also exactly
-                // where the approved Home and Tasks rows already send a review,
-                // so the digest cannot land somewhere the UI does not. Precise
-                // per-submission deep-linking waits for Project Workspace.
-                Href           = $"/mentor/projects/{s.ProjectId}",
+                // Straight to THIS submission's review drawer.
+                // MentorProjectDetailPage reads ?submissionId= and opens the
+                // drawer for it, and GetSubmissionContextAsync is mentor-scoped
+                // server-side — so the parameter saves a click on a page the
+                // mentor is already allowed to see and grants no access of its
+                // own. Everything that renders a review row (Home, יומן, the
+                // digest) now lands ON the submission rather than near it.
+                Href           = $"/mentor/projects/{s.ProjectId}?submissionId={s.SubmissionId}",
             });
         }
 
@@ -235,7 +238,11 @@ public class MentorAttentionService
                 Age         = MentorAttentionAge.New,
                 DueDate     = t.DueDate,
                 IsOverdue   = daysUntil < 0,
-                Href        = "/mentor/tasks?focus=personal",
+                // Straight to THIS task's editor, not the personal section:
+                // המשימות שלי reads ?editTask= and opens the shared
+                // MentorPersonalTaskModal for it, looked up inside the mentor's
+                // own list — an id that is not theirs simply is not found.
+                Href        = $"/mentor/tasks?editTask={t.Id}",
             });
         }
 

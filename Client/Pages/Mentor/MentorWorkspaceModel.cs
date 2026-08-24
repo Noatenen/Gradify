@@ -92,6 +92,27 @@ public static class MentorHealthStates
         _                      => MKpiCard.KpiAccent.Rose,
     };
 
+    /// <summary>URL vocabulary for the state — the value carried by
+    /// <c>/mentor/projects?health=</c>. A slug rather than the enum name so the
+    /// link stays readable, and a single pair with <see cref="FromSlug"/> so the
+    /// screen that WRITES the link and the screen that READS it cannot drift.</summary>
+    public static string Slug(MentorHealth h) => h switch
+    {
+        MentorHealth.OnTrack   => "ontrack",
+        MentorHealth.Attention => "attention",
+        _                      => "atrisk",
+    };
+
+    /// <summary>The inverse of <see cref="Slug"/>. An unknown or missing value
+    /// is "no filter" — a hand-edited URL must never blank the list.</summary>
+    public static MentorHealth? FromSlug(string? slug) => (slug ?? "").ToLowerInvariant() switch
+    {
+        "ontrack"   => MentorHealth.OnTrack,
+        "attention" => MentorHealth.Attention,
+        "atrisk"    => MentorHealth.AtRisk,
+        _           => null,
+    };
+
     /// <summary>Ranking for "worst first" ordering — the order every mentor
     /// list uses, because the whole point of the screen is that the projects
     /// needing attention are the ones you should hit first.</summary>
@@ -278,4 +299,59 @@ public static class MentorTime
     /// due-date chip.</summary>
     public static bool IsOverdue(DateTime? due) =>
         due is not null && due.Value.ToLocalTime().Date < DateTime.Now.Date;
+}
+
+// ── Where a mentor surface sends a click ────────────────────────────────────
+
+/// <summary>
+/// The mentor experience's navigation vocabulary, in one place.
+///
+/// <para>Two kinds of click exist on a mentor screen and they must never be
+/// confused:</para>
+/// <list type="bullet">
+///   <item><b>A collection</b> — a KPI card, a "לכל ה…" link — navigates to the
+///   workspace that owns that collection, with the matching filter applied.</item>
+///   <item><b>One specific item</b> — a row, the CTA on a single item — opens
+///   THAT item, by id, in the existing details UI on its own page. For an
+///   attention item that destination is already computed by the server and
+///   arrives as <c>MentorAttentionItemDto.Href</c>; these helpers cover the
+///   surfaces that do not come from the attention model.</item>
+/// </list>
+///
+/// <para>Nothing here is a new screen or a new parameter: every value below is
+/// a route the mentor experience already serves — <c>?focus=</c> on המשימות
+/// שלי, <c>?editTask=</c> on its personal-task editor, and <c>?health=</c> on
+/// הפרויקטים שלי.</para>
+/// </summary>
+public static class MentorLinks
+{
+    // ── Collections ─────────────────────────────────────────────────────────
+
+    /// <summary>המשימות שלי, unfiltered.</summary>
+    public const string Tasks = "/mentor/tasks";
+
+    /// <summary>המשימות שלי, scoped to הגשות לבדיקה.</summary>
+    public const string Reviews = "/mentor/tasks?focus=reviews";
+
+    /// <summary>המשימות שלי, scoped to בקשות הדורשות פעולה.</summary>
+    public const string Requests = "/mentor/tasks?focus=requests";
+
+    /// <summary>המשימות שלי, scoped to משימות אישיות.</summary>
+    public const string PersonalTasks = "/mentor/tasks?focus=personal";
+
+    /// <summary>בקשות — every request on the mentor's projects, not only the
+    /// ones awaiting them.</summary>
+    public const string RequestsInbox = "/mentor-requests";
+
+    /// <summary>הפרויקטים שלי, optionally scoped to one health state.</summary>
+    public static string Projects(MentorHealth? health = null) =>
+        health is null
+            ? "/mentor/projects"
+            : $"/mentor/projects?health={MentorHealthStates.Slug(health.Value)}";
+
+    // ── Single items ────────────────────────────────────────────────────────
+
+    /// <summary>One personal task's editor. Same link the calendar and the
+    /// attention model already use, so all three open the same modal.</summary>
+    public static string PersonalTask(int taskId) => $"/mentor/tasks?editTask={taskId}";
 }

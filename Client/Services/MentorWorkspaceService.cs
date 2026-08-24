@@ -172,7 +172,7 @@ public class MentorWorkspaceService : IMentorWorkspaceService
                 TeamName:     hasContext ? t.TeamName : null,
                 Detail: t.Description,
                 // Straight to THIS task's editor, not the section.
-                Href: $"/mentor/tasks?editTask={t.Id}",
+                Href: MentorLinks.PersonalTask(t.Id),
                 HasTime: isTimed,
                 EndsAt:  hasEnd ? t.DueDate!.Value.Date + end!.Value : null));
         }
@@ -189,14 +189,12 @@ public class MentorWorkspaceService : IMentorWorkspaceService
                 ProjectId: r.ProjectId, ProjectTitle: r.ProjectTitle,
                 TeamName: r.TeamName ?? (r.ProjectId is int pid ? snapshot.TeamNameFor(pid) : null),
                 Detail: string.IsNullOrWhiteSpace(r.MilestoneTitle) ? null : $"אבן דרך: {r.MilestoneTitle}",
-                // Deep link to THIS submission's review drawer rather than the
-                // project page. EntityId is the TaskSubmissions row id (see
-                // MentorAttentionService), which is exactly what the drawer
-                // takes. Falls back to the attention model's own project-level
-                // Href when there is no project to hang the drawer on.
-                Href: r.ProjectId is int rpid
-                          ? $"/mentor/projects/{rpid}?submissionId={r.EntityId}"
-                          : r.Href,
+                // The attention model's own Href, which IS the deep link to this
+                // submission's review drawer — it used to stop at the project
+                // page, so the calendar rebuilt the link itself. Now that every
+                // attention Href opens its own entity, a calendar entry, a Home
+                // row and the daily digest all land in the same drawer.
+                Href: r.Href,
                 Age: r.Age,
                 WaitingLabel: r.WaitingLabel));
         }
