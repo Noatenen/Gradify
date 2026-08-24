@@ -8,56 +8,65 @@
 @inject IProjectRequestsService RequestsService
 @inject IRequestTypesService    RequestTypesService
 
-@*
-    StudentRequestsPage — the finalized Motiva Requests screen
-    (design-reference/motiva/project/Motiva Requests.dc.html).
-
-    The Design's shape: an ambient hero whose h1 is a state summary rather than
-    a page title, a KPI row that IS the status filter, and one workspace card
-    holding three responsibility groups of accordion threads. That replaces the
-    previous two-pane inbox, where only one request could be open at a time.
-
-    Everything below the presentation is unchanged: the same four service calls,
-    the same reply validation, the same mark-read behaviour, the same statuses.
-    The one behavioural correction is the "in flight" bucket, which now includes
-    the two extension-flow statuses the old "ממתין למענה" pill silently dropped —
-    see RequestWorkspaceModel.cs.
-*@
-
 <NewRequestModal IsOpen="@_showModal"
                  OnClose="CloseModal"
                  OnSuccess="OnRequestCreated" />
 
-@*
-    .sreq-header-bleed cancels the student shell's inline inset so the ambient
-    band reaches the shell edge, exactly as /tasks does; MPageHeader's own
-    padding keeps its text and the KPI row on the content boundary.
-*@
-@*
-    The final design's Requests screen opens on a plain "בקשות" h1 with the
-    status tabs and the new-request CTA on the SAME row — no ambient band, no
-    KPI grid, and no state-summary sentence in place of the page title. The
-    counts the KPI cards carried are not lost: the one that drives behaviour
-    rides on the "דורש ממך פעולה" tab as a badge.
-*@
 <MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="בקשות">
     <Actions>
-        @if (!_isLoading && !_loadError)
-        {
-            <RequestsStatusTabs WaitingCount="@BucketCount(RequestBucket.Waiting)"
-                                LecturerCount="@BucketCount(RequestBucket.Lecturer)"
-                                DoneCount="@BucketCount(RequestBucket.Done)"
-                                TotalCount="@_requests.Count"
-                                ActiveStatusFilters="@_statusFilters"
-                                OnSelectStatus="ToggleStatusFilter"
-                                OnClearStatusFilters="ClearStatusFilters" />
-        }
+        <div class="sreq-tabbar">
+            @if (!_isLoading && !_loadError)
+            {
+                <RequestsStatusTabs WaitingCount="@BucketCount(RequestBucket.Waiting)"
+                                    LecturerCount="@BucketCount(RequestBucket.Lecturer)"
+                                    DoneCount="@BucketCount(RequestBucket.Done)"
+                                    TotalCount="@_requests.Count"
+                                    ActiveStatusFilters="@_statusFilters"
+                                    OnSelectStatus="ToggleStatusFilter"
+                                    OnClearStatusFilters="ClearStatusFilters" />
 
-        <MButton Variant="MButton.ButtonVariant.Primary"
-                 OnClick="OpenModal">
-            <span class="sreq-new-plus" aria-hidden="true">+</span>
-            <span class="sreq-new-label">בקשה חדשה</span>
-        </MButton>
+                @if (TypeOptions.Any(o => o.Value != ""))
+                {
+                    <span class="sreq-tabbar-sep" aria-hidden="true"></span>
+
+                    <div class="sreq-type-wrap">
+                        <button type="button"
+                                class="sreq-type-btn @(!string.IsNullOrEmpty(_selectedType) ? "sreq-type-btn-active" : "")"
+                                @onclick="ToggleTypeMenu">
+                            @(!string.IsNullOrEmpty(_selectedType) ? TypeLabel(_selectedType) : "סוג בקשה")
+                            <span class="sreq-type-caret @(_typeMenuOpen ? "sreq-type-caret-open" : "")">▾</span>
+                        </button>
+
+                        @if (_typeMenuOpen)
+                        {
+                            <div class="sreq-type-backdrop" @onclick="CloseTypeMenu"></div>
+                            <div class="sreq-type-panel">
+                                @foreach (var opt in TypeOptions)
+                                {
+                                    var capturedOpt = opt;
+                                    var on = _selectedType == capturedOpt.Value;
+                                    <button type="button" class="sreq-type-opt @(on ? "sreq-type-opt-on" : "")" @onclick="@(() => PickType(capturedOpt.Value))">
+                                        <span class="sreq-type-opt-label">@capturedOpt.Label</span>
+                                        @if (on)
+                                        {
+                                            <svg class="sreq-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6D28F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="m5 12.5 4.5 4.5L19 7"/>
+                                            </svg>
+                                        }
+                                    </button>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+
+            <MButton Variant="MButton.ButtonVariant.Primary"
+                     OnClick="OpenModal">
+                <span class="sreq-new-plus" aria-hidden="true">+</span>
+                <span class="sreq-new-label">בקשה חדשה</span>
+            </MButton>
+        </div>
     </Actions>
 </MPageHeader>
 
@@ -78,87 +87,79 @@ else if (_loadError)
 else
 {
     <div class="sreq-page">
-        <MCard Padding="MCard.CardPadding.None">
-            <div class="sreq-workspace">
 
-                @if (_requests.Count > 0)
+        @if (_requests.Count == 0)
+        {
+            <MEmptyState Title="עדיין לא פתחת בקשות"
+                         Description="כשתפתחי בקשה לצוות האקדמי היא תופיע כאן, יחד עם כל השיחה סביבה.">
+                <Action>
+                    <MButton Variant="MButton.ButtonVariant.Primary"
+                             OnClick="OpenModal">
+                        פתיחת בקשה ראשונה
+                    </MButton>
+                </Action>
+            </MEmptyState>
+        }
+        else if (!VisibleBuckets.Any())
+        {
+            <MEmptyState Title="אין בקשות שתואמות לסינון הנוכחי"
+                         Description="אפשר לשנות את הסינון או להציג את כל הבקשות."
+                         Live="true">
+                <Action>
+                    <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ClearAllFilters">
+                        הצגת כל הבקשות
+                    </MButton>
+                </Action>
+            </MEmptyState>
+        }
+        else
+        {
+            <div class="sreq-groups">
+                @foreach (var bucket in VisibleBuckets)
                 {
-                    <RequestFilterBar Axes="@FilterAxes"
-                                      OnToggle="OnFilterToggled"
-                                      OnClearAll="ClearAllFilters" />
-                }
+                    var captured  = bucket;
+                    var rows      = RowsIn(captured);
+                    var isDone    = captured == RequestBucket.Done;
 
-                @if (_requests.Count == 0)
-                {
-                    <MEmptyState Title="עדיין לא פתחת בקשות"
-                                 Description="כשתפתחי בקשה לצוות האקדמי היא תופיע כאן, יחד עם כל השיחה סביבה.">
-                        <Action>
-                            <MButton Variant="MButton.ButtonVariant.Primary"
-                                     OnClick="OpenModal">
-                                פתיחת בקשה ראשונה
-                            </MButton>
-                        </Action>
-                    </MEmptyState>
-                }
-                else if (!VisibleBuckets.Any())
-                {
-                    <MEmptyState Title="אין בקשות שתואמות לסינון הנוכחי"
-                                 Description="אפשר לשנות את הסינון או להציג את כל הבקשות."
-                                 Live="true">
-                        <Action>
-                            <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ClearAllFilters">
-                                הצגת כל הבקשות
-                            </MButton>
-                        </Action>
-                    </MEmptyState>
-                }
-                else
-                {
-                    @foreach (var bucket in VisibleBuckets)
-                    {
-                        var captured  = bucket;
-                        var rows      = RowsIn(captured);
-                        var isDone    = captured == RequestBucket.Done;
-
-                        <RequestGroupSection Label="@RequestBuckets.GroupLabel(captured)"
-                                             Count="@rows.Count"
-                                             Emphasis="@(captured == RequestBucket.Waiting)"
-                                             Collapsible="@(isDone && rows.Count > 0)"
-                                             Open="@(!isDone || DoneGroupOpen)"
-                                             OnToggle="ToggleDoneGroup">
-                            @if (rows.Count == 0)
+                    <RequestGroupSection Label="@RequestBuckets.GroupLabel(captured)"
+                                         BucketClass="@RequestBuckets.CssSuffix(captured)"
+                                         Count="@rows.Count"
+                                         Emphasis="@(captured == RequestBucket.Waiting)"
+                                         Collapsible="@(isDone && rows.Count > 0)"
+                                         Open="@(!isDone || DoneGroupOpen)"
+                                         OnToggle="ToggleDoneGroup">
+                        @if (rows.Count == 0)
+                        {
+                            <MEmptyState Title="@EmptyLineFor(captured)" />
+                        }
+                        else
+                        {
+                            @foreach (var r in rows)
                             {
-                                <MEmptyState Title="@EmptyLineFor(captured)" />
+                                var req = r;
+                                <RequestThreadRow @key="req.Id"
+                                                  Request="@req"
+                                                  Bucket="@captured"
+                                                  TypeLabel="@TypeLabel(req.RequestType)"
+                                                  Expanded="@_expanded.Contains(req.Id)"
+                                                  OnToggle="@(() => ToggleThread(req.Id))"
+                                                  CanReply="@CanReply(req)"
+                                                  ReplyText="@GetReplyText(req.Id)"
+                                                  ReplyTextChanged="@(v => SetReplyText(req.Id, v))"
+                                                  Attachments="@GetReplyAttachments(req.Id)"
+                                                  OnFilesSelected="@(e => OnReplyFilesSelected(req.Id, e))"
+                                                  OnRemoveAttachment="@(a => RemoveReplyAttachment(req.Id, a))"
+                                                  MaxAttachments="@MaxReplyAttachments"
+                                                  IsSending="@IsReplying(req.Id)"
+                                                  ReplyError="@GetReplyError(req.Id)"
+                                                  FileError="@GetReplyFileError(req.Id)"
+                                                  OnSend="@(() => SubmitReply(req.Id))" />
                             }
-                            else
-                            {
-                                @foreach (var r in rows)
-                                {
-                                    var req = r;
-                                    <RequestThreadRow @key="req.Id"
-                                                      Request="@req"
-                                                      Bucket="@captured"
-                                                      TypeLabel="@TypeLabel(req.RequestType)"
-                                                      Expanded="@_expanded.Contains(req.Id)"
-                                                      OnToggle="@(() => ToggleThread(req.Id))"
-                                                      CanReply="@CanReply(req)"
-                                                      ReplyText="@GetReplyText(req.Id)"
-                                                      ReplyTextChanged="@(v => SetReplyText(req.Id, v))"
-                                                      Attachments="@GetReplyAttachments(req.Id)"
-                                                      OnFilesSelected="@(e => OnReplyFilesSelected(req.Id, e))"
-                                                      OnRemoveAttachment="@(a => RemoveReplyAttachment(req.Id, a))"
-                                                      MaxAttachments="@MaxReplyAttachments"
-                                                      IsSending="@IsReplying(req.Id)"
-                                                      ReplyError="@GetReplyError(req.Id)"
-                                                      FileError="@GetReplyFileError(req.Id)"
-                                                      OnSend="@(() => SubmitReply(req.Id))" />
-                                }
-                            }
-                        </RequestGroupSection>
-                    }
+                        }
+                    </RequestGroupSection>
                 }
             </div>
-        </MCard>
+        }
     </div>
 }
 
@@ -169,37 +170,21 @@ else
     private bool _showModal;
 
     // ── Filter state ──────────────────────────────────────────────────────
-    // Two independent axes, exactly as the Design models them: the KPI cards
-    // and the "סטטוס" dropdown write to _statusFilters, the "סוג בקשה"
-    // dropdown to _typeFilters. Both are multi-select.
-    private const string StatusAxis = "status";
-    private const string TypeAxis   = "type";
-
     private readonly HashSet<string> _statusFilters = new();
-    private readonly HashSet<string> _typeFilters   = new();
+    private string _selectedType = ""; // "" = all
+
+    // ── Type dropdown state ───────────────────────────────────────────────
+    private bool _typeMenuOpen;
 
     // ── Accordion state ───────────────────────────────────────────────────
-    // Any number of threads can be open at once (the Design's `expanded` map).
     private readonly HashSet<int> _expanded = new();
 
-    // The completed group is collapsed at rest — finished requests are history.
-    // It opens on demand, and is opened FOR the student when they filter to it,
-    // since a "טופלו" KPI press that reveals nothing would be a regression on
-    // the pill it replaces.
-    //
-    // That auto-open sets the flag (see OpenDoneGroupIfFilteredTo) rather than
-    // being OR-ed into a computed property: as a computed override it won the
-    // comparison every render, so the group's own הצגה/הסתרה toggle became
-    // inert for exactly as long as the filter was on.
     private bool _doneGroupOpen;
     private bool DoneGroupOpen => _doneGroupOpen;
 
-    // Code → display name for the admin-managed request-type catalogue. Falls
-    // back to the built-in RequestTypes.Label, which itself falls back to the
-    // raw code, so a custom type never renders blank.
     private Dictionary<string, string> _typeNames = new();
 
-    // ── Per-request reply state (unchanged) ───────────────────────────────
+    // ── Per-request reply state ───────────────────────────────────────────
     private readonly Dictionary<int, string> _replyTexts  = new();
     private readonly HashSet<int>            _replyingIds = new();
     private readonly Dictionary<int, string> _replyErrors = new();
@@ -209,25 +194,41 @@ else
     private const int  MaxReplyAttachments = 3;
     private const long MaxReplyAttachBytes = 5 * 1024 * 1024;
 
-    // The state-summary h1 this page used to compute is gone: the final design
-    // titles the screen "בקשות" and reports state through the tab badge and the
-    // group labels instead. Removed rather than left unused so the next reader
-    // does not wonder which title actually renders.
+    // ── Type dropdown options ─────────────────────────────────────────────
+    private IReadOnlyList<(string Value, string Label)> TypeOptions
+    {
+        get
+        {
+            var items = new List<(string, string)> { ("", "הכל") };
+            items.AddRange(
+                _requests
+                    .Select(r => r.RequestType)
+                    .Distinct()
+                    .Select(code => (code, TypeLabel(code)))
+                    .OrderBy(x => x.Item2, StringComparer.CurrentCulture));
+            return items;
+        }
+    }
+
+    private void ToggleTypeMenu() => _typeMenuOpen = !_typeMenuOpen;
+    private void CloseTypeMenu()  => _typeMenuOpen = false;
+
+    private void PickType(string value)
+    {
+        _selectedType = value;
+        _typeMenuOpen = false;
+    }
 
     // ── Buckets, filtering, ordering ──────────────────────────────────────
 
     private int BucketCount(RequestBucket bucket) =>
         _requests.Count(r => RequestBuckets.Of(r.Status) == bucket);
 
-    /// <summary>Type filter only. The status axis selects which GROUPS render,
-    /// so applying it here as well would empty every group it hides.</summary>
     private IEnumerable<StudentOwnRequestDto> TypeFiltered =>
-        _typeFilters.Count == 0
+        string.IsNullOrEmpty(_selectedType)
             ? _requests
-            : _requests.Where(r => _typeFilters.Contains(r.RequestType));
+            : _requests.Where(r => r.RequestType == _selectedType);
 
-    /// <summary>Newest activity first — every server write path bumps
-    /// UpdatedAt, so a thread floats up on any meaningful change.</summary>
     private List<StudentOwnRequestDto> RowsIn(RequestBucket bucket) =>
         TypeFiltered.Where(r => RequestBuckets.Of(r.Status) == bucket)
                     .OrderByDescending(r => r.UpdatedAt)
@@ -236,15 +237,10 @@ else
     private static readonly RequestBucket[] BucketOrder =
         { RequestBucket.Waiting, RequestBucket.Lecturer, RequestBucket.Done };
 
-    /// <summary>Which groups render. No status filter → all three (the Design
-    /// always shows the full workspace); otherwise only the selected ones.
-    /// A group with no rows under the current TYPE filter drops out entirely,
-    /// so a type filter can genuinely empty the page and reach the
-    /// "no results" state rather than showing three empty headings.</summary>
     private IEnumerable<RequestBucket> VisibleBuckets =>
         BucketOrder
             .Where(b => _statusFilters.Count == 0 || _statusFilters.Contains(RequestBuckets.FilterId(b)))
-            .Where(b => _typeFilters.Count == 0 || RowsIn(b).Count > 0);
+            .Where(b => string.IsNullOrEmpty(_selectedType) || RowsIn(b).Count > 0);
 
     private static string EmptyLineFor(RequestBucket bucket) => bucket switch
     {
@@ -258,53 +254,24 @@ else
             ? name
             : RequestTypes.Label(code);
 
-    /// <summary>The two dropdown axes. Type options are built from the types
-    /// actually present in this student's requests, so the menu never offers a
-    /// filter that can only return nothing.</summary>
-    private IReadOnlyList<RequestFilterBar.FilterAxis> FilterAxes
-    {
-        get
-        {
-            var statusOptions = new List<RequestFilterBar.FilterOption>
-            {
-                new(RequestBuckets.WaitingFilterId,  "מחכות לתגובתך", "rfb-dot-waiting"),
-                new(RequestBuckets.LecturerFilterId, "בבדיקת מרצה",   "rfb-dot-lecturer"),
-                new(RequestBuckets.DoneFilterId,     "טופלו",         "rfb-dot-done"),
-            };
-
-            var typeOptions = _requests
-                .Select(r => r.RequestType)
-                .Distinct()
-                .OrderBy(TypeLabel, StringComparer.CurrentCulture)
-                .Select(code => new RequestFilterBar.FilterOption(code, TypeLabel(code)))
-                .ToList();
-
-            return new[]
-            {
-                new RequestFilterBar.FilterAxis(StatusAxis, "סטטוס",    statusOptions, _statusFilters),
-                new RequestFilterBar.FilterAxis(TypeAxis,   "סוג בקשה", typeOptions,   _typeFilters),
-            };
-        }
-    }
-
     private void OnFilterToggled((string AxisKey, string Value) f)
     {
-        var set = f.AxisKey == StatusAxis ? _statusFilters : _typeFilters;
-        if (!set.Add(f.Value)) set.Remove(f.Value);
+        if (f.AxisKey == "status")
+        {
+            if (!_statusFilters.Add(f.Value)) _statusFilters.Remove(f.Value);
+        }
+        else
+        {
+            _selectedType = _selectedType == f.Value ? "" : f.Value;
+        }
         OpenDoneGroupIfFilteredTo();
     }
 
-    /// <summary>Reveals the completed group when the student has just asked to
-    /// see it. One-way on purpose: it opens the group, and the group's own
-    /// toggle is then free to close it again.</summary>
     private void OpenDoneGroupIfFilteredTo()
     {
         if (_statusFilters.Contains(RequestBuckets.DoneFilterId)) _doneGroupOpen = true;
     }
 
-    /// <summary>KPI press. Design: the KPI cards are a single-choice view of
-    /// the status axis — pressing one replaces whatever status filter was set
-    /// and pressing the active one clears it. The type axis is untouched.</summary>
     private void ToggleStatusFilter(string id)
     {
         bool wasOnlyThis = _statusFilters.Count == 1 && _statusFilters.Contains(id);
@@ -318,7 +285,7 @@ else
     private void ClearAllFilters()
     {
         _statusFilters.Clear();
-        _typeFilters.Clear();
+        _selectedType = "";
     }
 
     private void ToggleDoneGroup() => _doneGroupOpen = !_doneGroupOpen;
@@ -326,9 +293,6 @@ else
     // ── Lifecycle ─────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
-        // Both are existing endpoints. The catalogue is loaded so the type
-        // filter can label admin-defined types; a failure just falls back to
-        // the built-in labels, never blocks the page.
         var requestsTask = RequestsService.GetMyRequestsAsync();
         var typesTask    = RequestTypesService.GetActiveAsync();
 
@@ -353,15 +317,6 @@ else
         _requests  = result ?? new();
     }
 
-    // No thread opens on load. The page's job on arrival is the overview —
-    // which groups need the student, how many, and what each is about — and
-    // one auto-opened conversation was taking most of the viewport before
-    // the student had chosen anything to read. Urgency and unread state are
-    // carried by the row itself (the violet dot, the group's tint, the
-    // status chip, the "מחכה לתגובתך" group and its ordering); none of them
-    // expands a thread. Opening is the student's decision, and a future
-    // notification deep-link will be the only other caller.
-
     private async Task ToggleThread(int id)
     {
         if (!_expanded.Add(id))
@@ -372,12 +327,6 @@ else
         await MarkOpenedAsync(id);
     }
 
-    /// <summary>
-    /// Expanding a thread is what "reading" it means now that there is no
-    /// detail pane. Same optimistic local clear + best-effort server call the
-    /// previous SelectRequest did, so the dot disappears immediately and stays
-    /// gone in other tabs after their next refresh.
-    /// </summary>
     private async Task MarkOpenedAsync(int id)
     {
         _expanded.Add(id);
@@ -397,12 +346,11 @@ else
     private async Task OnRequestCreated()
     {
         await LoadAsync();
-        // Open the newest request so the student sees what they just submitted.
         var newest = _requests.OrderByDescending(r => r.CreatedAt).FirstOrDefault();
         if (newest is not null) _expanded.Add(newest.Id);
     }
 
-    // ── Reply state (behaviour carried over unchanged) ────────────────────
+    // ── Reply state ───────────────────────────────────────────────────────
 
     private static bool CanReply(StudentOwnRequestDto r) =>
         r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed);
@@ -491,9 +439,6 @@ else
 
         await LoadAsync();
 
-        // A reply moves NeedsInfo → WaitingForStaff server-side, i.e. the row
-        // changes bucket. Keeping it expanded is what makes that legible —
-        // the student sees their message land in the thread that just moved.
         _expanded.Add(requestId);
     }
 }
