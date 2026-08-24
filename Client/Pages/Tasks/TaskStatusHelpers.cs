@@ -16,9 +16,32 @@ public static class TaskStatusHelpers
     /// Effective status resolution. Priority order for submission tasks:
     ///  1. Mentor returned   → "ReturnedByMentor"    (student must fix + resubmit)
     ///  2. Reviewer returned → "ReturnedForRevision"  (NeedsRevision from lecturer)
-    ///  3. Submission pending mentor review → "PendingMentorReview"
-    ///  4. Mentor approved, reviewer pending → "ApprovedByMentor"
-    ///  5. Fall back to task.Status (covers Done, InProgress, Open, etc.)
+    ///  3. Task already terminal → "Done"
+    ///  4. Submission pending mentor review → "PendingMentorReview"
+    ///  5. Mentor approved, not yet confirmed → "ApprovedByMentor"
+    ///  6. Fall back to task.Status (InProgress, Open, etc.)
+    ///
+    /// <para>Step 3 is the terminal-state check, and it has to sit ABOVE step 5.
+    /// The Moodle-confirmation handler
+    /// (TaskSubmissionsController POST {id}/mark-moodle-submitted) writes
+    /// MoodleSubmittedAt and sets Tasks.Status = 'Done', but it deliberately
+    /// leaves the submission row's own Status/MentorStatus alone as an audit
+    /// record — they stay "Submitted"/"Approved" forever. With step 5 above
+    /// step 3, every finished submission task therefore matched
+    /// "ApprovedByMentor" and the fallback was unreachable: "Done" was
+    /// impossible for any submission task, so a Moodle-confirmed task still
+    /// told the student to go submit it, dropped out of the הושלמו filter, and
+    /// disagreed with the milestone's own DoneCount (which the server computes
+    /// from the same normalized 'Done').
+    ///
+    /// Steps 1–2 stay above it on purpose: a task whose latest submission was
+    /// returned is NOT done, whatever a stale Tasks.Status says. The server
+    /// applies the same precedence in NormalizeTaskStatus, so both ends agree.
+    ///
+    /// "ApprovedByMentor" keeps its own meaning and stays actionable — after
+    /// this reorder it matches only tasks that genuinely have not been
+    /// confirmed in Moodle yet, which is exactly when the student still has
+    /// something to do.</para>
     /// </summary>
     public static string ResolveDisplayStatus(TaskItemDto task)
     {
@@ -30,6 +53,13 @@ public static class TaskStatusHelpers
 
         if (task.LatestSubmissionStatus == "NeedsRevision")
             return "ReturnedForRevision";
+
+        // Terminal state, checked before the approval rules below — see the
+        // note on this method. Tasks.Status is pipeline-owned past
+        // ApprovedForSubmission (StudentEditableTaskStatuses is {Open,
+        // InProgress}), so 'Done' here means the Moodle confirmation ran.
+        if (task.Status == "Done")
+            return "Done";
 
         if (task.LatestMentorStatus == "Pending")
             return "PendingMentorReview";

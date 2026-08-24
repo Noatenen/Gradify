@@ -129,22 +129,11 @@ else
     <div class="tsk-page">
 
         @*
-            ── דורש התייחסות ──
-            A cross-cutting view: these tasks still belong to their milestones in
-            משימות הפרויקט below. Hidden entirely when empty — the Design has no
-            empty state for this band, and a permanently empty rose-dotted strip
-            would read as an alert that isn't one.
-        *@
-        @if (AttentionTasks.Count > 0)
-        {
-            <TaskAttentionSection Tasks="@AttentionTasks" OnOpenDetail="OpenDetail" />
-        }
-
-        @*
             ── Active KPI filter ──
             The Design surfaces the active filter as a removable chip rather than
-            a permanent toolbar; clearing it here and pressing the KPI again are
-            the same action.
+            a permanent toolbar; clearing it here and pressing the tab again are
+            the same action. It stays ABOVE the workspace and full width, because
+            it qualifies every panel below it, not one of them.
         *@
         @if (!string.IsNullOrEmpty(_kpiFilter))
         {
@@ -159,17 +148,53 @@ else
             </div>
         }
 
-        <!-- ── Project + Team, side by side (Design: 1.6fr / 1fr) ── -->
-        <div id="task-sections" class="tsk-sections">
-            <ProjectTasksSection Groups="@VisibleGroups"
-                                 CurrentMilestoneIds="@CurrentMilestoneIds"
-                                 EmptyMessage="@SectionEmptyMessage"
-                                 OnOpenDetail="OpenDetail" />
+        @*
+            ── The workspace ────────────────────────────────────────────────
+            ONE row that fills what is left of the viewport, not three sections
+            laid down the page.
 
-            <TeamTasksSection Tasks="@_teamTasks"
-                              Filter="@TeamFilter"
-                              EmptyTitle="@TeamEmptyTitle"
-                              OnChanged="StateHasChanged" />
+            Reading start (the wide column) carries the student's own thread:
+            what needs them now, then everything by milestone. דורש התייחסות is
+            a cross-cutting view over the very rows in the panel beneath it, so
+            this is where it belongs — stacked directly on top of the list it
+            draws from, sharing that column's width and inset. It is no longer a
+            capped card floating beside empty canvas.
+
+            The rail carries the team layer, full height. It is a different KIND
+            of work (student-created, shared, checkable), which is why it stays a
+            column of its own rather than a third block in the stack — and being
+            full height is what stops it reading as an afterthought.
+
+            Both columns stretch, so the workspace has one top edge and one
+            bottom edge. Every panel scrolls inside itself; the page does not.
+        *@
+        <div id="task-sections" class="tsk-workspace">
+
+            <div class="tsk-primary">
+                @*
+                    Hidden entirely when empty — the Design has no empty state
+                    for this band, and a permanently empty rose strip would read
+                    as an alert that isn't one. The column's `auto` first track
+                    then collapses and משימות הפרויקט takes the full height.
+                *@
+                @if (AttentionTasks.Count > 0)
+                {
+                    <TaskAttentionSection Tasks="@AttentionTasks" OnOpenDetail="OpenDetail" />
+                }
+
+                <ProjectTasksSection Groups="@VisibleGroups"
+                                     CurrentMilestoneIds="@CurrentMilestoneIds"
+                                     EmptyMessage="@SectionEmptyMessage"
+                                     OnOpenDetail="OpenDetail" />
+            </div>
+
+            <div class="tsk-rail">
+                <TeamTasksSection Tasks="@_teamTasks"
+                                  Filter="@TeamFilter"
+                                  EmptyTitle="@TeamEmptyTitle"
+                                  OnChanged="StateHasChanged" />
+            </div>
+
         </div>
 
     </div>
@@ -419,8 +444,52 @@ else
     private bool HasData => _data is not null && !string.IsNullOrEmpty(_data.ProjectTitle);
 
     // Both group sets, so completed milestones can be shown alongside active ones.
-    private List<TaskMilestoneGroupDto> AllTasksGroups =>
-        _data is null ? new() : _data.ActiveGroups.Concat(_data.CompletedGroups).ToList();
+    //
+    // MERGED BY MILESTONE, not concatenated. The server splits one milestone
+    // across both lists whenever it has a mix of finished and unfinished work:
+    // ActiveGroups carries its non-Done tasks, CompletedGroups its Done ones.
+    // A plain Concat therefore rendered that milestone as TWO headers with the
+    // same title — הערכה appeared twice, once with its open task and once with
+    // its finished one — which read as two milestones and broke the hierarchy
+    // the panel exists to show.
+    //
+    // The group-level fields are milestone-wide and identical in both copies
+    // (DoneCount/TotalCount count the whole milestone, not the sublist), so the
+    // first copy supplies them and only Tasks are unioned. DistinctBy on Id is
+    // belt-and-braces: the two lists are disjoint by construction, so no task
+    // count anywhere on the page changes.
+    private List<TaskMilestoneGroupDto> AllTasksGroups
+    {
+        get
+        {
+            if (_data is null) return new();
+
+            return _data.ActiveGroups.Concat(_data.CompletedGroups)
+                .GroupBy(g => g.ProjectMilestoneId)
+                .Select(byMilestone =>
+                {
+                    var first = byMilestone.First();
+                    return new TaskMilestoneGroupDto
+                    {
+                        ProjectMilestoneId = first.ProjectMilestoneId,
+                        MilestoneTitle     = first.MilestoneTitle,
+                        OrderIndex         = first.OrderIndex,
+                        MilestoneStatus    = first.MilestoneStatus,
+                        OpenDate           = first.OpenDate,
+                        DueDate            = first.DueDate,
+                        CloseDate          = first.CloseDate,
+                        IsCurrentlyOpen    = first.IsCurrentlyOpen,
+                        DoneCount          = first.DoneCount,
+                        TotalCount         = first.TotalCount,
+                        Tasks              = byMilestone.SelectMany(g => g.Tasks)
+                                                        .DistinctBy(t => t.Id)
+                                                        .ToList(),
+                    };
+                })
+                .OrderBy(g => g.OrderIndex)
+                .ToList();
+        }
+    }
 
     private List<TaskItemDto> AllTasks =>
         AllTasksGroups.SelectMany(g => g.Tasks).ToList();

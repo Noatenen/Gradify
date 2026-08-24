@@ -26,9 +26,15 @@
         var isLast  = index == Stages.Count - 1;
         var clickable = OnStageClick.HasDelegate;
 
+        @* A clickable stage is a real control: focusable, Enter/Space
+           operable, and announced as a button. A read-only stepper keeps
+           the plain listitem so nothing inert enters the tab order. *@
         <div class="@StageClass(stage, isLast)"
-             role="listitem"
-             @onclick="@(() => clickable ? OnStageClick.InvokeAsync(index) : Task.CompletedTask)">
+             role="@(clickable ? "button" : "listitem")"
+             tabindex="@(clickable ? 0 : (int?)null)"
+             aria-label="@(clickable ? $"{stage.Label} — פתיחת פרטי אבן הדרך" : null)"
+             @onclick="@(() => clickable ? OnStageClick.InvokeAsync(index) : Task.CompletedTask)"
+             @onkeydown="@(e => OnStageKeyDown(e, index))">
 
             <div class="m-journey-track">
                 <span class="m-journey-dot" style="@DotStyle(stage, index)">
@@ -41,23 +47,25 @@
                     }
                 </span>
 
-                @if (!isLast)
-                {
-                    @if (stage.State == JourneyState.Complete)
+                @*
+                    ONE SEGMENT PER MILESTONE, and it belongs to this
+                    milestone only. Previously the connector ran from this
+                    dot into the NEXT stage's dot and was filled by this
+                    stage's percentage — a continuous pipeline, which is the
+                    wrong grammar now that milestones overlap and progress
+                    independently. Each stage now owns a discrete, rounded
+                    segment with a gap after it, so the row reads as a
+                    journey made of separate units rather than one line.
+
+                    The last stage gets a segment too: every milestone owns
+                    one, or the treatment is not actually consistent.
+                *@
+                <span class="@SegmentClass(stage)" style="@SegmentStyle(stage, index)">
+                    @if (stage.State == JourneyState.Current)
                     {
-                        <span class="m-journey-line" style="@LineStyle(index)"></span>
+                        <span class="m-journey-seg-fill" style="width: @(Clamp(stage.Percent))%"></span>
                     }
-                    else if (stage.State == JourneyState.Current)
-                    {
-                        <span class="m-journey-line m-journey-line-current">
-                            <span class="m-journey-line-fill" style="width: @(Clamp(stage.Percent))%"></span>
-                        </span>
-                    }
-                    else
-                    {
-                        <span class="m-journey-line m-journey-line-future"></span>
-                    }
-                }
+                </span>
             </div>
 
             <p class="m-journey-label">
@@ -76,6 +84,16 @@
 </div>
 
 @code {
+    /// <summary>A stage's own state.
+    ///
+    /// <para><b>Current means "active", and MORE THAN ONE stage may be
+    /// Current at a time.</b> Milestones are independent: אבן דרך can sit at
+    /// 100% while a later one is already at 50%, and both are genuinely in
+    /// progress. Nothing here gates a stage on the one before it.</para>
+    ///
+    /// <para>Emphasis is a separate axis — see <c>JourneyStage.Primary</c> —
+    /// so the design's one prominent stage survives without implying the
+    /// others are inactive.</para></summary>
     public enum JourneyState { Complete, Current, Future }
 
     /// <summary>One stage of the journey. `Percent` is read only for the
@@ -85,7 +103,8 @@
         string Label,
         JourneyState State,
         int Percent = 0,
-        string? Meta = null);
+        string? Meta = null,
+        bool Primary = false);
 
     [Parameter, EditorRequired] public IReadOnlyList<JourneyStage> Stages { get; set; } = Array.Empty<JourneyStage>();
 
@@ -117,6 +136,12 @@
         return Stops[Math.Clamp(slot, 0, Stops.Length - 1)];
     }
 
+    private async Task OnStageKeyDown(KeyboardEventArgs e, int index)
+    {
+        if (!OnStageClick.HasDelegate) return;
+        if (e.Key is "Enter" or " ") await OnStageClick.InvokeAsync(index);
+    }
+
     private string StageClass(JourneyStage stage, bool isLast)
     {
         var state = stage.State switch
@@ -127,6 +152,7 @@
         };
 
         return $"m-journey-stage {state}"
+             + (stage.Primary ? " m-journey-stage-primary" : "")
              + (isLast ? " m-journey-stage-last" : "")
              + (OnStageClick.HasDelegate ? " m-journey-stage-clickable" : "");
     }
@@ -136,9 +162,19 @@
             ? $"background: {StopAt(index)};"
             : "";
 
-    // The connector leaving a completed stage runs from its own colour to
-    // the next stage's — which is what makes the row read as one continuous
-    // ramp rather than a series of coloured segments.
-    private string LineStyle(int index) =>
-        $"background: linear-gradient(to left, {StopAt(index)}, {StopAt(index + 1)});";
+    private static string SegmentClass(JourneyStage stage) => stage.State switch
+    {
+        JourneyState.Complete => "m-journey-seg m-journey-seg-complete",
+        JourneyState.Current  => "m-journey-seg m-journey-seg-current",
+        _                     => "m-journey-seg m-journey-seg-future",
+    };
+
+    /// <summary>A completed segment is painted in its OWN stop from the journey
+    /// ramp — one flat colour per unit, not a gradient running into the next
+    /// stage. Sampling by position keeps the cyan→violet identity across the
+    /// row while each segment stays a self-contained block.</summary>
+    private string SegmentStyle(JourneyStage stage, int index) =>
+        stage.State == JourneyState.Complete
+            ? $"background: {StopAt(index)};"
+            : "";
 }

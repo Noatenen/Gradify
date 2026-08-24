@@ -53,8 +53,6 @@
     [Parameter]                 public string?                            FirstName       { get; set; }
     [Parameter]                 public EventCallback<MilestoneSummaryDto> OnOpenMilestone { get; set; }
 
-    private MilestoneSummaryDto? _current => StudentDashboardModel.CurrentMilestone(Milestones);
-
     private int _overallPct => StudentDashboardModel.OverallPercent(Milestones);
 
     // V4 opens on "בוקר טוב" — a time-of-day greeting, not stored data. The
@@ -80,20 +78,43 @@
     /// is the single source of truth for which, the same one the focus card and
     /// the tasks page read, so the stepper can never disagree with them about
     /// where the project is.</para></summary>
-    private IReadOnlyList<MJourneyStepper.JourneyStage> _stages =>
-        Milestones
-            .Select(m => new MJourneyStepper.JourneyStage(
-                Label:   m.Title,
-                State:   StateOf(m),
-                Percent: StateOf(m) == MJourneyStepper.JourneyState.Current ? PercentOf(m) : 0))
-            .ToList();
+    private IReadOnlyList<MJourneyStepper.JourneyStage> _stages
+    {
+        get
+        {
+            // Emphasis only — NOT a gate. The canonical "where you are"
+            // milestone gets the wider track; every other stage still reports
+            // its own real state and progress.
+            var primaryId = StudentDashboardModel.CurrentMilestone(Milestones)?.ProjectMilestoneId;
 
-    private MJourneyStepper.JourneyState StateOf(MilestoneSummaryDto m)
+            return Milestones
+                .Select(m => new MJourneyStepper.JourneyStage(
+                    Label:   m.Title,
+                    State:   StateOf(m),
+                    // Every stage reports ITS OWN task completion, whatever
+                    // the stages around it are doing.
+                    Percent: PercentOf(m),
+                    Primary: m.ProjectMilestoneId == primaryId))
+                .ToList();
+        }
+    }
+
+    /// <summary>A milestone's state, computed from THAT milestone alone.
+    ///
+    /// <para>Milestones are independent — several can be under way at once, and
+    /// a later one may have progress while an earlier one is still open. So
+    /// this never asks whether the previous milestone finished, and it does not
+    /// single out one "current" stage: a milestone is active when the data says
+    /// it is open/in-progress, or when it simply has work done in it.</para></summary>
+    private static MJourneyStepper.JourneyState StateOf(MilestoneSummaryDto m)
     {
         if (m.Status == "Completed") return MJourneyStepper.JourneyState.Complete;
-        if (_current is not null && m.ProjectMilestoneId == _current.ProjectMilestoneId)
-            return MJourneyStepper.JourneyState.Current;
-        return MJourneyStepper.JourneyState.Future;
+
+        bool hasProgress = m.Tasks.Count > 0 && m.Tasks.Any(StudentDashboardModel.IsComplete);
+
+        return m.IsCurrentlyOpen || m.Status is "InProgress" or "Delayed" || hasProgress
+            ? MJourneyStepper.JourneyState.Current
+            : MJourneyStepper.JourneyState.Future;
     }
 
     /// <summary>Completion of the current stage, from its own tasks. A stage

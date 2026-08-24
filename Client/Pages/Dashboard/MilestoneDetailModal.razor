@@ -69,10 +69,12 @@
             <!-- ── Body ── -->
             <div class="mdm-body">
 
-                <!-- Mini progress -->
-                <div class="mdm-progress-row">
-                    <span class="oi oi-task" aria-hidden="true"></span>
-                    <span class="mdm-progress-text">@done/@ms.Tasks.Count משימות הושלמו</span>
+                @* Progress in the SAME visual language as the dashboard's
+                   מסע הפרויקט — one stage of the journey rather than a second,
+                   modal-only progress design. The count stays as the stage's
+                   trailing meta, so nothing that was readable here is lost. *@
+                <div class="mdm-progress">
+                    <MJourneyStepper Stages="@ProgressStage(ms, done)" />
                 </div>
 
                 <!-- Attention banner: exactly which tasks need attention and why -->
@@ -154,9 +156,6 @@
             </div>
 
             <!-- ── Footer ── -->
-            <div class="mdm-footer">
-                <button class="mdm-btn-ghost" @onclick="Close">סגירה</button>
-            </div>
 
         </div>
     </div>
@@ -170,6 +169,37 @@
     [Parameter] public EventCallback<int>   OnOpenTask { get; set; }
 
     private async Task Close()           => await OnClose.InvokeAsync();
+
+    /// <summary>This milestone as a single journey stage, so the modal draws
+    /// progress in the dashboard's own language instead of a second design.
+    ///
+    /// <para>Milestones are INDEPENDENT: this stage reports only its own
+    /// stored status and its own task completion. It never looks at whether
+    /// an earlier milestone is finished, because a later milestone can be
+    /// under way while an earlier one is still open.</para></summary>
+    private static IReadOnlyList<MJourneyStepper.JourneyStage> ProgressStage(
+        MilestoneSummaryDto ms, int done)
+    {
+        var pct = ms.Tasks.Count == 0 ? 0 : (int)Math.Round(done * 100.0 / ms.Tasks.Count);
+
+        // Active when the data says it is open/in-progress, OR when it has
+        // real progress of its own — a milestone with work done in it is not
+        // "future", whatever its stored status says.
+        var state = ms.Status == "Completed"
+            ? MJourneyStepper.JourneyState.Complete
+            : (ms.IsCurrentlyOpen || ms.Status == "InProgress" || ms.Status == "Delayed" || pct > 0)
+                ? MJourneyStepper.JourneyState.Current
+                : MJourneyStepper.JourneyState.Future;
+
+        return new[]
+        {
+            new MJourneyStepper.JourneyStage(
+                Label:   ms.Title,
+                State:   state,
+                Percent: pct,
+                Meta:    $"{done}/{ms.Tasks.Count} משימות הושלמו")
+        };
+    }
     private async Task OpenTask(int id)  => await OnOpenTask.InvokeAsync(id);
 
     // ── Attention logic — mirrors ProjectProgressCard.MilestoneHasProblematicTask,

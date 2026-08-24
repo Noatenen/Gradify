@@ -165,19 +165,33 @@
             .Select(m => new MJourneyStepper.JourneyStage(
                 Label:   m.Title,
                 State:   JourneyStateOf(m),
-                Percent: JourneyStateOf(m) == MJourneyStepper.JourneyState.Current ? PercentOf(m) : 0,
+                // Own progress, always — independent of its neighbours.
+                Percent: PercentOf(m),
                 Meta:    JourneyStateOf(m) == MJourneyStepper.JourneyState.Current && m.DueDate.HasValue
                              ? $"יעד {m.DueDate.Value:dd.MM}"
-                             : null))
+                             : null,
+                Primary: m.ProjectMilestoneId == PrimaryMilestoneId))
             .ToList();
 
-    private MJourneyStepper.JourneyState JourneyStateOf(MilestoneSummaryDto m)
+    /// <summary>Which stage gets the wider track. Emphasis only — it gates
+    /// nothing, and every other stage still shows its own real progress.</summary>
+    private int? PrimaryMilestoneId =>
+        AuthWithAdmin.Client.Pages.Dashboard.StudentDashboardModel
+            .CurrentMilestone(_milestones)?.ProjectMilestoneId;
+
+    /// <summary>Same independent rule the dashboard applies — a milestone's
+    /// state comes from itself, never from whether the one before it is
+    /// finished. Several stages can be active at once.</summary>
+    private static MJourneyStepper.JourneyState JourneyStateOf(MilestoneSummaryDto m)
     {
         if (m.Status == "Completed") return MJourneyStepper.JourneyState.Complete;
-        var current = AuthWithAdmin.Client.Pages.Dashboard.StudentDashboardModel.CurrentMilestone(_milestones);
-        if (current is not null && m.ProjectMilestoneId == current.ProjectMilestoneId)
-            return MJourneyStepper.JourneyState.Current;
-        return MJourneyStepper.JourneyState.Future;
+
+        bool hasProgress = m.Tasks.Count > 0
+            && m.Tasks.Any(AuthWithAdmin.Client.Pages.Dashboard.StudentDashboardModel.IsComplete);
+
+        return m.IsCurrentlyOpen || m.Status is "InProgress" or "Delayed" || hasProgress
+            ? MJourneyStepper.JourneyState.Current
+            : MJourneyStepper.JourneyState.Future;
     }
 
     private static int PercentOf(MilestoneSummaryDto m)

@@ -11,22 +11,47 @@
     the task counts and the due dates all come off the existing DTO.
 
     The Design's two milestone states:
-      • current   — gradient-wash block, hollow violet ring dot, expanded,
-                    labelled "אבן דרך נוכחית"
-      • completed — plain block, solid teal dot, collapsed, "N משימות · הושלמה"
+      • current   — gradient-wash block, hollow violet ring dot, expanded
+      • completed — plain block, solid teal dot, collapsed
+
+    Both now carry the milestone's own due date and its own DoneCount/TotalCount
+    as a bar plus a count, replacing the text meta that used to sit there. The
+    counts were already on the DTO and already loaded; only the rendering is new.
 *@
 
+@*
+    Fill. The card is one column of a stretch row now, so it takes the row's
+    full height and hands it down: .m-card-fill is height:100% + flex column +
+    min-height:0, .pts-body claims what is left, and the scroll box inside it
+    is the only thing that scrolls.
+
+    An earlier pass removed Fill for the opposite reason — the page grid was
+    `align-items: start`, every card was as tall as its own content, and Fill
+    made this one a 482px box around 109px of rows. That was true of THAT
+    composition. Here the row's height is the viewport's, both columns claim
+    it, and the panel is full because the work fills it, not because a
+    constant said so.
+*@
 <MCard Padding="MCard.CardPadding.None" Fill="true">
     <div class="pts-body">
         <div class="pts-header">
             <p class="pts-title">משימות הפרויקט</p>
+            @* The reference sets a muted "· N" beside every section title. It is
+               the number of milestones currently listed — real, already in hand,
+               and it tells the student how much is below without a scroll. *@
+            <span class="pts-count">· @Groups.Count</span>
         </div>
 
         @*
-            No Class here: Blazor CSS isolation cannot style a child component's
-            root, so the scroll box relies on MScrollArea's own min-height:0 —
-            as a flex child of .pts-body it shrinks into the space the header
-            leaves and scrolls from there.
+            No MaxHeight. The scroll box takes whatever the column has left
+            after the header — see .pts-body ::deep .m-scroll in the scoped
+            CSS, which is how a parent reaches a child component's root when
+            Blazor's isolation will not put the scope attribute on it.
+
+            What went away with it was a hand-measured constant: "~319px of
+            page above this panel plus 73px of its own chrome", re-derived
+            every time anything above it moved, and wrong the moment the filter
+            bar appeared. The height is now inherited from the row.
         *@
         <MScrollArea Tabbable="false">
             @if (Groups.Count == 0)
@@ -47,11 +72,56 @@
                                 aria-expanded="@(isOpen ? "true" : "false")"
                                 @onclick="@(() => Toggle(captured.ProjectMilestoneId))">
                             <span class="pts-mile-lead">
-                                <span class="pts-chevron @(isOpen ? "pts-chevron-open" : "")" aria-hidden="true">⌄</span>
-                                <span class="pts-dot @(isCurrent ? "pts-dot-current" : "pts-dot-done")" aria-hidden="true"></span>
+                                @* A 30px circular target with a 14px SVG, in
+                                   place of an 11px "⌄" text glyph — the control
+                                   that expands the milestone should look and
+                                   behave like a control. *@
+                                <span class="pts-chevron @(isOpen ? "pts-chevron-open" : "")" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="m6 9 6 6 6-6"></path>
+                                    </svg>
+                                </span>
+                                @* Reference marker: 14px, not 8. Current is a
+                                   white disc with a 3.5px violet ring and a soft
+                                   pulse; a finished milestone is a filled teal
+                                   disc carrying a white check. At 8px neither
+                                   read as anything but a bullet. *@
+                                <span class="pts-dot @(isCurrent ? "pts-dot-current" : "pts-dot-done")" aria-hidden="true">
+                                    @if (!isCurrent && IsDone(group))
+                                    {
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="m5 12.5 4.5 4.5L19 7"></path>
+                                        </svg>
+                                    }
+                                </span>
                                 <strong class="pts-mile-title">@group.MilestoneTitle</strong>
+                                @if (group.DueDate.HasValue)
+                                {
+                                    <span class="pts-mile-due">יעד @group.DueDate.Value.ToString("dd.MM")</span>
+                                }
                             </span>
-                            <span class="pts-mile-meta @(isCurrent ? "pts-mile-meta-current" : "")">@MetaFor(group, isCurrent)</span>
+
+                            @*
+                                Per-milestone progress, from the group's OWN
+                                DoneCount/TotalCount. Each milestone reports only
+                                its own completion — פיתוח can read 100% while
+                                הערכה reads 50% — which is the independent model,
+                                not a position in a sequence. It is deliberately a
+                                bar and a count rather than the dashboard's
+                                journey: the journey answers "where is the project",
+                                this answers "how far is this one milestone".
+                            *@
+                            <span class="pts-mile-trail">
+                                <span class="pts-mile-bar" aria-hidden="true">
+                                    <span class="pts-mile-bar-fill @BarClass(group)"
+                                          style="width: @PercentOf(group)%"></span>
+                                </span>
+                                <span class="pts-mile-count @(IsDone(group) ? "pts-mile-count-done" : "")">
+                                    @group.DoneCount/@group.TotalCount
+                                </span>
+                            </span>
                         </button>
 
                         @if (isOpen)
@@ -66,17 +136,59 @@
                                     @foreach (var task in group.Tasks)
                                     {
                                         var capturedTask = task;
-                                        <button type="button" class="pts-task"
+                                        <button type="button" class="pts-task @(TaskStatusHelpers.IsOverdue(task) ? "pts-task-late" : "")"
                                                 @onclick="@(() => OnOpenDetail.InvokeAsync(capturedTask.Id))"
                                                 aria-label="@($"פתיחת {task.Title}")">
-                                            <span class="pts-task-main">
-                                                <strong class="pts-task-title">@task.Title</strong>
+                                            @*
+                                                Three siblings, not a nested main +
+                                                status: the row is a grid, so title,
+                                                meta and status line up into columns
+                                                down the whole list. Nested, the
+                                                title block absorbed the panel's
+                                                width and stranded the status pill
+                                                ~750px from the task it described.
+
+                                                The meta column carries the due date
+                                                plus the two facts already on the DTO
+                                                that were never shown — whether the
+                                                task is a submission and whether it
+                                                is mandatory. Both are real columns
+                                                (IsSubmission, IsMandatory); neither
+                                                is invented and neither adds a status.
+                                            *@
+                                            <strong class="pts-task-title">@task.Title</strong>
+
+                                            <span class="pts-task-meta">
                                                 @if (task.DueDate.HasValue)
                                                 {
-                                                    <span class="pts-task-due">יעד: @task.DueDate.Value.ToString("dd.MM")</span>
+                                                    <span class="pts-task-due">יעד @task.DueDate.Value.ToString("dd.MM")</span>
+                                                }
+                                                @if (task.IsSubmission)
+                                                {
+                                                    <span class="pts-task-tag">הגשה</span>
+                                                }
+                                                @if (task.IsMandatory)
+                                                {
+                                                    <span class="pts-task-tag pts-task-tag-req">חובה</span>
                                                 }
                                             </span>
+
                                             <span class="pts-task-status @StatusClass(task)">@StatusLabel(task)</span>
+
+                                            @* The reference ends every openable
+                                               task row with a chevron pointing
+                                               the way the row opens. Ours opens a
+                                               modal rather than expanding, so the
+                                               glyph points to the reading end (‹)
+                                               instead of down — an expand chevron
+                                               here would promise in-place detail
+                                               the row does not give. *@
+                                            <span class="pts-task-go" aria-hidden="true">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="m15 6-6 6 6 6"></path>
+                                                </svg>
+                                            </span>
                                         </button>
                                     }
                                 }
@@ -119,20 +231,26 @@
         _expanded[milestoneId] = !current;
     }
 
-    /// <summary>The Design's milestone meta: "N משימות · הושלמה" for a finished
-    /// milestone, the plain count otherwise. Hebrew has a real singular, so one
-    /// task reads "משימה אחת" rather than "1 משימות"; and a milestone with
-    /// nothing done yet gets no trailing clause instead of "0 הושלמו".</summary>
-    private static string MetaFor(TaskMilestoneGroupDto g, bool isCurrent)
-    {
-        if (isCurrent) return "אבן דרך נוכחית";
+    // ── Per-milestone progress ───────────────────────────────────────────────
+    // Straight from the group's own counts. This replaced the old text meta
+    // ("אבן דרך נוכחית" / "N משימות · הושלמה"): the current milestone is
+    // already marked by its wash and ring dot, so that label was restating
+    // what the surface said, and the completed-milestone sentence buried the
+    // one number worth scanning. A bar plus "done/total" says both in less
+    // space and stays true for a milestone that is neither.
+    private static int PercentOf(TaskMilestoneGroupDto g) =>
+        g.TotalCount <= 0 ? 0 : (int)Math.Round(100.0 * g.DoneCount / g.TotalCount);
 
-        string count = g.TotalCount == 1 ? "משימה אחת" : $"{g.TotalCount} משימות";
+    private static bool IsDone(TaskMilestoneGroupDto g) =>
+        g.TotalCount > 0 && g.DoneCount >= g.TotalCount;
 
-        if (g.TotalCount > 0 && g.DoneCount >= g.TotalCount) return $"{count} · הושלמה";
-        if (g.DoneCount > 0) return $"{count} · {g.DoneCount} הושלמו";
-        return count;
-    }
+    // Teal at full, the violet→teal ramp while in flight, nothing at zero — the
+    // same three readings the journey stepper uses, so a milestone means the
+    // same thing on both surfaces.
+    private static string BarClass(TaskMilestoneGroupDto g) =>
+        g.DoneCount <= 0 ? "pts-mile-bar-empty"
+        : IsDone(g)      ? "pts-mile-bar-done"
+                         : "pts-mile-bar-part";
 
     // Status text and tone come from the existing shared helpers — this section
     // introduces no second status vocabulary.
