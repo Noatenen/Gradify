@@ -6,26 +6,13 @@
 @inject IRequestTypesService    RequestTypesService
 
 @*
-    NewRequestModal — the finalized design's create sheet
-    (Motiva Requests.dc.html, the createOpen overlay).
+    NewRequestModal — single-step compact create form.
+    Design reference: Motiva Student Requests final.dc.html (createOpen overlay).
 
-    Four steps: type → details → review → sent. The previous version was one
-    long scrolling form; the Design splits it so choosing a type can shape the
-    fields that follow, and so the student sees a summary before submitting.
-
-    WHY THIS OWNS ITS OWN SHEET RATHER THAN USING MModal
-    MModal's structure (overlay / header / scrolling body / footer) is exactly
-    right, but three things here are outside its API: the Design's 470px width,
-    its max-height of min(86vh, 660px), and the mobile bottom-sheet form. Those
-    could only be applied from outside via a class on MModal's root, which
-    Blazor CSS isolation cannot reach. Rather than widen a shared primitive for
-    one screen or move page rules into the global foundations layer, the sheet
-    is local — which is also what the audit reserved "Requests-specific" for.
-    Everything inside it that has a shared primitive (MButton) uses it.
-
-    NOTHING about validation changed: the required fields, the extension target
-    rules, the attachment limits and the server's Hebrew errors (including the
-    409 duplicate-extension guard) all behave exactly as before.
+    Collapses the previous 4-step wizard (type → details → review → sent) into
+    a single form: type chips inline at the top, then fields, then submit.
+    All validation, extension fields, attachment handling, and API calls are
+    unchanged. The Done/sent screen is kept as the success state.
 *@
 
 @if (IsOpen)
@@ -39,91 +26,54 @@
 
             <!-- ── Header ── -->
             <div class="nrm-head">
-                <div>
-                    <strong class="nrm-title" id="nrm-title">בקשה חדשה</strong>
-                    @if (!string.IsNullOrEmpty(StepLabel))
-                    {
-                        <p class="nrm-step">@StepLabel</p>
-                    }
-                </div>
+                <strong class="nrm-title" id="nrm-title">בקשה חדשה</strong>
                 <button type="button" class="nrm-x" aria-label="סגירה"
                         disabled="@(_phase == Phase.Submitting)"
                         @onclick="TryClose">×</button>
             </div>
 
-            @* ─────────────── STEP 1 — type ─────────────── *@
-            @if (_step == Step.Type)
+            @if (_step == Step.Form)
             {
-                <div class="nrm-body nrm-body-types">
-                    @if (!_typesLoaded)
-                    {
-                        <p class="nrm-hint"><span class="nrm-spinner-sm"></span> טוען סוגי בקשה…</p>
-                    }
-                    else if (_availableTypes.Count == 0)
-                    {
-                        <MEmptyState Title="אין סוגי בקשה פעילים"
-                                     Description="פני למרצה כדי שיפעיל סוגי בקשה במערכת." />
-                    }
-                    else
-                    {
-                        @foreach (var t in _availableTypes)
-                        {
-                            var captured = t;
-                            var on = _requestType == captured.Code;
-
-                            <button type="button"
-                                    class="nrm-type @(on ? "nrm-type-on" : "")"
-                                    aria-pressed="@(on ? "true" : "false")"
-                                    @onclick="@(() => PickType(captured.Code))">
-                                <span class="nrm-type-top">
-                                    <span class="nrm-type-name">@captured.Name</span>
-                                    @if (on)
-                                    {
-                                        <span class="nrm-type-check" aria-hidden="true">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                                                <path d="m5 12.5 4.5 4.5L19 7.5"></path>
-                                            </svg>
-                                        </span>
-                                    }
-                                </span>
-                                @if (!string.IsNullOrWhiteSpace(captured.Description))
-                                {
-                                    <span class="nrm-type-hint">@captured.Description</span>
-                                }
-                            </button>
-                        }
-                    }
-                </div>
-                <div class="nrm-foot nrm-foot-end">
-                    @*
-                        Every step's forward action is the same primary, and
-                        every back action stays ghost — so one
-                        button per step reads as "continue" and the flow's
-                        progression is legible without reading the labels.
-                    *@
-                    <MButton Variant="MButton.ButtonVariant.Primary"
-                             Disabled="@string.IsNullOrEmpty(_requestType)"
-                             OnClick="GoToForm">המשך</MButton>
-                </div>
-            }
-
-            else if (_step == Step.Form)
-            {
-                @* ─────────────── STEP 2 — details ─────────────── *@
+                <!-- ── Body: single-step form ── -->
                 <div class="nrm-body">
 
+                    <!-- Type chips -->
                     <div class="nrm-field">
                         <p class="nrm-label">סוג הבקשה</p>
-                        <p class="nrm-readonly">@SelectedTypeName</p>
+                        <div class="nrm-type-chips">
+                            @if (!_typesLoaded)
+                            {
+                                <p class="nrm-hint"><span class="nrm-spinner-sm"></span> טוען סוגי בקשה…</p>
+                            }
+                            else if (_availableTypes.Count == 0)
+                            {
+                                <p class="nrm-hint">אין סוגי בקשה פעילים — פני למרצה</p>
+                            }
+                            else
+                            {
+                                @foreach (var t in _availableTypes)
+                                {
+                                    var captured = t;
+                                    var on = _requestType == captured.Code;
+                                    <button type="button"
+                                            class="nrm-chip-type @(on ? "nrm-chip-type-on" : "")"
+                                            aria-pressed="@(on ? "true" : "false")"
+                                            disabled="@(_phase == Phase.Submitting)"
+                                            @onclick="@(() => PickType(captured.Code))">
+                                        @captured.Name
+                                    </button>
+                                }
+                            }
+                        </div>
                     </div>
 
+                    <!-- Title -->
                     <div class="nrm-field">
                         <label class="nrm-label" for="nrm-title-input">נושא הבקשה</label>
                         <input id="nrm-title-input"
                                class="nrm-input @(TitleInvalid ? "nrm-invalid" : "")"
                                type="text"
-                               placeholder="נושא קצר וברור"
+                               placeholder="למשל: בקשה להארכת מועד הגשה"
                                maxlength="200"
                                @bind="_title"
                                @bind:event="oninput"
@@ -134,12 +84,13 @@
                         }
                     </div>
 
+                    <!-- Description -->
                     <div class="nrm-field">
-                        <label class="nrm-label" for="nrm-desc">תוכן הבקשה</label>
+                        <label class="nrm-label" for="nrm-desc">פירוט</label>
                         <textarea id="nrm-desc"
                                   class="nrm-textarea @(DescriptionInvalid ? "nrm-invalid" : "")"
                                   rows="3"
-                                  placeholder="מה הבקשה ומה הרקע לה"
+                                  placeholder="תיאור קצר של הבקשה והסיבה"
                                   maxlength="2000"
                                   @bind="_description"
                                   @bind:event="oninput"
@@ -150,15 +101,7 @@
                         }
                     </div>
 
-                    @*
-                        Extension block. The Design draws a milestone picker and
-                        a task picker in sequence; the domain treats task and
-                        milestone as MUTUALLY EXCLUSIVE targets, not parent and
-                        child, so the existing single grouped picker is kept —
-                        a cascade would misrepresent the model. The details
-                        panel and the overdue banner are existing behaviour and
-                        stay, restyled.
-                    *@
+                    <!-- Extension-only fields (conditional) -->
                     @if (_requestType == RequestTypes.Extension)
                     {
                         <div class="nrm-field">
@@ -239,7 +182,6 @@
                                     <span class="nrm-info-k">מועד נוכחי</span>
                                     <span class="nrm-info-v">@CurrentDueText(sel)</span>
                                 </div>
-
                                 @if (overdue is > 0)
                                 {
                                     <p class="nrm-banner nrm-banner-warn">
@@ -267,6 +209,7 @@
                         </div>
                     }
 
+                    <!-- Attachments -->
                     <div class="nrm-field">
                         <p class="nrm-label">מסמכים תומכים</p>
                         <div class="nrm-files">
@@ -287,7 +230,6 @@
                                 📎 <span>@(CanAddMore ? "צירוף קובץ" : "הגעת למספר המרבי")</span>
                                 @if (CanAddMore)
                                 {
-                                    @* Wrapper, not the InputFile itself — see RequestThreadRow. *@
                                     <span class="nrm-file-hidden">
                                         <InputFile multiple
                                                    accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
@@ -302,82 +244,37 @@
                             <p class="nrm-err">@_fileError</p>
                         }
                     </div>
-                </div>
-
-                <div class="nrm-foot">
-                    <MButton Variant="MButton.ButtonVariant.Ghost" OnClick="@(() => _step = Step.Type)">חזרה</MButton>
-                    <MButton Variant="MButton.ButtonVariant.Primary"
-                             OnClick="GoToReview">המשך לסיכום</MButton>
-                </div>
-            }
-
-            else if (_step == Step.Review)
-            {
-                @* ─────────────── STEP 3 — review ─────────────── *@
-                <div class="nrm-body">
-                    <div class="nrm-sum-row">
-                        <span class="nrm-sum-k">סוג הבקשה</span>
-                        <span class="nrm-sum-v">@SelectedTypeName</span>
-                    </div>
-                    <div class="nrm-sum-row">
-                        <span class="nrm-sum-k">נושא</span>
-                        <span class="nrm-sum-v">@_title</span>
-                    </div>
-                    <div class="nrm-sum-block">
-                        <p class="nrm-sum-k">תוכן הבקשה</p>
-                        <p class="nrm-sum-body">@_description</p>
-                    </div>
-
-                    @if (_requestType == RequestTypes.Extension)
-                    {
-                        var sel = SelectedTarget;
-                        <div class="nrm-sum-group">
-                            <div class="nrm-sum-row">
-                                <span class="nrm-sum-k">@(sel?.Kind == "Task" ? "משימה" : "אבן דרך")</span>
-                                <span class="nrm-sum-v">@(sel?.Title ?? "—")</span>
-                            </div>
-                            <div class="nrm-sum-row">
-                                <span class="nrm-sum-k">מועד נוכחי</span>
-                                <span class="nrm-sum-v">@CurrentDueText(sel)</span>
-                            </div>
-                            <div class="nrm-sum-row">
-                                <span class="nrm-sum-k">תאריך חדש מבוקש</span>
-                                <span class="nrm-sum-v">@(_extRequestedDate?.ToString("dd.MM.yyyy") ?? "—")</span>
-                            </div>
-                        </div>
-                    }
-
-                    @if (_attachments.Count > 0)
-                    {
-                        <div class="nrm-files">
-                            @foreach (var att in _attachments)
-                            {
-                                <span class="nrm-chip nrm-chip-static">📎 @att.Name</span>
-                            }
-                        </div>
-                    }
 
                     @if (!string.IsNullOrWhiteSpace(_submitError))
                     {
                         <p class="nrm-err nrm-err-banner">@_submitError</p>
                     }
+
                 </div>
 
-                <div class="nrm-foot">
-                    <MButton Variant="MButton.ButtonVariant.Ghost"
-                             Disabled="@(_phase == Phase.Submitting)"
-                             OnClick="@(() => _step = Step.Form)">חזרה לעריכה</MButton>
-                    <MButton Variant="MButton.ButtonVariant.Primary"
-                             Loading="@(_phase == Phase.Submitting)"
-                             LoadingText="שולח…"
-                             Disabled="@(_phase == Phase.Submitting)"
-                             OnClick="Submit">שליחת בקשה</MButton>
+                <!-- ── Footer ── -->
+                <div class="nrm-foot nrm-foot-form">
+                    <button type="button" class="nrm-cancel-btn"
+                            disabled="@(_phase == Phase.Submitting)"
+                            @onclick="TryClose">ביטול</button>
+                    <button type="button" class="nrm-submit-btn"
+                            disabled="@(_phase == Phase.Submitting)"
+                            @onclick="Submit">
+                        @if (_phase == Phase.Submitting)
+                        {
+                            <span class="nrm-spinner-sm" aria-hidden="true"></span>
+                            <span>שולח…</span>
+                        }
+                        else
+                        {
+                            <span>שליחת הבקשה</span>
+                        }
+                    </button>
                 </div>
             }
-
             else
             {
-                @* ─────────────── STEP 4 — sent ─────────────── *@
+                <!-- ── Done state ── -->
                 <div class="nrm-done">
                     <span class="nrm-done-ic" aria-hidden="true">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -389,14 +286,10 @@
                     <p class="nrm-done-body">הבקשה נוספה לרשימה ומחכה לבדיקת @SubmittedChannel.</p>
                     <MButton Variant="MButton.ButtonVariant.Primary"
                              OnClick="SuccessClose">חזרה לבקשות</MButton>
-                    @*
-                        Not in the Design's done step, kept because it is
-                        existing behaviour: filing two requests in a row is a
-                        real flow and losing it would be a regression.
-                    *@
                     <MButton Variant="MButton.ButtonVariant.Ghost" OnClick="ResetForm">הגשת בקשה נוספת</MButton>
                 </div>
             }
+
         </div>
     </div>
 }
@@ -407,10 +300,10 @@
     [Parameter] public EventCallback OnSuccess { get; set; }
 
     private enum Phase { Form, Submitting }
-    private enum Step  { Type, Form, Review, Done }
+    private enum Step  { Form, Done }
 
     private Phase _phase = Phase.Form;
-    private Step  _step  = Step.Type;
+    private Step  _step  = Step.Form;
 
     // Form fields
     private string _requestType = "";
@@ -422,7 +315,7 @@
     private List<PendingAttachment> _attachments = new();
     private string _fileError = "";
     private const int  MaxAttachments     = 5;
-    private const long MaxAttachmentBytes = 5 * 1_048_576L; // 5 MB
+    private const long MaxAttachmentBytes = 5 * 1_048_576L;
 
     // Validation / error
     private bool   _touched;
@@ -443,14 +336,7 @@
     private string    _extTargetKey = "";
     private DateTime? _extRequestedDate;
 
-    // ── Step chrome ───────────────────────────────────────────────────────
-    private string StepLabel => _step switch
-    {
-        Step.Type   => "בחירת סוג בקשה",
-        Step.Form   => "פרטי הבקשה",
-        Step.Review => "סיכום ושליחה",
-        _           => "",
-    };
+    // ── Computed ──────────────────────────────────────────────────────────
 
     private RequestTypeDefinitionDto? SelectedType =>
         _availableTypes.FirstOrDefault(t => t.Code == _requestType);
@@ -458,10 +344,6 @@
     private string SelectedTypeName =>
         SelectedType?.Name is { Length: > 0 } n ? n : RequestTypes.Label(_requestType);
 
-    /// <summary>Who the student is told to expect a response from, taken from
-    /// the type's own HandlerRole in the admin catalogue. Falls back to the
-    /// generic wording when a type has no handler recorded (the legacy static
-    /// constants have none).</summary>
     private string SubmittedChannel
     {
         get
@@ -476,7 +358,7 @@
 
     private bool CanAddMore => _attachments.Count < MaxAttachments && _phase != Phase.Submitting;
 
-    // ── Validation surface ────────────────────────────────────────────────
+    // ── Validation ────────────────────────────────────────────────────────
     private bool TitleInvalid       => _touched && string.IsNullOrWhiteSpace(_title);
     private bool DescriptionInvalid => _touched && string.IsNullOrWhiteSpace(_description);
     private bool TargetInvalid      => _touched && _requestType == RequestTypes.Extension && SelectedTarget is null;
@@ -521,9 +403,6 @@
             _teamName     = ctx?.TeamName ?? "";
         }
 
-        // Active request types, once per modal lifetime. If the fetch fails or
-        // returns empty (e.g. a fresh deploy before the migrator runs), fall
-        // back to the legacy static constants so the picker never goes silent.
         if (IsOpen && !_typesLoaded)
         {
             var list = await RequestTypesService.GetActiveAsync();
@@ -540,7 +419,6 @@
             _typesLoaded = true;
         }
 
-        // Extension picker targets, once per modal lifetime (project-scoped).
         if (IsOpen && !_extTargetsLoaded && !_targetsLoading)
         {
             _targetsLoading = true;
@@ -551,31 +429,12 @@
         }
     }
 
-    // ── Navigation ────────────────────────────────────────────────────────
+    // ── Actions ───────────────────────────────────────────────────────────
     private void PickType(string code)
     {
         _requestType = code;
         _touched     = false;
         _submitError = "";
-    }
-
-    private void GoToForm()
-    {
-        if (string.IsNullOrEmpty(_requestType)) return;
-        _step = Step.Form;
-    }
-
-    /// <summary>Gate into the review step. Runs exactly the checks the previous
-    /// Submit ran, so nothing can reach the summary that the server would
-    /// reject on a rule the client already knows about.</summary>
-    private void GoToReview()
-    {
-        _touched     = true;
-        _submitError = "";
-
-        if (TitleInvalid || DescriptionInvalid || TargetInvalid || DateInvalid) return;
-
-        _step = Step.Review;
     }
 
     // ── Files ─────────────────────────────────────────────────────────────
@@ -607,7 +466,6 @@
                 using var ms     = new MemoryStream();
                 await stream.CopyToAsync(ms);
                 string base64 = Convert.ToBase64String(ms.ToArray());
-
                 _attachments.Add(new PendingAttachment(file.Name, base64, file.ContentType, file.Size));
             }
             catch
@@ -629,19 +487,8 @@
         _touched     = true;
         _submitError = "";
 
-        // Re-validated here as well as at the review gate: the student can go
-        // back, edit, and return, and the server is the only other check.
-        if (TitleInvalid || DescriptionInvalid || TargetInvalid || DateInvalid)
-        {
-            _step = Step.Form;
+        if (string.IsNullOrEmpty(_requestType) || TitleInvalid || DescriptionInvalid || TargetInvalid || DateInvalid)
             return;
-        }
-
-        if (string.IsNullOrEmpty(_requestType))
-        {
-            _step = Step.Type;
-            return;
-        }
 
         if (_projectId <= 0)
         {
@@ -673,8 +520,6 @@
                 ContentType      = a.ContentType,
                 SizeBytes        = a.Size,
             }).ToList(),
-
-            // Silently ignored server-side for non-Extension types.
             TargetTaskId      = extTaskId,
             TargetMilestoneId = extMilestoneId,
             RequestedDueDate  = _requestType == RequestTypes.Extension ? _extRequestedDate : null,
@@ -686,9 +531,6 @@
 
         if (newId is null)
         {
-            // Surfaced in place on the review step — this is where the server's
-            // 409 duplicate-extension message ("כבר קיימת בקשת דחייה פתוחה…")
-            // reaches the student.
             _submitError = string.IsNullOrWhiteSpace(error)
                 ? "אירעה שגיאה בשליחת הבקשה. נסה שנית."
                 : error;
@@ -703,7 +545,7 @@
     private void ResetForm()
     {
         _phase       = Phase.Form;
-        _step        = Step.Type;
+        _step        = Step.Form;
         _requestType = "";
         _title       = "";
         _description = "";
@@ -729,7 +571,7 @@
         await OnClose.InvokeAsync();
     }
 
-    // ── Helpers (unchanged) ───────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────
     private static string FormatBytes(long bytes)
     {
         if (bytes < 1024)      return $"{bytes} B";
@@ -737,9 +579,6 @@
         return $"{bytes / 1_048_576.0:F1} MB";
     }
 
-    /// <summary>Days past the current due date, or null when the item has no
-    /// due date. Negative values clamp to null so a future deadline is never
-    /// called "overdue by -3 days".</summary>
     private static int? OverdueDays(ExtensionTargetDto? t)
     {
         if (t?.CurrentDueDate is null) return null;
