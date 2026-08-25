@@ -1,59 +1,116 @@
 @namespace AuthWithAdmin.Client.Pages.Planning
 
 @*
-    PlanningWeekView — a compact 7-day planning view.
+    PlanningWeekView — the final Calendar's week view
+    (Motiva Student Calendar final.dc.html, WEEK VIEW).
 
-    DERIVED FROM, NOT INVENTED: the Design's week view
-    (Motiva Calendar.dc.html:174–221) contributes its day-head strip verbatim
-    (day name over a 15px/700 number, today as a 25px indigo disc), its today
-    column tint, its per-column hairlines, and the same .pl-chip items the
-    Month view uses.
+    THE REFERENCE'S TWO BANDS, BOTH REAL HERE
+    The reference splits a week into a כל היום strip and an 08:00–20:00 hour
+    grid, and it decides between them on one question: does the item carry a
+    start time? Motiva answers that question for real —
 
-    WHAT IS DELIBERATELY ABSENT: the 08:00–20:00 hour grid (13 rows × 44px).
-    It exists in the Design solely to position `event` blocks by start/end
-    time. Motiva has no meetings table and no task carries a time-of-day, so
-    rendering it would be 91 empty cells implying a scheduling capability the
-    product does not have. The Design's own "יעדים" deadline row is what
-    survives — promoted from a 34px strip into the column body, which is the
-    space the hour grid vacated.
+      • PersonalTaskDto carries an optional StartTime/EndTime work block
+        ("when on that day do I plan to sit with it"), so a personal task with
+        one is POSITIONED in the hour grid at its own hour.
+      • Every other kind is date-only — a submission is due on a day, not at an
+        hour — so it sits in the כל היום band, which is exactly what the
+        reference does with its own untimed items.
 
-    The result answers מה קורה לי השבוע? — today and tomorrow are named, and
-    the rest of the week is one glance wide.
+    That is why the hour grid is drawn now and was not before: when this view
+    was first built no Motiva row carried a time of day, and 13 empty rows
+    would have implied a scheduling capability the product did not have. The
+    band above it means nothing is hidden by the window either — see
+    OutsideWindow.
+
+    The DAY HEAD is the reference's verbatim: day name over the date, today's
+    date as a 26px violet pill, a 52px gutter column holding the hour scale.
 *@
 
 <MCard Padding="MCard.CardPadding.None">
-    <div class="pl-clip">
+    <div class="pl-week">
 
+        @* ── Day head ── *@
         <div class="pl-week-head">
+            <span class="pl-week-gutter" aria-hidden="true"></span>
             @foreach (var col in Columns)
             {
-                <div class="pl-week-headcell @(col.IsToday ? "pl-week-headcell-today" : "")">
-                    <div class="pl-week-dayname">@col.DayName</div>
-                    <div class="pl-week-daynum @(col.IsToday ? "pl-week-daynum-today" : "")">@col.Date.Day</div>
+                <div class="pl-week-headcell">
+                    <span class="pl-week-dayname">@col.DayName</span>
+                    <span class="pl-week-daynum @(col.IsToday ? "pl-week-daynum-today" : "")">@col.Date.Day</span>
                     @if (col.RelLabel is not null)
                     {
-                        <div class="pl-week-rel">@col.RelLabel</div>
+                        <span class="pl-week-rel">@col.RelLabel</span>
                     }
                 </div>
             }
         </div>
 
-        <div class="pl-week-body">
+        @* ── כל היום ──
+           Everything without a positionable work block. The band always
+           renders: it is where six of Motiva's seven dated things live, so
+           hiding it when empty would make the week look broken on a quiet
+           week rather than calm. *@
+        <div class="pl-week-allday">
+            <span class="pl-week-gutter pl-week-gutter-label">כל היום</span>
             @foreach (var col in Columns)
             {
-                <div class="pl-week-col @(col.IsToday ? "pl-week-col-today" : "") @(col.Items.Count == 0 ? "pl-week-col-quiet" : "")">
-                    @if (col.Items.Count == 0)
+                <div class="pl-week-allday-cell @(col.IsToday ? "pl-week-col-today" : "")">
+                    @foreach (var item in col.AllDay)
                     {
-                        @* Quiet, not empty-stated: a day with nothing due is the
-                           normal case, and seven "אין משימות" blocks would shout. *@
-                        <span class="pl-week-none" aria-label="אין פריטים">·</span>
+                        <PlanningItemChip Item="@item" OnOpen="OnOpenItem" />
                     }
-                    else
+                </div>
+            }
+        </div>
+
+        @* ── Hour grid ── *@
+        <div class="pl-week-hours">
+            <div class="pl-week-gutter">
+                @for (int h = HourStart; h < HourEnd; h++)
+                {
+                    <div class="pl-week-hourlabel">@HourLabel(h)</div>
+                }
+            </div>
+
+            @foreach (var col in Columns)
+            {
+                <div class="pl-week-col @(col.IsToday ? "pl-week-col-today" : "")">
+                    @* ── Click-to-create ──
+                       Each hour row IS the button. Same reasoning as the Month
+                       cell: a real <button> is focusable and Enter/Space-operable
+                       without re-implementing either. Positioned event blocks sit
+                       above these at z-index 2 and handle their own clicks, so an
+                       existing task always opens and never creates. *@
+                    @for (int h = HourStart; h < HourEnd; h++)
                     {
-                        @foreach (var item in col.Items)
-                        {
-                            <PlanningItemChip Item="@item" Relaxed="true" OnOpen="OnOpenItem" />
-                        }
+                        @* Both the slot and its label are built HERE, not inside
+                           the lambda: Razor cannot parse an interpolated string
+                           inside an event-handler expression. *@
+                        var slot      = new PlanningSlot(col.Date, HourLabel(h));
+                        var slotLabel = $"יצירת משימת צוות ליום {col.DayName} {col.Date:d.M} בשעה {HourLabel(h)}";
+                        <button type="button" class="pl-week-hourline"
+                                aria-label="@slotLabel"
+                                @onclick="() => OnCreateAt.InvokeAsync(slot)">
+                        </button>
+                    }
+
+                    @foreach (var block in col.Timed)
+                    {
+                        <button type="button"
+                                class="pl-week-event @(block.Item.IsDone ? "pl-week-event-done" : "")"
+                                style="@PlanningKinds.PaletteStyle(block.Item.Kind) top:@(block.Top)px; block-size:@(block.Height)px;"
+                                title="@block.Tooltip"
+                                @onclick="() => OnOpenItem.InvokeAsync(block.Item)">
+                            <span class="pl-week-event-time" dir="ltr">@block.TimeLabel</span>
+                            <span class="pl-week-event-title">@block.Item.Title</span>
+                        </button>
+                    }
+
+                    @if (col.NowOffset is int nowTop)
+                    {
+                        <div class="pl-week-now" style="top:@(nowTop)px" aria-hidden="true">
+                            <span class="pl-week-now-dot"></span>
+                        </div>
                     }
                 </div>
             }
@@ -70,14 +127,55 @@
 
     [Parameter] public EventCallback<PlanningItem> OnOpenItem { get; set; }
 
+    /// <summary>Raised when the student clicks an EMPTY hour slot. The page turns
+    /// it into the existing create-task modal, seeded with that day and hour.</summary>
+    [Parameter] public EventCallback<PlanningSlot> OnCreateAt { get; set; }
+
+    /// <summary>
+    /// The reference's window, 08:00–20:00, at a tightened row height.
+    ///
+    /// <para>The reference draws 56px an hour; 44px is the density this product
+    /// needs to seat a whole working day inside the page without the card
+    /// running past the fold. It is ONE value at every breakpoint on purpose —
+    /// the block positions below are computed in C# and the hour rows are drawn
+    /// in CSS, so a per-breakpoint height would desynchronise the two and float
+    /// every block off its own slot.</para>
+    /// </summary>
+    private const int HourStart  = 8;
+    private const int HourEnd    = 20;
+    private const int HourHeight = 44;
+
+    /// <summary>Floor for a block's height, so a 15-minute block is still
+    /// readable rather than a sliver.</summary>
+    private const int MinBlockHeight = 24;
+
+    /// <summary>"08:00" — one formatter for the scale and the slot labels, so
+    /// the hour a student reads is the hour the form is seeded with.</summary>
+    private static string HourLabel(int hour) => hour.ToString("00") + ":00";
+
     private static readonly string[] DayNames =
         { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
 
-    private sealed record Col(
-        DateTime Date, string DayName, bool IsToday, string? RelLabel, List<PlanningItem> Items);
-
-    /// <summary>Sunday-first, matching the Month header and the Design.</summary>
+    /// <summary>Sunday-first, matching the Month header and the reference.</summary>
     public static DateTime StartOfWeek(DateTime d) => d.Date.AddDays(-(int)d.Date.DayOfWeek);
+
+    /// <summary>A work block already resolved to pixels within the hour grid.</summary>
+    private sealed record TimedBlock(PlanningItem Item, int Top, int Height, string TimeLabel, string Tooltip);
+
+    private sealed record Col(
+        DateTime Date, string DayName, bool IsToday, string? RelLabel,
+        List<PlanningItem> AllDay, List<TimedBlock> Timed, int? NowOffset);
+
+    /// <summary>
+    /// True when a work block cannot be drawn inside the 08:00–20:00 window.
+    ///
+    /// <para>Such an item falls back to the כל היום band rather than being
+    /// clamped to the window's edge: clamping would draw a 07:00 block at 08:00
+    /// and quietly lie about when it is, while the band keeps it visible and
+    /// its chip label still carries the real hour.</para>
+    /// </summary>
+    private static bool OutsideWindow(PlanningItem i) =>
+        i.StartMinutes is not int m || m < HourStart * 60 || m > HourEnd * 60;
 
     private List<Col> Columns
     {
@@ -88,8 +186,12 @@
             var byDate = Items
                 .GroupBy(i => i.Date)
                 .ToDictionary(g => g.Key, g => g.OrderBy(i => i.IsDone)
+                                                .ThenBy(i => i.StartMinutes ?? -1)
                                                 .ThenBy(i => (int)i.Kind)
                                                 .ToList());
+
+            var now       = DateTime.Now;
+            var nowMinute = now.Hour * 60 + now.Minute;
 
             var cols = new List<Col>(7);
             for (int k = 0; k < 7; k++)
@@ -97,14 +199,50 @@
                 var d    = start.AddDays(k);
                 int diff = (d - DateTime.Today).Days;
 
+                var all = byDate.TryGetValue(d, out var list) ? list : new List<PlanningItem>();
+
+                var allDay = all.Where(i => !i.HasTime || OutsideWindow(i)).ToList();
+                var timed  = all.Where(i => i.HasTime && !OutsideWindow(i))
+                                .Select(ToBlock)
+                                .ToList();
+
+                bool isToday = d == DateTime.Today;
+                int? nowOffset = isToday
+                                 && nowMinute >= HourStart * 60
+                                 && nowMinute <= HourEnd * 60
+                    ? (nowMinute - HourStart * 60) * HourHeight / 60
+                    : null;
+
                 cols.Add(new Col(
                     d,
                     DayNames[(int)d.DayOfWeek],
-                    d == DateTime.Today,
+                    isToday,
                     diff switch { 0 => "היום", 1 => "מחר", _ => null },
-                    byDate.TryGetValue(d, out var list) ? list : new List<PlanningItem>()));
+                    allDay,
+                    timed,
+                    nowOffset));
             }
             return cols;
         }
+    }
+
+    private static TimedBlock ToBlock(PlanningItem i)
+    {
+        int startMin = i.StartMinutes!.Value;
+        int endMin   = i.EndMinutes ?? startMin;
+
+        int top    = (startMin - HourStart * 60) * HourHeight / 60;
+        int height = Math.Max((endMin - startMin) * HourHeight / 60, MinBlockHeight);
+
+        // The reference insets the block a pixel top and bottom so consecutive
+        // blocks read as two, not as one continuous fill.
+        var label = string.IsNullOrWhiteSpace(i.EndTime) ? i.StartTime! : $"{i.StartTime}–{i.EndTime}";
+
+        return new TimedBlock(
+            i,
+            top + 1,
+            Math.Max(height - 2, MinBlockHeight),
+            label,
+            $"{PlanningKinds.Label(i.Kind)} · {i.Title} · {label} · {i.StatusLabel}");
     }
 }

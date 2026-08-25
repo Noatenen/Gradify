@@ -88,10 +88,58 @@ public sealed class PlanningItem
 
     public string? MilestoneTitle { get; init; }
 
+    /// <summary>
+    /// Optional work block on <see cref="Date"/>, as Israel wall-clock "HH:mm".
+    ///
+    /// <para>Only PersonalTaskDto carries this pair today — it is the one kind
+    /// whose rows answer "when on that day do I plan to sit with it". Every
+    /// other kind is date-only, which is exactly the split the reference draws:
+    /// timed items are positioned in the hour grid, undated-in-time items sit
+    /// in the כל היום band above it. Both are set together or both are null;
+    /// the server refuses a half-set pair.</para>
+    /// </summary>
+    public string? StartTime { get; init; }
+
+    /// <summary>End of the work block. See <see cref="StartTime"/>.</summary>
+    public string? EndTime { get; init; }
+
+    /// <summary>True when this item belongs in the Week view's hour grid rather
+    /// than its כל היום band.</summary>
+    public bool HasTime => !string.IsNullOrWhiteSpace(StartTime);
+
+    /// <summary>Minutes from midnight, or null when the item is date-only.</summary>
+    public int? StartMinutes => ParseMinutes(StartTime);
+
+    /// <summary>Minutes from midnight for the block's end. Falls back to the
+    /// start when no end is stored, so a degenerate block still renders at the
+    /// grid's minimum height rather than collapsing to zero.</summary>
+    public int? EndMinutes => ParseMinutes(EndTime) ?? StartMinutes;
+
+    private static int? ParseMinutes(string? hhmm)
+    {
+        if (string.IsNullOrWhiteSpace(hhmm)) return null;
+        var parts = hhmm.Split(':');
+        if (parts.Length < 2) return null;
+        if (!int.TryParse(parts[0], out var h) || !int.TryParse(parts[1], out var m)) return null;
+        return h * 60 + m;
+    }
+
     /// <summary>True when this item can open the existing TaskDetailModal.</summary>
     public bool OpensTaskDetail =>
         Kind is PlanningKind.Submission or PlanningKind.System or PlanningKind.Mentor;
 }
+
+/// <summary>
+/// A point on the calendar the student clicked in EMPTY space, and therefore
+/// wants to create something at.
+///
+/// <para>One type for both grids so a single page handler serves them:
+/// <see cref="StartTime"/> is null from the Month grid, which has no hour axis,
+/// and "HH:mm" from the Week grid's hour slots.</para>
+/// </summary>
+/// <param name="Date">The day clicked, date-part only.</param>
+/// <param name="StartTime">Israel wall-clock "HH:mm", or null for a whole day.</param>
+public sealed record PlanningSlot(DateTime Date, string? StartTime = null);
 
 /// <summary>
 /// A milestone as the Timeline needs it: the one entity in the domain with a
@@ -194,30 +242,36 @@ public static class PlanningKinds
     /// PlanningTimeline. Custom properties set inline are unscoped and inherit
     /// normally, so all four components read one palette from one place.
     ///
-    /// Every value is an existing Motiva categorical token — no new semantic
-    /// status colour is introduced:
-    ///   הגשה        indigo      (Design's `submission`)
-    ///   משימת מערכת periwinkle  (Design's `system`)
-    ///   משימת מנחה  amber       net new; the only categorical token that stays
-    ///                           legible against indigo at 11px — cobalt sits
-    ///                           ~10° away and collapses. NOT --motiva-color-
-    ///                           warning, which is a different token/value.
-    ///   משימת צוות  teal        (Design's `team`)
-    ///   אישי        neutral     inherits the Design's quietest slot, vacated
-    ///                           by the removed `event` type.
+    /// The five slots are the FINAL Calendar's own five types, taken at their
+    /// exact ink/tint pairs. Motiva's five kinds map onto them one-for-one,
+    /// which is why no slot is invented and none is left over:
+    ///
+    ///   הגשה        submit    #C42B52 — the reference's own הגשה
+    ///   משימת מערכת task      #2E63E8 — the reference's own משימה
+    ///   משימת מנחה  meeting   #6D28F5 — the violet "guidance" slot the
+    ///                                   reference fills with פגישת הנחיה
+    ///   משימת צוות  team      #0F8FA6 — the reference's own משימת צוות
+    ///   אישי        milestone #4A4657 — the reference's quietest slot
+    ///
+    /// Values are literal rather than token references because these are
+    /// CATEGORICAL, not semantic: --motiva-color-danger and the הגשה tint would
+    /// resolve to the same rose while meaning two different things, and a
+    /// future change to the danger role must not silently repaint a task type.
+    /// The literals are the student scope's own palette either way (see
+    /// motiva-tokens.css: the four roles plus their ink weights).
     /// </summary>
     public static string PaletteStyle(PlanningKind k) => k switch
     {
         PlanningKind.Submission =>
-            "--pl-ink:var(--motiva-color-indigo);--pl-tint:rgba(79,70,229,.07);",
+            "--pl-ink:#C42B52;--pl-tint:rgba(224,51,95,.10);",
         PlanningKind.System =>
-            "--pl-ink:var(--motiva-color-periwinkle);--pl-tint:var(--motiva-color-periwinkle-bg);",
+            "--pl-ink:#2E63E8;--pl-tint:rgba(46,99,232,.10);",
         PlanningKind.Mentor =>
-            "--pl-ink:var(--motiva-color-amber);--pl-tint:var(--motiva-color-amber-bg);",
+            "--pl-ink:#6D28F5;--pl-tint:rgba(109,40,245,.10);",
         PlanningKind.Team =>
-            "--pl-ink:var(--motiva-color-teal);--pl-tint:rgba(13,156,154,.07);",
+            "--pl-ink:#0F8FA6;--pl-tint:rgba(15,168,194,.12);",
         _ =>
-            "--pl-ink:var(--motiva-text-secondary);--pl-tint:transparent;"
+            "--pl-ink:#4A4657;--pl-tint:rgba(27,26,34,.07);"
     };
 
     /// <summary>Display order — mirrors the filter row, most official first.</summary>
@@ -365,7 +419,11 @@ public static class PlanningMapper
                 Date        = date,
                 IsDone      = t.IsDone,
                 IsOverdue   = !t.IsDone && date < DateTime.Today,
-                StatusLabel = t.IsDone ? "הושלם" : "פתוח"
+                StatusLabel = t.IsDone ? "הושלם" : "פתוח",
+                // The only kind with a time of day. Carried through so the Week
+                // view can place it in the hour grid instead of the כל היום band.
+                StartTime   = t.StartTime,
+                EndTime     = t.EndTime
             });
         }
 

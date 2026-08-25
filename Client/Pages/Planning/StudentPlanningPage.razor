@@ -42,6 +42,8 @@
 
 <TeamTaskEditModal IsOpen="@_teamModalOpen"
                    EditingTask="@_editingTeamTask"
+                   InitialDueDate="@_newTaskDate"
+                   InitialStartTime="@_newTaskStart"
                    OnClose="CloseTeamModal"
                    OnCreated="OnTeamTaskSaved"
                    OnUpdated="OnTeamTaskSaved" />
@@ -76,6 +78,27 @@
                 @:תכנון הפרויקט — אבני דרך, הגשות ומשימות על ציר הזמן.
             }
         </SubtitleContent>
+
+        @* ── Controls ──
+           The reference puts the view tabs, the period cluster and the primary
+           action on the TITLE row, not on a strip below it, and MPageHeader's
+           Actions slot is exactly that position. Gated on a loaded, project-
+           bound state: stepping months while there is nothing to step through
+           would be chrome around nothing. *@
+        <Actions>
+            @if (!_isLoading && !_loadError && HasProject)
+            {
+                <PlanningToolbar View="@_view"
+                                 PeriodLabel="@PeriodLabel"
+                                 TimelineFullSpan="@_timelineFullSpan"
+                                 OnViewChange="SetView"
+                                 OnTimelineScopeChange="SetTimelineScope"
+                                 OnPrev="PrevPeriod"
+                                 OnNext="NextPeriod"
+                                 OnToday="GoToday"
+                                 OnNewTask="OpenNewTeamTask" />
+            }
+        </Actions>
     </MPageHeader>
 </div>
 
@@ -100,16 +123,6 @@ else
 {
     <div class="pl-page">
 
-        <PlanningToolbar View="@_view"
-                         PeriodLabel="@PeriodLabel"
-                         TimelineFullSpan="@_timelineFullSpan"
-                         OnViewChange="SetView"
-                         OnTimelineScopeChange="SetTimelineScope"
-                         OnPrev="PrevPeriod"
-                         OnNext="NextPeriod"
-                         OnToday="GoToday"
-                         OnNewTask="OpenNewTeamTask" />
-
         @* ── Desktop / laptop ──
            Rendered and hidden by CSS rather than by a measured viewport: no JS
            interop, no resize listener to leak, and no first-paint flash from a
@@ -120,13 +133,15 @@ else
                 case PlanningView.Month:
                     <PlanningMonthGrid Anchor="@_anchor"
                                        Items="@FilteredItems"
-                                       OnOpenItem="OpenItem" />
+                                       OnOpenItem="OpenItem"
+                                       OnCreateAt="OpenNewTeamTaskAt" />
                     break;
 
                 case PlanningView.Week:
                     <PlanningWeekView Anchor="@_anchor"
                                       Items="@FilteredItems"
-                                      OnOpenItem="OpenItem" />
+                                      OnOpenItem="OpenItem"
+                                      OnCreateAt="OpenNewTeamTaskAt" />
                     break;
 
                 default:
@@ -143,8 +158,8 @@ else
 
         @* ── Legend / type filter ──
            Below the grid, which is where the reference puts it
-           (design-reference/motiva-student-final, Motiva Student Calendar
-           final). It stays interactive here — the reference's legend is
+           (design-reference/motiva-student-final/Motiva Student Calendar
+           final.dc.html, LEGEND). It stays interactive here — the legend is
            informational only, but this one is the page's real type filter and
            demoting it to a caption would remove working behaviour. *@
         <PlanningFilterChips Active="@_filter"
@@ -202,6 +217,12 @@ else
     private int                _detailTaskId;
     private bool               _teamModalOpen;
     private TeamTaskDto?       _editingTeamTask;
+
+    /// <summary>What a click on empty calendar space seeds the create form with.
+    /// Both are cleared whenever the modal closes, so the toolbar's own
+    /// "משימת צוות חדשה" never inherits a day the student clicked earlier.</summary>
+    private DateTime? _newTaskDate;
+    private string?   _newTaskStart;
     private PlanningMilestone? _milestonePopover;
     private PlanningItem?      _personalPopover;
 
@@ -403,6 +424,24 @@ else
 
     private void OpenNewTeamTask()
     {
+        _newTaskDate     = null;
+        _newTaskStart    = null;
+        _editingTeamTask = null;
+        _teamModalOpen   = true;
+    }
+
+    /// <summary>
+    /// Click-to-create from empty calendar space — the Month cell background and
+    /// the Week hour slots both land here.
+    ///
+    /// <para>It opens the SAME TeamTaskEditModal the toolbar opens, seeded with
+    /// the clicked day and, from the week grid, the clicked hour. No second form
+    /// and no new endpoint: the modal owns creation, Google sync included.</para>
+    /// </summary>
+    private void OpenNewTeamTaskAt(PlanningSlot slot)
+    {
+        _newTaskDate     = slot.Date.Date;
+        _newTaskStart    = slot.StartTime;
         _editingTeamTask = null;
         _teamModalOpen   = true;
     }
@@ -411,6 +450,8 @@ else
     {
         _teamModalOpen   = false;
         _editingTeamTask = null;
+        _newTaskDate     = null;
+        _newTaskStart    = null;
     }
 
     private async Task OnTeamTaskSaved()

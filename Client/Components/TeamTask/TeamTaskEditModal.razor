@@ -284,6 +284,31 @@
     [Parameter] public List<TeamMemberDto> TeamMembers { get; set; } = new();
 
     /// <summary>Raised when the modal should close, whether it saved or not.</summary>
+    /// <summary>
+    /// Seeds תאריך יעד when creating. Optional and create-only: an EditingTask's
+    /// own DueDate always wins, so no existing caller changes behaviour by not
+    /// passing it.
+    ///
+    /// <para>Added for the calendar's click-to-create — /milestones opens THIS
+    /// modal with the clicked day already filled in, rather than growing a
+    /// second team-task form.</para>
+    /// </summary>
+    [Parameter] public DateTime? InitialDueDate { get; set; }
+
+    /// <summary>
+    /// Seeds the Google Calendar work block's start, as "HH:mm". Optional and
+    /// create-only.
+    ///
+    /// <para>The calendar's week grid is the only caller: clicking an empty
+    /// 09:00 slot means "book this at 09:00". Because the modal has no default
+    /// duration of its own — both time fields normally start empty and the save
+    /// path requires both — the seed also fills the end at
+    /// <see cref="SeededBlockMinutes"/> later, so the form opens VALID rather
+    /// than half-filled. The toggle is only switched on when Google is actually
+    /// connected; see LoadCalendarStateAsync.</para>
+    /// </summary>
+    [Parameter] public string? InitialStartTime { get; set; }
+
     [Parameter] public EventCallback OnClose { get; set; }
 
     /// <summary>Raised with the server's new task after a successful create.</summary>
@@ -338,6 +363,10 @@
     // would wipe whatever the user has typed.
     private bool _wasOpen;
 
+    /// <summary>Length of a seeded work block. One hour is the week grid's own
+    /// row, so a slot click books exactly the slot that was clicked.</summary>
+    private const int SeededBlockMinutes = 60;
+
     protected override async Task OnParametersSetAsync()
     {
         if (IsOpen && !_wasOpen)
@@ -371,6 +400,19 @@
 
         _gcalStatus = statusTask.Result ?? new GoogleCalendarStatusDto { IsConnected = false };
 
+        // A seeded slot, applied only on a create and only once the server has
+        // confirmed the grant — switching the toggle on while disconnected would
+        // offer a booking that cannot be saved.
+        if (EditingTask is null
+            && _gcalStatus.IsConnected
+            && !string.IsNullOrWhiteSpace(InitialStartTime)
+            && TimeSpan.TryParse(InitialStartTime, out var seedStart))
+        {
+            _addToCalendar = true;
+            _calStartStr   = seedStart.ToString(@"hh\:mm");
+            _calEndStr     = seedStart.Add(TimeSpan.FromMinutes(SeededBlockMinutes)).ToString(@"hh\:mm");
+        }
+
         var existing = EditingTask is null
             ? null
             : schedulesTask.Result.FirstOrDefault(s => s.TaskId == EditingTask.Id);
@@ -400,7 +442,9 @@
         _newTitle            = EditingTask?.Title ?? "";
         _newDescription      = EditingTask?.Description;
         _newAssignedToUserId = EditingTask?.AssignedToUserId ?? 0;
-        _newDueDateStr       = EditingTask?.DueDate?.ToString("yyyy-MM-dd") ?? "";
+        _newDueDateStr       = EditingTask?.DueDate?.ToString("yyyy-MM-dd")
+                               ?? (EditingTask is null ? InitialDueDate?.ToString("yyyy-MM-dd") : null)
+                               ?? "";
         _touched             = false;
         _saveError           = null;
         _isSaving            = false;

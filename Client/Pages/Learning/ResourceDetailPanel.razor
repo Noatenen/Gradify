@@ -1,0 +1,180 @@
+@namespace AuthWithAdmin.Client.Pages.Learning
+
+@*
+    ResourceDetailPanel — the FINAL Resources screen's 360px side panel.
+    Source: Motiva Student Resources final.dc.html, the `detailOpen` block
+    (scrim + fixed panel at top/bottom 26px, inset-inline-end 26px, r26).
+
+    WHAT IT IS FOR, AND WHY IT IS NOT AN MModal
+    The reference opens every resource into a panel before anything happens to
+    it: type, title, description, stage, task, date, format — then the action.
+    MModal is a centred dialog with its own header/footer chrome and a max
+    width; expressing a full-height edge panel through it would mean fighting
+    every one of those. The panel is local to this screen (the calendar's own
+    360px panel is a different composition), so it stays a page component
+    rather than becoming a fifth shared surface.
+
+    THE ACTIONS ARE THE REAL ONES
+    Nothing here is a demo affordance. A stored file gets the SAME
+    `<a download href="/resources/…">` the list row always used, plus an
+    open-in-tab link over the same href; a video raises OnPlay, which the page
+    turns into the existing video modal; an external resource gets a real
+    target="_blank" link. A resource with no usable target says so instead of
+    rendering a button that does nothing.
+*@
+
+@if (Resource is not null)
+{
+    var r = Resource;
+
+    <div class="rdp-scrim" @onclick="CloseAsync"></div>
+
+    <aside class="rdp"
+           @ref="_panelRef"
+           tabindex="-1"
+           role="dialog"
+           aria-modal="true"
+           aria-labelledby="@_titleId"
+           @onkeydown="HandleKeyDownAsync">
+
+        <div class="rdp-head">
+            <span class="rdp-type" style="--rdp-accent:@r.Accent">
+                <span class="rdp-type-icon" aria-hidden="true">
+                    <KnowledgeIcon Category="r.Category" Size="14" />
+                </span>
+                @r.TypeLabel
+            </span>
+
+            <button type="button" class="rdp-close" @onclick="CloseAsync" title="סגירה" aria-label="סגירה">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.2" stroke-linecap="round" aria-hidden="true" focusable="false">
+                    <path d="M18 6 6 18M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+
+        <h2 class="rdp-title" id="@_titleId">@r.Title</h2>
+
+        @if (!string.IsNullOrWhiteSpace(r.Description))
+        {
+            <p class="rdp-desc">@r.Description</p>
+        }
+
+        <dl class="rdp-meta">
+            @if (r.HasMilestone)
+            {
+                <div class="rdp-meta-row">
+                    <dt class="rdp-meta-key">שלב</dt>
+                    <dd class="rdp-meta-val rdp-meta-val-accent">@r.MilestoneLabel</dd>
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(r.TaskLabel))
+            {
+                <div class="rdp-meta-row">
+                    <dt class="rdp-meta-key">משימה</dt>
+                    <dd class="rdp-meta-val">@r.TaskLabel</dd>
+                </div>
+            }
+
+            <div class="rdp-meta-row">
+                <dt class="rdp-meta-key">קטגוריה</dt>
+                <dd class="rdp-meta-val">@KnowledgeCenterModel.LabelFor(r.Category)</dd>
+            </div>
+
+            <div class="rdp-meta-row">
+                <dt class="rdp-meta-key">עודכן</dt>
+                <dd class="rdp-meta-val">@r.UploadedAt.ToString("dd.MM.yyyy")</dd>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(r.Format))
+            {
+                <div class="rdp-meta-row">
+                    <dt class="rdp-meta-key">פורמט</dt>
+                    @* dir=ltr: "DOCX" and "youtube.com" are Latin strings inside an
+                       RTL panel and mirror without it. *@
+                    <dd class="rdp-meta-val rdp-meta-val-ltr" dir="ltr">@r.Format</dd>
+                </div>
+            }
+        </dl>
+
+        <div class="rdp-actions">
+            @switch (r.Action)
+            {
+                case KnowledgeResourceAction.Download:
+                    @* Secondary first: the reference puts the quieter action at
+                       the reading start and the CTA after it. *@
+                    <a class="rdp-btn-ghost" href="@r.Href" target="_blank" rel="noopener noreferrer">
+                        פתיחה בכרטיסייה חדשה
+                    </a>
+                    <a class="rdp-btn" href="@r.Href" download="@r.DownloadName">
+                        הורדה
+                    </a>
+                    break;
+
+                case KnowledgeResourceAction.PlayVideo:
+                    @if (!string.IsNullOrWhiteSpace(r.VideoUrl))
+                    {
+                        <a class="rdp-btn-ghost" href="@r.VideoUrl" target="_blank" rel="noopener noreferrer">
+                            פתיחה במקור
+                        </a>
+                    }
+                    <button type="button" class="rdp-btn" @onclick="PlayAsync">צפייה</button>
+                    break;
+
+                case KnowledgeResourceAction.External:
+                    <a class="rdp-btn" href="@r.Href" target="_blank" rel="noopener noreferrer">
+                        פתיחה בכרטיסייה חדשה
+                    </a>
+                    break;
+
+                default:
+                    @* A malformed row (a File with no stored file and no URL).
+                       The reference has no such state; saying so is better than
+                       a CTA that cannot do anything. *@
+                    <span class="rdp-btn-disabled">המשאב אינו זמין להורדה</span>
+                    break;
+            }
+        </div>
+    </aside>
+}
+
+@code {
+    /// <summary>The open resource, or null when the panel is closed.</summary>
+    [Parameter] public KnowledgeResource? Resource { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised for a video — the page owns the player modal.</summary>
+    [Parameter] public EventCallback<KnowledgeResource> OnPlay { get; set; }
+
+    private readonly string _titleId = $"rdp-title-{Guid.NewGuid():N}";
+
+    private ElementReference _panelRef;
+    private int? _focusedFor;
+
+    private Task CloseAsync() => OnClose.HasDelegate ? OnClose.InvokeAsync() : Task.CompletedTask;
+
+    private async Task PlayAsync()
+    {
+        if (Resource is not null && OnPlay.HasDelegate) await OnPlay.InvokeAsync(Resource);
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await CloseAsync();
+    }
+
+    // Focus moves to the panel when it opens (so Escape works and a screen
+    // reader lands inside it), and only then — never on every re-render, which
+    // would steal focus back from the buttons inside it.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Resource is null) { _focusedFor = null; return; }
+        if (_focusedFor == Resource.Id) return;
+
+        _focusedFor = Resource.Id;
+        try { await _panelRef.FocusAsync(); }
+        catch { /* not attached yet — the panel is still usable by mouse */ }
+    }
+}

@@ -6,67 +6,108 @@
 @inject NavigationManager Nav
 
 @*
-    StudentProfileIntegrationsCard — "אינטגרציות"
+    StudentProfileIntegrationsCard — "שירותים מחוברים"
+    Visual source: Motiva Student Profile final.dc.html:142-164.
 
-    StudentProfilePage's header lists the integrations card among the sections
-    deliberately left out of the Motiva rebuild, "with their backends fully
-    intact". Google Calendar now HAS a real backend — a per-user OAuth grant in
-    GoogleCalendarConnections — so the card comes back, holding exactly one row.
+    One row, and the reference draws exactly one too: Google Calendar.
+    Slack is not brought over — its row on the staff settings page is
+    unchanged and this epic is not the place to re-home it.
 
-    Only Google Calendar. Slack is not brought over: its row on the staff page
-    is unchanged and this epic is not the place to re-home it.
+    ── THE STATE IS NEVER INFERRED ──────────────────────────────────────────
+    The reference hard-codes `gConnected: true` and prints a prototype
+    address. Nothing here does either. Consent happens on accounts.google.com
+    with this app unloaded, so the only thing that knows whether a grant
+    exists is GET /api/google-calendar/status — which is what this reads on
+    mount and again after every disconnect. The connected line shows the
+    Google account the grant belongs to only when the status response carries
+    it; a grant made without the identity scopes says "מחובר" and no address,
+    because the alternative is printing one the server did not send.
 
-    The row NEVER infers state. Consent happens on accounts.google.com with the
-    app unloaded, so the only thing that knows whether a grant exists is
-    GET /api/google-calendar/status — which is what this reads on mount and
-    again after every disconnect.
+    The connect action mints a fresh authorization URL per click
+    (GET /api/google-calendar/connect-url) — the URL carries a single-use
+    state that expires in minutes, so it is never cached or reused — and the
+    disconnect action revokes through DELETE /api/google-calendar/disconnect.
+    Both are the existing endpoints; this card adds no integration logic of
+    its own.
+
+    Disconnecting touches nothing about the Motiva session: the same page,
+    the same token, still signed in.
 *@
 
-<MCard Variant="MCard.CardVariant.Default" Padding="MCard.CardPadding.None">
-    <div class="spf-int-head">
-        <h2 class="spf-int-title">אינטגרציות</h2>
-    </div>
+<MCard Padding="MCard.CardPadding.None">
+    <div class="spf-int">
+        <h2 class="spf-int-title">שירותים מחוברים</h2>
 
-    <div class="spf-int-body">
         @if (_loading)
         {
             <p class="spf-int-note">טוענת חיבורים…</p>
         }
         else
         {
-            <MRowList>
-                <MRow>
-                    <PrimaryContent>Google Calendar</PrimaryContent>
-                    <SecondaryContent>
-                        @if (_status?.IsConnected == true)
+            <div class="spf-int-row">
+                <span class="spf-int-icon" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24">
+                        <rect x="3" y="4" width="18" height="17" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                        <path d="M3 9h18" stroke="currentColor" stroke-width="1.8"></path>
+                        <path d="M8 2v4M16 2v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                        <rect class="spf-int-icon-mark" x="7.5" y="12.5" width="4" height="4" rx="1"></rect>
+                    </svg>
+                </span>
+
+                <div class="spf-int-text">
+                    <p class="spf-int-name">Google Calendar</p>
+
+                    @if (IsConnected)
+                    {
+                        <p class="spf-int-status">
+                            <span class="spf-int-dot spf-int-dot-on" aria-hidden="true"></span>
+                            @if (string.IsNullOrWhiteSpace(_status!.GoogleEmail))
+                            {
+                                <span>מחובר</span>
+                            }
+                            else
+                            {
+                                <span class="spf-int-status-label">מחובר כ־</span>
+                                <span class="spf-int-account">@_status.GoogleEmail</span>
+                            }
+                        </p>
+                    }
+                    else
+                    {
+                        <p class="spf-int-status spf-int-status-off">
+                            <span class="spf-int-dot" aria-hidden="true"></span>
+                            <span>לא מחובר — משימות הפרויקט לא יסונכרנו ליומן</span>
+                        </p>
+                    }
+                </div>
+
+                @if (IsConnected)
+                {
+                    <button type="button"
+                            class="spf-int-btn-ghost"
+                            disabled="@_busy"
+                            @onclick="DisconnectAsync">
+                        @if (_busy)
                         {
-                            @(string.IsNullOrWhiteSpace(_status.GoogleEmail)
-                                ? "מחובר"
-                                : $"מחובר ל־{_status.GoogleEmail}")
+                            <span class="spf-int-spinner" aria-hidden="true"></span>
                         }
-                        else
+                        <span>ניתוק</span>
+                    </button>
+                }
+                else
+                {
+                    <button type="button"
+                            class="spf-int-btn-connect motiva-cta"
+                            disabled="@_busy"
+                            @onclick="ConnectAsync">
+                        @if (_busy)
                         {
-                            @("חיבור יומן Google")
+                            <span class="spf-int-spinner spf-int-spinner-on-fill" aria-hidden="true"></span>
                         }
-                    </SecondaryContent>
-                    <Trailing>
-                        @if (_status?.IsConnected == true)
-                        {
-                            <MButton Variant="MButton.ButtonVariant.Danger"
-                                     Size="MButton.ButtonSize.Small"
-                                     Loading="_busy"
-                                     OnClick="DisconnectAsync">ניתוק</MButton>
-                        }
-                        else
-                        {
-                            <MButton Variant="MButton.ButtonVariant.Primary"
-                                     Size="MButton.ButtonSize.Small"
-                                     Loading="_busy"
-                                     OnClick="ConnectAsync">חיבור</MButton>
-                        }
-                    </Trailing>
-                </MRow>
-            </MRowList>
+                        <span>חיבור</span>
+                    </button>
+                }
+            </div>
 
             @if (_error is not null)
             {
@@ -87,6 +128,8 @@
     private bool    _busy;
     private bool    _justConnected;
     private string? _error;
+
+    private bool IsConnected => _status?.IsConnected == true;
 
     /// <summary>Hebrew copy for each coarse failure flag the callback can put on
     /// the return URL. The server never puts a reason, a token or an exception

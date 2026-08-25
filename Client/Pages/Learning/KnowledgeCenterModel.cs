@@ -62,7 +62,16 @@ public enum KnowledgeResourceAction
 public sealed record KnowledgeCategory(
     KnowledgeCategoryKey Key,
     string Label,
-    string Accent);
+    string Accent,
+    /// <summary>Optional short form for the finalized Resources screen's filter
+    /// chip row, where six pills share one line. Null means "no shorter honest
+    /// name exists" and the full label is used — which is why this is a
+    /// defaulted parameter and not a second required one.</summary>
+    string? ShortLabel = null)
+{
+    /// <summary>What the filter chip says.</summary>
+    public string ChipLabel => ShortLabel ?? Label;
+}
 
 /// <summary>One resource row, fully resolved for rendering. Everything on this
 /// record comes from a real ResourceFileDto field — nothing is synthesized.</summary>
@@ -90,6 +99,50 @@ public sealed record KnowledgeResource(
     /// <summary>The Design's row mark: "↖" when activating leaves Motiva,
     /// "‹" when it does not (Motiva Resources.dc.html:521).</summary>
     public string Mark => Action == KnowledgeResourceAction.External ? "↖" : "‹";
+
+    // ── Added for the FINAL Resources screen ────────────────────────────────
+    // The finalized design draws a card and a detail panel, not a one-line row,
+    // so it asks the resource for more of itself than the row ever did:
+    // a description, the tagged task, a format and a full date.
+    //
+    // Declared as init-only properties rather than positional parameters on
+    // purpose — every one of them is OPTIONAL and every existing construction
+    // site (the mentor library, the dashboard strip, the deliverables section)
+    // keeps compiling and rendering unchanged.
+
+    /// <summary>The lecturer's own description, when they wrote one. Empty on
+    /// every row in the database today, which is exactly why the card and the
+    /// panel render it conditionally instead of reserving space for it.</summary>
+    public string? Description { get; init; }
+
+    /// <summary>Title of the TaskTemplate the resource is pinned to, when the
+    /// lecturer pinned it to one (ResourceFileDto.TaskName).</summary>
+    public string? TaskLabel { get; init; }
+
+    /// <summary>What the file (or link) actually is, in the detail panel's
+    /// "פורמט" row: an uppercase extension for a stored file, the host for a
+    /// video or external link. Null when neither can be derived — the row is
+    /// then omitted rather than filled with a guess.</summary>
+    public string? Format { get; init; }
+
+    /// <summary>True when the resource is pinned to a real milestone. Distinct
+    /// from <see cref="MilestoneLabel"/>, which reads "כללי" for MilestoneId 0
+    /// — a label, not a flag, and not something to test with a string compare.</summary>
+    public bool HasMilestone { get; init; }
+
+    /// <summary>The raw upload timestamp, for the panel's full date.</summary>
+    public DateTime UploadedAt { get; init; }
+
+    /// <summary>The verb on the card's action link and the detail panel's
+    /// primary button. It names the resource's REAL behaviour, which is why it
+    /// is derived from <see cref="Action"/> and not from the category.</summary>
+    public string ActionLabel => Action switch
+    {
+        KnowledgeResourceAction.Download  => "הורדה",
+        KnowledgeResourceAction.PlayVideo => "צפייה",
+        KnowledgeResourceAction.External  => "פתיחה",
+        _                                 => "",
+    };
 }
 
 /// <summary>
@@ -114,9 +167,9 @@ public static class KnowledgeCenterModel
     /// <summary>The fixed four, in the Design's grid order.</summary>
     public static readonly IReadOnlyList<KnowledgeCategory> Categories = new[]
     {
-        new KnowledgeCategory(KnowledgeCategoryKey.Documents, "מסמכים וטפסים",  AccentDocs),
+        new KnowledgeCategory(KnowledgeCategoryKey.Documents, "מסמכים וטפסים",  AccentDocs,   "מסמכים"),
         new KnowledgeCategory(KnowledgeCategoryKey.Videos,    "סרטונים",        AccentVideo),
-        new KnowledgeCategory(KnowledgeCategoryKey.Slides,    "מצגות וגיליונות", AccentSlides),
+        new KnowledgeCategory(KnowledgeCategoryKey.Slides,    "מצגות וגיליונות", AccentSlides, "מצגות"),
         new KnowledgeCategory(KnowledgeCategoryKey.Images,    "תמונות וקבצים",  AccentImages),
     };
 
@@ -154,7 +207,28 @@ public static class KnowledgeCenterModel
             UploadedLabel:  file.UploadedAt.ToString("dd.MM.yy"),
             Action:         action,
             Href:           href,
-            VideoUrl:       file.VideoUrl);
+            VideoUrl:       file.VideoUrl)
+        {
+            Description  = string.IsNullOrWhiteSpace(file.Description) ? null : file.Description!.Trim(),
+            TaskLabel    = string.IsNullOrWhiteSpace(file.TaskName)    ? null : file.TaskName!.Trim(),
+            Format       = FormatOf(file, isVideo, action),
+            HasMilestone = file.MilestoneId > 0 && !string.IsNullOrWhiteSpace(file.MilestoneName),
+            UploadedAt   = file.UploadedAt,
+        };
+    }
+
+    /// <summary>The detail panel's "פורמט" value, derived and never invented:
+    /// the stored file's own extension, or the host a video / external link
+    /// actually points at. Null when the resource carries neither.</summary>
+    private static string? FormatOf(ResourceFileDto file, bool isVideo, KnowledgeResourceAction action)
+    {
+        if (isVideo || action == KnowledgeResourceAction.External)
+            return Uri.TryCreate(file.VideoUrl, UriKind.Absolute, out var uri)
+                ? uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host
+                : null;
+
+        var ext = ExtensionOf(file.FileName);
+        return ext.Length > 1 ? ext[1..].ToUpperInvariant() : null;
     }
 
     /// <summary>Client-side search across everything a student can actually see
@@ -167,6 +241,8 @@ public static class KnowledgeCenterModel
         return resources
             .Where(r =>
                 Contains(r.Title, q) ||
+                Contains(r.Description, q) ||
+                Contains(r.TaskLabel, q) ||
                 Contains(r.DownloadName, q) ||
                 Contains(r.TypeLabel, q) ||
                 Contains(r.MilestoneLabel, q) ||

@@ -3,24 +3,61 @@
 @using Microsoft.AspNetCore.Authorization
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Dashboard
 @inject IResourceFilesService ResourceFilesService
+@inject IDashboardService DashboardService
+@inject IJSRuntime JS
 @attribute [Authorize]
 
 @*
-    ── Student Knowledge Center (מרכז ידע) ──────────────────────────────────
-    Visual source of truth: design-reference/motiva/project/Motiva Resources.dc.html
-    Data source of truth:   GET api/student/resources (ResourceFiles)
+    ── Student Resources (משאבים) ───────────────────────────────────────────
+    Visual source of truth:
+        design-reference/motiva-student-final/Motiva Student Resources final.dc.html
+    Data source of truth:
+        GET api/student/resources  (ResourceFiles)  — unchanged
+        GET api/projects/my-dashboard              — read-only, for the stage strip
 
-    The Design's browse architecture is preserved exactly — ambient compact hero
-    with the search field inside it, a four-card category grid, one category
-    expanding into an attached panel of dense rows, and search replacing the
-    whole browse body with flat cross-category results.
+    The finalized screen is a THREE-PART composition and this page reproduces
+    it exactly: a title row with the search pill, a gradient-bordered
+    "רלוונטי לשלב שלך" strip, and one library section holding a filter-chip
+    row and a card grid. Opening a card raises the 360px side panel; the real
+    download / play / external action lives there.
 
-    What is NOT here, and why: the article/reader view, "נצפו לאחרונה",
-    "צפייה נדרשת" / required badges, related resources, read time, and the
-    embedded-form modal. Every one of them needs a field the domain does not
-    have (body text, view tracking, a required flag, a form resource type), and
-    none is simulated with localStorage or sample content.
+    ── WHERE THE REFERENCE AND THE DOMAIN DIVERGE ──────────────────────────
+    Three of its ideas have no field behind them, and none of them is faked:
+
+    * ITS FILTER CHIPS are editorial types (תבניות / מדריכים / דוגמאות / כלים /
+      הקלטות). ResourceFiles carries no editorial type — only ItemType plus a
+      ContentType from the upload form's own accept list. So the chips are the
+      REAL taxonomy KnowledgeCenterModel already derives from those two fields,
+      in the reference's own pill-group shape: הכל · מסמכים · סרטונים · מצגות ·
+      תמונות וקבצים · מועדפים. The seventh chip (מועדפים) is the reference's
+      own, and it behaves exactly as it does there.
+
+    * ITS "מקור" (owner) row. ResourceFiles has an UploadedByUserId column, but
+      no endpoint projects it and no DTO carries it — surfacing it means a
+      server change, which this visual migration deliberately does not make.
+      The card foot and the panel carry the provenance the data does have: the
+      publication date, the milestone, and the task the resource is pinned to.
+
+    * ITS SAMPLE RESOURCES (RES) and ITS localStorage FAVOURITES ARE PROTOTYPE
+      DATA. Every card here is a real ResourceFiles row. Favourites are real
+      user actions, but they are device-local — see the note on FavKey below.
+
+    ── "רלוונטי לשלב שלך" IS REAL ──────────────────────────────────────────
+    The strip is driven by the student's actual current milestone —
+    StudentDashboardModel.CurrentMilestone over GET api/projects/my-dashboard,
+    the same single source of truth the dashboard stepper, the focus card and
+    the tasks page read — matched against the milestone a lecturer pinned each
+    resource to. No recommendation engine, no scoring, no invented relevance:
+    when there is no current milestone, or nothing is pinned to it, the strip
+    does not render at all.
+
+    ── WHAT IS NOT HERE, AND WHY ───────────────────────────────────────────
+    The four-card category grid and its expanding panel are gone from THIS
+    screen — the final design browses by chip and card, not by category card.
+    KnowledgeCategoryCard / KnowledgeResourceRow are untouched and still serve
+    משאבים למנחים, which has its own (different, unmigrated) design.
 *@
 
 <div class="kc-header-bleed">
@@ -29,7 +66,7 @@
                  Title="משאבים"
                  Subtitle="תבניות, מדריכים וכלים — מה שצריך כדי להתקדם">
         <Actions>
-            @if (!_loadError)
+            @if (!_loadError && !_isLoading)
             {
                 <MSearchField @bind-Value="_query"
                               MaxWidth="260px"
@@ -44,15 +81,12 @@
 
     @if (_isLoading)
     {
-        <div class="kc-loading" role="status" aria-live="polite">
-            <span class="kc-spinner" aria-hidden="true"></span>
-            <span>טוענת את מרכז הידע…</span>
-        </div>
+        <MLoadingState Label="טוענת משאבים…" />
     }
     else if (_loadError)
     {
         <MEmptyState Live="true"
-                     Title="לא הצלחנו לטעון את מרכז הידע"
+                     Title="לא הצלחנו לטעון את המשאבים"
                      Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
             <Action>
                 <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">
@@ -63,97 +97,151 @@
     }
     else if (_resources.Count == 0)
     {
-        @* Global empty state — nothing has been published to any category yet. *@
-        <MEmptyState Title="אין עדיין חומרים במרכז הידע"
+        @* Nothing has been published to the library at all. *@
+        <MEmptyState Title="אין עדיין משאבים בספרייה"
                      Description="כשצוות הקורס יעלה מסמכים, מצגות או סרטונים, הם יופיעו כאן." />
-    }
-    else if (IsSearching)
-    {
-        @* ── SEARCH RESULTS — flat, category-labeled ── *@
-        var results = Results;
-        <section class="kc-results" aria-label="תוצאות חיפוש">
-            <p class="kc-results-count" role="status" aria-live="polite">
-                תוצאות עבור "@_query.Trim()" · @results.Count
-            </p>
-
-            @if (results.Count > 0)
-            {
-                <MCard Padding="MCard.CardPadding.None">
-                    <MRowList Class="kc-reslist" AriaLabel="תוצאות חיפוש">
-                        @foreach (var resource in results)
-                        {
-                            <KnowledgeResourceRow Resource="resource"
-                                                  ShowCategory="true"
-                                                  OnPlay="OpenVideo" />
-                        }
-                    </MRowList>
-                </MCard>
-            }
-            else
-            {
-                <MEmptyState Live="true"
-                             Title="לא נמצאו תוצאות"
-                             Description="אפשר לנסות מונח אחר, או לנקות את החיפוש ולעיין בקטגוריות." />
-            }
-        </section>
     }
     else
     {
-        @* ── BROWSE — category grid + attached panel ── *@
-        <div class="kc-catgrid">
-            @foreach (var category in KnowledgeCenterModel.Categories)
-            {
-                var key = category.Key;
-                <KnowledgeCategoryCard Category="category"
-                                       Count="CountIn(key)"
-                                       IsOpen="_openCategory == key"
-                                       PanelId="@PanelId"
-                                       OnToggle="() => ToggleCategory(key)" />
-            }
-        </div>
-
-        @if (_openCategory is { } openKey)
+        @* ── רלוונטי לשלב שלך ──────────────────────────────────────── *@
+        @if (StagePicks.Count > 0)
         {
-            var items = ResourcesIn(openKey);
-            <MCard
-                   Padding="MCard.CardPadding.None"
-                   Class="kc-panel">
-                <div class="kc-panel-inner" id="@PanelId">
-                    <div class="kc-panel-head">
-                        <h2 class="kc-panel-title">@KnowledgeCenterModel.LabelFor(openKey)</h2>
-                        <button type="button"
-                                class="kc-panel-close"
-                                aria-label="סגירת הקטגוריה"
-                                @onclick="CloseCategory">
-                            <span aria-hidden="true">✕</span>
-                        </button>
-                    </div>
+            <section class="kc-stage" aria-labelledby="kc-stage-title">
+                <div class="kc-stage-head">
+                    <h2 class="kc-stage-title" id="kc-stage-title">רלוונטי לשלב שלך</h2>
+                    <span class="kc-stage-chip">
+                        <span class="kc-stage-dot" aria-hidden="true"></span>
+                        @_currentStage
+                    </span>
+                    <span class="kc-stage-note">מבוסס על שלב הפרויקט הנוכחי שלכם</span>
+                </div>
 
-                    @if (items.Count > 0)
+                <div class="kc-stage-grid">
+                    @foreach (var pick in StagePicks)
                     {
-                        <MRowList Class="kc-reslist" AriaLabel="@KnowledgeCenterModel.LabelFor(openKey)">
-                            @foreach (var resource in items)
-                            {
-                                <KnowledgeResourceRow Resource="resource" OnPlay="OpenVideo" />
-                            }
-                        </MRowList>
-                    }
-                    else
-                    {
-                        @* The Design's own empty-category line, verbatim. *@
-                        <p class="kc-panel-empty">אין עדיין משאבים בקטגוריה הזו.</p>
+                        var p = pick;
+                        <button type="button"
+                                class="kc-pick"
+                                style="--kc-accent:@p.Accent"
+                                @onclick="() => OpenDetail(p)">
+                            <span class="kc-pick-icon" aria-hidden="true">
+                                <KnowledgeIcon Category="p.Category" Size="16" />
+                            </span>
+                            <span class="kc-pick-text">
+                                <span class="kc-pick-title">@p.Title</span>
+                                <span class="kc-pick-type">@p.TypeLabel</span>
+                            </span>
+                            <span class="kc-pick-mark" aria-hidden="true">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m15 6-6 6 6 6"></path>
+                                </svg>
+                            </span>
+                        </button>
                     }
                 </div>
-            </MCard>
+            </section>
         }
+
+        @* ── The library ───────────────────────────────────────────── *@
+        <section class="kc-lib" aria-label="ספריית המשאבים">
+
+            <div class="kc-lib-head">
+                <div class="kc-chips" role="group" aria-label="סינון לפי סוג">
+                    <button type="button"
+                            class="@ChipClass(FilterAll)"
+                            aria-pressed="@(_filter == FilterAll)"
+                            @onclick="() => SetFilter(FilterAll)">הכל</button>
+
+                    @foreach (var category in KnowledgeCenterModel.Categories)
+                    {
+                        var key = category.Key.ToString();
+                        <button type="button"
+                                class="@ChipClass(key)"
+                                aria-pressed="@(_filter == key)"
+                                @onclick="() => SetFilter(key)">@category.ChipLabel</button>
+                    }
+
+                    <button type="button"
+                            class="@ChipClass(FilterFavorites)"
+                            aria-pressed="@(_filter == FilterFavorites)"
+                            @onclick="() => SetFilter(FilterFavorites)">מועדפים</button>
+                </div>
+
+                <span class="kc-count" role="status" aria-live="polite">@CountLabel</span>
+            </div>
+
+            @{
+                var shown = Visible;
+            }
+
+            @if (shown.Count > 0)
+            {
+                <div class="kc-grid">
+                    @foreach (var resource in shown)
+                    {
+                        var r = resource;
+                        <ResourceCard Resource="r"
+                                      IsFavorite="_favorites.Contains(r.Id)"
+                                      IsSelected="_selected?.Id == r.Id"
+                                      OnOpen="OpenDetail"
+                                      OnToggleFavorite="ToggleFavoriteAsync" />
+                    }
+                </div>
+            }
+            else if (IsEmptyFavorites)
+            {
+                @* The reference's own favourites empty state, verbatim. *@
+                <div class="kc-empty">
+                    <span class="kc-empty-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.8" stroke-linejoin="round">
+                            <path d="m12 2.6 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.4l-5.8 3.1 1.1-6.5L2.6 9.4l6.5-.9Z"></path>
+                        </svg>
+                    </span>
+                    <p class="kc-empty-title">עדיין אין לך משאבים מועדפים</p>
+                    <p class="kc-empty-note">אפשר לסמן משאבים בכוכב כדי למצוא אותם כאן במהירות.</p>
+                </div>
+            }
+            else
+            {
+                <div class="kc-empty" role="status" aria-live="polite">
+                    <span class="kc-empty-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round">
+                            <circle cx="11" cy="11" r="7"></circle>
+                            <path d="m20 20-3.6-3.6"></path>
+                        </svg>
+                    </span>
+                    <p class="kc-empty-title">לא נמצאו משאבים מתאימים</p>
+                    <p class="kc-empty-note">נסו מילה אחרת, או בקשו מהמנחה להוסיף משאב</p>
+                    <button type="button" class="kc-empty-clear" @onclick="ClearFilters">
+                        ניקוי חיפוש וסינון
+                    </button>
+                </div>
+            }
+        </section>
     }
 
 </div>
 
+@*
+    ── Overlays ─────────────────────────────────────────────────────────────
+    Both of these are position:fixed and therefore out of flow, so the wrapper
+    costs no layout. It exists so this stylesheet has an element of its own to
+    hang `::deep` off: MModal's markup belongs to MModal, and without an
+    ancestor carrying this page's scope attribute the video-frame rule below
+    would silently match nothing.
+*@
+<div class="kc-overlays">
+
+<ResourceDetailPanel Resource="_selected"
+                     OnClose="CloseDetail"
+                     OnPlay="OpenVideo" />
+
 @* ── Video modal ──────────────────────────────────────────────────────────
-   The Design has no player at all; the app does, and real playback is
-   preserved. A modal rather than an inline iframe per row keeps the dense
-   list intact. *@
+   The design has no player at all; the app does, and real playback is
+   preserved. Raised from the detail panel's צפייה button. *@
 <MModal IsOpen="_playing is not null"
         Title="@(_playing?.Title)"
         Size="MModal.ModalSize.Large"
@@ -189,24 +277,49 @@
     }
 </MModal>
 
+</div>
+
 @code {
-    private const string PanelId = "kc-category-panel";
+    private const string FilterAll       = "all";
+    private const string FilterFavorites = "favorites";
+
+    /// <summary>How many picks the stage strip shows. The reference draws three
+    /// across its auto-fit grid; more than that and the strip stops being a
+    /// shortcut and starts being a second copy of the library below it.</summary>
+    private const int StagePickLimit = 3;
+
+    /// <summary>Device-local favourites.
+    ///
+    /// <para>No endpoint persists a per-user resource preference — there is no
+    /// UserResourcePreferences table and no field on ResourceFiles that could
+    /// hold one — so this is localStorage, exactly as משאבים למנחים already
+    /// does it (MentorResourcesPage, same key shape, same failure handling).
+    /// These are real user actions, not sample data, but they do not follow a
+    /// student to another device. A small server-side table would close that,
+    /// and it is the one thing on this screen worth adding a table for.</para></summary>
+    private const string FavKey = "motiva.student.resources.favorites";
 
     private bool _isLoading = true;
     private bool _loadError;
 
     private List<KnowledgeResource> _resources = new();
-    private KnowledgeCategoryKey?   _openCategory;
-    private KnowledgeResource?      _playing;
+    private HashSet<int>            _favorites = new();
 
-    private string _query = "";
+    private string _query  = "";
+    private string _filter = FilterAll;
 
-    private bool IsSearching => !string.IsNullOrWhiteSpace(_query);
+    private KnowledgeResource? _selected;
+    private KnowledgeResource? _playing;
 
-    private List<KnowledgeResource> Results =>
-        KnowledgeCenterModel.Search(_resources, _query);
+    /// <summary>The student's real current milestone title, or null when they
+    /// have no project, no milestones, or the dashboard call failed.</summary>
+    private string? _currentStage;
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFavoritesAsync();
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -214,31 +327,135 @@
         _loadError = false;
         StateHasChanged();
 
-        // Same endpoint the (unchanged) /files page reads. Nothing on the
-        // server, in the DTO or in the SQL is touched by this phase.
+        // The same endpoint the (unchanged) /files page reads. Nothing on the
+        // server, in the DTO or in the SQL is touched by this screen.
         var files = await ResourceFilesService.GetPublicAsync();
 
         _loadError = files is null;
-        _resources = files is null
-            ? new()
-            : KnowledgeCenterModel.ToResources(files);
+        _resources = files is null ? new() : KnowledgeCenterModel.ToResources(files);
+
+        // The stage strip is an enhancement, never a gate: the library renders
+        // in full whether or not the dashboard answers.
+        await LoadCurrentStageAsync();
 
         _isLoading = false;
     }
 
-    private int CountIn(KnowledgeCategoryKey key) =>
-        _resources.Count(r => r.Category == key);
+    private async Task LoadCurrentStageAsync()
+    {
+        _currentStage = null;
 
-    private List<KnowledgeResource> ResourcesIn(KnowledgeCategoryKey key) =>
-        _resources.Where(r => r.Category == key).ToList();
+        var dashboard = await DashboardService.GetDashboardAsync();
+        if (dashboard is null || dashboard.Milestones.Count == 0) return;
 
-    // One category open at a time — the Design's own toggle semantics.
-    private void ToggleCategory(KnowledgeCategoryKey key) =>
-        _openCategory = _openCategory == key ? null : key;
+        var current = StudentDashboardModel.CurrentMilestone(dashboard.Milestones);
+        _currentStage = string.IsNullOrWhiteSpace(current?.Title) ? null : current!.Title;
+    }
 
-    private void CloseCategory() => _openCategory = null;
+    // ── Derivation ──────────────────────────────────────────────────────
 
-    private void OpenVideo(KnowledgeResource resource) => _playing = resource;
+    /// <summary>Resources the lecturer pinned to the milestone the student is
+    /// actually in. A title match, because that is the only join the two
+    /// payloads share: MilestoneSummaryDto.Title and ResourceFileDto's
+    /// MilestoneName are both MilestoneTemplates.Title, selected by
+    /// ProjectsController and ResourceFilesController respectively.</summary>
+    private List<KnowledgeResource> StagePicks =>
+        string.IsNullOrWhiteSpace(_currentStage)
+            ? new()
+            : _resources
+                .Where(r => r.HasMilestone
+                            && string.Equals(r.MilestoneLabel, _currentStage, StringComparison.Ordinal))
+                .Take(StagePickLimit)
+                .ToList();
+
+    /// <summary>What the grid shows: the chip filter, then the query.</summary>
+    private List<KnowledgeResource> Visible
+    {
+        get
+        {
+            var pool = _filter switch
+            {
+                FilterAll       => _resources,
+                FilterFavorites => _resources.Where(r => _favorites.Contains(r.Id)).ToList(),
+                _               => Enum.TryParse<KnowledgeCategoryKey>(_filter, out var key)
+                                       ? _resources.Where(r => r.Category == key).ToList()
+                                       : _resources,
+            };
+
+            return KnowledgeCenterModel.Search(pool, _query);
+        }
+    }
+
+    /// <summary>True for "the favourites tab, and nothing is starred" — which
+    /// the design answers with its own empty state, not with the no-results
+    /// one. A query narrowing the favourites to nothing is a no-RESULTS case,
+    /// so it is excluded here.</summary>
+    private bool IsEmptyFavorites =>
+        _filter == FilterFavorites && string.IsNullOrWhiteSpace(_query) && _favorites.Count == 0;
+
+    private string CountLabel
+    {
+        get
+        {
+            var count = Visible.Count;
+            return _filter == FilterFavorites
+                ? count == 1 ? "מועדף אחד" : $"{count} מועדפים"
+                : count == 1 ? "משאב אחד"  : $"{count} משאבים";
+        }
+    }
+
+    private string ChipClass(string key) =>
+        _filter == key ? "kc-chip kc-chip-active" : "kc-chip";
+
+    // ── Interaction ─────────────────────────────────────────────────────
+
+    private void SetFilter(string key) => _filter = key;
+
+    private void ClearFilters()
+    {
+        _filter = FilterAll;
+        _query  = "";
+    }
+
+    private void OpenDetail(KnowledgeResource resource) => _selected = resource;
+
+    private void CloseDetail() => _selected = null;
+
+    // Playing a video replaces the panel with the player rather than stacking
+    // the two — the panel's job (deciding what to do) is finished at that point.
+    private void OpenVideo(KnowledgeResource resource)
+    {
+        _playing  = resource;
+        _selected = null;
+    }
 
     private void CloseVideo() => _playing = null;
+
+    // ── Favourites ──────────────────────────────────────────────────────
+
+    private async Task ToggleFavoriteAsync(KnowledgeResource resource)
+    {
+        if (!_favorites.Add(resource.Id)) _favorites.Remove(resource.Id);
+
+        try { await JS.InvokeVoidAsync("localStorage.setItem", FavKey, string.Join(",", _favorites)); }
+        catch { /* storage blocked — the page stays fully usable */ }
+    }
+
+    private async Task LoadFavoritesAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", FavKey);
+            if (!string.IsNullOrWhiteSpace(raw))
+                _favorites = raw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => int.TryParse(x, out var v) ? v : -1)
+                                .Where(v => v > 0)
+                                .ToHashSet();
+        }
+        catch
+        {
+            // Storage unavailable (private mode, blocked). The page is fully
+            // usable without favourites, so this is not an error state.
+        }
+    }
 }
