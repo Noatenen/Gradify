@@ -141,6 +141,7 @@ else
                                                   Request="@req"
                                                   Bucket="@captured"
                                                   TypeLabel="@TypeLabel(req.RequestType)"
+                                                  RecipientLabel="@RecipientLabel(req.RequestType)"
                                                   Expanded="@_expanded.Contains(req.Id)"
                                                   OnToggle="@(() => ToggleThread(req.Id))"
                                                   CanReply="@CanReply(req)"
@@ -182,7 +183,8 @@ else
     private bool _doneGroupOpen;
     private bool DoneGroupOpen => _doneGroupOpen;
 
-    private Dictionary<string, string> _typeNames = new();
+    private Dictionary<string, string> _typeNames        = new();
+    private Dictionary<string, string> _typeHandlerRoles = new();
 
     // ── Per-request reply state ───────────────────────────────────────────
     private readonly Dictionary<int, string> _replyTexts  = new();
@@ -254,6 +256,17 @@ else
             ? name
             : RequestTypes.Label(code);
 
+    private string RecipientLabel(string code)
+    {
+        var handlerRole = _typeHandlerRoles.TryGetValue(code, out var r) ? r : "";
+        var roles = handlerRole
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(role => role != RequestTypeHandlerRoles.Admin)
+            .Select(RequestTypeHandlerRoles.Label)
+            .ToList();
+        return roles.Count == 0 ? "הצוות האקדמי" : string.Join(" / ", roles);
+    }
+
     private void OnFilterToggled((string AxisKey, string Value) f)
     {
         if (f.AxisKey == "status")
@@ -306,6 +319,20 @@ else
             : types.Where(t => !string.IsNullOrWhiteSpace(t.Code))
                    .GroupBy(t => t.Code)
                    .ToDictionary(g => g.Key, g => g.First().Name);
+        _typeHandlerRoles = types is null
+            ? new()
+            : types.Where(t => !string.IsNullOrWhiteSpace(t.Code))
+                   .GroupBy(t => t.Code)
+                   .ToDictionary(g => g.Key, g => g.First().HandlerRole);
+
+        // Ensure "Extension" metadata is present for the test request
+        if (!_typeNames.ContainsKey(RequestTypes.Extension))
+            _typeNames[RequestTypes.Extension] = "הארכת מועד";
+        if (!_typeHandlerRoles.ContainsKey(RequestTypes.Extension))
+            _typeHandlerRoles[RequestTypes.Extension] = RequestTypeHandlerRoles.Mentor;
+
+        // TEMPORARY TEST REQUEST (for visual verification - easy to remove)
+        EnsureTemporaryTestRequest(_requests);
 
         _isLoading = false;
     }
@@ -315,6 +342,52 @@ else
         var result = await RequestsService.GetMyRequestsAsync();
         _loadError = result is null;
         _requests  = result ?? new();
+
+        // TEMPORARY TEST REQUEST (for visual verification - easy to remove)
+        EnsureTemporaryTestRequest(_requests);
+    }
+
+    // ── TEMPORARY TEST DATA HELPER ─────────────────────────────────────────
+    // Temporary test request for visual verification of student requests UI.
+    // To remove later: delete this method and the two EnsureTemporaryTestRequest calls.
+    private static void EnsureTemporaryTestRequest(List<StudentOwnRequestDto> list)
+    {
+        const int testId = -999;
+        if (list.Any(r => r.Id == testId)) return;
+
+        list.Insert(0, new StudentOwnRequestDto
+        {
+            Id = testId,
+            RequestType = RequestTypes.Extension, // "Extension" -> "הארכת מועד"
+            Title = "בקשה להארכת מועד הגשה",
+            Description = "בקשה להארכת מועד הגשה עקב נסיבות בריאותיות שאירעו בשבוע האחרון.",
+            Status = RequestStatuses.NeedsInfo, // Belong to RequestBucket.Waiting ("ממתין לתגובתך" / "דורש ממך פעולה")
+            Priority = RequestPriorities.Normal,
+            CreatedAt = new DateTime(2026, 8, 24, 9, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2026, 8, 25, 14, 0, 0, DateTimeKind.Utc),
+            AttachmentCount = 0,
+            HasUnread = true,
+            Extension = new ExtensionRequestInfoDto
+            {
+                CurrentDueDate = new DateTime(2026, 8, 24),
+                RequestedDueDate = new DateTime(2026, 8, 31),
+                Reason = "בקשה להארכת מועד הגשה עקב נסיבות בריאותיות שאירעו בשבוע האחרון."
+            },
+            Events = new List<ProjectRequestEventDto>
+            {
+                new()
+                {
+                    Id = -9991,
+                    RequestId = testId,
+                    UserId = 1,
+                    UserName = "מנחת הפרויקט",
+                    UserRole = Roles.Mentor,
+                    EventType = RequestEventTypes.Comment,
+                    Content = "כדי שנוכל לבחון את בקשתך, אנא צרפי אישור רשמי המפרט את משך ההיעדרות.",
+                    CreatedAt = new DateTime(2026, 8, 25, 14, 0, 0, DateTimeKind.Utc)
+                }
+            }
+        });
     }
 
     private async Task ToggleThread(int id)
@@ -335,7 +408,10 @@ else
         if (row is { HasUnread: true })
         {
             row.HasUnread = false;
-            await RequestsService.MarkReadAsync(id);
+            if (id > 0)
+            {
+                await RequestsService.MarkReadAsync(id);
+            }
             StateHasChanged();
         }
     }
@@ -413,6 +489,34 @@ else
 
         _replyingIds.Add(requestId);
         _replyErrors.Remove(requestId);
+
+        // Simulation for the temporary mock request
+        if (requestId < 0)
+        {
+            var testReq = _requests.FirstOrDefault(r => r.Id == requestId);
+            if (testReq is not null)
+            {
+                testReq.Events.Add(new ProjectRequestEventDto
+                {
+                    Id = -new Random().Next(1000, 9999),
+                    RequestId = requestId,
+                    UserId = 0,
+                    UserName = "את/ה",
+                    UserRole = Roles.Student,
+                    EventType = RequestEventTypes.Comment,
+                    Content = text,
+                    CreatedAt = DateTime.UtcNow
+                });
+                testReq.Status = RequestStatuses.WaitingForStaff;
+                testReq.UpdatedAt = DateTime.UtcNow;
+                _replyTexts.Remove(requestId);
+                _replyAttachments.Remove(requestId);
+                _replyFileErrors.Remove(requestId);
+                StateHasChanged();
+            }
+            _replyingIds.Remove(requestId);
+            return;
+        }
 
         var attachments = GetReplyAttachments(requestId)
             .Select(a => new RequestAttachmentUploadRequest

@@ -442,4 +442,7 @@ public class StudentOwnRequestDto
     /// (called automatically when the detail is opened).</summary>
     public bool     HasUnread       { get; set; }
     public List<ProjectRequestEventDto> Events { get; set; } = new();
+
+    /// <summary>Populated only when RequestType = Extension. Null otherwise.</summary>
+    public ExtensionRequestInfoDto? Extension { get; set; }
 }
