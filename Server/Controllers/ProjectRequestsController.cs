@@ -304,6 +304,49 @@ public class ProjectRequestsController : ControllerBase
 
             foreach (var row in rows)
                 row.Events = lookup.TryGetValue(row.Id, out var ev) ? ev : new();
+
+            // Load extension details for all extension requests in this batch
+            var extRequestIds = rows.Where(r => r.RequestType == RequestTypes.Extension).Select(r => r.Id).ToList();
+            if (extRequestIds.Count > 0)
+            {
+                var extIdsStr = string.Join(",", extRequestIds);
+                var extSql = $@"
+                    SELECT  e.Id,
+                            e.RequestId,
+                            e.TaskId,
+                            t.Title                                      AS TaskTitle,
+                            e.ProjectMilestoneId,
+                            COALESCE(mt.Title, '')                       AS MilestoneTitle,
+                            e.CurrentDueDate,
+                            e.RequestedDueDate,
+                            e.Reason,
+                            e.MentorDecision,
+                            e.MentorDecidedAt,
+                            md.FirstName || ' ' || md.LastName           AS MentorDecidedByName,
+                            e.MentorNotes,
+                            e.LecturerDecision,
+                            e.LecturerDecidedAt,
+                            ld.FirstName || ' ' || ld.LastName           AS LecturerDecidedByName,
+                            e.LecturerNotes,
+                            e.FinalDecision,
+                            e.ApprovedDueDate
+                    FROM    ProjectRequestExtensions e
+                    LEFT JOIN Tasks                    t   ON t.Id   = e.TaskId
+                    LEFT JOIN ProjectMilestones        pm  ON pm.Id  = e.ProjectMilestoneId
+                    LEFT JOIN AcademicYearMilestones   aym ON aym.Id = pm.AcademicYearMilestoneId
+                    LEFT JOIN MilestoneTemplates       mt  ON mt.Id  = aym.MilestoneTemplateId
+                    LEFT JOIN users                    md  ON md.Id  = e.MentorDecidedByUserId
+                    LEFT JOIN users                    ld  ON ld.Id  = e.LecturerDecidedByUserId
+                    WHERE   e.RequestId IN ({extIdsStr})";
+
+                var extensions = (await _db.GetRecordsAsync<ExtensionRequestInfoDto>(extSql))?.ToList() ?? new();
+                var extMap = extensions.ToDictionary(e => e.RequestId, e => e);
+                foreach (var row in rows)
+                {
+                    if (extMap.TryGetValue(row.Id, out var ext))
+                        row.Extension = ext;
+                }
+            }
         }
 
         return Ok(rows);
