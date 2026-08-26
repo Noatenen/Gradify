@@ -1,0 +1,447 @@
+@*
+    ── הצוותים שלי (Lecturer Teams) ────────────────────────────────────────
+    Visual source: design/design-system/MotivaLecturerDesign/
+                   הצוותים שלי מרצה 268.pdf (primary)
+                   Motiva Lecturer Teams.dc.html (implementation reference)
+    Data source:   IDashboardOverviewService.GetAsync("lecturer")
+                   → DashboardOverviewDto.Projects (list of DashboardProjectRowDto)
+    Detail panel:  IProjectOverviewService.GetAsync(projectId)
+                   → ProjectOverviewDto  (loaded on demand when row is clicked)
+
+    LAYOUT
+      Title row: large H1 + subtitle (RTL right), search pill (left / auto margin)
+      One large rounded list surface:
+        – Compact segmented-pill filter bar + result count
+        – Compact horizontal rows: status dot · team/project · mentor ·
+          stage pill · status note · chevron
+      Fixed side panel (right, 380px) with backdrop when a row is clicked.
+
+    STATUS PRIORITY (for dot / note / panel alert)
+      overdue > awaiting-approval > open-request > ok
+*@
+@page "/projects"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Projects
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IDashboardOverviewService DashboardService
+@inject IProjectOverviewService   ProjectOverview
+@inject NavigationManager         Nav
+
+<div class="ltp-page" dir="rtl">
+
+    @* ── Title + Search ──────────────────────────────────────────────── *@
+    <div class="ltp-title-row">
+        <div class="ltp-title-group">
+            <h1 class="ltp-h1">הצוותים שלי</h1>
+            <p class="ltp-subtitle">כל צוותי הקורס — מנחים, התקדמות ומצב נוכחי</p>
+        </div>
+        <div class="ltp-search-wrap">
+            <svg class="ltp-search-icon" width="15" height="15" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
+                 aria-hidden="true">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-3.6-3.6"></path>
+            </svg>
+            <input class="ltp-search-input"
+                   type="search"
+                   placeholder="חיפוש צוות, פרויקט או מנחה…"
+                   value="@_query"
+                   @oninput="@((e) => _query = e.Value?.ToString() ?? "")"
+                   aria-label="חיפוש צוותים" />
+        </div>
+    </div>
+
+    @* ── Loading / error ─────────────────────────────────────────────── *@
+    @if (_loading)
+    {
+        <div class="ltp-loading" role="status" aria-live="polite">
+            <span class="ltp-spinner" aria-hidden="true"></span>
+            <span>טוענת נתונים…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <p class="ltp-error">שגיאה בטעינת הנתונים. נסה לרענן את הדף.</p>
+    }
+    else
+    {
+        @* ── Teams list ──────────────────────────────────────────────── *@
+        <section class="ltp-list" aria-label="רשימת הצוותים">
+
+            @* ── Filter bar ── *@
+            <div class="ltp-filter-row">
+                <div class="ltp-chips">
+                    @foreach (var f in Filters)
+                    {
+                        <button type="button"
+                                class="ltp-chip @(f.Id == _filter ? "ltp-chip-active" : "")"
+                                @onclick="@(() => _filter = f.Id)"
+                                aria-pressed="@(f.Id == _filter ? "true" : "false")">
+                            @f.Label
+                            @if (f.Id == "attention" && AttentionCount > 0)
+                            {
+                                <span class="ltp-chip-badge" aria-label="@AttentionCount באיחור">@AttentionCount</span>
+                            }
+                        </button>
+                    }
+                </div>
+                <span class="ltp-count" aria-live="polite">@Visible.Count מתוך @_all.Count צוותים</span>
+            </div>
+
+            @* ── Team rows ── *@
+            @if (Visible.Count == 0)
+            {
+                <p class="ltp-empty-msg">
+                    לא נמצאו צוותים תואמים ·
+                    <button type="button" class="ltp-clear-btn" @onclick="ClearFilter">ניקוי חיפוש וסינון</button>
+                </p>
+            }
+            else
+            {
+                @foreach (var (row, idx) in Visible.Select((r, i) => (r, i)))
+                {
+                    bool isLast = idx == Visible.Count - 1;
+                    <button type="button"
+                            class="ltp-row @(isLast ? "ltp-row-last" : "")"
+                            @onclick="@(() => OpenPanel(row))"
+                            aria-label="@($"פרטי הצוות {row.TeamName ?? row.ProjectTitle}")">
+
+                        @* 1. Status dot *@
+                        <span class="ltp-dot" style="background:@DotColor(row)" aria-hidden="true"></span>
+
+                        @* 2. Team + project *@
+                        <span class="ltp-team-col">
+                            <span class="ltp-team-name">@(row.TeamName ?? row.ProjectTitle)</span>
+                            <span class="ltp-team-project">@row.ProjectTitle</span>
+                        </span>
+
+                        @* 3. Mentor *@
+                        <span class="ltp-mentor-col">מנחה: @(row.MentorNames ?? "לא שויך")</span>
+
+                        @* 4. Current stage pill *@
+                        <span class="ltp-stage-col">
+                            @if (row.CurrentMilestoneTitle is { Length: > 0 })
+                            {
+                                <span class="ltp-stage-pill">@row.CurrentMilestoneTitle</span>
+                            }
+                            else
+                            {
+                                <span class="ltp-stage-pill ltp-stage-empty">—</span>
+                            }
+                        </span>
+
+                        @* 5. Status note *@
+                        <span class="ltp-note-col" style="color:@NoteColor(row)">@NoteText(row)</span>
+
+                        @* 6. Chevron *@
+                        <svg class="ltp-chevron" width="15" height="15" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2.2"
+                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M15 6l-6 6 6 6"></path>
+                        </svg>
+                    </button>
+                }
+            }
+        </section>
+    }
+
+</div>
+
+@* ── Detail panel ─────────────────────────────────────────────────────────── *@
+@if (_selectedRow is not null)
+{
+    @* Backdrop — covers everything including nav; z-index 110 > nav z-index 100 *@
+    <div class="ltp-overlay" @onclick="ClosePanel" aria-hidden="true"></div>
+
+    <div class="ltp-panel" dir="rtl"
+         role="dialog" aria-modal="true"
+         aria-label="@($"פרטי {_selectedRow.TeamName ?? _selectedRow.ProjectTitle}")">
+
+        @* Panel header: stage chip + optional alert + close *@
+        <div class="ltp-panel-head">
+            @if (_selectedRow.CurrentMilestoneTitle is { Length: > 0 })
+            {
+                <span class="ltp-panel-stage-chip">@_selectedRow.CurrentMilestoneTitle</span>
+            }
+            @if (PanelAlertText(_selectedRow) is { } alertText)
+            {
+                <span class="ltp-panel-alert-chip">
+                    <span class="ltp-panel-alert-dot" aria-hidden="true"></span>
+                    @alertText
+                </span>
+            }
+            <button type="button" class="ltp-panel-close" @onclick="ClosePanel"
+                    title="סגירה" aria-label="סגירה">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                    <path d="M18 6 6 18M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+
+        @* Team / project identity *@
+        <h2 class="ltp-panel-name">@(_selectedRow.TeamName ?? _selectedRow.ProjectTitle)</h2>
+        <p class="ltp-panel-project">פרויקט: @_selectedRow.ProjectTitle</p>
+
+        @* Detail rows *@
+        <div class="ltp-panel-rows">
+
+            @* Mentor *@
+            <div class="ltp-panel-row">
+                <span class="ltp-panel-label">מנחה</span>
+                <span class="ltp-panel-val ltp-panel-mentor-val">
+                    @if (_selectedRow.MentorNames is { Length: > 0 })
+                    {
+                        <span class="ltp-mentor-avatar" aria-hidden="true">@MentorInitials(_selectedRow.MentorNames)</span>
+                        @_selectedRow.MentorNames
+                    }
+                    else
+                    {
+                        <span class="ltp-panel-muted">לא שויך מנחה</span>
+                    }
+                </span>
+            </div>
+
+            @* Current stage + progress *@
+            <div class="ltp-panel-row">
+                <span class="ltp-panel-label">שלב נוכחי</span>
+                <span class="ltp-panel-val ltp-panel-stage-val">
+                    @(_selectedRow.CurrentMilestoneTitle ?? "לא הוגדר")
+                    @if (_panelDetail is not null)
+                    {
+                        <span class="ltp-panel-pct"> · @_panelDetail.Summary.OverallProgressPercent%</span>
+                    }
+                </span>
+            </div>
+
+            @* Next milestone due date *@
+            @if (_selectedRow.CurrentMilestoneDueDate is { } due)
+            {
+                <div class="ltp-panel-row">
+                    <span class="ltp-panel-label">אבן דרך הבאה</span>
+                    <span class="ltp-panel-val">
+                        @(_selectedRow.CurrentMilestoneTitle ?? "—") · @due.ToString("dd.MM")
+                    </span>
+                </div>
+            }
+
+            @* Detail rows loaded from ProjectOverviewDto *@
+            @if (_panelLoading)
+            {
+                <div class="ltp-panel-row ltp-panel-row-loading">
+                    <span class="ltp-spinner ltp-spinner-sm" aria-hidden="true"></span>
+                </div>
+            }
+            else if (_panelDetail is not null)
+            {
+                @* Latest submission *@
+                @if (_panelDetail.RecentSubmissions.Count > 0)
+                {
+                    var sub = _panelDetail.RecentSubmissions[0];
+                    <div class="ltp-panel-row">
+                        <span class="ltp-panel-label">הגשה אחרונה</span>
+                        <span class="ltp-panel-val ltp-panel-sub">
+                            <span class="ltp-panel-sub-title">@sub.TaskTitle · @sub.SubmittedAt.ToString("dd.MM")</span>
+                            <span class="ltp-panel-sub-state" style="color:@SubStateColor(sub.Status)">@SubStateLabel(sub)</span>
+                        </span>
+                    </div>
+                }
+
+                @* First open request *@
+                @if (_panelDetail.OpenRequests.Count > 0)
+                {
+                    var req = _panelDetail.OpenRequests[0];
+                    <div class="ltp-panel-row ltp-panel-row-last">
+                        <span class="ltp-panel-label">בקשה פתוחה</span>
+                        <a class="ltp-panel-req-link" href="/management/requests">
+                            @req.Title · @req.CreatedAt.ToString("dd.MM")
+                        </a>
+                    </div>
+                }
+            }
+        </div>
+
+        @* Footer actions *@
+        <div class="ltp-panel-footer">
+            <a class="ltp-panel-btn-outline" href="/milestones-overview">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="1.9"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                    <path d="M16 2v4M8 2v4M3 10h18"></path>
+                </svg>
+                יומן הצוות
+            </a>
+            <a class="ltp-panel-cta" href="@($"/projects/{_selectedRow.ProjectId}/overview")">
+                לסקירת הפרויקט
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.3"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 6l-6 6 6 6"></path>
+                </svg>
+            </a>
+        </div>
+    </div>
+}
+
+@code {
+    // ── Filter definitions ─────────────────────────────────────────────────
+    private record FilterDef(string Id, string Label);
+
+    private static readonly FilterDef[] Filters =
+    {
+        new("all",       "הכל"),
+        new("attention", "דורש תשומת לב"),
+        new("approve",   "ממתין לאישור"),
+        new("request",   "בקשה פתוחה"),
+        new("ok",        "מתקדם כרגיל"),
+    };
+
+    // ── State ─────────────────────────────────────────────────────────────
+    private List<DashboardProjectRowDto> _all    = new();
+    private string _query  = "";
+    private string _filter = "all";
+    private bool   _loading   = true;
+    private bool   _loadError;
+
+    // Detail panel
+    private DashboardProjectRowDto? _selectedRow;
+    private ProjectOverviewDto?     _panelDetail;
+    private bool                    _panelLoading;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        var data = await DashboardService.GetAsync("lecturer");
+        _loadError = data is null;
+        if (data is not null)
+        {
+            // Worst health first → soonest deadline
+            _all = data.Projects
+                .OrderBy(p  => HealthSeverity(p.HealthBucket))
+                .ThenByDescending(p => p.OverdueTaskCount)
+                .ThenBy(p  => p.CurrentMilestoneDueDate ?? DateTime.MaxValue)
+                .ToList();
+        }
+        _loading = false;
+    }
+
+    // ── Filtering ─────────────────────────────────────────────────────────
+    private List<DashboardProjectRowDto> Visible =>
+        _all.Where(MatchesFilter).Where(MatchesQuery).ToList();
+
+    private bool MatchesFilter(DashboardProjectRowDto r) => _filter switch
+    {
+        "all"       => true,
+        "attention" => HasAnyAttention(r),
+        "approve"   => r.MissingSubmissionCount > 0,
+        "request"   => r.OpenRequestCount > 0,
+        "ok"        => !HasAnyAttention(r),
+        _           => true,
+    };
+
+    private bool MatchesQuery(DashboardProjectRowDto r)
+    {
+        var q = _query.Trim();
+        if (q.Length == 0) return true;
+        return (r.TeamName     ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)
+            || (r.ProjectTitle ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)
+            || (r.MentorNames  ?? "").Contains(q, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasAnyAttention(DashboardProjectRowDto r) =>
+        r.OverdueTaskCount > 0 || r.MissingSubmissionCount > 0 || r.OpenRequestCount > 0;
+
+    /// <summary>Badge on "דורש תשומת לב" = count of overdue teams specifically.</summary>
+    private int AttentionCount => _all.Count(r => r.OverdueTaskCount > 0);
+
+    private void ClearFilter() { _filter = "all"; _query = ""; }
+
+    // ── Row display helpers ────────────────────────────────────────────────
+    private static string DotColor(DashboardProjectRowDto r)
+    {
+        if (r.OverdueTaskCount      > 0) return "#E0335F";   // rose — overdue
+        if (r.MissingSubmissionCount > 0) return "#2E63E8";   // blue — awaiting approval
+        if (r.OpenRequestCount      > 0) return "#6D28F5";   // violet — open request
+        return "#0FA8C2";                                     // teal — healthy
+    }
+
+    private static string NoteColor(DashboardProjectRowDto r)
+    {
+        if (r.OverdueTaskCount      > 0) return "#C42B52";
+        if (r.MissingSubmissionCount > 0) return "#2E63E8";
+        if (r.OpenRequestCount      > 0) return "#6D28F5";
+        return "#6B6779";
+    }
+
+    private static string NoteText(DashboardProjectRowDto r)
+    {
+        if (r.OverdueTaskCount > 0)
+            return $"משימות באיחור · {r.OverdueTaskCount}";
+        if (r.MissingSubmissionCount > 0) return "הגשה ממתינה לאישורך";
+        if (r.OpenRequestCount      > 0) return "בקשה פתוחה";
+        return "מתקדם כרגיל";
+    }
+
+    private static int HealthSeverity(string bucket) => bucket switch
+    {
+        HealthBuckets.AtRisk    => 0,
+        HealthBuckets.Attention => 1,
+        _                       => 2,
+    };
+
+    // ── Panel ──────────────────────────────────────────────────────────────
+    private async Task OpenPanel(DashboardProjectRowDto row)
+    {
+        _selectedRow  = row;
+        _panelDetail  = null;
+        _panelLoading = true;
+        StateHasChanged();
+
+        _panelDetail  = await ProjectOverview.GetAsync(row.ProjectId);
+        _panelLoading = false;
+    }
+
+    private void ClosePanel() { _selectedRow = null; _panelDetail = null; }
+
+    private static string? PanelAlertText(DashboardProjectRowDto r)
+    {
+        if (r.OverdueTaskCount      > 0) return "באיחור";
+        if (r.MissingSubmissionCount > 0) return "הגשה לאישור";
+        if (r.OpenRequestCount      > 0) return "בקשה להחלטתך";
+        return null;
+    }
+
+    private static string MentorInitials(string names)
+    {
+        var first = names.Split(',')[0].Trim();
+        var parts = first.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2
+            ? $"{parts[0][0]}{parts[1][0]}"
+            : (parts.Length == 1 && parts[0].Length > 0) ? parts[0][0].ToString() : "?";
+    }
+
+    private static string SubStateLabel(ProjectOverviewSubmissionDto sub)
+    {
+        if (sub.LatestMentorStatus is { Length: > 0 } ms) return ms;
+        return sub.Status switch
+        {
+            "Submitted"     => "ממתין לבדיקת המנחה",
+            "Reviewed"      => "נבדק ע״י המנחה · ממתין לאישורך",
+            "NeedsRevision" => "נדרש תיקון",
+            "Approved"      => "אושר",
+            _               => sub.Status,
+        };
+    }
+
+    private static string SubStateColor(string status) => status switch
+    {
+        "Reviewed"      => "#2E63E8",
+        "NeedsRevision" => "#C42B52",
+        "Approved"      => "#0F8FA6",
+        _               => "#6B6779",
+    };
+}

@@ -98,4 +98,36 @@ public static class NavIcons
         "M7 7V5.6a1 1 0 0 1 1-1h2.7a1 1 0 0 1 .8.4l.9 1.2a1 1 0 0 0 .8.4H18a1 1 0 0 1 1 1V9",
         "M3 10.5a1 1 0 0 1 1-1h2.7a1 1 0 0 0 .8-.4l.9-1.2a1 1 0 0 1 .8-.4H20a1 1 0 0 1 1 1v10.9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z",
     };
+
+    // ── Lecturer additions ───────────────────────────────────────────────
+    // Same 24x24 grid, same open-path construction as the icons above.
+    // Added for the Lecturer (Staff) Motiva rail, which shares the visual
+    // system with Student and Mentor but points at different destinations.
+
+    /// <summary>A heart — "בריאות פרויקטים". Open stroke, symmetric shape
+    /// so it reads identically under RTL.</summary>
+    public static readonly IReadOnlyList<string> Health = new[]
+    {
+        "M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z",
+    };
+
+    /// <summary>Three concentric circles — "שיבוצים". A target reads as
+    /// "assignments / allocation" in any language and is symmetric under RTL.
+    /// Drawn as arcs so the centre ring and bullseye are visible at small
+    /// sizes even without a fill.</summary>
+    public static readonly IReadOnlyList<string> Assignments = new[]
+    {
+        "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20",
+        "M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12",
+        "M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
+    };
+
+    /// <summary>A shield with a checkmark inside — "אישורי מנחה". The shield
+    /// reads as authority / approval; the check confirms that action was taken.
+    /// Symmetric about the vertical axis, so it reads identically under RTL.</summary>
+    public static readonly IReadOnlyList<string> ShieldCheck = new[]
+    {
+        "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10",
+        "m9 12 2 2 4-4",
+    };
 }

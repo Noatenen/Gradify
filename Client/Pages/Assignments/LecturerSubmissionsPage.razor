@@ -1,0 +1,521 @@
+@*
+    ── הגשות ובקרה (Lecturer Submissions & Monitoring) ─────────────────────────
+    Visual source: design/design-system/MotivaLecturerDesign/
+                   Motiva Lecturer Submissions.dc.html
+    Data sources:
+      • IPendingMentorApprovalsService.GetPendingAsync()
+          → List<PendingMentorApprovalRowDto> — submissions stuck at mentor >0 days
+          Actions: RemindMentorAsync(id) · OverrideApproveAsync(id, reason)
+      • ITaskSubmissionsService.GetLecturerDetailAsync(id)
+          → LecturerSubmissionDetailDto — expanded-row detail on demand
+
+    WORKFLOW (real, not the retired lecturer-review flow)
+      Student submits → Mentor reviews → if stuck, lecturer can:
+        a) "תזכורת למנחה" — send a reminder (POST remind-mentor)
+        b) "אישור ההגשה"  — override-approve with mandatory reason (PUT lecturer-override-approve)
+
+    GROUPS (when tab = הכל)
+      approve   — ממתינות לאישורך   (blue,  primary surface) — DaysWaiting >= 3
+      mentor    — בבדיקת מנחה       (gray,  primary surface) — DaysWaiting < 3
+      attention — דורש תשומת לב     (rose,  primary surface) — empty (no separate endpoint)
+      done      — אושרו              (teal,  quiet surface, hidden on הכל tab) — empty
+*@
+@page "/lecturer/submissions"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Assignments
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IPendingMentorApprovalsService PendingService
+@inject ITaskSubmissionsService SubmissionsService
+
+<div class="lsb-page" dir="rtl">
+
+    <!-- TITLE ROW -->
+    <div class="lsb-title-row">
+        <div class="lsb-title-block">
+            <h1 class="lsb-h1">הגשות ובקרה</h1>
+            <p class="lsb-sub">מה הוגש, מה ממתין לאישור — ואיפה יש חריגים</p>
+        </div>
+        <nav class="lsb-tabs" role="tablist">
+            @foreach (var tab in _tabs)
+            {
+                <button class="@TabClass(tab.Id)"
+                        role="tab"
+                        @onclick="() => SetFilter(tab.Id)">
+                    @tab.Label
+                    @if (tab.Badge > 0)
+                    {
+                        <span class="lsb-tab-badge">@tab.Badge</span>
+                    }
+                </button>
+            }
+        </nav>
+    </div>
+
+    <!-- CONTROL CHIPS -->
+    <div class="lsb-chips-row">
+        <button class="lsb-chip lsb-chip-rose" @onclick='() => SetFilter("mentor")'>
+            <span class="lsb-chip-dot lsb-dot-rose"></span>
+            @_attentionCount הגשות ממתינות
+        </button>
+        <button class="lsb-chip lsb-chip-blue" @onclick='() => SetFilter("approve")'>
+            <span class="lsb-chip-dot lsb-dot-blue"></span>
+            @_approveCount ממתינות לאישורך
+        </button>
+        @if (_statusFilter != "all")
+        {
+            <span class="lsb-filter-active">
+                סינון פעיל: @ActiveFilterLabel
+                <button class="lsb-filter-clear" title="ניקוי" @onclick='() => SetFilter("all")'>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
+            </span>
+        }
+    </div>
+
+    <!-- LOADING / ERROR -->
+    @if (_loading)
+    {
+        <div class="lsb-state lsb-state-loading">טוען הגשות…</div>
+    }
+    else if (_loadError)
+    {
+        <div class="lsb-state lsb-state-error">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4m0 4h.01"></path></svg>
+            שגיאה בטעינת ההגשות. נסו לרענן את הדף.
+        </div>
+    }
+    else
+    {
+        @* Render each visible group with an index to add top-margin on non-first groups *@
+        @foreach (var groupEntry in VisibleGroups.Select((g, i) => new { Group = g, Idx = i }))
+        {
+            var group = groupEntry.Group;
+            var groupIdx = groupEntry.Idx;
+            var rows = RowsForGroup(group.Id);
+            var sectionClass = "lsb-group" +
+                               (group.Quiet ? " lsb-group-quiet" : "") +
+                               (groupIdx > 0 ? " lsb-group-spaced" : "");
+
+            <section class="@sectionClass">
+                <p class="lsb-group-label" style="color: @group.Color">@group.Label</p>
+
+                @if (rows.Count == 0)
+                {
+                    <p class="lsb-group-empty">אין הגשות תואמות לסינון הנוכחי</p>
+                }
+                else
+                {
+                    @foreach (var row in rows)
+                    {
+                        var isExpanded = _expandedKey == row.Key;
+
+                        @if (isExpanded)
+                        {
+                            @* Expanded card *@
+                            <div class="lsb-card-expanded">
+                                <div class="lsb-card-head">
+                                    <div class="lsb-card-head-main">
+                                        <p class="lsb-card-title">@row.Title</p>
+                                        <p class="lsb-card-sub">
+                                            @row.Sub
+                                            @if (!string.IsNullOrEmpty(row.StateLine))
+                                            {
+                                                <span> · </span>
+                                                <span style="color: @row.StateColor; font-weight: 600">@row.StateLine</span>
+                                            }
+                                        </p>
+                                    </div>
+                                    <button class="lsb-collapse-btn" title="צמצום" @onclick="() => Toggle(row.Key)">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="m6 15 6-6 6 6" />
+                                        </svg>
+                                    </button>
+                                </div>
+
+                                @if (_detailLoading.Contains(row.Key))
+                                {
+                                    <div class="lsb-detail-loading">טוען פרטים…</div>
+                                }
+                                else
+                                {
+                                    @* Pre-compute detail variables to avoid nested @{ } blocks *@
+                                    var detail = _details.TryGetValue(row.Key, out var d) ? d : null;
+                                    var studentFile = detail?.Files?.FirstOrDefault(f => !f.IsLecturerFeedback);
+                                    var notesUrl = detail?.Notes?.Trim();
+                                    var hasNotesUrl = !string.IsNullOrWhiteSpace(notesUrl) && Uri.IsWellFormedUriString(notesUrl, UriKind.Absolute);
+                                    var mentorFeedback = detail?.MentorFeedback;
+                                    var mentorName = detail?.MentorName ?? row.MentorName;
+                                    var actionMsg = GetActionMessage(row.Key);
+                                    var noteVal = GetNote(row.Key);
+
+                                    @* Dates + file links row *@
+                                    <div class="lsb-dates-row">
+                                        <div class="lsb-dates-block">
+                                            <span class="lsb-dates-inner">
+                                                <span class="lsb-date-col">
+                                                    <span class="lsb-date-val">@row.Submitted</span>
+                                                    <span class="lsb-date-lbl">הוגש</span>
+                                                </span>
+                                                <span class="lsb-date-sep"></span>
+                                                <span class="lsb-date-col">
+                                                    <span class="lsb-date-val" style="color: @row.DueColor">@row.Due</span>
+                                                    <span class="lsb-date-lbl">מועד הגשה</span>
+                                                </span>
+                                            </span>
+                                        </div>
+                                        @if (studentFile is not null)
+                                        {
+                                            <a href="/submissions/@studentFile.StoredFileName" target="_blank" class="lsb-file-link">
+                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M20 11.5 12 19.5a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l7-7" />
+                                                </svg>
+                                                @studentFile.OriginalFileName
+                                            </a>
+                                        }
+                                        @if (hasNotesUrl)
+                                        {
+                                            <a href="@notesUrl" target="_blank" class="lsb-file-link">
+                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M20 11.5 12 19.5a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l7-7" />
+                                                </svg>
+                                                קישור להגשה
+                                            </a>
+                                        }
+                                        @if (row.ProjectId > 0)
+                                        {
+                                            <a href="/projects/@row.ProjectId" class="lsb-team-link">
+                                                לצוות
+                                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M15 6l-6 6 6 6" />
+                                                </svg>
+                                            </a>
+                                        }
+                                    </div>
+
+                                    @* Mentor feedback block *@
+                                    @if (!string.IsNullOrWhiteSpace(mentorFeedback))
+                                    {
+                                        <div class="lsb-feedback-block">
+                                            <p class="lsb-feedback-by">משוב המנחה · @mentorName</p>
+                                            <p class="lsb-feedback-text">"@mentorFeedback"</p>
+                                        </div>
+                                    }
+
+                                    @* Decision row — only for pending items where DaysWaiting >= 3 *@
+                                    @if (row.CanDecide)
+                                    {
+                                        <div class="lsb-decision-row">
+                                            <button class="lsb-btn-outline"
+                                                    disabled="@_busyKeys.Contains(row.Key)"
+                                                    @onclick="() => RemindMentor(row)">
+                                                תזכורת למנחה
+                                            </button>
+                                            <input class="lsb-note-input"
+                                                   placeholder="סיבת האישור החריג (חובה)"
+                                                   value="@noteVal"
+                                                   @oninput="e => SetNote(row.Key, e.Value?.ToString() ?? string.Empty)" />
+                                            <button class="lsb-btn-approve"
+                                                    disabled="@IsApproveDisabled(row.Key)"
+                                                    @onclick="() => OverrideApprove(row)">
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="m5 12.5 4.5 4.5L19 7" />
+                                                </svg>
+                                                אישור ההגשה
+                                            </button>
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(actionMsg))
+                                        {
+                                            <p class="@ActionMsgClass(row.Key)">@actionMsg</p>
+                                        }
+                                    }
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            @* Collapsed row *@
+                            <div class="lsb-row-collapsed" @onclick="() => Toggle(row.Key)">
+                                <span class="lsb-row-dot" style="background: @row.Dot"></span>
+                                <div class="lsb-row-body">
+                                    <p class="lsb-row-title">@row.Title</p>
+                                    <p class="lsb-row-sub">@row.Sub</p>
+                                </div>
+                                <span class="lsb-row-time" style="color: @row.TimeColor">@row.TimeLabel</span>
+                                <span class="lsb-row-chevron">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="m6 9 6 6 6-6" />
+                                    </svg>
+                                </span>
+                            </div>
+                        }
+                    }
+                }
+            </section>
+        }
+
+        @* "כל ההגשות שאושרו" link *@
+        @if (_statusFilter != "done")
+        {
+            <div class="lsb-done-link-row">
+                <button class="lsb-done-link" @onclick='() => SetFilter("done")'>
+                    כל ההגשות שאושרו
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 6l-6 6 6 6" />
+                    </svg>
+                </button>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    // ── State ─────────────────────────────────────────────────────────────────
+
+    private string _statusFilter = "all";
+    private string? _expandedKey;
+    private bool _loading = true;
+    private bool _loadError;
+
+    private List<PendingMentorApprovalRowDto> _pending = new();
+
+    private Dictionary<string, LecturerSubmissionDetailDto?> _details = new();
+    private HashSet<string> _detailLoading = new();
+
+    private Dictionary<string, string> _notes          = new();
+    private Dictionary<string, string> _actionMessages = new();
+    private HashSet<string> _actionErrors              = new();
+    private HashSet<string> _busyKeys                  = new();
+
+    // ── Group & tab definitions ────────────────────────────────────────────────
+
+    private record GroupDef(string Id, string Label, string Color, bool Quiet);
+    private static readonly GroupDef[] AllGroups =
+    {
+        new("approve",   "ממתינות לאישורך",  "#2E63E8", false),
+        new("attention", "דורש תשומת לב",    "#C42B52", false),
+        new("mentor",    "בבדיקת מנחה",      "#6B6779", false),
+        new("done",      "אושרו",             "#9B96A8", true ),
+    };
+
+    private record TabDef(string Id, string Label, int Badge = 0);
+    private IReadOnlyList<TabDef> _tabs = Array.Empty<TabDef>();
+
+    // ── Derived helpers ────────────────────────────────────────────────────────
+
+    private int _approveCount   => _pending.Count(r => r.DaysWaiting >= 3);
+    private int _attentionCount => _pending.Count;
+
+    private string ActiveFilterLabel =>
+        AllGroups.FirstOrDefault(g => g.Id == _statusFilter)?.Label ?? _statusFilter;
+
+    private string TabClass(string id) =>
+        id == _statusFilter ? "lsb-tab lsb-tab-active" : "lsb-tab";
+
+    private string GetNote(string key) =>
+        _notes.TryGetValue(key, out var n) ? n : string.Empty;
+
+    private bool IsApproveDisabled(string key) =>
+        _busyKeys.Contains(key) || string.IsNullOrWhiteSpace(GetNote(key));
+
+    private string? GetActionMessage(string key) =>
+        _actionMessages.TryGetValue(key, out var m) ? m : null;
+
+    private string ActionMsgClass(string key) =>
+        "lsb-row-msg " + (_actionErrors.Contains(key) ? "lsb-row-msg-error" : "lsb-row-msg-ok");
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        var data = await PendingService.GetPendingAsync();
+        if (data is null)
+            _loadError = true;
+        else
+            _pending = data;
+        _loading = false;
+        RebuildTabs();
+    }
+
+    private void RebuildTabs()
+    {
+        var approveCount = _pending.Count(r => r.DaysWaiting >= 3);
+        _tabs = new TabDef[]
+        {
+            new("all",       "הכל"),
+            new("approve",   "ממתינות לאישורך", approveCount),
+            new("mentor",    "בבדיקת מנחה"),
+            new("attention", "דורש תשומת לב"),
+            new("done",      "אושרו"),
+        };
+    }
+
+    // ── Row model ─────────────────────────────────────────────────────────────
+
+    private record RowModel(
+        string Key,
+        string Title,
+        string Sub,
+        string Submitted,
+        string Due,
+        string DueColor,
+        string Dot,
+        string TimeLabel,
+        string TimeColor,
+        string StateLine,
+        string StateColor,
+        bool   CanDecide,
+        string MentorName,
+        int    SubmissionId,
+        int    ProjectId
+    );
+
+    // ── Data mapping ──────────────────────────────────────────────────────────
+    // GetPendingAsync returns only MentorStatus="Pending" submissions.
+    // Split by DaysWaiting: >= 3 → approve (canDecide), < 3 → mentor.
+    // attention and done are empty (no separate endpoint).
+
+    private IReadOnlyList<RowModel> RowsForGroup(string groupId) =>
+        groupId switch
+        {
+            "approve"   => _pending.Where(r => r.DaysWaiting >= 3).Select(ToRowModel).ToList(),
+            "mentor"    => _pending.Where(r => r.DaysWaiting < 3).Select(ToRowModel).ToList(),
+            _           => new List<RowModel>()
+        };
+
+    private RowModel ToRowModel(PendingMentorApprovalRowDto r)
+    {
+        bool canDecide = r.DaysWaiting >= 3;
+        var submitted  = r.SubmittedAt != default ? r.SubmittedAt.ToString("dd.MM") : "—";
+
+        string stateLine, stateColor, timeLabel, timeColor, dot;
+        if (canDecide)
+        {
+            stateLine  = $"נבדק ע\"י המנחה · ממתין לאישורך ({r.DaysWaiting} ימים)";
+            stateColor = "#2E63E8";
+            timeLabel  = "ממתין לאישורך";
+            timeColor  = "#2E63E8";
+            dot        = "#2E63E8";
+        }
+        else
+        {
+            stateLine  = "בבדיקת המנחה";
+            stateColor = "#6B6779";
+            timeLabel  = $"הוגש {submitted}";
+            timeColor  = "#6B6779";
+            dot        = "#6B6779";
+        }
+
+        return new RowModel(
+            Key:          $"s{r.SubmissionId}",
+            Title:        r.TaskTitle,
+            Sub:          $"{r.TeamName} · {r.ProjectTitle} · מנחה: {r.MentorName}",
+            Submitted:    submitted,
+            Due:          "—",
+            DueColor:     "#6D28F5",
+            Dot:          dot,
+            TimeLabel:    timeLabel,
+            TimeColor:    timeColor,
+            StateLine:    stateLine,
+            StateColor:   stateColor,
+            CanDecide:    canDecide,
+            MentorName:   r.MentorName ?? string.Empty,
+            SubmissionId: r.SubmissionId,
+            ProjectId:    r.ProjectId
+        );
+    }
+
+    // ── Visible groups ────────────────────────────────────────────────────────
+
+    private IEnumerable<GroupDef> VisibleGroups =>
+        _statusFilter == "all"
+            ? AllGroups.Where(g => g.Id != "done")
+            : AllGroups.Where(g => g.Id == _statusFilter);
+
+    // ── Interactions ──────────────────────────────────────────────────────────
+
+    private void SetFilter(string id)
+    {
+        _statusFilter = id;
+        _expandedKey  = null;
+        RebuildTabs();
+    }
+
+    private async Task Toggle(string key)
+    {
+        if (_expandedKey == key)
+        {
+            _expandedKey = null;
+            return;
+        }
+        _expandedKey = key;
+
+        if (!_details.ContainsKey(key) && !_detailLoading.Contains(key))
+        {
+            var submissionId = ExtractId(key);
+            if (submissionId > 0)
+            {
+                _detailLoading.Add(key);
+                StateHasChanged();
+                var detail = await SubmissionsService.GetLecturerDetailAsync(submissionId);
+                _details[key] = detail;
+                _detailLoading.Remove(key);
+            }
+        }
+    }
+
+    private void SetNote(string key, string value)
+    {
+        if (string.IsNullOrEmpty(value)) _notes.Remove(key);
+        else _notes[key] = value;
+    }
+
+    private async Task RemindMentor(RowModel row)
+    {
+        _busyKeys.Add(row.Key);
+        var err = await PendingService.RemindMentorAsync(row.SubmissionId);
+        _busyKeys.Remove(row.Key);
+        if (err is null)
+        {
+            _actionMessages[row.Key] = "תזכורת נשלחה למנחה";
+            _actionErrors.Remove(row.Key);
+        }
+        else
+        {
+            _actionMessages[row.Key] = err;
+            _actionErrors.Add(row.Key);
+        }
+    }
+
+    private async Task OverrideApprove(RowModel row)
+    {
+        var reason = GetNote(row.Key);
+        if (string.IsNullOrWhiteSpace(reason)) return;
+
+        _busyKeys.Add(row.Key);
+        var err = await PendingService.OverrideApproveAsync(row.SubmissionId, reason);
+        _busyKeys.Remove(row.Key);
+
+        if (err is null)
+        {
+            _pending     = _pending.Where(r => r.SubmissionId != row.SubmissionId).ToList();
+            _expandedKey = null;
+            _actionMessages.Remove(row.Key);
+            _actionErrors.Remove(row.Key);
+            _notes.Remove(row.Key);
+            RebuildTabs();
+        }
+        else
+        {
+            _actionMessages[row.Key] = err;
+            _actionErrors.Add(row.Key);
+        }
+    }
+
+    private static int ExtractId(string key) =>
+        key.Length > 1 && key[0] == 's' && int.TryParse(key[1..], out var id) ? id : 0;
+}

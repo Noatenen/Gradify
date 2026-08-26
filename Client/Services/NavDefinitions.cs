@@ -12,34 +12,35 @@ namespace AuthWithAdmin.Client.Services;
 public static class NavDefinitions
 {
     // ── Admin / Staff (Lecturer) ─────────────────────────────────────
-    // Restructured 2026-05-21: side nav holds *operational, daily-work*
-    // items only. System configuration lives in the "ניהול" area below.
-    // The /dashboard legacy route still resolves so old bookmarks survive.
+    // Seven destinations matching the approved Motiva Lecturer design
+    // (design/design-system/MotivaLecturerDesign/דשבורד מרצה 268.pdf).
+    // The pill nav renders these identically to the student and mentor
+    // bars — same pill track, same badge mechanism, same action cluster.
+    //
+    // All eight destinations from the previous side-nav remain accessible
+    // at their existing routes; only this list (what appears in the chrome)
+    // changed. /project-health, /management/pending-mentor-approvals and
+    // the חומרי עזר side-nav entry are still reachable via /management or
+    // direct URL — they were not removed, just withdrawn from the primary nav.
     private static readonly IReadOnlyList<NavItem> _adminMain = new[]
     {
-        new NavItem("דשבורד מרצה",       "dashboard/lecturer",            "oi-pulse",           NavLinkMatch.Prefix),
-        new NavItem("פרויקטים",         "projects",                       "oi-folder",          NavLinkMatch.Prefix),
-        new NavItem("בריאות פרויקטים",   "project-health",                 "oi-heart",           NavLinkMatch.Prefix),
-        new NavItem("שיבוצים",           "assignments",                    "oi-target",          NavLinkMatch.Prefix),
-        // Cross-project milestones overview (not the student-style /milestones page).
-        // Milestone TEMPLATE editing lives under /management/milestones.
-        new NavItem("אבני דרך",          "milestones-overview",            "oi-flag",            NavLinkMatch.Prefix),
-        // Operational request inbox. The /management/requests URL is the
-        // existing page — kept so deep links keep working — but it now
-        // surfaces as a primary side-nav item, not a management card.
-        new NavItem("בקשות",             "management/requests",            "oi-envelope-closed", NavLinkMatch.Prefix),
-        // Pending mentor approvals as a daily work-queue surface.
-        new NavItem("אישורי מנחה",       "management/pending-mentor-approvals", "oi-shield",     NavLinkMatch.Prefix),
-        // Learning Materials — promoted from the management area so lecturers
-        // can upload / categorize without an extra click through "ניהול".
-        new NavItem("חומרי עזר",         "resource-files",                 "oi-book",            NavLinkMatch.Prefix),
+        // Match.All: prevents /dashboard/lecturer/anything from keeping "בית" lit.
+        new NavItem("בית",            "dashboard/lecturer",  "oi-home",            NavLinkMatch.All,    NavIcons.Home),
+        new NavItem("הצוותים שלי",    "projects",            "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
+        new NavItem("הגשות ובקרה",    "lecturer/submissions", "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
+        // Badge: OpenRequests count (shown by LecturerTopNav, same as student's בקשות badge).
+        new NavItem("בקשות",          "management/requests", "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
+        new NavItem("יומן",           "milestones-overview", "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),
+        new NavItem("משאבים",         "resource-files",      "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
+        // Match.All: /management/* is owned by its own inner nav; this item
+        // should only light up when the user is at /management exactly.
+        new NavItem("ניהול",          "management",          "oi-list-rich",       NavLinkMatch.All,    NavIcons.Dashboard),
     };
 
-    private static readonly IReadOnlyList<NavItem> _adminBottom = new[]
-    {
-        new NavItem("ניהול",   "management", "oi-list-rich", NavLinkMatch.All),
-        new NavItem("הגדרות",  "settings",   "oi-cog",       NavLinkMatch.Prefix),
-    };
+    // Empty: settings is reached from the profile avatar in LecturerTopNav's
+    // action cluster, exactly like the student and mentor shells. A second
+    // nav row here would be a duplicate destination.
+    private static readonly IReadOnlyList<NavItem> _adminBottom = Array.Empty<NavItem>();
 
     // ── Student ──────────────────────────────────────────────────────
     // The six destinations of the FINAL student design — every one of the
@@ -149,7 +150,12 @@ public static class NavDefinitions
         /// <see cref="Student"/>, different information architecture.</summary>
         Mentor,
 
-        /// <summary>Lecturer / Staff / Admin — the legacy shell, untouched.
+        /// <summary>The Motiva lecturer experience — same visual system as
+        /// <see cref="Student"/> and <see cref="Mentor"/>, different information
+        /// architecture. Staff users (role = Roles.Staff) resolve here.</summary>
+        Lecturer,
+
+        /// <summary>Admin-only — the legacy shell, untouched.
         /// Resolves every token at its :root value.</summary>
         Staff
     }
@@ -163,21 +169,25 @@ public static class NavDefinitions
         if (RoleService.IsStudent(user)) return Shell.Student;
 
         // Dual-role users (Staff + Mentor): the active mode picks.
+        // Staff mode → Lecturer shell (same Motiva visual system as Mentor).
         if (UserModeService.IsDualRole(user))
             return UserModeService.EffectiveMode(user) == UserModes.Mentor
                 ? Shell.Mentor
-                : Shell.Staff;
+                : Shell.Lecturer;
 
-        if (RoleService.IsMentor(user))       return Shell.Mentor;
-        if (RoleService.IsAdminOrStaff(user)) return Shell.Staff;
+        if (RoleService.IsMentor(user)) return Shell.Mentor;
+        // Both Staff (Lecturer) and Admin land on /dashboard/lecturer as their home
+        // and share the Lecturer information architecture. Admin no longer gets a
+        // separate legacy sidebar shell — the Motiva top nav serves them equally.
+        if (RoleService.IsStaff(user) || RoleService.IsAdmin(user)) return Shell.Lecturer;
 
         return Shell.Student; // safe fallback — matches GetNavItems
     }
 
-    /// <summary>True for the two experiences that consume the Motiva System
-    /// Master (Student and Mentor). This is the single predicate behind the
-    /// `.motiva` token scope, the `.snav-motiva` rail, and the decision of
-    /// where the notification bell is mounted.</summary>
+    /// <summary>True for the three experiences that consume the Motiva System
+    /// Master (Student, Mentor, and Lecturer). This is the single predicate
+    /// behind the `.motiva` token scope, the `.snav-motiva` rail, and the
+    /// decision of where the notification bell is mounted.</summary>
     public static bool IsMotivaShell(User? user) => GetShell(user) != Shell.Staff;
 
     // ─────────────────────────────────────────────────────────────────
@@ -192,8 +202,9 @@ public static class NavDefinitions
     public static (IReadOnlyList<NavItem> Main, IReadOnlyList<NavItem> Bottom) GetNavItems(User? user)
         => GetShell(user) switch
         {
-            Shell.Student => (_studentMain, _studentBottom),
-            Shell.Mentor  => (_mentorMain,  _mentorBottom),
-            _             => (_adminMain,   _adminBottom),
+            Shell.Student  => (_studentMain, _studentBottom),
+            Shell.Mentor   => (_mentorMain,  _mentorBottom),
+            Shell.Lecturer => (_adminMain,   _adminBottom),
+            _              => (_adminMain,   _adminBottom),
         };
 }
