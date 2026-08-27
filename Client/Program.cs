@@ -112,6 +112,7 @@ builder.Services.AddScoped<IRememberedLoginService, RememberedLoginService>();
 builder.Services.AddScoped<UserContextService>();
 builder.Services.AddScoped<IPersonalTasksService, PersonalTasksService>();
 builder.Services.AddScoped<ITeamTasksService, TeamTasksService>();
+builder.Services.AddScoped<IProjectMentorsService, ProjectMentorsService>();
 
 builder.Services.AddAuthorizationCore(options =>
 {

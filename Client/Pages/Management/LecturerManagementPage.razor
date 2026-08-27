@@ -1,0 +1,788 @@
+@*
+    ── ניהול (Lecturer Management) ──────────────────────────────────────────
+    Route:  /management  — the "ניהול" nav item in the Lecturer/Staff shell.
+
+    Visual reference:
+        Motiva Lecturer Management.dc.html
+        design/design-system/MotivaLecturerDesign/ניהול מרצה 268.pdf
+
+    OVERVIEW STATE
+    ──────────────
+    2×2 grid of four management category cards. Each card navigates into its
+    category detail view without leaving the page.
+
+    CATEGORY DETAIL STATES
+    ──────────────────────
+    1. צוותים ושיוכים   — compact team rows with inline mentor assignment
+    2. אבני דרך ומועדים — milestone rows with inline date editing
+    3. ניהול משאבים     — resource rows with project-type visibility toggles
+    4. הרשאות והגדרות   — role feature-flag matrix with toggle switches
+
+    SHELL
+    ─────
+    Same title-row pattern as the other Lecturer pages (38 px / 700 / −0.035 em).
+    No MPageHeader gradient — sits on the regular page background.
+*@
+
+@page "/management"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Management
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@inject IDashboardOverviewService        DashboardService
+@inject IMilestoneManagementService      MilestoneService
+@inject IResourceFilesService            ResourceFilesService
+@inject IRoleSettingsManagementService   RoleSettingsService
+@inject IProjectMentorsService           MentorsService
+@inject NavigationManager                Nav
+
+<div class="lmg-page" dir="rtl">
+
+    <!-- ══ Title row ══════════════════════════════════════════════════════════ -->
+    <div class="lmg-title-row">
+        <div class="lmg-title-block">
+            @if (_activeSection is not null)
+            {
+                <button type="button" class="lmg-back" @onclick="GoBack">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m9 18 6-6-6-6"></path>
+                    </svg>
+                    חזרה לניהול
+                </button>
+            }
+            <h1 class="lmg-h1">ניהול</h1>
+            <p class="lmg-subtitle">
+                @(_activeSection is null
+                    ? "ניהול הקורס — צוותים, אבני דרך, משאבים והרשאות"
+                    : SectionSubtitle(_activeSection))
+            </p>
+        </div>
+    </div>
+
+    <!-- ══ Loading ════════════════════════════════════════════════════════════ -->
+    @if (_loading)
+    {
+        <div class="lmg-loading" role="status" aria-live="polite">
+            <span class="lmg-spinner" aria-hidden="true"></span>
+            <span>טוענת נתוני ניהול…</span>
+        </div>
+    }
+    else
+    {
+        <!-- ══ Overview — 2 × 2 card grid ════════════════════════════════════ -->
+        @if (_activeSection is null)
+        {
+            <div class="lmg-grid">
+                @foreach (var card in BuildOverviewCards())
+                {
+                    var c = card;
+                    <button type="button" class="lmg-card" @onclick="() => OpenSection(c.Key)">
+                        <div class="lmg-card-top">
+                            <span class="lmg-card-icon"
+                                  style="--icon-bg:@c.IconBg;--icon-color:@c.IconColor"
+                                  aria-hidden="true">
+                                @((MarkupString)c.IconSvg)
+                            </span>
+                            <span class="lmg-card-chevron" aria-hidden="true">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m15 6-6 6 6 6"></path>
+                                </svg>
+                            </span>
+                        </div>
+                        <h2 class="lmg-card-title">@c.Title</h2>
+                        <p class="lmg-card-desc">@c.Description</p>
+                        <span class="lmg-card-meta">@c.Meta</span>
+                    </button>
+                }
+            </div>
+        }
+
+        <!-- ══ צוותים ושיוכים ════════════════════════════════════════════════ -->
+        @if (_activeSection == "teams")
+        {
+            <section class="lmg-panel" aria-labelledby="lmg-teams-title">
+                <div class="lmg-panel-head">
+                    <h2 class="lmg-panel-title" id="lmg-teams-title">צוותים ושיוכים</h2>
+                    <span class="lmg-head-chip">@_projects.Count צוותים</span>
+                    <span class="lmg-head-note">שינוי שיוך מנחה לפרויקט</span>
+                </div>
+
+                @if (_projects.Count == 0)
+                {
+                    <p class="lmg-empty-msg">אין פרויקטים פעילים כרגע.</p>
+                }
+                else
+                {
+                    <div class="lmg-rows" role="list">
+                        @foreach (var proj in _projects)
+                        {
+                            var p = proj;
+                            bool isEditing = _editingProjectId == p.ProjectId;
+                            <div class="lmg-row @(isEditing ? "lmg-row-open" : "")" role="listitem">
+                                <div class="lmg-row-body">
+                                    <span class="lmg-dot" style="background:@HealthDot(p.HealthBucket)" aria-hidden="true"></span>
+                                    <div class="lmg-row-text">
+                                        <span class="lmg-row-name">@(p.TeamName ?? p.ProjectTitle)</span>
+                                        <span class="lmg-row-sub">פרויקט @p.ProjectNumber · @p.ProjectTitle</span>
+                                    </div>
+                                    <div class="lmg-mentor-info">
+                                        @if (!string.IsNullOrWhiteSpace(p.MentorNames))
+                                        {
+                                            <span class="lmg-avatar" aria-hidden="true">@TwoInitials(p.MentorNames)</span>
+                                        }
+                                        <span class="lmg-mentor-name">@(p.MentorNames ?? "ללא מנחה")</span>
+                                    </div>
+                                    <button type="button"
+                                            class="lmg-inline-btn"
+                                            @onclick="() => ToggleEditTeam(p.ProjectId)">
+                                        @(isEditing ? "ביטול" : "שינוי שיוך")
+                                    </button>
+                                </div>
+
+                                @if (isEditing)
+                                {
+                                    <div class="lmg-row-expand">
+                                        @if (_editLoading)
+                                        {
+                                            <span class="lmg-edit-loading" role="status">טוענת מנחים…</span>
+                                        }
+                                        else
+                                        {
+                                            <!-- Current mentors -->
+                                            @if (_editCurrentMentors.Count > 0)
+                                            {
+                                                <div class="lmg-mentor-current">
+                                                    <span class="lmg-expand-label">מנחים נוכחיים</span>
+                                                    <div class="lmg-chips-row">
+                                                        @foreach (var m in _editCurrentMentors)
+                                                        {
+                                                            var mentor = m;
+                                                            <span class="lmg-mentor-chip">
+                                                                <span class="lmg-chip-avatar" aria-hidden="true">@TwoInitials(mentor.FullName)</span>
+                                                                @mentor.FullName
+                                                                <button type="button"
+                                                                        class="lmg-chip-remove"
+                                                                        @onclick="() => RemoveMentorAsync(p.ProjectId, mentor.UserId)"
+                                                                        aria-label="הסרת @mentor.FullName">
+                                                                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+                                                                        <path d="M18 6 6 18M6 6l12 12"></path>
+                                                                    </svg>
+                                                                </button>
+                                                            </span>
+                                                        }
+                                                    </div>
+                                                </div>
+                                            }
+
+                                            <!-- Candidate list -->
+                                            <div class="lmg-mentor-add">
+                                                <span class="lmg-expand-label">הוספת מנחה</span>
+                                                @if (_editCandidates.Count == 0)
+                                                {
+                                                    <span class="lmg-expand-empty">אין מנחים זמינים להוספה.</span>
+                                                }
+                                                else
+                                                {
+                                                    <div class="lmg-candidates">
+                                                        @foreach (var cand in _editCandidates)
+                                                        {
+                                                            var cd = cand;
+                                                            <button type="button"
+                                                                    class="lmg-candidate"
+                                                                    @onclick="() => AddMentorAsync(p.ProjectId, cd.UserId)">
+                                                                <span class="lmg-cand-avatar" aria-hidden="true">@TwoInitials(cd.FullName)</span>
+                                                                <span class="lmg-cand-name">@cd.FullName</span>
+                                                                <span class="lmg-cand-role">@cd.Roles</span>
+                                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="lmg-cand-plus" aria-hidden="true">
+                                                                    <path d="M12 5v14M5 12h14"></path>
+                                                                </svg>
+                                                            </button>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        }
+
+        <!-- ══ אבני דרך ומועדים ══════════════════════════════════════════════ -->
+        @if (_activeSection == "milestones")
+        {
+            <section class="lmg-panel" aria-labelledby="lmg-ms-title">
+                <div class="lmg-panel-head">
+                    <h2 class="lmg-panel-title" id="lmg-ms-title">אבני דרך ומועדים</h2>
+                    <span class="lmg-head-chip">@_milestones.Count אבני דרך</span>
+                    <span class="lmg-head-note">שינוי תאריך מעדכן את לוח השנה ואת ההתראות</span>
+                </div>
+
+                @if (_milestones.Count == 0)
+                {
+                    <p class="lmg-empty-msg">אין תבניות אבני דרך מוגדרות.</p>
+                }
+                else
+                {
+                    <div class="lmg-rows" role="list">
+                        @foreach (var ms in _milestones.OrderBy(m => m.OrderIndex))
+                        {
+                            var m = ms;
+                            bool isEditing = _editingMilestoneId == m.Id;
+                            var status = MilestoneStatus(m);
+                            <div class="lmg-row @(isEditing ? "lmg-row-open" : "")" role="listitem">
+                                <div class="lmg-row-body">
+                                    <span class="lmg-ms-index" aria-hidden="true">@m.OrderIndex</span>
+                                    <div class="lmg-row-text">
+                                        <span class="lmg-row-name">@m.Title</span>
+                                        <span class="lmg-row-sub">@m.Applicability</span>
+                                    </div>
+                                    <span class="lmg-status-pill lmg-s-@status.Key">@status.Label</span>
+                                    <span class="lmg-date-range">@DateRange(m)</span>
+                                    <button type="button"
+                                            class="lmg-inline-btn"
+                                            @onclick="() => ToggleEditMilestone(m)">
+                                        @(isEditing ? "ביטול" : "עריכת מועד")
+                                    </button>
+                                </div>
+
+                                @if (isEditing)
+                                {
+                                    <div class="lmg-row-expand">
+                                        <div class="lmg-date-fields">
+                                            <label class="lmg-date-field">
+                                                <span class="lmg-field-label">פתיחה</span>
+                                                <input type="date" class="lmg-date-input"
+                                                       value="@_editOpenDate"
+                                                       @onchange="e => _editOpenDate = e.Value?.ToString() ?? _editOpenDate" />
+                                            </label>
+                                            <label class="lmg-date-field">
+                                                <span class="lmg-field-label">מועד הגשה</span>
+                                                <input type="date" class="lmg-date-input"
+                                                       value="@_editDueDate"
+                                                       @onchange="e => _editDueDate = e.Value?.ToString() ?? _editDueDate" />
+                                            </label>
+                                            <label class="lmg-date-field">
+                                                <span class="lmg-field-label">סגירה</span>
+                                                <input type="date" class="lmg-date-input"
+                                                       value="@_editCloseDate"
+                                                       @onchange="e => _editCloseDate = e.Value?.ToString() ?? _editCloseDate" />
+                                            </label>
+                                        </div>
+                                        <div class="lmg-expand-actions">
+                                            <button type="button"
+                                                    class="lmg-save-btn"
+                                                    disabled="@_msSaving"
+                                                    @onclick="() => SaveMilestoneDatesAsync(m)">
+                                                @(_msSaving ? "שומר…" : "שמירה")
+                                            </button>
+                                            @if (!string.IsNullOrWhiteSpace(_msError))
+                                            {
+                                                <span class="lmg-error-msg" role="alert">@_msError</span>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        }
+
+        <!-- ══ ניהול משאבים ══════════════════════════════════════════════════ -->
+        @if (_activeSection == "resources")
+        {
+            <section class="lmg-panel" aria-labelledby="lmg-res-title">
+                <div class="lmg-panel-head">
+                    <h2 class="lmg-panel-title" id="lmg-res-title">ניהול משאבים</h2>
+                    <span class="lmg-head-chip">@_resources.Count קבצים</span>
+                    <a class="lmg-add-link" href="/management/resources">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 5v14M5 12h14"></path>
+                        </svg>
+                        הוספת משאב
+                    </a>
+                </div>
+
+                @if (_resources.Count == 0)
+                {
+                    <p class="lmg-empty-msg">
+                        אין משאבים בספרייה.
+                        <a href="/management/resources" class="lmg-empty-link">הוספה ראשונה ↗</a>
+                    </p>
+                }
+                else
+                {
+                    <div class="lmg-res-header" aria-hidden="true">
+                        <span class="lmg-res-col-main">שם המשאב</span>
+                        <span class="lmg-res-col-toggle">טכנולוגי</span>
+                        <span class="lmg-res-col-toggle">מתודולוגי</span>
+                    </div>
+                    <div class="lmg-rows" role="list">
+                        @foreach (var res in _resources)
+                        {
+                            var r = res;
+                            <div class="lmg-row lmg-res-row" role="listitem">
+                                <span class="lmg-res-icon" aria-hidden="true">
+                                    @((MarkupString)ResourceIcon(r))
+                                </span>
+                                <div class="lmg-row-text">
+                                    <span class="lmg-row-name">@FileTitle(r.FileName)</span>
+                                    <span class="lmg-row-sub">@ResourceTypeLabel(r)</span>
+                                </div>
+                                <div class="lmg-toggle-cell">
+                                    <button type="button"
+                                            role="switch"
+                                            aria-checked="@r.ForTechnological.ToString().ToLowerInvariant()"
+                                            class="lmg-toggle @(r.ForTechnological ? "lmg-toggle-on" : "")"
+                                            @onclick="() => ToggleResAsync(r, tech: true)">
+                                        <span class="lmg-toggle-thumb"></span>
+                                    </button>
+                                </div>
+                                <div class="lmg-toggle-cell">
+                                    <button type="button"
+                                            role="switch"
+                                            aria-checked="@r.ForMethodological.ToString().ToLowerInvariant()"
+                                            class="lmg-toggle @(r.ForMethodological ? "lmg-toggle-on" : "")"
+                                            @onclick="() => ToggleResAsync(r, tech: false)">
+                                        <span class="lmg-toggle-thumb"></span>
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        }
+
+        <!-- ══ הרשאות והגדרות ════════════════════════════════════════════════ -->
+        @if (_activeSection == "settings")
+        {
+            <section class="lmg-panel" aria-labelledby="lmg-set-title">
+                <div class="lmg-panel-head">
+                    <h2 class="lmg-panel-title" id="lmg-set-title">הרשאות והגדרות</h2>
+                    <span class="lmg-head-note">שינויים נכנסים לתוקף מיידית</span>
+                </div>
+
+                @if (_roleSettings.Count == 0)
+                {
+                    <p class="lmg-empty-msg">לא נמצאו הגדרות הרשאות.</p>
+                }
+                else
+                {
+                    @foreach (var role in _roleSettings)
+                    {
+                        var rs = role;
+                        <div class="lmg-settings-group">
+                            <div class="lmg-settings-group-label">@RoleDisplayName(rs.RoleName)</div>
+                            @foreach (var flag in SettingFlags)
+                            {
+                                var f = flag;
+                                bool isOn = GetFlag(rs, f);
+                                <div class="lmg-setting-row">
+                                    <div class="lmg-setting-text">
+                                        <span class="lmg-setting-name">@RoleFeatures.Label(f)</span>
+                                        <span class="lmg-setting-desc">@SettingDescription(f)</span>
+                                    </div>
+                                    <button type="button"
+                                            role="switch"
+                                            aria-checked="@isOn.ToString().ToLowerInvariant()"
+                                            class="lmg-toggle @(isOn ? "lmg-toggle-on" : "")"
+                                            @onclick="() => ToggleSettingAsync(rs, f)">
+                                        <span class="lmg-toggle-thumb"></span>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                }
+            </section>
+        }
+    }
+
+</div>
+
+@code {
+    // ── State ─────────────────────────────────────────────────────────────────
+    private bool    _loading       = true;
+    private string? _activeSection;           // null = overview
+
+    // Teams
+    private List<DashboardProjectRowDto> _projects           = new();
+    private int?                         _editingProjectId;
+    private bool                         _editLoading;
+    private List<ProjectMentorDto>       _editCurrentMentors = new();
+    private List<MentorCandidateDto>     _editCandidates     = new();
+
+    // Milestones
+    private List<MilestoneTemplateDto>   _milestones         = new();
+    private int?                         _editingMilestoneId;
+    private string                       _editOpenDate       = "";
+    private string                       _editDueDate        = "";
+    private string                       _editCloseDate      = "";
+    private bool                         _msSaving;
+    private string                       _msError            = "";
+
+    // Resources
+    private List<ResourceFileDto>        _resources          = new();
+
+    // Settings
+    private List<RoleSettingsDto>        _roleSettings       = new();
+
+    // ── Constant flag list for the settings section ────────────────────────
+    private static readonly string[] SettingFlags =
+    {
+        RoleFeatures.CanOpenRequests,
+        RoleFeatures.CanViewTasks,
+        RoleFeatures.CanSubmitTasks,
+        RoleFeatures.CanManageAssignments,
+        RoleFeatures.CanManageMilestones,
+    };
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync() => await LoadAllAsync();
+
+    private async Task LoadAllAsync()
+    {
+        _loading = true;
+
+        var tDash     = DashboardService.GetAsync("lecturer");
+        var tMs       = MilestoneService.GetTemplatesAsync();
+        var tRes      = ResourceFilesService.GetAllAsync();
+        var tSettings = RoleSettingsService.GetAllAsync();
+
+        await Task.WhenAll(tDash, tMs, tRes, tSettings);
+
+        _projects     = tDash.Result?.Projects ?? new();
+        _milestones   = tMs.Result             ?? new();
+        _resources    = tRes.Result            ?? new();
+        _roleSettings = (tSettings.Result      ?? new())
+            .Where(r => r.RoleName is "Student" or "Mentor")
+            .OrderBy(r => r.RoleName == "Student" ? 0 : 1)
+            .ToList();
+
+        _loading = false;
+    }
+
+    // ── Overview cards ─────────────────────────────────────────────────────
+    private record OverviewCard(string Key, string Title, string Description, string Meta,
+                                string IconSvg, string IconBg, string IconColor);
+
+    private IEnumerable<OverviewCard> BuildOverviewCards() => new[]
+    {
+        new OverviewCard(
+            "teams", "צוותים ושיוכים",
+            "ניהול שיוך מנחים לפרויקטים וצוותים פעילים",
+            TeamsMetaLabel(),
+            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>""",
+            "rgba(109,40,245,.09)", "#6D28F5"),
+
+        new OverviewCard(
+            "milestones", "אבני דרך ומועדים",
+            "עדכון תאריכים ומועדי הגשה לאבני הדרך",
+            $"{_milestones.Count} אבני דרך",
+            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>""",
+            "rgba(46,99,232,.09)", "#2E63E8"),
+
+        new OverviewCard(
+            "resources", "ניהול משאבים",
+            "ניהול חומרי לימוד ושליטה על נגישות לפי סוג פרויקט",
+            $"{_resources.Count} קבצים בספרייה",
+            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>""",
+            "rgba(15,168,194,.09)", "#0FA8C2"),
+
+        new OverviewCard(
+            "settings", "הרשאות והגדרות",
+            "הגדרת הרשאות לפי תפקיד — מה מותר לסטודנטים ומנחים",
+            "הגדרות מערכת",
+            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>""",
+            "rgba(109,40,245,.09)", "#6D28F5"),
+    };
+
+    private string TeamsMetaLabel()
+    {
+        var withMentor = _projects.Count(p => !string.IsNullOrWhiteSpace(p.MentorNames));
+        return $"{_projects.Count} צוותים · {withMentor} עם מנחה";
+    }
+
+    // ── Navigation ─────────────────────────────────────────────────────────
+    private void OpenSection(string key)
+    {
+        _activeSection      = key;
+        _editingProjectId   = null;
+        _editingMilestoneId = null;
+        _msError            = "";
+    }
+
+    private void GoBack()
+    {
+        _activeSection      = null;
+        _editingProjectId   = null;
+        _editingMilestoneId = null;
+        _msError            = "";
+    }
+
+    private static string SectionSubtitle(string section) => section switch
+    {
+        "teams"      => "שינוי שיוך מנחים לפרויקטים",
+        "milestones" => "עדכון תאריכים ומועדי הגשה",
+        "resources"  => "ניהול נגישות חומרי לימוד",
+        "settings"   => "הרשאות לפי תפקיד",
+        _            => "",
+    };
+
+    // ── Teams ──────────────────────────────────────────────────────────────
+    private async Task ToggleEditTeam(int projectId)
+    {
+        if (_editingProjectId == projectId) { _editingProjectId = null; return; }
+
+        _editingProjectId   = projectId;
+        _editLoading        = true;
+        _editCurrentMentors = new();
+        _editCandidates     = new();
+
+        var (mentors, candidates) = (
+            await MentorsService.GetMentorsAsync(projectId),
+            await MentorsService.GetCandidatesAsync(projectId));
+
+        _editCurrentMentors = mentors    ?? new();
+        _editCandidates     = candidates ?? new();
+        _editLoading        = false;
+    }
+
+    private async Task AddMentorAsync(int projectId, int userId)
+    {
+        if (!await MentorsService.AddMentorAsync(projectId, userId)) return;
+        await RefreshMentorEditAsync(projectId);
+        await RefreshProjectsAsync();
+    }
+
+    private async Task RemoveMentorAsync(int projectId, int userId)
+    {
+        if (!await MentorsService.RemoveMentorAsync(projectId, userId)) return;
+        await RefreshMentorEditAsync(projectId);
+        await RefreshProjectsAsync();
+    }
+
+    private async Task RefreshMentorEditAsync(int projectId)
+    {
+        _editCurrentMentors = await MentorsService.GetMentorsAsync(projectId)    ?? _editCurrentMentors;
+        _editCandidates     = await MentorsService.GetCandidatesAsync(projectId)  ?? _editCandidates;
+    }
+
+    private async Task RefreshProjectsAsync()
+    {
+        var dash = await DashboardService.GetAsync("lecturer");
+        if (dash is not null) _projects = dash.Projects;
+    }
+
+    // ── Milestones ─────────────────────────────────────────────────────────
+    private void ToggleEditMilestone(MilestoneTemplateDto m)
+    {
+        if (_editingMilestoneId == m.Id) { _editingMilestoneId = null; return; }
+
+        _editingMilestoneId = m.Id;
+        _editOpenDate  = m.OpenDate?.ToString("yyyy-MM-dd")  ?? "";
+        _editDueDate   = m.DueDate?.ToString("yyyy-MM-dd")   ?? "";
+        _editCloseDate = m.CloseDate?.ToString("yyyy-MM-dd") ?? "";
+        _msError = "";
+    }
+
+    private async Task SaveMilestoneDatesAsync(MilestoneTemplateDto m)
+    {
+        _msSaving = true;
+        _msError  = "";
+
+        var req = new SaveMilestoneTemplateRequest
+        {
+            Title         = m.Title,
+            Description   = m.Description,
+            OrderIndex    = m.OrderIndex,
+            IsRequired    = m.IsRequired,
+            IsActive      = m.IsActive,
+            ProjectTypeId = m.ProjectTypeId,
+            OpenDate      = string.IsNullOrWhiteSpace(_editOpenDate)  ? null : DateTime.Parse(_editOpenDate),
+            DueDate       = string.IsNullOrWhiteSpace(_editDueDate)   ? null : DateTime.Parse(_editDueDate),
+            CloseDate     = string.IsNullOrWhiteSpace(_editCloseDate) ? null : DateTime.Parse(_editCloseDate),
+        };
+
+        var err = await MilestoneService.UpdateTemplateAsync(m.Id, req);
+        if (err is null)
+        {
+            m.OpenDate  = req.OpenDate;
+            m.DueDate   = req.DueDate;
+            m.CloseDate = req.CloseDate;
+            _editingMilestoneId = null;
+        }
+        else
+        {
+            _msError = err;
+        }
+
+        _msSaving = false;
+    }
+
+    // ── Resources ──────────────────────────────────────────────────────────
+    private async Task ToggleResAsync(ResourceFileDto r, bool tech)
+    {
+        if (tech) r.ForTechnological  = !r.ForTechnological;
+        else      r.ForMethodological = !r.ForMethodological;
+
+        var ok = await ResourceFilesService.UpdateAsync(r.Id, new UpdateResourceFileRequest
+        {
+            ItemType          = r.ItemType,
+            FileName          = r.FileName,
+            Description       = r.Description,
+            MilestoneId       = r.MilestoneId,
+            TaskId            = r.TaskId,
+            ForTechnological  = r.ForTechnological,
+            ForMethodological = r.ForMethodological,
+            VideoUrl          = r.VideoUrl,
+        });
+
+        if (!ok)
+        {
+            // Rollback on failure
+            if (tech) r.ForTechnological  = !r.ForTechnological;
+            else      r.ForMethodological = !r.ForMethodological;
+        }
+    }
+
+    // ── Settings ───────────────────────────────────────────────────────────
+    private async Task ToggleSettingAsync(RoleSettingsDto rs, string flag)
+    {
+        SetFlag(rs, flag, !GetFlag(rs, flag));
+
+        var req = new SaveRoleSettingsRequest
+        {
+            CanManageRequests        = rs.CanManageRequests,
+            CanManageMilestones      = rs.CanManageMilestones,
+            CanManageAssignments     = rs.CanManageAssignments,
+            CanManageUsers           = rs.CanManageUsers,
+            CanManageAirtable        = rs.CanManageAirtable,
+            CanOpenRequests          = rs.CanOpenRequests,
+            CanViewTasks             = rs.CanViewTasks,
+            CanSubmitTasks           = rs.CanSubmitTasks,
+            CanViewLecturerDashboard = rs.CanViewLecturerDashboard,
+        };
+
+        if (!await RoleSettingsService.SaveAsync(rs.RoleName, req))
+            SetFlag(rs, flag, !GetFlag(rs, flag)); // rollback
+    }
+
+    private bool GetFlag(RoleSettingsDto rs, string flag) => flag switch
+    {
+        RoleFeatures.CanManageRequests        => rs.CanManageRequests,
+        RoleFeatures.CanManageMilestones      => rs.CanManageMilestones,
+        RoleFeatures.CanManageAssignments     => rs.CanManageAssignments,
+        RoleFeatures.CanManageUsers           => rs.CanManageUsers,
+        RoleFeatures.CanManageAirtable        => rs.CanManageAirtable,
+        RoleFeatures.CanOpenRequests          => rs.CanOpenRequests,
+        RoleFeatures.CanViewTasks             => rs.CanViewTasks,
+        RoleFeatures.CanSubmitTasks           => rs.CanSubmitTasks,
+        RoleFeatures.CanViewLecturerDashboard => rs.CanViewLecturerDashboard,
+        _                                     => false,
+    };
+
+    private static void SetFlag(RoleSettingsDto rs, string flag, bool v)
+    {
+        switch (flag)
+        {
+            case RoleFeatures.CanManageRequests:        rs.CanManageRequests        = v; break;
+            case RoleFeatures.CanManageMilestones:      rs.CanManageMilestones      = v; break;
+            case RoleFeatures.CanManageAssignments:     rs.CanManageAssignments     = v; break;
+            case RoleFeatures.CanManageUsers:           rs.CanManageUsers           = v; break;
+            case RoleFeatures.CanManageAirtable:        rs.CanManageAirtable        = v; break;
+            case RoleFeatures.CanOpenRequests:          rs.CanOpenRequests          = v; break;
+            case RoleFeatures.CanViewTasks:             rs.CanViewTasks             = v; break;
+            case RoleFeatures.CanSubmitTasks:           rs.CanSubmitTasks           = v; break;
+            case RoleFeatures.CanViewLecturerDashboard: rs.CanViewLecturerDashboard = v; break;
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+    private static string HealthDot(string? bucket) => bucket switch
+    {
+        "Healthy"   => "#10B981",
+        "Attention" => "#F59E0B",
+        "AtRisk"    => "#EF4444",
+        _           => "#B4B0C0",
+    };
+
+    /// <summary>First initials of the first and last word in a name string.</summary>
+    private static string TwoInitials(string name)
+    {
+        var parts = name.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "?";
+        var a = parts[0].Length > 0 ? parts[0][..1] : "";
+        var b = parts.Length > 1 && parts[^1].Length > 0 ? parts[^1][..1] : "";
+        return (a + b) is { Length: > 0 } s ? s : "?";
+    }
+
+    private static string DateRange(MilestoneTemplateDto m)
+    {
+        if (m.OpenDate is null && m.DueDate is null) return "ללא תאריכים";
+        var open = m.OpenDate?.ToString("dd.MM.yy") ?? "—";
+        var due  = m.DueDate?.ToString("dd.MM.yy")  ?? "—";
+        return $"{open} – {due}";
+    }
+
+    private static (string Key, string Label) MilestoneStatus(MilestoneTemplateDto m)
+    {
+        var now = DateTime.Today;
+        if (!m.IsActive) return ("planned", "מתוכננת");
+        if (m.CloseDate.HasValue && m.CloseDate < now) return ("done", "הסתיימה");
+        if (m.OpenDate.HasValue && m.OpenDate <= now
+            && (!m.DueDate.HasValue || m.DueDate >= now)) return ("current", "נוכחית");
+        if (m.DueDate.HasValue && m.DueDate < now) return ("done", "הסתיימה");
+        if (m.OpenDate.HasValue && m.OpenDate > now) return ("next", "הבאה");
+        return ("active", "פעילה");
+    }
+
+    private static string FileTitle(string fileName) =>
+        System.IO.Path.GetFileNameWithoutExtension(fileName) is { Length: > 0 } t ? t : fileName;
+
+    private static string ResourceIcon(ResourceFileDto r)
+    {
+        if (r.ItemType == "Video")
+            return """<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>""";
+        return """<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>""";
+    }
+
+    private static string ResourceTypeLabel(ResourceFileDto r)
+    {
+        if (r.ItemType == "Video") return "סרטון";
+        var ext = System.IO.Path.GetExtension(r.FileName).TrimStart('.').ToUpperInvariant();
+        return string.IsNullOrEmpty(ext) ? "קובץ" : ext;
+    }
+
+    private static string RoleDisplayName(string role) => role switch
+    {
+        "Student" => "סטודנטים",
+        "Mentor"  => "מנחים",
+        "Staff"   => "מרצים",
+        "Admin"   => "מנהלים",
+        _         => role,
+    };
+
+    private static string SettingDescription(string flag) => flag switch
+    {
+        RoleFeatures.CanOpenRequests      => "האם ניתן לפתוח בקשות חדשות",
+        RoleFeatures.CanViewTasks         => "צפייה ברשימת המשימות הפעילות",
+        RoleFeatures.CanSubmitTasks       => "הגשת תוצרים למשימות",
+        RoleFeatures.CanManageAssignments => "ניהול שיבוצי מנחים ותוצרים",
+        RoleFeatures.CanManageMilestones  => "עדכון ועריכת אבני דרך",
+        _                                 => "",
+    };
+}

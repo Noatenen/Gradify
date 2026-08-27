@@ -1,0 +1,454 @@
+@*
+    ── משאבים (Lecturer Resources) ─────────────────────────────────────────
+    Visual source:  design/design-system/MotivaLecturerDesign/
+                    Motiva Lecturer Resources.dc.html
+                    משאבים מרצה 268.pdf
+
+    ARCHITECTURE
+    ─────────────
+    The Lecturer Resources screen is a READ-BROWSE experience over the same
+    ResourceFiles corpus the student and mentor screens consume, but:
+
+      • Data source: GetAllAsync() — the Admin/Staff endpoint, so the lecturer
+        sees every resource in the system (not filtered by project).
+      • Stage strip: "רלוונטי לתקופה בקורס" — the most common CurrentMilestone
+        across all active projects, derived from IDashboardOverviewService.
+      • Category filters: the four derived categories from KnowledgeCenterModel
+        (Documents / Videos / Slides / Images) plus מועדפים. Editorial types
+        from the design reference (תבניות / מדריכים / דוגמאות / כלים / הקלטות)
+        have no data backing — the upload form carries no such field.
+      • Favourites: localStorage at "motiva.lecturer.resources.favorites",
+        same pattern as mentor and student.
+      • Upload / management still lives at /management/resources (kept as-is).
+
+    PAGE HEADER
+    ───────────
+    Uses the plain lrs-title-row + h1 pattern matching every other Lecturer
+    screen (Teams, Submissions, Requests). No MPageHeader gradient band.
+
+    SHARED COMPONENTS
+    ─────────────────
+    ResourceCard, ResourceDetailPanel, KnowledgeCenterModel — all reused
+    unchanged. The lecturer-specific star key keeps favourites isolated.
+*@
+
+@page "/resource-files"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.ResourceFiles
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Learning
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@inject IResourceFilesService    ResourceFilesService
+@inject IDashboardOverviewService DashboardService
+@inject IJSRuntime               JS
+@inject NavigationManager        Nav
+
+<div class="lrs-page" dir="rtl">
+
+    <!-- ── Title row — same structure as Teams / Submissions / Requests ── -->
+    <div class="lrs-title-row">
+        <div class="lrs-title-block">
+            <h1 class="lrs-h1">משאבים</h1>
+            <p class="lrs-subtitle">נהלים, מחוונים וחומרי הוראה — לכל הקורס</p>
+        </div>
+
+        @if (!_loadError && !_loading)
+        {
+            <div class="lrs-search-wrap">
+                <MSearchField @bind-Value="_query"
+                              MaxWidth="280px"
+                              Placeholder="חיפוש משאב…"
+                              AriaLabel="חיפוש במשאבים" />
+            </div>
+        }
+    </div>
+
+    <!-- ── Loading / error ── -->
+    @if (_loading)
+    {
+        <div class="lrs-loading" role="status" aria-live="polite">
+            <span class="lrs-spinner" aria-hidden="true"></span>
+            <span>טוענת משאבים…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Live="true"
+                     Title="לא הצלחנו לטעון את המשאבים"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">נסי שוב</MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_resources.Count == 0)
+    {
+        <MEmptyState Title="אין עדיין משאבים בספרייה"
+                     Description="ניתן להוסיף קבצים וסרטונים דרך אזור הניהול.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary"
+                         OnClick="@(() => Nav.NavigateTo("/management/resources"))">
+                    מעבר לניהול משאבים
+                </MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else
+    {
+        <!-- ── Stage strip: resources relevant to the current course stage ── -->
+        @if (StagePicks.Count > 0 && !IsSearching)
+        {
+            <section class="lrs-stage" aria-labelledby="lrs-stage-title">
+                <div class="lrs-stage-head">
+                    <h2 class="lrs-stage-title" id="lrs-stage-title">רלוונטי לתקופה בקורס</h2>
+                    @if (!string.IsNullOrWhiteSpace(_currentStage))
+                    {
+                        <span class="lrs-stage-chip">
+                            <span class="lrs-stage-dot" aria-hidden="true"></span>
+                            @_currentStage
+                        </span>
+                    }
+                    <span class="lrs-stage-note">מבוסס על שלב הקורס הנוכחי</span>
+                </div>
+
+                <div class="lrs-stage-row">
+                    @foreach (var pick in StagePicks)
+                    {
+                        var p = pick;
+                        <button type="button"
+                                class="lrs-pick"
+                                style="--lrs-accent:@p.Accent"
+                                @onclick="() => OpenDetail(p)">
+                            <span class="lrs-pick-icon" aria-hidden="true">
+                                <KnowledgeIcon Category="p.Category" Size="16" />
+                            </span>
+                            <span class="lrs-pick-text">
+                                <span class="lrs-pick-title">@p.Title</span>
+                                <span class="lrs-pick-type">@p.TypeLabel</span>
+                            </span>
+                            <span class="lrs-pick-mark" aria-hidden="true">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m15 6-6 6 6 6"></path>
+                                </svg>
+                            </span>
+                        </button>
+                    }
+                </div>
+            </section>
+        }
+
+        <!-- ── Main library ── -->
+        <section class="lrs-lib" aria-label="ספריית המשאבים">
+
+            <div class="lrs-lib-head">
+                <div class="lrs-chips" role="group" aria-label="סינון לפי סוג">
+                    <button type="button"
+                            class="@ChipClass(FilterAll)"
+                            aria-pressed="@(_filter == FilterAll)"
+                            @onclick="() => SetFilter(FilterAll)">
+                        הכל
+                    </button>
+
+                    @foreach (var category in KnowledgeCenterModel.Categories)
+                    {
+                        var key = category.Key.ToString();
+                        <button type="button"
+                                class="@ChipClass(key)"
+                                aria-pressed="@(_filter == key)"
+                                @onclick="() => SetFilter(key)">
+                            @category.ChipLabel
+                        </button>
+                    }
+
+                    <button type="button"
+                            class="@ChipClass(FilterFavorites)"
+                            aria-pressed="@(_filter == FilterFavorites)"
+                            @onclick="() => SetFilter(FilterFavorites)">
+                        מועדפים
+                    </button>
+                </div>
+
+                <div class="lrs-lib-actions">
+                    <span class="lrs-count" role="status" aria-live="polite">@CountLabel</span>
+                    <a class="lrs-manage-link" href="/management/resources">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                        ניהול משאבים
+                    </a>
+                </div>
+            </div>
+
+            @{
+                var shown = Visible;
+            }
+
+            @if (shown.Count > 0)
+            {
+                <div class="lrs-grid">
+                    @foreach (var resource in shown)
+                    {
+                        var r = resource;
+                        <ResourceCard Resource="r"
+                                      IsFavorite="_favorites.Contains(r.Id)"
+                                      IsSelected="_selected?.Id == r.Id"
+                                      OnOpen="OpenDetail"
+                                      OnToggleFavorite="ToggleFavoriteAsync" />
+                    }
+                </div>
+            }
+            else if (IsEmptyFavorites)
+            {
+                <div class="lrs-empty">
+                    <span class="lrs-empty-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.8" stroke-linejoin="round">
+                            <path d="m12 2.6 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.4l-5.8 3.1 1.1-6.5L2.6 9.4l6.5-.9Z"></path>
+                        </svg>
+                    </span>
+                    <p class="lrs-empty-title">עדיין אין משאבים מועדפים</p>
+                    <p class="lrs-empty-note">אפשר לסמן משאבים בכוכב כדי למצוא אותם כאן במהירות.</p>
+                </div>
+            }
+            else
+            {
+                <div class="lrs-empty" role="status" aria-live="polite">
+                    <span class="lrs-empty-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round">
+                            <circle cx="11" cy="11" r="7"></circle>
+                            <path d="m20 20-3.6-3.6"></path>
+                        </svg>
+                    </span>
+                    <p class="lrs-empty-title">לא נמצאו משאבים מתאימים</p>
+                    <p class="lrs-empty-note">נסו מילה אחרת או שנו את הסינון</p>
+                    <button type="button" class="lrs-empty-clear" @onclick="ClearFilters">
+                        ניקוי חיפוש וסינון
+                    </button>
+                </div>
+            }
+        </section>
+    }
+
+</div>
+
+<!-- ── Overlays (position:fixed, out of flow) ── -->
+<div class="lrs-overlays">
+
+    <ResourceDetailPanel Resource="_selected"
+                         OnClose="CloseDetail"
+                         OnPlay="OpenVideo" />
+
+    <MModal IsOpen="_playing is not null"
+            Title="@(_playing?.Title)"
+            Size="MModal.ModalSize.Large"
+            Class="lrs-video-modal"
+            OnClose="CloseVideo">
+        @if (_playing is not null)
+        {
+            var embed = KnowledgeCenterModel.ToEmbedUrl(_playing.VideoUrl);
+            if (embed is not null)
+            {
+                <div class="lrs-video-frame">
+                    <iframe src="@embed"
+                            title="@_playing.Title"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowfullscreen></iframe>
+                </div>
+            }
+            else
+            {
+                <MEmptyState Title="הסרטון אינו זמין להצגה כאן"
+                             Description="אפשר לפתוח אותו במקור בכרטיסייה חדשה.">
+                    <Action>
+                        <a class="lrs-video-external"
+                           href="@_playing.VideoUrl"
+                           target="_blank"
+                           rel="noopener noreferrer">
+                            פתיחה בכרטיסייה חדשה ↗
+                        </a>
+                    </Action>
+                </MEmptyState>
+            }
+        }
+    </MModal>
+
+</div>
+
+@code {
+    private const string FilterAll       = "all";
+    private const string FilterFavorites = "favorites";
+    private const string FavKey          = "motiva.lecturer.resources.favorites";
+    private const int    StagePickLimit  = 3;
+
+    private bool _loading  = true;
+    private bool _loadError;
+
+    private List<KnowledgeResource> _resources = new();
+    private HashSet<int>            _favorites = new();
+
+    private string _query  = "";
+    private string _filter = FilterAll;
+
+    private KnowledgeResource? _selected;
+    private KnowledgeResource? _playing;
+
+    /// <summary>The most common CurrentMilestoneTitle across active projects,
+    /// derived from the lecturer dashboard. Null when the dashboard is
+    /// unavailable or no project has a current milestone.</summary>
+    private string? _currentStage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFavoritesAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading   = true;
+        _loadError = false;
+
+        var files = await ResourceFilesService.GetAllAsync();
+        _loadError = files is null;
+        _resources = files is null ? new() : KnowledgeCenterModel.ToResources(files);
+
+        // Stage strip is an enhancement — the library renders regardless.
+        await LoadCurrentStageAsync();
+
+        _loading = false;
+    }
+
+    private async Task LoadCurrentStageAsync()
+    {
+        _currentStage = null;
+
+        var overview = await DashboardService.GetAsync("lecturer");
+        if (overview is null || overview.Projects.Count == 0) return;
+
+        // Most common CurrentMilestoneTitle across all active projects
+        var mode = overview.Projects
+            .Where(p => !string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle))
+            .GroupBy(p => p.CurrentMilestoneTitle!)
+            .OrderByDescending(g => g.Count())
+            .FirstOrDefault()?.Key;
+
+        _currentStage = mode;
+    }
+
+    // ── Derivation ──────────────────────────────────────────────────────
+
+    private bool IsSearching => _query.Trim().Length > 0;
+
+    private List<KnowledgeResource> StagePicks
+    {
+        get
+        {
+            if (_resources.Count == 0) return new();
+
+            // 1st choice: resources pinned to the detected current stage
+            if (!string.IsNullOrWhiteSpace(_currentStage))
+            {
+                var stagePicks = _resources
+                    .Where(r => r.HasMilestone &&
+                                string.Equals(r.MilestoneLabel, _currentStage, StringComparison.OrdinalIgnoreCase))
+                    .Take(StagePickLimit)
+                    .ToList();
+                if (stagePicks.Count > 0) return stagePicks;
+            }
+
+            // 2nd choice: any milestoned resources (most relevant when stage unknown)
+            var milestoned = _resources.Where(r => r.HasMilestone).Take(StagePickLimit).ToList();
+            if (milestoned.Count > 0) return milestoned;
+
+            // Fallback: first resources in the library (newest first, as returned by API)
+            return _resources.Take(StagePickLimit).ToList();
+        }
+    }
+
+    private List<KnowledgeResource> Visible
+    {
+        get
+        {
+            var pool = _filter switch
+            {
+                FilterAll       => _resources,
+                FilterFavorites => _resources.Where(r => _favorites.Contains(r.Id)).ToList(),
+                _               => Enum.TryParse<KnowledgeCategoryKey>(_filter, out var key)
+                                       ? _resources.Where(r => r.Category == key).ToList()
+                                       : _resources,
+            };
+
+            return KnowledgeCenterModel.Search(pool, _query);
+        }
+    }
+
+    private bool IsEmptyFavorites =>
+        _filter == FilterFavorites && string.IsNullOrWhiteSpace(_query) && _favorites.Count == 0;
+
+    private string CountLabel
+    {
+        get
+        {
+            var count = Visible.Count;
+            return _filter == FilterFavorites
+                ? count == 1 ? "מועדף אחד" : $"{count} מועדפים"
+                : count == 1 ? "משאב אחד"  : $"{count} משאבים";
+        }
+    }
+
+    private string ChipClass(string key) =>
+        _filter == key ? "lrs-chip lrs-chip-active" : "lrs-chip";
+
+    // ── Interaction ─────────────────────────────────────────────────────
+
+    private void SetFilter(string key) => _filter = key;
+
+    private void ClearFilters()
+    {
+        _filter = FilterAll;
+        _query  = "";
+    }
+
+    private void OpenDetail(KnowledgeResource resource) => _selected = resource;
+    private void CloseDetail() => _selected = null;
+
+    private void OpenVideo(KnowledgeResource resource)
+    {
+        _playing  = resource;
+        _selected = null;
+    }
+
+    private void CloseVideo() => _playing = null;
+
+    // ── Favourites ──────────────────────────────────────────────────────
+
+    private async Task ToggleFavoriteAsync(KnowledgeResource resource)
+    {
+        if (!_favorites.Add(resource.Id)) _favorites.Remove(resource.Id);
+
+        try { await JS.InvokeVoidAsync("localStorage.setItem", FavKey, string.Join(",", _favorites)); }
+        catch { /* storage blocked — fully usable without favorites */ }
+    }
+
+    private async Task LoadFavoritesAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", FavKey);
+            if (!string.IsNullOrWhiteSpace(raw))
+                _favorites = raw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => int.TryParse(x, out var v) ? v : -1)
+                                .Where(v => v > 0)
+                                .ToHashSet();
+        }
+        catch { /* storage unavailable — page is fully usable */ }
+    }
+}

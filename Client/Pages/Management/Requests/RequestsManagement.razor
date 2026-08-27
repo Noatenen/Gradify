@@ -1,1348 +1,881 @@
+@*
+    ── בקשות — Lecturer Request Queue ──────────────────────────────────────
+    Visual source:  design/design-system/MotivaLecturerDesign/
+                    Motiva Lecturer Requests.dc.html
+                    בקשות מרצה 268.pdf
+
+    ARCHITECTURE
+    ─────────────
+    This page is the lecturer/staff equivalent of MentorRequestsPage.
+    It replaces the legacy table+modal view with the Motiva accordion design
+    that mirrors the finalized Student and Mentor request screens.
+
+    TABS
+    ────
+      הכל              → all requests
+      להחלטתך (N)     → PendingLecturerDecision + New + InProgress + WaitingForStaff
+                          badge shows the count
+      בטיפול מנחה     → PendingMentorRecommendation
+      טופלו           → Resolved + Closed
+
+    DECISION FLOW
+    ─────────────
+    Extension requests at PendingLecturerDecision:
+        SubmitExtensionDecisionAsync(id, {Stage=Lecturer, Decision=Approved/Rejected})
+        "החזרה להשלמה" → HandleAsync(id, {NewStatus=NeedsInfo})
+
+    All other requests (New / InProgress / WaitingForStaff):
+        אישור     → HandleAsync(id, {NewStatus=Resolved})
+        דחייה     → HandleAsync(id, {NewStatus=Closed})
+        החזרה     → HandleAsync(id, {NewStatus=NeedsInfo})
+*@
+
 @page "/management/requests"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
-@implements IDisposable
+@namespace AuthWithAdmin.Client.Pages.Management.Requests
+@using Microsoft.AspNetCore.Authorization
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
-@using Microsoft.AspNetCore.Components.Forms
-@inject NavigationManager Nav
+
 @inject IProjectRequestsService RequestsService
-@inject IJSRuntime JS
+@inject IRequestTypesService RequestTypesService
 
-<!-- ══════════════════════════════════════════
-     REQUEST DETAIL MODAL
-     ══════════════════════════════════════════ -->
-@if (_drawer is not null)
-{
-    <div class="req-modal-overlay" @onclick="CloseDrawer" @onkeydown="OnModalKeyDown" tabindex="-1" @ref="_modalOverlayRef">
-    <div class="req-modal-box" @onclick:stopPropagation="true">
+<div class="lrq-page" dir="rtl">
 
-        <!-- ── Modal header ── -->
-        <div class="req-modal-header">
-            <div class="req-drawer-title-row">
-                <div class="req-drawer-title-block">
-                    <span class="req-type-badge req-type-@TypeClass(_drawer.RequestType)">
-                        @RequestTypes.Label(_drawer.RequestType)
-                    </span>
-                    <div class="req-drawer-title">@_drawer.Title</div>
-                </div>
-                <div class="req-drawer-header-actions">
-                    <button class="req-drawer-refresh"
-                            @onclick="RefreshDrawer"
-                            title="רענן פרטים"
-                            disabled="@_refreshing">
-                        @if (_refreshing)
+    <!-- ── Title row — same structure as Teams / Submissions pages ── -->
+    <div class="lrq-title-row">
+        <div class="lrq-title-block">
+            <h1 class="lrq-h1">בקשות</h1>
+        </div>
+
+        @if (!_loading)
+        {
+            <div class="lrq-tabbar">
+                <!-- Status tabs -->
+                <nav class="lrq-tabs" aria-label="סינון לפי סטטוס">
+                    <button type="button"
+                            class="@TabClass("all")"
+                            aria-pressed="@(_activeTab == "all")"
+                            @onclick="@(() => SetTab("all"))">
+                        הכל
+                    </button>
+                    <button type="button"
+                            class="@TabClass("decision")"
+                            aria-pressed="@(_activeTab == "decision")"
+                            @onclick="@(() => SetTab("decision"))">
+                        ממתינות להחלטתך
+                        @if (DecisionCount > 0)
                         {
-                            <span class="req-spinner-sm"></span>
-                        }
-                        else
-                        {
-                            <span class="oi oi-loop-circular" aria-hidden="true"></span>
+                            <span class="lrq-tab-badge" aria-label="@DecisionCount בקשות ממתינות">@DecisionCount</span>
                         }
                     </button>
-                    <button class="req-drawer-close" @onclick="CloseDrawer" title="סגירה">
-                        <span class="oi oi-x" aria-hidden="true"></span>
+                    <button type="button"
+                            class="@TabClass("mentor")"
+                            aria-pressed="@(_activeTab == "mentor")"
+                            @onclick="@(() => SetTab("mentor"))">
+                        בטיפול מנחה
                     </button>
-                </div>
-            </div>
+                    <button type="button"
+                            class="@TabClass("done")"
+                            aria-pressed="@(_activeTab == "done")"
+                            @onclick="@(() => SetTab("done"))">
+                        טופלו
+                    </button>
+                </nav>
 
-            <div class="req-drawer-meta">
-                <div class="req-drawer-meta-item">
-                    <span class="oi oi-layers" aria-hidden="true"></span>
-                    צוות @_drawer.ProjectNumber — @_drawer.ProjectTitle
-                </div>
-                <div class="req-drawer-meta-item">
-                    <span class="oi oi-person" aria-hidden="true"></span>
-                    נפתחה על ידי @_drawer.CreatedByName
-                </div>
-                <div class="req-drawer-meta-item">
-                    <span class="oi oi-clock" aria-hidden="true"></span>
-                    @_drawer.CreatedAt.IsraelFormat()
-                    @if (_drawer.UpdatedAt > _drawer.CreatedAt)
-                    {
-                        <span class="req-updated-note">(עודכן @_drawer.UpdatedAt.IsraelFormat())</span>
-                    }
-                </div>
-                @if (!string.IsNullOrEmpty(_drawer.AssignedToName))
+                @if (AvailableTypes.Count > 0)
                 {
-                    <div class="req-drawer-meta-item req-meta-assignee">
-                        <span class="oi oi-arrow-circle-right" aria-hidden="true"></span>
-                        מטופל על ידי @_drawer.AssignedToName
+                    <span class="lrq-tabbar-sep" aria-hidden="true"></span>
+
+                    <div class="lrq-type-wrap">
+                        <button type="button"
+                                class="lrq-type-btn @(!string.IsNullOrEmpty(_selectedType) ? "lrq-type-btn-active" : "")"
+                                @onclick="ToggleTypeMenu">
+                            @(!string.IsNullOrEmpty(_selectedType) ? TypeLabel(_selectedType) : "סוג בקשה")
+                            <span class="lrq-type-caret @(_typeMenuOpen ? "lrq-type-caret-open" : "")">▾</span>
+                        </button>
+
+                        @if (_typeMenuOpen)
+                        {
+                            <div class="lrq-type-backdrop" @onclick="CloseTypeMenu"></div>
+                            <div class="lrq-type-panel">
+                                @{
+                                    var allOpt = ("", "הכל");
+                                    var allOn = string.IsNullOrEmpty(_selectedType);
+                                }
+                                <button type="button" class="lrq-type-opt @(allOn ? "lrq-type-opt-on" : "")"
+                                        @onclick="@(() => PickType(""))">
+                                    <span class="lrq-type-opt-label">הכל</span>
+                                    @if (allOn)
+                                    {
+                                        <svg class="lrq-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6D28F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="m5 12.5 4.5 4.5L19 7"/>
+                                        </svg>
+                                    }
+                                </button>
+                                @foreach (var type in AvailableTypes)
+                                {
+                                    var t = type;
+                                    var on = _selectedType == t;
+                                    <button type="button" class="lrq-type-opt @(on ? "lrq-type-opt-on" : "")"
+                                            @onclick="@(() => PickType(t))">
+                                        <span class="lrq-type-opt-label">@TypeLabel(t)</span>
+                                        @if (on)
+                                        {
+                                            <svg class="lrq-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6D28F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="m5 12.5 4.5 4.5L19 7"/>
+                                            </svg>
+                                        }
+                                    </button>
+                                }
+                            </div>
+                        }
                     </div>
                 }
             </div>
+        }
+    </div>
 
-            <div class="req-drawer-badges-row">
-                <span class="req-priority-badge req-priority-@_drawer.Priority.ToLower()">
-                    <span class="oi oi-signal" aria-hidden="true"></span>
-                    @RequestPriorities.Label(_drawer.Priority)
-                </span>
-                <span class="req-status-badge req-badge-@_drawer.Status.ToLower()">
-                    @RequestStatuses.Label(_drawer.Status)
-                </span>
-            </div>
+    <!-- ── Body ── -->
+    @if (_loading)
+    {
+        <div class="lrq-loading" role="status">
+            <span class="lrq-spinner" aria-hidden="true"></span>
+            <span>טוענת בקשות…</span>
         </div>
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Title="אירעה שגיאה בטעינת הבקשות" Description="נסה לרענן את הדף." />
+    }
+    else
+    {
 
-        <!-- ── Modal body: 2-column layout ── -->
-        <div class="req-modal-body">
+        @if (_all.Count == 0)
+        {
+            <MEmptyState Title="אין בקשות במערכת" Description="כשסטודנטים יגישו בקשות הן יופיעו כאן." />
+        }
+        else
+        {
+            var groups = VisibleGroups;
+            var totalVisible = groups.Sum(g => g.Items.Count);
 
-        <!-- Main column: description + thread (independently scrollable) -->
-        <div class="req-modal-main">
-
-            <!-- Original request description -->
-            @if (!string.IsNullOrWhiteSpace(_drawer.Description))
+            @if (totalVisible == 0)
             {
-                <div class="req-drawer-section">
-                    <div class="req-drawer-section-title">תיאור הבקשה המקורית</div>
-                    <div class="req-drawer-text-block">@_drawer.Description</div>
-                </div>
+                <MEmptyState Title="אין בקשות שתואמות לסינון הנוכחי"
+                             Description="אפשר לשנות את הסינון כדי לראות בקשות נוספות."
+                             Live="true">
+                    <Action>
+                        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ClearFilters">
+                            הצגת כל הבקשות
+                        </MButton>
+                    </Action>
+                </MEmptyState>
             }
-
-            <!-- Postponement (Extension) details — visible only for Extension requests -->
-            @if (_drawer.RequestType == RequestTypes.Extension && _drawer.Extension is not null)
+            else
             {
-                <div class="req-drawer-section req-extension-block">
-                    <div class="req-drawer-section-title">פרטי הדחייה</div>
+                <div class="lrq-groups">
+                    @foreach (var group in groups)
+                    {
+                        var g = group;
+                        var isDone = g.Bucket == "done";
 
-                    <div class="req-ext-grid">
-                        <div class="req-ext-cell">
-                            <div class="req-ext-label">אבן דרך / משימה</div>
-                            <div class="req-ext-value">
-                                @if (!string.IsNullOrWhiteSpace(_drawer.Extension.TaskTitle))
+                        @if (!isDone || _doneOpen || g.Items.Count == 0)
+                        {
+                            <!-- Group container -->
+                            <div class="lrq-group lrq-group-@g.Bucket">
+
+                                <!-- Group header -->
+                                <div class="lrq-group-head">
+                                    <span class="lrq-group-label">@g.Label</span>
+                                    @if (g.Items.Count > 0)
+                                    {
+                                        <span class="lrq-group-count">@g.Items.Count @(g.Items.Count == 1 ? "בקשה" : "בקשות")</span>
+                                    }
+                                </div>
+
+                                @if (g.Items.Count == 0)
                                 {
-                                    <span class="oi oi-task" aria-hidden="true"></span>
-                                    <span>@_drawer.Extension.TaskTitle</span>
-                                }
-                                else if (!string.IsNullOrWhiteSpace(_drawer.Extension.MilestoneTitle))
-                                {
-                                    <span class="oi oi-flag" aria-hidden="true"></span>
-                                    <span>@_drawer.Extension.MilestoneTitle</span>
+                                    <p class="lrq-group-empty">אין בקשות בקבוצה זו</p>
                                 }
                                 else
                                 {
-                                    <span class="req-ext-general">אחר / כללי (ללא משימה ספציפית)</span>
-                                }
-                            </div>
-                        </div>
-                        <div class="req-ext-cell">
-                            <div class="req-ext-label">תאריך נוכחי</div>
-                            <div class="req-ext-value">
-                                @(_drawer.Extension.CurrentDueDate?.ToString("dd/MM/yyyy") ?? "—")
-                            </div>
-                        </div>
-                        <div class="req-ext-cell">
-                            <div class="req-ext-label">תאריך מבוקש</div>
-                            <div class="req-ext-value req-ext-requested">
-                                @_drawer.Extension.RequestedDueDate.ToString("dd/MM/yyyy")
-                            </div>
-                        </div>
-                        <div class="req-ext-cell">
-                            <div class="req-ext-label">המלצת מנחה</div>
-                            <div class="req-ext-value">
-                                <span class="req-ext-decision req-ext-dec-@_drawer.Extension.MentorDecision.ToLower()">
-                                    @ExtensionDecisionStatuses.Label(_drawer.Extension.MentorDecision)
-                                </span>
-                            </div>
-                        </div>
-                        @if (_drawer.Extension.LecturerDecision != ExtensionDecisionStatuses.NotRequired)
-                        {
-                            <div class="req-ext-cell">
-                                <div class="req-ext-label">החלטת מרצה</div>
-                                <div class="req-ext-value">
-                                    <span class="req-ext-decision req-ext-dec-@_drawer.Extension.LecturerDecision.ToLower()">
-                                        @ExtensionDecisionStatuses.Label(_drawer.Extension.LecturerDecision)
-                                    </span>
-                                </div>
-                            </div>
-                        }
-                        @if (_drawer.Extension.ApprovedDueDate.HasValue)
-                        {
-                            <div class="req-ext-cell">
-                                <div class="req-ext-label">תאריך חדש מאושר</div>
-                                <div class="req-ext-value req-ext-approved">
-                                    @_drawer.Extension.ApprovedDueDate.Value.ToString("dd/MM/yyyy")
-                                </div>
-                            </div>
-                        }
-                    </div>
-
-                    @if (!string.IsNullOrWhiteSpace(_drawer.Extension.Reason))
-                    {
-                        <div class="req-ext-reason">
-                            <div class="req-ext-label">נימוק הסטודנט</div>
-                            <div class="req-drawer-text-block">@_drawer.Extension.Reason</div>
-                        </div>
-                    }
-
-                    @* Internal mentor note — visible to lecturer/admin on this
-                       page; never returned to the student. The page itself is
-                       gated to Admin/Staff so this block is private by route. *@
-                    @if (!string.IsNullOrWhiteSpace(_drawer.Extension.MentorNotes))
-                    {
-                        <div class="req-ext-reason">
-                            <div class="req-ext-label">הערת מנחה פנימית</div>
-                            <div class="req-drawer-text-block">@_drawer.Extension.MentorNotes</div>
-                        </div>
-                    }
-
-                    @if (_drawer.Status == RequestStatuses.PendingMentorRecommendation)
-                    {
-                        <div class="req-ext-decision-form">
-                            <div class="req-ext-decision-hint">
-                                הבקשה ממתינה להמלצת מנחה. ההחלטה תיפתח לאחר קבלת ההמלצה.
-                            </div>
-                        </div>
-                    }
-                    else if (ExtensionPendingStage is not null)
-                    {
-                        bool hasTarget = _drawer.Extension.TaskId.HasValue
-                                      || _drawer.Extension.ProjectMilestoneId.HasValue;
-                        <div class="req-ext-decision-form">
-                            <div class="req-ext-decision-title">
-                                @(ExtensionPendingStage == "Lecturer" ? "החלטת מרצה" : "החלטה")
-                            </div>
-
-                            <div class="req-handle-field">
-                                <label class="req-handle-label">החלטה</label>
-                                <select class="req-handle-select"
-                                        @bind="_extDecision"
-                                        disabled="@_handling">
-                                    <option value="@ExtensionDecisionStatuses.Approved">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Approved)</option>
-                                    <option value="@ExtensionDecisionStatuses.Rejected">@ExtensionDecisionStatuses.Label(ExtensionDecisionStatuses.Rejected)</option>
-                                </select>
-                            </div>
-
-                            @if (hasTarget && _extDecision == ExtensionDecisionStatuses.Approved)
-                            {
-                                <div class="req-handle-field">
-                                    <label class="req-handle-label">תאריך חדש מאושר</label>
-                                    <input class="req-handle-select req-ext-date-input"
-                                           type="date"
-                                           @bind="_extApprovedDate"
-                                           @bind:format="yyyy-MM-dd"
-                                           disabled="@_handling" />
-                                    <div class="req-ext-decision-hint">
-                                        התאריך יעודכן עבור אבן הדרך של הצוות בלבד.
-                                    </div>
-                                </div>
-                            }
-                        </div>
-                    }
-                </div>
-            }
-
-            <!-- Image attachments -->
-            @if (_drawer.Attachments.Count > 0)
-            {
-                <div class="req-drawer-section">
-                    <div class="req-drawer-section-title">
-                        קבצים מצורפים
-                        <span class="req-attachment-count">(@_drawer.Attachments.Count)</span>
-                    </div>
-                    <div class="req-attachments-grid">
-                        @foreach (var att in _drawer.Attachments)
-                        {
-                            <a class="req-attachment-thumb"
-                               href="/request-attachments/@att.StoredFileName"
-                               target="_blank"
-                               title="@att.OriginalFileName">
-                                <img src="/request-attachments/@att.StoredFileName"
-                                     alt="@att.OriginalFileName"
-                                     loading="lazy" />
-                                <span class="req-attachment-name">@att.OriginalFileName</span>
-                            </a>
-                        }
-                    </div>
-                </div>
-            }
-
-            <!-- ── Thread / history ── -->
-            @if (_drawer.Events.Count > 0 || !string.IsNullOrWhiteSpace(_drawer.Description))
-            {
-                <div class="req-drawer-section">
-                    <div class="req-drawer-section-title">היסטוריית בקשה</div>
-                    <div class="req-thread">
-
-                        <!-- Synthetic "original request" entry -->
-                        <div class="req-thread-entry req-thread-original">
-                            <div class="req-thread-avatar req-avatar-student">
-                                <span class="oi oi-person" aria-hidden="true"></span>
-                            </div>
-                            <div class="req-thread-bubble">
-                                <div class="req-thread-meta">
-                                    <span class="req-thread-author">@_drawer.CreatedByName</span>
-                                    <span class="req-thread-time">@_drawer.CreatedAt.IsraelFormat()</span>
-                                </div>
-                                <div class="req-thread-content">
-                                    @if (!string.IsNullOrWhiteSpace(_drawer.Description))
+                                    @foreach (var row in g.Items)
                                     {
-                                        @_drawer.Description
-                                    }
-                                    else
-                                    {
-                                        <em class="req-thread-no-desc">ללא תיאור</em>
-                                    }
-                                </div>
-                            </div>
-                        </div>
+                                        var r = row;
+                                        var isOpen = _expandedId == r.Id;
+                                        var detail = _details.TryGetValue(r.Id, out var d) ? d : null;
 
-                        <!-- Actual events -->
-                        @foreach (var evt in _drawer.Events)
-                        {
-                            <div class="req-thread-entry @EventClass(evt) @(_highlightedEventIds.Contains(evt.Id) ? "req-evt-new" : "")"
-                                 id="req-evt-@evt.Id">
-                                <div class="req-thread-avatar @AvatarClass(evt)">
-                                    <span class="oi @EventIcon(evt)" aria-hidden="true"></span>
-                                </div>
-                                <div class="req-thread-bubble">
-                                    <div class="req-thread-meta">
-                                        <span class="req-thread-author">@evt.UserName</span>
-                                        <span class="req-thread-time">@evt.CreatedAt.IsraelFormat()</span>
-                                    </div>
-                                    <div class="req-thread-content">
-                                        @EventSummary(evt)
-                                    </div>
-                                    @if (evt.Attachments.Count > 0)
-                                    {
-                                        <div class="req-thread-event-attachments">
-                                            @foreach (var att in evt.Attachments)
+                                        <div class="lrq-row-wrap @(isOpen ? "lrq-row-wrap-open" : "")">
+
+                                            @if (!isOpen)
                                             {
-                                                @if (att.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-                                                {
-                                                    <a class="req-evt-att-thumb"
-                                                       href="/request-attachments/@att.StoredFileName"
-                                                       target="_blank"
-                                                       title="@att.OriginalFileName">
-                                                        <img src="/request-attachments/@att.StoredFileName"
-                                                             alt="@att.OriginalFileName"
-                                                             loading="lazy" />
-                                                    </a>
-                                                }
-                                                else
-                                                {
-                                                    <a class="req-evt-att-file"
-                                                       href="/request-attachments/@att.StoredFileName"
-                                                       target="_blank"
-                                                       title="@att.OriginalFileName">
-                                                        <span class="oi oi-document" aria-hidden="true"></span>
-                                                        <span>@att.OriginalFileName</span>
-                                                    </a>
-                                                }
+                                                <!-- ── COLLAPSED ROW ── -->
+                                                <div class="lrq-row"
+                                                     role="button"
+                                                     tabindex="0"
+                                                     aria-expanded="false"
+                                                     aria-label="@($"פתיחת הבקשה: {r.Title}")"
+                                                     @onclick="@(() => Toggle(r.Id))"
+                                                     @onkeydown="@(e => { if (e.Key == "Enter" || e.Key == " ") Toggle(r.Id); })">
+
+                                                    <div class="lrq-row-right">
+                                                        <span class="lrq-dot lrq-dot-@BucketOf(r.Status)" aria-hidden="true"></span>
+                                                        <div class="lrq-row-text">
+                                                            <div class="lrq-row-titlerow">
+                                                                @if (r.HasUnread)
+                                                                {
+                                                                    <span class="lrq-unread" title="עדכון חדש שלא נקרא" aria-label="עדכון חדש"></span>
+                                                                }
+                                                                <strong class="lrq-row-title">@r.Title</strong>
+                                                            </div>
+                                                            <span class="lrq-row-sub">@RowSubLine(r)</span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="lrq-row-left">
+                                                        <span class="lrq-row-time lrq-row-time-@BucketOf(r.Status)">@RowTimeLabel(r)</span>
+                                                        <span class="lrq-chevron" aria-hidden="true">
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                                                                <path d="m6 9 6 6 6-6"/>
+                                                            </svg>
+                                                        </span>
+                                                    </div>
+                                                </div>
                                             }
-                                        </div>
+                                            else
+                                            {
+                                                <!-- ── EXPANDED CARD ── -->
+                                                <div class="lrq-card" role="region" aria-label="@r.Title">
+
+                                                    @if (detail is null && _loadingDetails.Contains(r.Id))
+                                                    {
+                                                        <div class="lrq-detail-loading" role="status">
+                                                            <span class="lrq-spinner" aria-hidden="true"></span>
+                                                            <span>טוענת פרטי בקשה…</span>
+                                                        </div>
+                                                    }
+                                                    else
+                                                    {
+                                                        @* 1. CARD HEADER: title + meta + close *@
+                                                        <div class="lrq-card-head">
+                                                            <div class="lrq-card-htext">
+                                                                <h2 class="lrq-card-title">@r.Title</h2>
+                                                                <p class="lrq-card-meta">
+                                                                    <span class="lrq-type-pill">@TypeLabel(r.RequestType)</span>
+                                                                    <span class="lrq-meta-sep">·</span>
+                                                                    <span class="lrq-meta-requester">@r.CreatedByName</span>
+                                                                    @if (!string.IsNullOrWhiteSpace(r.TeamName))
+                                                                    {
+                                                                        <span class="lrq-meta-sep">·</span>
+                                                                        <span class="lrq-meta-team">@r.TeamName</span>
+                                                                    }
+                                                                    @if (!string.IsNullOrWhiteSpace(r.ProjectTitle))
+                                                                    {
+                                                                        <span class="lrq-meta-sep">·</span>
+                                                                        <span class="lrq-meta-project">@r.ProjectTitle</span>
+                                                                    }
+                                                                </p>
+                                                            </div>
+                                                            <button type="button"
+                                                                    class="lrq-card-close"
+                                                                    aria-label="סגירה"
+                                                                    @onclick="@(() => Toggle(r.Id))">
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                    <path d="m18 15-6-6-6 6"/>
+                                                                </svg>
+                                                            </button>
+                                                        </div>
+
+                                                        <div class="lrq-card-body">
+
+                                                            @* 3. EXPLANATION *@
+                                                            @{
+                                                                var explanation = detail?.Description ?? r.Title;
+                                                            }
+                                                            @if (!string.IsNullOrWhiteSpace(detail?.Description))
+                                                            {
+                                                                <p class="lrq-desc">@detail.Description</p>
+                                                            }
+
+                                                            @* 4. CONTEXTUAL INFO: DEADLINE DATES (Extension) *@
+                                                            @if (detail?.RequestType == RequestTypes.Extension && detail.Extension is { } ext)
+                                                            {
+                                                                <div class="lrq-dates-wrap">
+                                                                    <div class="lrq-dates" aria-label="מועדי הגשה">
+                                                                        <div class="lrq-date-col">
+                                                                            <span class="lrq-date-val">@ExtDate(ext.CurrentDueDate)</span>
+                                                                            <span class="lrq-date-lbl">מועד נוכחי</span>
+                                                                        </div>
+                                                                        <span class="lrq-date-arrow" aria-hidden="true">←</span>
+                                                                        <div class="lrq-date-col">
+                                                                            <span class="lrq-date-val lrq-date-val-req">@ExtDate(ext.RequestedDueDate)</span>
+                                                                            <span class="lrq-date-lbl lrq-date-lbl-req">מועד מבוקש</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                @if (!string.IsNullOrWhiteSpace(ext.TaskTitle) || !string.IsNullOrWhiteSpace(ext.MilestoneTitle))
+                                                                {
+                                                                    <p class="lrq-ext-target">
+                                                                        יעד: @(ext.TaskTitle ?? ext.MilestoneTitle)
+                                                                    </p>
+                                                                }
+                                                            }
+
+                                                            @* 4b. Attachments count *@
+                                                            @if ((detail?.Attachments?.Count ?? r.AttachmentCount) > 0)
+                                                            {
+                                                                var cnt = detail?.Attachments?.Count ?? r.AttachmentCount;
+                                                                <p class="lrq-attach-count">📎 @cnt @(cnt == 1 ? "קובץ מצורף" : "קבצים מצורפים")</p>
+                                                            }
+
+                                                            @* 5. MENTOR RECOMMENDATION PANEL *@
+                                                            @if (detail?.Extension is { } mentorExt &&
+                                                                 !string.IsNullOrEmpty(mentorExt.MentorDecision) &&
+                                                                 mentorExt.MentorDecision != ExtensionDecisionStatuses.Pending)
+                                                            {
+                                                                <div class="lrq-mentor-rec">
+                                                                    <div class="lrq-mentor-rec-head">
+                                                                        <span class="lrq-mentor-rec-label">המלצת המנחה</span>
+                                                                        <span class="lrq-mentor-rec-decision lrq-mentor-dec-@mentorExt.MentorDecision.ToLower()">
+                                                                            @ExtensionDecisionStatuses.Label(mentorExt.MentorDecision)
+                                                                        </span>
+                                                                        @if (!string.IsNullOrWhiteSpace(mentorExt.MentorDecidedByName))
+                                                                        {
+                                                                            <span class="lrq-mentor-rec-by">@mentorExt.MentorDecidedByName</span>
+                                                                        }
+                                                                    </div>
+                                                                    @if (!string.IsNullOrWhiteSpace(mentorExt.MentorNotes))
+                                                                    {
+                                                                        <p class="lrq-mentor-rec-note">@mentorExt.MentorNotes</p>
+                                                                    }
+                                                                </div>
+                                                            }
+
+                                                            @* 6. LECTURER DECISION AREA *@
+                                                            @{
+                                                                var isDoneReq = r.Status is RequestStatuses.Resolved or RequestStatuses.Closed;
+                                                                var isMentorPending = r.Status == RequestStatuses.PendingMentorRecommendation;
+                                                                var currentChoice = _decisionChoice.TryGetValue(r.Id, out var ch) ? ch : "";
+                                                                var currentNote = _decisionNote.TryGetValue(r.Id, out var n) ? n : "";
+                                                                var isSubmitting = _submitting.Contains(r.Id);
+                                                                var submitError = _submitErrors.TryGetValue(r.Id, out var e) ? e : null;
+                                                            }
+
+                                                            @if (isDoneReq)
+                                                            {
+                                                                @* Show the recorded decision *@
+                                                                var lecDec = detail?.Extension?.LecturerDecision;
+                                                                var finalStatus = RequestStatuses.Label(r.Status);
+                                                                <div class="lrq-decision-done">
+                                                                    <span class="lrq-decision-done-label">סטטוס:</span>
+                                                                    <span class="lrq-decision-done-val lrq-status-@r.Status.ToLower()">@finalStatus</span>
+                                                                    @if (!string.IsNullOrWhiteSpace(lecDec) && lecDec != ExtensionDecisionStatuses.NotRequired && lecDec != ExtensionDecisionStatuses.Pending)
+                                                                    {
+                                                                        <span class="lrq-decision-done-dec">@ExtensionDecisionStatuses.Label(lecDec)</span>
+                                                                    }
+                                                                </div>
+                                                            }
+                                                            else if (isMentorPending)
+                                                            {
+                                                                <div class="lrq-decision-waiting">
+                                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                        <circle cx="12" cy="12" r="10"/>
+                                                                        <path d="M12 6v6l4 2"/>
+                                                                    </svg>
+                                                                    <span>הבקשה ממתינה להמלצת המנחה. ההחלטה שלך תיפתח לאחר קבלת ההמלצה.</span>
+                                                                </div>
+                                                            }
+                                                            else
+                                                            {
+                                                                @* Active decision form *@
+                                                                <div class="lrq-decision">
+                                                                    <p class="lrq-decision-title">החלטה</p>
+
+                                                                    @* Decision option pills *@
+                                                                    <div class="lrq-choices" role="radiogroup" aria-label="בחר החלטה">
+                                                                        <button type="button"
+                                                                                class="lrq-choice @(currentChoice == "approved" ? "lrq-choice-approved" : "")"
+                                                                                role="radio"
+                                                                                aria-checked="@(currentChoice == "approved")"
+                                                                                disabled="@isSubmitting"
+                                                                                @onclick="@(() => SetChoice(r.Id, "approved"))">
+                                                                            <span class="lrq-choice-mark" aria-hidden="true">
+                                                                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                                     stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                                                                    <path d="m5 13 4.5 4.5L19 7"/>
+                                                                                </svg>
+                                                                            </span>
+                                                                            אישור
+                                                                        </button>
+                                                                        <button type="button"
+                                                                                class="lrq-choice @(currentChoice == "rejected" ? "lrq-choice-rejected" : "")"
+                                                                                role="radio"
+                                                                                aria-checked="@(currentChoice == "rejected")"
+                                                                                disabled="@isSubmitting"
+                                                                                @onclick="@(() => SetChoice(r.Id, "rejected"))">
+                                                                            <span class="lrq-choice-mark" aria-hidden="true">
+                                                                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                                     stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                                                                    <path d="M18 6 6 18M6 6l12 12"/>
+                                                                                </svg>
+                                                                            </span>
+                                                                            דחייה
+                                                                        </button>
+                                                                        <button type="button"
+                                                                                class="lrq-choice @(currentChoice == "return" ? "lrq-choice-return" : "")"
+                                                                                role="radio"
+                                                                                aria-checked="@(currentChoice == "return")"
+                                                                                disabled="@isSubmitting"
+                                                                                @onclick="@(() => SetChoice(r.Id, "return"))">
+                                                                            <span class="lrq-choice-mark" aria-hidden="true">
+                                                                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                                     stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                                                                    <path d="M9 14 4 9l5-5M4 9h11a4 4 0 0 1 0 8h-1"/>
+                                                                                </svg>
+                                                                            </span>
+                                                                            החזרה להשלמה
+                                                                        </button>
+                                                                    </div>
+
+                                                                    @* Optional note to team *@
+                                                                    <div class="lrq-decision-note-wrap">
+                                                                        <label class="lrq-decision-note-lbl" for="lrq-note-@r.Id">הערה לצוות (אופציונלי)</label>
+                                                                        <textarea id="lrq-note-@r.Id"
+                                                                                  class="lrq-decision-note"
+                                                                                  rows="2"
+                                                                                  maxlength="2000"
+                                                                                  placeholder="הסבר קצר לצוות…"
+                                                                                  disabled="@isSubmitting"
+                                                                                  value="@currentNote"
+                                                                                  @oninput="@(e => SetNote(r.Id, e.Value?.ToString() ?? ""))"></textarea>
+                                                                    </div>
+
+                                                                    @if (submitError is not null)
+                                                                    {
+                                                                        <p class="lrq-decision-error" role="alert">@submitError</p>
+                                                                    }
+
+                                                                    @* Gradient CTA *@
+                                                                    <div class="lrq-decision-actions">
+                                                                        <button type="button"
+                                                                                class="lrq-send-btn"
+                                                                                disabled="@(isSubmitting || string.IsNullOrEmpty(currentChoice))"
+                                                                                @onclick="@(() => SubmitDecision(r.Id, r.RequestType, r.Status))">
+                                                                            @if (isSubmitting)
+                                                                            {
+                                                                                <span class="lrq-send-spinner" aria-hidden="true"></span>
+                                                                            }
+                                                                            שליחת ההחלטה
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            }
+
+                                                            @* 7. REQUEST HISTORY — collapsed by default *@
+                                                            @{
+                                                                var histEvents = detail?.Events ?? new();
+                                                                var histOpen = _historyOpen.Contains(r.Id);
+                                                            }
+                                                            @if (histEvents.Count > 0)
+                                                            {
+                                                                <div class="lrq-hist-bar">
+                                                                    <button type="button"
+                                                                            class="lrq-hist-btn"
+                                                                            aria-expanded="@(histOpen ? "true" : "false")"
+                                                                            @onclick="@(() => ToggleHistory(r.Id))">
+                                                                        <span>היסטוריה · @histEvents.Count @(histEvents.Count == 1 ? "עדכון" : "עדכונים")</span>
+                                                                        <span class="lrq-hist-caret @(histOpen ? "lrq-hist-caret-open" : "")" aria-hidden="true">
+                                                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                                                <path d="m6 9 6 6 6-6"/>
+                                                                            </svg>
+                                                                        </span>
+                                                                    </button>
+                                                                </div>
+
+                                                                @if (histOpen)
+                                                                {
+                                                                    <div class="lrq-hist-items">
+                                                                        @foreach (var evt in histEvents.OrderBy(x => x.CreatedAt))
+                                                                        {
+                                                                            <div class="lrq-hist-item">
+                                                                                <span class="lrq-hist-dot" aria-hidden="true"></span>
+                                                                                <div class="lrq-hist-content">
+                                                                                    <p class="lrq-hist-text">@HistLine(evt)</p>
+                                                                                    @if (evt.EventType == RequestEventTypes.Comment && evt.Attachments.Count > 0)
+                                                                                    {
+                                                                                        <div class="lrq-hist-files">
+                                                                                            @foreach (var att in evt.Attachments)
+                                                                                            {
+                                                                                                <a class="lrq-hist-file"
+                                                                                                   href="/request-attachments/@att.StoredFileName"
+                                                                                                   target="_blank" rel="noopener noreferrer">
+                                                                                                    📎 @att.OriginalFileName
+                                                                                                </a>
+                                                                                            }
+                                                                                        </div>
+                                                                                    }
+                                                                                </div>
+                                                                            </div>
+                                                                        }
+                                                                    </div>
+                                                                }
+                                                            }
+
+                                                        </div>@* lrq-card-body *@
+                                                    }
+                                                </div>@* lrq-card *@
+                                            }
+
+                                        </div>@* lrq-row-wrap *@
                                     }
+                                }
+
+                            </div>@* lrq-group *@
+                        }
+
+                        @* "טופלו" toggle — shows only when done group is collapsed *@
+                        @if (isDone && g.Items.Count > 0 && !_doneOpen)
+                        {
+                            <div class="lrq-done-toggle-wrap">
+                                <div class="lrq-group lrq-group-done">
+                                    <div class="lrq-group-head">
+                                        <span class="lrq-group-label">@g.Label</span>
+                                        <span class="lrq-group-count">@g.Items.Count @(g.Items.Count == 1 ? "בקשה" : "בקשות")</span>
+                                        <button type="button" class="lrq-done-toggle" @onclick="@(() => _doneOpen = true)">
+                                            הצגה
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         }
-                    </div>
-                </div>
-            }
-
-            <!-- ── DEBUG: raw event log ── -->
-            <div class="req-drawer-section">
-                <button class="req-debug-toggle" @onclick="@(() => _showDebug = !_showDebug)">
-                    <span class="oi @(_showDebug ? "oi-chevron-top" : "oi-chevron-bottom")" aria-hidden="true"></span>
-                    DEBUG — אירועים גולמיים (@_drawer.Events.Count)
-                </button>
-
-                @if (_showDebug)
-                {
-                    <div class="req-debug-panel">
-                        @if (_drawer.Events.Count == 0)
-                        {
-                            <p class="req-debug-empty">אין אירועים בטעינה הנוכחית.</p>
-                        }
-                        else
-                        {
-                            <table class="req-debug-table">
-                                <thead>
-                                    <tr>
-                                        <th>Id</th>
-                                        <th>Type</th>
-                                        <th>UserId</th>
-                                        <th>OldValue</th>
-                                        <th>NewValue</th>
-                                        <th>Content</th>
-                                        <th>CreatedAt</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @foreach (var evt in _drawer.Events)
-                                    {
-                                        <tr>
-                                            <td>@evt.Id</td>
-                                            <td class="req-debug-type">@evt.EventType</td>
-                                            <td>@evt.UserId</td>
-                                            <td>@evt.OldValue</td>
-                                            <td>@evt.NewValue</td>
-                                            <td class="req-debug-content">@(evt.Content is { Length: > 40 } c ? c[..40] + "…" : evt.Content)</td>
-                                            <td class="req-debug-time">@evt.CreatedAt.IsraelFormat("HH:mm:ss.fff")</td>
-                                        </tr>
-                                    }
-                                </tbody>
-                            </table>
-                        }
-                        <p class="req-debug-hint">
-                            לבדיקה עמוקה יותר: <code>GET /api/project-requests/@_drawer.Id/debug-events</code>
-                        </p>
-                    </div>
-                }
-            </div>
-
-        </div>
-        <!-- ← closes req-modal-main -->
-
-        <!-- Side panel: request controls -->
-        <div class="req-modal-panel">
-            <div class="req-panel-section-title">עדכון בקשה</div>
-
-            <div class="req-handle-field">
-                <label class="req-handle-label">סטטוס</label>
-                <select class="req-handle-select" @bind="_handleStatus" disabled="@_handling">
-                    @foreach (var s in RequestStatuses.All)
-                    {
-                        <option value="@s">@RequestStatuses.Label(s)</option>
-                    }
-                </select>
-            </div>
-
-            <div class="req-handle-field">
-                <label class="req-handle-label">עדיפות</label>
-                <select class="req-handle-select" @bind="_handlePriority" disabled="@_handling">
-                    @foreach (var p in RequestPriorities.All)
-                    {
-                        <option value="@p">@RequestPriorities.Label(p)</option>
-                    }
-                </select>
-            </div>
-
-            <div class="req-handle-field">
-                <label class="req-handle-label">שיוך לאדם</label>
-                <select class="req-handle-select" @bind="_handleAssigneeId" disabled="@_handling">
-                    <option value="">— ללא שיוך —</option>
-                    @foreach (var u in _assignableUsers)
-                    {
-                        <option value="@u.Id">@u.Name (@RoleLabel(u.Role))</option>
-                    }
-                </select>
-            </div>
-
-            <div class="req-panel-divider"></div>
-
-            <div class="req-panel-section-title">פעולות מהירות</div>
-
-            <button class="req-quick-btn req-quick-return req-panel-btn"
-                    title="החזר לסטודנט להשלמה"
-                    disabled="@_handling"
-                    @onclick="@(() => _handleStatus = RequestStatuses.NeedsInfo)">
-                <span class="oi oi-action-undo" aria-hidden="true"></span>
-                החזרה לסטודנט
-            </button>
-            <button class="req-quick-btn req-quick-resolve req-panel-btn"
-                    title="סמן כטופל ומעבר לסגירה"
-                    disabled="@_handling"
-                    @onclick="@(() => _handleStatus = RequestStatuses.Resolved)">
-                <span class="oi oi-circle-check" aria-hidden="true"></span>
-                סמן כטופל
-            </button>
-
-        </div>
-
-        </div>
-        <!-- ← closes req-modal-body -->
-
-        <!-- ── Modal footer: reply row with inline paperclip attachment ── -->
-        <div class="req-modal-footer">
-            @{
-                bool _canAttachMore = _handleAttachments.Count < MaxEventAttachments && !_handling;
-            }
-
-            @if (_handleAttachments.Count > 0)
-            {
-                <ul class="req-handle-file-list">
-                    @foreach (var att in _handleAttachments)
-                    {
-                        <li class="req-handle-file-item">
-                            <span class="oi @(att.ContentType.StartsWith("image/") ? "oi-image" : "oi-document") req-handle-file-icon" aria-hidden="true"></span>
-                            <span class="req-handle-file-name">@att.Name</span>
-                            <span class="req-handle-file-size">@FormatBytes(att.Size)</span>
-                            <button type="button" class="req-handle-file-remove" title="הסר"
-                                    disabled="@_handling"
-                                    @onclick="@(() => { _handleAttachments.Remove(att); _handleFileError = ""; })">
-                                <span class="oi oi-x" aria-hidden="true"></span>
-                            </button>
-                        </li>
-                    }
-                </ul>
-            }
-
-            @if (!string.IsNullOrEmpty(_handleFileError))
-            {
-                <div class="req-drawer-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_handleFileError
-                </div>
-            }
-
-            <div class="req-modal-reply-row">
-                <label class="req-attach-btn @(!_canAttachMore ? "req-attach-btn--disabled" : "")"
-                       title="@(_canAttachMore ? "צרף קבצים לתגובה" : "הגעת למספר המקסימלי")"
-                       aria-label="צרף קבצים">
-                    <span class="oi oi-paperclip" aria-hidden="true"></span>
-                    @if (_handleAttachments.Count > 0)
-                    {
-                        <span class="req-attach-count">@_handleAttachments.Count</span>
-                    }
-                    @if (_canAttachMore)
-                    {
-                        <InputFile OnChange="OnHandleFilesSelected"
-                                   accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,.jpg,.jpeg,.png,.webp"
-                                   multiple
-                                   class="req-upload-hidden" />
-                    }
-                </label>
-
-                <textarea class="req-handle-textarea req-modal-textarea"
-                          rows="2"
-                          placeholder="הוסף תגובה, הסבר, החלטה או הוראה לסטודנט…"
-                          maxlength="2000"
-                          @bind="_handleComment"
-                          @bind:event="oninput"
-                          disabled="@_handling"></textarea>
-
-                <div class="req-modal-reply-actions">
-                    <button class="req-save-btn"
-                            disabled="@_handling"
-                            @onclick="SubmitHandle">
-                        @if (_handling)
-                        {
-                            <span class="req-spinner-sm"></span>
-                        }
-                        else
-                        {
-                            <span class="oi oi-check" aria-hidden="true"></span>
-                        }
-                        שמור ושלח
-                    </button>
-                </div>
-            </div>
-
-            @if (!string.IsNullOrWhiteSpace(_handleError))
-            {
-                <div class="req-handle-inline-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_handleError
-                </div>
-            }
-        </div>
-
-    </div>
-    </div>
-}
-
-<!-- ══════════════════════════════════════════
-     MAIN PAGE
-     ══════════════════════════════════════════ -->
-<div class="req-page" @onclick="CloseAllMenus">
-
-    <!-- ── Top bar ── -->
-    <div class="req-topbar">
-        <div class="req-topbar-start">
-            <button class="req-back-btn"
-                    @onclick="@(() => Nav.NavigateTo("/management"))"
-                    @onclick:stopPropagation="true"
-                    title="חזרה לניהול">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="req-breadcrumb">ניהול</div>
-                <h1 class="req-page-title">ניהול בקשות</h1>
-            </div>
-        </div>
-    </div>
-
-    <!-- ── KPI summary (clickable filters) ── -->
-    @if (!_loading && !_loadError)
-    {
-        <div class="req-kpi-row">
-            <div class="req-kpi-card @(_kpiFilter == "all" ? "req-kpi--active" : "")"
-                 @onclick="@(() => SetKpiFilter("all"))"
-                 title="הצג את כל הבקשות">
-                <div class="req-kpi-value">@_all.Count</div>
-                <div class="req-kpi-label">סה"כ בקשות</div>
-            </div>
-            <div class="req-kpi-card req-kpi--new @(_kpiFilter == "new" ? "req-kpi--active" : "")"
-                 @onclick="@(() => SetKpiFilter("new"))"
-                 title="סנן לבקשות חדשות">
-                <div class="req-kpi-value">@_all.Count(r => r.Status == RequestStatuses.New)</div>
-                <div class="req-kpi-label">בקשות חדשות</div>
-                <div class="req-kpi-hint">לחץ לסינון</div>
-            </div>
-            <div class="req-kpi-card req-kpi--inprogress @(_kpiFilter == "inprogress" ? "req-kpi--active" : "")"
-                 @onclick="@(() => SetKpiFilter("inprogress"))"
-                 title="סנן לבקשות בטיפול">
-                <div class="req-kpi-value">@_all.Count(r => r.Status is RequestStatuses.InProgress or RequestStatuses.NeedsInfo or RequestStatuses.WaitingForStaff)</div>
-                <div class="req-kpi-label">בטיפול</div>
-                <div class="req-kpi-hint">לחץ לסינון</div>
-            </div>
-            <div class="req-kpi-card req-kpi--resolved @(_kpiFilter == "resolved" ? "req-kpi--active" : "")"
-                 @onclick="@(() => SetKpiFilter("resolved"))"
-                 title="הצג בקשות שטופלו">
-                <div class="req-kpi-value">@_all.Count(r => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed)</div>
-                <div class="req-kpi-label">טופלו / נסגרו</div>
-                <div class="req-kpi-hint">לחץ לסינון</div>
-            </div>
-        </div>
-    }
-
-    <!-- ── Filters bar ── -->
-    <div class="req-filters-bar">
-        <div class="req-search-wrap">
-            <span class="oi oi-magnifying-glass req-search-icon" aria-hidden="true"></span>
-            <input class="req-search" type="text"
-                   placeholder="חיפוש לפי כותרת, פרויקט, צוות, שם…"
-                   @bind="_searchQuery" @bind:event="oninput" />
-        </div>
-        <div class="req-filter-group">
-            <select class="req-filter-select" @bind="_filterType">
-                <option value="">כל סוגי הבקשות</option>
-                @foreach (var t in RequestTypes.All)
-                {
-                    <option value="@t">@RequestTypes.Label(t)</option>
-                }
-            </select>
-            <select class="req-filter-select" @bind="_filterStatus">
-                <option value="">כל הסטטוסים</option>
-                @foreach (var s in RequestStatuses.All)
-                {
-                    <option value="@s">@RequestStatuses.Label(s)</option>
-                }
-            </select>
-            <select class="req-filter-select" @bind="_filterPriority">
-                <option value="">כל העדיפויות</option>
-                @foreach (var p in RequestPriorities.All)
-                {
-                    <option value="@p">@RequestPriorities.Label(p)</option>
-                }
-            </select>
-        </div>
-    </div>
-
-    <!-- ── Active scope indicator ── -->
-    @if (!_loading && !_loadError)
-    {
-        <div class="req-scope-bar">
-            <span class="req-scope-label @(_kpiFilter == "active" ? "req-scope-default" : "req-scope-filtered")">
-                <span class="oi oi-eye" aria-hidden="true"></span>
-                @KpiScopeText()
-            </span>
-            @if (_kpiFilter != "active" || !string.IsNullOrEmpty(_filterType) || !string.IsNullOrEmpty(_filterStatus) || !string.IsNullOrEmpty(_filterPriority) || !string.IsNullOrEmpty(_searchQuery))
-            {
-                <button class="req-scope-reset" @onclick="ClearAllFilters" title="חזור לתצוגת ברירת מחדל">
-                    <span class="oi oi-x" aria-hidden="true"></span>
-                    נקה סינון
-                </button>
-            }
-        </div>
-    }
-
-    <!-- ── Table panel ── -->
-    <div class="req-table-panel">
-        <div class="req-table-wrap">
-            <table class="req-table">
-                <thead>
-                    <tr>
-                        <th>סוג</th>
-                        <th>כותרת</th>
-                        <th>פרויקט / צוות</th>
-                        <th>פתח על ידי</th>
-                        <th>תאריך</th>
-                        <th>עדיפות</th>
-                        <th>סטטוס</th>
-                        <th class="req-th-actions"></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (_loading)
-                    {
-                        <tr><td colspan="8" class="req-empty">
-                            <span class="req-spinner-inline"></span>טוען בקשות...
-                        </td></tr>
-                    }
-                    else if (_loadError)
-                    {
-                        <tr><td colspan="8" class="req-empty req-empty--error">
-                            <span class="oi oi-warning"></span>שגיאה בטעינה. רענן את הדף.
-                        </td></tr>
-                    }
-                    else if (!Filtered.Any())
-                    {
-                        <tr><td colspan="8" class="req-empty">
-                            <span class="oi oi-magnifying-glass"></span>
-                            @if (_all.Count == 0)
-                            {
-                                <span>לא נפתחו בקשות עדיין.</span>
-                            }
-                            else
-                            {
-                                <span>לא נמצאו בקשות התואמות את הסינון.</span>
-                            }
-                        </td></tr>
-                    }
-                    else
-                    {
-                        foreach (var r in Filtered)
-                        {
-                            bool isSelected = _drawer?.Id == r.Id;
-                            <tr class="req-row @(isSelected ? "req-row-selected" : "") @(r.HasUnread ? "req-row-unread" : "")"
-                                @onclick="@(async () => await OpenDrawer(r))">
-                                <td>
-                                    <span class="req-type-badge req-type-@TypeClass(r.RequestType)">
-                                        @RequestTypes.Label(r.RequestType)
-                                    </span>
-                                </td>
-                                <td>
-                                    <div class="req-title-cell-wrap">
-                                        @if (r.HasUnread)
-                                        {
-                                            <span class="req-unread-dot" title="עדכון חדש"></span>
-                                        }
-                                        <span class="req-title-cell">@r.Title</span>
-                                        @if (r.AttachmentCount > 0)
-                                        {
-                                            <span class="req-attach-indicator" title="@r.AttachmentCount תמונות מצורפות">
-                                                <span class="oi oi-image" aria-hidden="true"></span>
-                                            </span>
-                                        }
-                                    </div>
-                                </td>
-                                <td>
-                                    <div class="req-project-cell-wrap">
-                                        <div class="req-project-cell">
-                                            <span class="req-team-number">צוות @r.ProjectNumber</span>
-                                            <span class="req-project-title">@r.ProjectTitle</span>
-                                        </div>
-                                        <TeamQuickInfoPopover TeamName="@(string.IsNullOrWhiteSpace(r.TeamName) ? $"צוות {r.ProjectNumber}" : r.TeamName)"
-                                                              ProjectTitle="@r.ProjectTitle"
-                                                              TrackName="@r.TrackName"
-                                                              StudentNames="r.StudentNames"
-                                                              StudentEmails="r.StudentEmails"
-                                                              MentorNames="r.MentorNames"
-                                                              MentorEmails="r.MentorEmails">
-                                            <button type="button"
-                                                    class="req-team-info-btn"
-                                                    title="פרטי צוות"
-                                                    aria-label="פרטי צוות">
-                                                <span class="oi oi-info" aria-hidden="true"></span>
-                                                <span class="req-team-info-btn-label">פרטי צוות</span>
-                                            </button>
-                                        </TeamQuickInfoPopover>
-                                    </div>
-                                </td>
-                                <td>
-                                    <span class="req-name-cell">@r.CreatedByName</span>
-                                </td>
-                                <td class="req-date-cell">
-                                    <div>@r.CreatedAt.ToString("dd/MM/yyyy")</div>
-                                    <div class="req-time">@r.CreatedAt.IsraelFormat("HH:mm")</div>
-                                </td>
-                                <td>
-                                    <span class="req-priority-badge req-priority-@r.Priority.ToLower()">
-                                        @RequestPriorities.Label(r.Priority)
-                                    </span>
-                                </td>
-                                <td>
-                                    <span class="req-status-badge req-badge-@r.Status.ToLower()">
-                                        @RequestStatuses.Label(r.Status)
-                                    </span>
-                                </td>
-                                <td class="req-cell-action">
-                                    <button class="req-open-btn"
-                                            title="פתח פרטים"
-                                            @onclick:stopPropagation="true"
-                                            @onclick="@(async () => await OpenDrawer(r))">
-                                        <span class="oi oi-chevron-left" aria-hidden="true"></span>
-                                    </button>
-                                </td>
-                            </tr>
-                        }
-                    }
-                </tbody>
-            </table>
-        </div>
-
-        @if (!_loading && !_loadError)
-        {
-            <div class="req-table-footer">
-                <span class="req-count">
-                    @{ var cnt = Filtered.Count(); }
-                    @cnt בקשות
-                    @if (_kpiFilter == "active" && cnt < _all.Count)
-                    {
-                        <span class="req-count-note">(פעילות — @_all.Count סה"כ במערכת)</span>
-                    }
-                    else if (_kpiFilter != "active" && cnt < _all.Count)
-                    {
-                        <span class="req-count-note">(מסוננות מתוך @_all.Count)</span>
-                    }
-                </span>
-                <div class="req-legend">
-                    @foreach (var s in RequestStatuses.All)
-                    {
-                        <span class="req-status-badge req-badge-@s.ToLower()">
-                            @RequestStatuses.Label(s)
-                        </span>
                     }
                 </div>
-            </div>
+            }
         }
-    </div>
+    }
 
-</div>
+</div>@* lrq-page *@
 
 @code {
+    // ── State ─────────────────────────────────────────────────────────────────
 
-    // ── Data ─────────────────────────────────────────────────────────────────
-    private List<ProjectRequestRowDto> _all         = new();
-    private List<AssignableUserDto>    _assignableUsers = new();
-    private bool _loading   = true;
+    private List<ProjectRequestRowDto> _all = new();
+    private readonly Dictionary<int, ProjectRequestDetailDto?> _details = new();
+    private readonly HashSet<int> _loadingDetails = new();
+    private bool _loading = true;
     private bool _loadError;
 
-    // ── Filters ──────────────────────────────────────────────────────────────
-    private string _searchQuery    = "";
-    private string _filterType     = "";
-    private string _filterStatus   = "";
-    private string _filterPriority = "";
+    private int? _expandedId;
 
-    // KPI card group filter:  "active" (default) | "all" | "new" | "inprogress" | "resolved"
-    private string _kpiFilter = "active";
+    // Filter
+    private string _activeTab = "all";
+    private string _selectedType = "";
+    private bool _typeMenuOpen;
 
-    // ── Drawer ────────────────────────────────────────────────────────────────
-    private ProjectRequestDetailDto? _drawer;
+    // Decision form state
+    private readonly Dictionary<int, string> _decisionChoice = new();
+    private readonly Dictionary<int, string> _decisionNote   = new();
+    private readonly HashSet<int>            _submitting      = new();
+    private readonly Dictionary<int, string?> _submitErrors  = new();
 
-    // Handle form
-    private string  _handleStatus    = "";
-    private string  _handlePriority  = "";
-    private string  _handleAssigneeIdRaw = "";   // bound to select as string
-    private string  _handleComment   = "";
-    private bool    _handling;
-    private bool    _refreshing;
-    private string  _handleError     = "";
+    // History toggle (collapsed by default per the reference)
+    private readonly HashSet<int> _historyOpen = new();
 
-    // Handle-form attachments
-    private record PendingAttachment(string Name, string Base64, string ContentType, long Size);
-    private List<PendingAttachment> _handleAttachments = new();
-    private string _handleFileError = "";
-    private const int MaxEventAttachments = 3;
+    // "טופלו" group starts collapsed
+    private bool _doneOpen;
 
-    // Extension-decision form state (only used when the open request is an
-    // Extension request whose mentor or lecturer decision is still Pending).
-    private string    _extDecision  = ExtensionDecisionStatuses.Approved;
-    private DateTime? _extApprovedDate;
+    // Type name cache from RequestTypesService
+    private Dictionary<string, string> _typeNames = new();
 
-    // The management page is for Admin/Staff only — it surfaces the
-    // lecturer-stage decision form once a mentor has submitted a
-    // recommendation. The legacy "Mentor" branch is gone; mentors now use
-    // /mentor-recommendation through the Mentor requests page.
-    private string? ExtensionPendingStage
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        var rowsTask  = RequestsService.GetAllAsync();
+        var typesTask = RequestTypesService.GetActiveAsync();
+
+        var rows  = await rowsTask;
+        var types = await typesTask;
+
+        _loadError = rows is null;
+        _all = rows?.OrderByDescending(r => r.UpdatedAt).ToList() ?? new();
+
+        _typeNames = types is null
+            ? new()
+            : types.Where(t => !string.IsNullOrWhiteSpace(t.Code))
+                   .GroupBy(t => t.Code)
+                   .ToDictionary(g => g.Key, g => g.First().Name);
+
+        _loading = false;
+    }
+
+    private async Task LoadAsync()
+    {
+        var rows = await RequestsService.GetAllAsync();
+        _loadError = rows is null;
+        _all = rows?.OrderByDescending(r => r.UpdatedAt).ToList() ?? new();
+    }
+
+    // ── Toggle expand / collapse ───────────────────────────────────────────────
+
+    private async Task Toggle(int id)
+    {
+        if (_expandedId == id)
+        {
+            _expandedId = null;
+            return;
+        }
+
+        _expandedId = id;
+
+        if (!_details.ContainsKey(id))
+        {
+            _loadingDetails.Add(id);
+            StateHasChanged();
+
+            var detail = await RequestsService.GetByIdAsync(id);
+            _details[id] = detail;
+            _loadingDetails.Remove(id);
+
+            // Fire-and-forget read receipt
+            _ = RequestsService.MarkReadAsync(id);
+
+            // Update HasUnread on the row list
+            var row = _all.FirstOrDefault(r => r.Id == id);
+            if (row is not null) row.HasUnread = false;
+        }
+    }
+
+    // ── Decision form ──────────────────────────────────────────────────────────
+
+    private void SetChoice(int id, string choice)
+    {
+        _decisionChoice[id] = _decisionChoice.TryGetValue(id, out var c) && c == choice ? "" : choice;
+        _submitErrors.Remove(id);
+    }
+
+    private void SetNote(int id, string note) => _decisionNote[id] = note;
+
+    private async Task SubmitDecision(int id, string requestType, string currentStatus)
+    {
+        if (!_decisionChoice.TryGetValue(id, out var choice) || string.IsNullOrEmpty(choice)) return;
+
+        _submitting.Add(id);
+        _submitErrors.Remove(id);
+        StateHasChanged();
+
+        var note = _decisionNote.TryGetValue(id, out var n) ? n.Trim() : null;
+        if (string.IsNullOrEmpty(note)) note = null;
+
+        string? error = null;
+
+        bool isExtensionDecision = requestType == RequestTypes.Extension
+            && currentStatus == RequestStatuses.PendingLecturerDecision;
+
+        if (choice == "return")
+        {
+            // "החזרה להשלמה" — always uses HandleAsync regardless of type
+            error = await RequestsService.HandleAsync(id, new HandleProjectRequestRequest
+            {
+                NewStatus = RequestStatuses.NeedsInfo,
+                NewPriority = RequestPriorities.Normal,
+                Comment = note,
+            });
+        }
+        else if (isExtensionDecision)
+        {
+            // Extension decision: Approved / Rejected
+            var extDecision = choice == "approved"
+                ? ExtensionDecisionStatuses.Approved
+                : ExtensionDecisionStatuses.Rejected;
+
+            error = await RequestsService.SubmitExtensionDecisionAsync(id, new ExtensionDecisionRequest
+            {
+                Stage    = "Lecturer",
+                Decision = extDecision,
+                Notes    = note,
+            });
+        }
+        else
+        {
+            // General request: Resolved / Closed
+            var newStatus = choice == "approved"
+                ? RequestStatuses.Resolved
+                : RequestStatuses.Closed;
+
+            error = await RequestsService.HandleAsync(id, new HandleProjectRequestRequest
+            {
+                NewStatus = newStatus,
+                NewPriority = RequestPriorities.Normal,
+                Comment = note,
+            });
+        }
+
+        _submitting.Remove(id);
+
+        if (error is not null)
+        {
+            _submitErrors[id] = error.Trim('"', ' ');
+            StateHasChanged();
+            return;
+        }
+
+        // Success: clear local state and reload
+        _decisionChoice.Remove(id);
+        _decisionNote.Remove(id);
+        _details.Remove(id);
+        _expandedId = null;
+
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    // ── History toggle ────────────────────────────────────────────────────────
+
+    private void ToggleHistory(int id)
+    {
+        if (!_historyOpen.Remove(id))
+            _historyOpen.Add(id);
+    }
+
+    // ── Filters ───────────────────────────────────────────────────────────────
+
+    private void SetTab(string tab)
+    {
+        _activeTab = tab;
+        _expandedId = null;
+        if (tab == "done") _doneOpen = true;
+    }
+
+    private void ToggleTypeMenu() => _typeMenuOpen = !_typeMenuOpen;
+    private void CloseTypeMenu()  => _typeMenuOpen = false;
+
+    private void PickType(string type)
+    {
+        _selectedType = type;
+        _typeMenuOpen = false;
+        _expandedId = null;
+    }
+
+    private void ClearFilters()
+    {
+        _activeTab = "all";
+        _selectedType = "";
+        _expandedId = null;
+    }
+
+    // ── Bucket logic ──────────────────────────────────────────────────────────
+
+    /// <summary>Classifies a status into the lecturer's three UI buckets.</summary>
+    private static string BucketOf(string status) => status switch
+    {
+        RequestStatuses.PendingMentorRecommendation => "mentor",
+        RequestStatuses.Resolved or RequestStatuses.Closed => "done",
+        _ => "decision",   // PendingLecturerDecision, New, InProgress, WaitingForStaff, NeedsInfo
+    };
+
+    private int DecisionCount =>
+        _all.Count(r => BucketOf(r.Status) == "decision");
+
+    // ── Groups for the list ───────────────────────────────────────────────────
+
+    private sealed record Group(string Bucket, string Label, List<ProjectRequestRowDto> Items);
+
+    private List<Group> VisibleGroups
     {
         get
         {
-            if (_drawer is null
-                || _drawer.RequestType != RequestTypes.Extension
-                || _drawer.Extension is null)
-                return null;
-            bool hasRecommendation =
-                _drawer.Extension.MentorDecision == ExtensionDecisionStatuses.Recommended    ||
-                _drawer.Extension.MentorDecision == ExtensionDecisionStatuses.NotRecommended ||
-                _drawer.Extension.MentorDecision == ExtensionDecisionStatuses.Escalated;
-            if (hasRecommendation
-                && _drawer.Extension.LecturerDecision == ExtensionDecisionStatuses.Pending)
-                return "Lecturer";
-            return null;
-        }
-    }
+            var typed = string.IsNullOrEmpty(_selectedType)
+                ? _all
+                : _all.Where(r => r.RequestType == _selectedType).ToList();
 
-    // ── Debug panel ──────────────────────────────────────────────────────────
-    private bool _showDebug;
-
-    // ── Modal focus (ESC support) ─────────────────────────────────────────────
-    private ElementReference _modalOverlayRef;
-    private bool             _justOpenedModal;
-
-    // ── Auto-refresh polling + highlight/scroll ───────────────────────────────
-    private CancellationTokenSource? _pollCts;
-    private const int PollIntervalMs = 4000;
-
-    // IDs of events that just arrived via polling — cleared after animation
-    private readonly HashSet<int> _highlightedEventIds = new();
-    // Set before StateHasChanged; consumed and cleared in OnAfterRenderAsync
-    private int? _scrollToEventId;
-
-    private int? _handleAssigneeId
-    {
-        get => int.TryParse(_handleAssigneeIdRaw, out var v) && v > 0 ? v : null;
-        set => _handleAssigneeIdRaw = value?.ToString() ?? "";
-    }
-
-    // Notification deep-link target. When the user clicks a request notification
-    // we land here with `?requestId={id}`; after the list loads we open that
-    // request's drawer automatically. Unknown ids are silently ignored.
-    [SupplyParameterFromQuery(Name = "requestId")]
-    public int? DeepLinkRequestId { get; set; }
-
-    // ── Lifecycle ────────────────────────────────────────────────────────────
-    protected override async Task OnInitializedAsync()
-    {
-        var reqTask   = RequestsService.GetAllAsync();
-        var usersTask = RequestsService.GetAssignableUsersAsync();
-        await Task.WhenAll(reqTask, usersTask);
-
-        _loadError       = reqTask.Result is null;
-        _all             = reqTask.Result   ?? new();
-        _assignableUsers = usersTask.Result ?? new();
-        _loading         = false;
-
-        if (DeepLinkRequestId is int reqId)
-        {
-            var row = _all.FirstOrDefault(r => r.Id == reqId);
-            if (row is not null) await OpenDrawer(row);
-        }
-    }
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (_justOpenedModal)
-        {
-            _justOpenedModal = false;
-            try { await JS.InvokeVoidAsync("gradify.focusElement", _modalOverlayRef); } catch { }
-        }
-
-        if (_scrollToEventId.HasValue)
-        {
-            var id = _scrollToEventId.Value;
-            _scrollToEventId = null;
-            await JS.InvokeVoidAsync("gradify.scrollIntoView", $"req-evt-{id}");
-        }
-    }
-
-    // ── Filtered list ─────────────────────────────────────────────────────
-    // The "active" branch must include the Extension intermediate statuses
-    // (PendingMentorRecommendation, PendingLecturerDecision). Without them
-    // a request would vanish from the lecturer view the moment the mentor
-    // recommended a decision — bug reported 2026-05-19.
-    private IEnumerable<ProjectRequestRowDto> Filtered => _all
-        .Where(r => _kpiFilter switch
-        {
-            "all"        => true,
-            "new"        => r.Status == RequestStatuses.New,
-            "inprogress" => r.Status is RequestStatuses.InProgress
-                                     or RequestStatuses.NeedsInfo
-                                     or RequestStatuses.WaitingForStaff
-                                     or RequestStatuses.PendingMentorRecommendation
-                                     or RequestStatuses.PendingLecturerDecision,
-            "resolved"   => r.Status is RequestStatuses.Resolved or RequestStatuses.Closed,
-            // Default "active" — everything except finalised.
-            _            => r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed),
-        })
-        .Where(r => string.IsNullOrEmpty(_filterType)     || r.RequestType == _filterType)
-        .Where(r => string.IsNullOrEmpty(_filterStatus)   || r.Status      == _filterStatus)
-        .Where(r => string.IsNullOrEmpty(_filterPriority) || r.Priority    == _filterPriority)
-        .Where(r => string.IsNullOrEmpty(_searchQuery)
-                 || r.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
-                 || r.ProjectTitle.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
-                 || r.ProjectNumber.ToString().Contains(_searchQuery)
-                 || r.CreatedByName.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
-        // WhatsApp-style: newest activity first.
-        .OrderByDescending(r => r.UpdatedAt);
-
-    private void SetKpiFilter(string key)
-    {
-        _kpiFilter    = (_kpiFilter == key) ? "active" : key;
-        _filterStatus = "";   // clear dropdown conflict
-    }
-
-    private void ClearAllFilters()
-    {
-        _kpiFilter     = "active";
-        _filterStatus  = "";
-        _filterType    = "";
-        _filterPriority = "";
-        _searchQuery   = "";
-    }
-
-    private string KpiScopeText() => _kpiFilter switch
-    {
-        "all"        => "כל הבקשות",
-        "new"        => "בקשות חדשות בלבד",
-        "inprogress" => "בקשות בטיפול",
-        "resolved"   => "בקשות שטופלו / נסגרו",
-        _            => "בקשות פעילות בלבד",
-    };
-
-    // ── Drawer open / close ───────────────────────────────────────────────
-    private async Task OpenDrawer(ProjectRequestRowDto row)
-    {
-        _handleError = "";
-
-        // Clear the WhatsApp dot on the row immediately; tell the server in
-        // parallel so the state is also cleared across other tabs/devices.
-        if (row.HasUnread)
-        {
-            row.HasUnread = false;
-            _ = RequestsService.MarkReadAsync(row.Id);
-        }
-
-        var detail   = await RequestsService.GetByIdAsync(row.Id);
-        if (detail is null) return;
-
-        _drawer            = detail;
-        _handleStatus      = detail.Status;
-        _handlePriority    = detail.Priority;
-        _handleAssigneeId  = detail.AssignedToUserId;
-        _handleComment     = "";
-        _handleAttachments.Clear();
-        _handleFileError   = "";
-        _handleError       = "";
-        _showDebug         = false;
-        _justOpenedModal   = true;
-
-        // Reset the extension-decision form. Pre-fill the date input with the
-        // student's requested date so the approver only types it when they want
-        // to override the requested date.
-        _extDecision     = ExtensionDecisionStatuses.Approved;
-        _extApprovedDate = detail.Extension?.RequestedDueDate.Date;
-
-        StartPolling();
-    }
-
-    private void CloseDrawer()
-    {
-        StopPolling();
-        _drawer      = null;
-        _handleError = "";
-    }
-
-    private void OnModalKeyDown(KeyboardEventArgs e)
-    {
-        if (e.Key == "Escape") CloseDrawer();
-    }
-
-    private async Task RefreshDrawer()
-    {
-        if (_drawer is null) return;
-        _refreshing = true;
-        var updated = await RequestsService.GetByIdAsync(_drawer.Id);
-        _refreshing = false;
-        if (updated is null) return;
-
-        ApplyDrawerUpdate(updated);
-    }
-
-    private void CloseAllMenus() { }
-
-    // ── Auto-refresh polling ──────────────────────────────────────────────────
-
-    private void StartPolling()
-    {
-        StopPolling();
-        _pollCts = new CancellationTokenSource();
-        _ = PollLoop(_pollCts.Token);
-    }
-
-    private void StopPolling()
-    {
-        _pollCts?.Cancel();
-        _pollCts?.Dispose();
-        _pollCts = null;
-    }
-
-    private async Task PollLoop(CancellationToken ct)
-    {
-        try
-        {
-            while (!ct.IsCancellationRequested)
+            var all = new[]
             {
-                await Task.Delay(PollIntervalMs, ct);
-                if (ct.IsCancellationRequested || _drawer is null) break;
-
-                var updated = await RequestsService.GetByIdAsync(_drawer.Id);
-                if (ct.IsCancellationRequested || updated is null || _drawer is null) break;
-
-                // Skip re-render when nothing changed
-                if (updated.UpdatedAt == _drawer.UpdatedAt &&
-                    updated.Events.Count == _drawer.Events.Count) continue;
-
-                await InvokeAsync(() =>
-                {
-                    if (_drawer is null) return;
-                    ApplyDrawerUpdate(updated);
-                    StateHasChanged();
-                });
-            }
-        }
-        catch (OperationCanceledException) { /* normal cancellation */ }
-    }
-
-    /// <summary>
-    /// Mutates the open drawer's display-only fields in-place so the DOM diff
-    /// is minimal (no scroll reset, no flicker). Form fields are intentionally
-    /// left untouched so the lecturer's in-progress edits are preserved.
-    /// Also detects newly arrived events and schedules their highlight + scroll.
-    /// </summary>
-    private void ApplyDrawerUpdate(ProjectRequestDetailDto updated)
-    {
-        if (_drawer is null) return;
-
-        // Detect events that weren't present before this update
-        var existingIds = _drawer.Events.Select(e => e.Id).ToHashSet();
-        var newEvents   = updated.Events.Where(e => !existingIds.Contains(e.Id)).ToList();
-
-        _drawer.Events           = updated.Events;
-        _drawer.Status           = updated.Status;
-        _drawer.Priority         = updated.Priority;
-        _drawer.UpdatedAt        = updated.UpdatedAt;
-        _drawer.AssignedToName   = updated.AssignedToName;
-        _drawer.AssignedToUserId = updated.AssignedToUserId;
-        _drawer.ResolutionNotes  = updated.ResolutionNotes;
-
-        // Keep list row in sync too (status badge in the table)
-        var listRow = _all.FirstOrDefault(r => r.Id == updated.Id);
-        if (listRow is not null)
-        {
-            listRow.Status         = updated.Status;
-            listRow.Priority       = updated.Priority;
-            listRow.UpdatedAt      = updated.UpdatedAt;
-            listRow.AssignedToName = updated.AssignedToName;
-        }
-
-        if (newEvents.Count == 0) return;
-
-        // Mark newly arrived events for highlight and scroll to the latest one
-        foreach (var e in newEvents)
-            _highlightedEventIds.Add(e.Id);
-
-        _scrollToEventId = newEvents[^1].Id;  // newest new event
-
-        // Remove highlight classes after the CSS animation finishes (2.5 s)
-        var idsToRemove = newEvents.Select(e => e.Id).ToList();
-        _ = ClearHighlightsAsync(idsToRemove);
-    }
-
-    private async Task ClearHighlightsAsync(List<int> ids)
-    {
-        await Task.Delay(2800);
-        await InvokeAsync(() =>
-        {
-            foreach (var id in ids)
-                _highlightedEventIds.Remove(id);
-            StateHasChanged();
-        });
-    }
-
-    public void Dispose() => StopPolling();
-
-    // ── Handle action ─────────────────────────────────────────────────────
-    //
-    // Postponement (Extension) requests with a pending decision are routed to
-    // the dedicated extension/decision endpoint, which writes the per-team
-    // due-date override on Approved. Generic (non-extension) requests still go
-    // through the existing handle endpoint — that path is untouched.
-    private async Task SubmitHandle()
-    {
-        if (_drawer is null) return;
-        _handling    = true;
-        _handleError = "";
-
-        var stage = ExtensionPendingStage;
-        if (stage is not null)
-        {
-            // Extension decision path
-            if (string.IsNullOrWhiteSpace(_handleComment))
-            {
-                _handleError = "יש להוסיף תגובה לסטודנט לפני אישור או דחיית הבקשה";
-                _handling    = false;
-                return;
-            }
-
-            bool hasTarget = _drawer.Extension!.TaskId.HasValue
-                          || _drawer.Extension!.ProjectMilestoneId.HasValue;
-
-            DateTime? approvedDate = null;
-            if (_extDecision == ExtensionDecisionStatuses.Approved && hasTarget)
-                approvedDate = _extApprovedDate?.Date;
-
-            var decisionReq = new ExtensionDecisionRequest
-            {
-                Stage           = stage,
-                Decision        = _extDecision,
-                ApprovedDueDate = approvedDate,
-                Notes           = string.IsNullOrWhiteSpace(_handleComment) ? null : _handleComment.Trim(),
+                new Group("decision", "להחלטתך",     typed.Where(r => BucketOf(r.Status) == "decision").ToList()),
+                new Group("mentor",   "בטיפול מנחה",  typed.Where(r => BucketOf(r.Status) == "mentor").ToList()),
+                new Group("done",     "טופלו",         typed.Where(r => BucketOf(r.Status) == "done").ToList()),
             };
 
-            var decErr = await RequestsService.SubmitExtensionDecisionAsync(_drawer.Id, decisionReq);
-            _handling = false;
-            if (decErr is not null) { _handleError = decErr.Trim('"', ' '); return; }
-
-            // Reflect the new state in the list row before closing — lecturer
-            // decisions are always terminal under the mentor-first flow.
-            var listRowExt = _all.FirstOrDefault(r => r.Id == _drawer.Id);
-            if (listRowExt is not null)
+            return _activeTab switch
             {
-                listRowExt.Status    = RequestStatuses.Resolved;
-                listRowExt.UpdatedAt = DateTime.Now;
-            }
-            CloseDrawer();
-            return;
-        }
-
-        // ── Non-extension generic path ───────────────────────────────────
-        // Require a comment before finalising (Resolved / Closed).
-        if (_handleStatus is RequestStatuses.Resolved or RequestStatuses.Closed
-            && string.IsNullOrWhiteSpace(_handleComment))
-        {
-            _handleError = "יש להוסיף תגובה לסטודנט לפני סגירת הבקשה";
-            _handling    = false;
-            return;
-        }
-
-        var req = new HandleProjectRequestRequest
-        {
-            NewStatus        = _handleStatus,
-            NewPriority      = _handlePriority,
-            AssignedToUserId = _handleAssigneeId,
-            Comment          = string.IsNullOrWhiteSpace(_handleComment) ? null : _handleComment.Trim(),
-            Attachments      = _handleAttachments.Select(a => new RequestAttachmentUploadRequest
-            {
-                OriginalFileName = a.Name,
-                FileBase64       = a.Base64,
-                ContentType      = a.ContentType,
-                SizeBytes        = a.Size,
-            }).ToList(),
-        };
-
-        var error = await RequestsService.HandleAsync(_drawer.Id, req);
-        _handling = false;
-
-        if (error is not null) { _handleError = error.Trim('"', ' '); return; }
-
-        // Sync list row with what we applied before closing
-        var reqId   = _drawer.Id;
-        var listRow = _all.FirstOrDefault(r => r.Id == reqId);
-        if (listRow is not null)
-        {
-            listRow.Status         = _handleStatus;
-            listRow.Priority       = _handlePriority;
-            listRow.UpdatedAt      = DateTime.Now;
-            listRow.AssignedToName = _handleAssigneeId.HasValue
-                ? _assignableUsers.FirstOrDefault(u => u.Id == _handleAssigneeId.Value)?.Name
-                : null;
-        }
-
-        // Auto-close — action is complete, return to the queue
-        CloseDrawer();
-    }
-
-    // ── Handle-form file upload ───────────────────────────────────────────
-    private async Task OnHandleFilesSelected(InputFileChangeEventArgs e)
-    {
-        _handleFileError = "";
-        int remaining = MaxEventAttachments - _handleAttachments.Count;
-        if (remaining <= 0) return;
-
-        foreach (var file in e.GetMultipleFiles(remaining))
-        {
-            string ext = Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
-            if (ext is not ("jpg" or "jpeg" or "png" or "webp" or "pdf" or "doc" or "docx"))
-            {
-                _handleFileError = $"הקובץ \"{file.Name}\" אינו סוג נתמך (jpg, png, webp, pdf, doc, docx)";
-                continue;
-            }
-            if (file.Size > 5 * 1_048_576L)
-            {
-                _handleFileError = $"הקובץ \"{file.Name}\" חורג מהגודל המקסימלי (5 MB)";
-                continue;
-            }
-            try
-            {
-                using var stream = file.OpenReadStream(maxAllowedSize: 5 * 1_048_576L);
-                using var ms     = new MemoryStream();
-                await stream.CopyToAsync(ms);
-                _handleAttachments.Add(new PendingAttachment(
-                    Name:        file.Name,
-                    Base64:      Convert.ToBase64String(ms.ToArray()),
-                    ContentType: file.ContentType,
-                    Size:        file.Size));
-            }
-            catch { _handleFileError = $"שגיאה בקריאת הקובץ \"{file.Name}\""; }
+                "decision" => new List<Group> { all[0] },
+                "mentor"   => new List<Group> { all[1] },
+                "done"     => new List<Group> { all[2] },
+                _          => all.ToList(),
+            };
         }
     }
 
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024)       return $"{bytes} B";
-        if (bytes < 1_048_576)  return $"{bytes / 1024.0:F1} KB";
-        return $"{bytes / 1_048_576.0:F1} MB";
-    }
+    // ── Types ─────────────────────────────────────────────────────────────────
 
-    // ── Display helpers ───────────────────────────────────────────────────
-    private static string TypeClass(string type) => type switch
-    {
-        RequestTypes.Extension                 => "extension",
-        RequestTypes.SpecialEvent              => "special",
-        RequestTypes.TechnicalSupport          => "tech",
-        RequestTypes.Meeting                   => "meeting",
-        RequestTypes.ClientChallenge           => "client",
-        RequestTypes.ContentChallenge          => "content",
-        RequestTypes.CharacterizationChallenge => "char",
-        _                                      => "default",
-    };
+    private string TypeLabel(string code) =>
+        _typeNames.TryGetValue(code, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : RequestTypes.Label(code);
 
-    private static string RoleLabel(string role) => role switch
-    {
-        Roles.Admin  => "מנהל",
-        Roles.Staff  => "מרצה",
-        Roles.Mentor => "מנחה",
-        _            => role,
-    };
+    private List<string> AvailableTypes =>
+        RequestTypes.All
+            .Where(t => _all.Any(r => r.RequestType == t))
+            .ToList();
 
-    private static string EventClass(ProjectRequestEventDto evt)
+    // ── Row presentation ──────────────────────────────────────────────────────
+
+    private string RowSubLine(ProjectRequestRowDto r)
     {
-        if (evt.EventType == RequestEventTypes.Comment)
-            return evt.UserRole == Roles.Student ? "req-thread-student-comment" : "req-thread-comment";
-        return evt.EventType switch
+        var parts = new[]
         {
-            RequestEventTypes.StatusChange   => "req-thread-status",
-            RequestEventTypes.PriorityChange => "req-thread-system",
-            RequestEventTypes.AssigneeChange => "req-thread-system",
-            _                                => "",
-        };
+            TypeLabel(r.RequestType),
+            r.CreatedByName,
+            r.TeamName,
+            r.ProjectTitle,
+        }.Where(s => !string.IsNullOrWhiteSpace(s));
+        return string.Join(" · ", parts);
     }
 
-    private static string AvatarClass(ProjectRequestEventDto evt)
+    private string RowTimeLabel(ProjectRequestRowDto r) => BucketOf(r.Status) switch
     {
-        if (evt.EventType == RequestEventTypes.Comment)
-            return evt.UserRole == Roles.Student ? "req-avatar-student" : "req-avatar-staff";
-        return "req-avatar-system";
-    }
-
-    private static string EventIcon(ProjectRequestEventDto evt) => evt.EventType switch
-    {
-        RequestEventTypes.Comment        => "oi-comment-square",
-        RequestEventTypes.StatusChange   => "oi-loop-circular",
-        RequestEventTypes.PriorityChange => "oi-signal",
-        RequestEventTypes.AssigneeChange => "oi-arrow-circle-right",
-        _                                => "oi-info",
+        "decision" when r.Status == RequestStatuses.PendingLecturerDecision
+            => "ממתינה להחלטתך",
+        "decision"
+            => r.HasUnread ? "עדכון חדש" : $"עודכנה {r.UpdatedAt:dd.MM}",
+        "mentor"
+            => "אצל המנחה",
+        "done"
+            => $"טופל · {r.UpdatedAt:dd.MM}",
+        _   => $"{r.UpdatedAt:dd.MM}",
     };
 
-    private static string EventSummary(ProjectRequestEventDto evt) => evt.EventType switch
+    // ── History ───────────────────────────────────────────────────────────────
+
+    private static string HistLine(ProjectRequestEventDto e) => e.EventType switch
     {
-        RequestEventTypes.Comment        => evt.Content ?? "",
-        RequestEventTypes.StatusChange   => $"סטטוס שונה: {evt.OldValue} ← {evt.NewValue}",
-        RequestEventTypes.PriorityChange => $"עדיפות שונתה: {evt.OldValue} ← {evt.NewValue}",
-        RequestEventTypes.AssigneeChange => evt.NewValue is not null
-            ? $"הבקשה הועברה ל{evt.NewValue}"
-            : "שיוך הוסר",
-        _ => "",
+        RequestEventTypes.Comment =>
+            !string.IsNullOrWhiteSpace(e.Content)
+                ? $"{e.UserName} · {e.CreatedAt:dd.MM · HH:mm} — {e.Content}"
+                : $"{e.UserName} · {e.CreatedAt:dd.MM · HH:mm}",
+        RequestEventTypes.StatusChange =>
+            $"{e.UserName} · סטטוס שונה ל: {e.NewValue} · {e.CreatedAt:dd.MM}",
+        _ =>
+            $"{e.UserName} · {e.CreatedAt:dd.MM}",
     };
+
+    // ── Extension date helper ─────────────────────────────────────────────────
+
+    private static string ExtDate(DateTime? dt) =>
+        dt?.ToString("dd.MM.yyyy") ?? "—";
+
+    private static string ExtDate(DateTime dt) =>
+        dt.ToString("dd.MM.yyyy");
+
+    // ── CSS ───────────────────────────────────────────────────────────────────
+
+    private string TabClass(string tab) =>
+        _activeTab == tab ? "lrq-tab lrq-tab-active" : "lrq-tab";
 }
