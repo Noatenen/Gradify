@@ -137,6 +137,28 @@ public static class MentorAging
         _ => "",
     };
 
+    /// <summary>
+    /// The compact form, for a scannable list row.
+    ///
+    /// <para><see cref="WaitingLabel"/> is a full sentence ("ממתינה לבדיקה כבר 5
+    /// ימים") — right for an email body or a detail panel, and too dense for a
+    /// queue the mentor scans vertically. This says the same thing in two words
+    /// and stays kind-agnostic, because the section a row sits in has already
+    /// said whether it is a submission or a request.</para>
+    ///
+    /// <para>It carries no escalation word: the row's tone does that, and the
+    /// escalation is stated in words on the row's accessible name via
+    /// <see cref="StateLabel"/>. Same two rules as everything else here — the
+    /// subject is the item, never the reader, and no lateness vocabulary.</para>
+    /// </summary>
+    public static string ShortLabel(int days) => days switch
+    {
+        <= 0 => "התקבלה היום",
+        1    => "ממתינה יום",
+        2    => "ממתינה יומיים",
+        _    => $"ממתינה {days} ימים",
+    };
+
     /// <summary>Short state chip. Only NeedsAttention gets a word of its own —
     /// New and Waiting are already fully described by their WaitingLabel, and a
     /// second chip repeating it would be noise.</summary>

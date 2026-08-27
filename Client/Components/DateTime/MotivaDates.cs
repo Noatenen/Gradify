@@ -33,8 +33,20 @@ public static class MotivaDates
         "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר",
     };
 
+    /// <summary>Abbreviated months, for the places a full name cannot fit — the
+    /// mentor home's 44px date chip is the first. Same hardcoding rationale as
+    /// <see cref="MonthNames"/>: no CultureInfo, no ICU shard to be missing.</summary>
+    public static readonly string[] ShortMonthNames =
+    {
+        "ינו׳", "פבר׳", "מרץ", "אפר׳", "מאי", "יוני",
+        "יולי", "אוג׳", "ספט׳", "אוק׳", "נוב׳", "דצמ׳",
+    };
+
     /// <summary>"שני".</summary>
     public static string DayName(DateTime d) => DayNames[(int)d.DayOfWeek];
+
+    /// <summary>"אוג׳".</summary>
+    public static string ShortMonth(DateTime d) => ShortMonthNames[d.Month - 1];
 
     /// <summary>"17 באוגוסט".</summary>
     public static string DayAndMonth(DateTime d) => $"{d.Day} ב{MonthNames[d.Month - 1]}";

@@ -4,19 +4,30 @@
 @using AuthWithAdmin.Client.Pages.Requests
 @inject IAuthenticationService _Auth
 @inject IProjectRequestsService _Requests
+@inject IMentorAttentionService _Attention
 @inject NavigationManager Nav
 @implements IDisposable
 
 @*
-    ── StudentTopNav ────────────────────────────────────────────────────────
-    The chrome of the FINAL student experience: logo, one centred pill nav,
-    and a cluster of round icon buttons. It replaces the 248px sidebar for
-    students only — AppSideNav is untouched and still serves Mentor,
-    Lecturer, Staff and Admin.
+    ── MotivaTopNav ─────────────────────────────────────────────────────────
+    The chrome of BOTH finished experiences: logo, one centred pill nav, and a
+    cluster of round icon buttons. It replaces the 248px sidebar for Student
+    and Mentor — AppSideNav is untouched and still serves Lecturer, Staff and
+    Admin.
 
-    Source: every screen in design-reference/motiva-student-final (the eight
-    `… final.dc.html` files) draws exactly this bar, unchanged, at the top of
-    the canvas.
+    Source: every screen in design-reference/motiva-student-final (the
+    `… final.dc.html` files) AND every `Motiva Mentor *.dc.html` screen draws
+    exactly this bar, unchanged, at the top of the canvas. The two differ only
+    in which destinations sit in the pill — which this component never
+    hard-codes: it renders NavDefinitions.GetNavItems(_user), so the mentor's
+    six (בית · המשימות שלי · פרויקטים בהנחייתי · בקשות · יומן · משאבים) and the
+    student's come out of the same markup.
+
+    Renamed from StudentTopNav when Mentor adopted the same shell. Behaviour
+    for a student is unchanged: same nav source, same badge query, same
+    avatar target, same logout. The `stn-` CSS prefix is kept — it is what
+    ~200 lines of MotivaTopNav.razor.css and two `::deep` blocks hang off, and
+    churning it would be a no-op diff. Read it as "shell top nav".
 
     WHAT IS DELIBERATELY NOT HERE
     The design's cluster also shows a magnifier. The product has no global
@@ -43,7 +54,7 @@
                      href="@item.Href"
                      Match="@item.Match">
                 <span class="stn-nav-label">@item.Label</span>
-                @if (item.Href == "requests" && _actionRequestCount > 0)
+                @if (item.Href == RequestsRoute && _actionRequestCount > 0)
                 {
                     <span class="stn-nav-count" aria-label="@($"{_actionRequestCount} בקשות ממתינות לתגובתך")">
                         @_actionRequestCount
@@ -55,7 +66,11 @@
 
     <div class="stn-actions">
 
-        <a class="stn-icon-btn" href="/milestones" title="יומן ותכנון" aria-label="יומן ותכנון">
+        @* The design draws a calendar shortcut on both roles' bars, but they
+           are different calendars: /milestones is the student's plan,
+           /mentor/calendar is the mentor's scheduling surface. Both are real
+           destinations the role's own nav already carries. *@
+        <a class="stn-icon-btn" href="@CalendarHref" title="יומן ותכנון" aria-label="יומן ותכנון">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="3" y="4" width="18" height="18" rx="3"></rect>
@@ -95,11 +110,32 @@
 
     private IReadOnlyList<NavItem> _navMain = Array.Empty<NavItem>();
 
-    // "דורש ממך פעולה" — the count the design puts on the בקשות pill. Real,
-    // from GET api/project-requests/mine, bucketed by the same
-    // RequestBuckets.Of() the Requests page uses, so the badge and the page
-    // can never disagree about what "waiting on you" means.
+    // "דורש ממך פעולה" — the count the design puts on the בקשות pill. Real
+    // for both roles, and from each role's OWN source of truth, so the badge
+    // can never disagree with the page it points at:
+    //
+    //   Student  GET api/project-requests/mine, bucketed by the same
+    //            RequestBuckets.Of() the Requests page uses.
+    //   Mentor   GET api/mentor/attention → Counts.AwaitingRequests, which is
+    //            the documented single source of truth for everything waiting
+    //            on a mentor — the same number Home's shortcut pill and the
+    //            daily digest read.
     private int _actionRequestCount;
+
+    /// <summary>Whether this bar is being drawn for a mentor. Reads the same
+    /// NavDefinitions.GetShell as AppLayout, so the bar and the shell can
+    /// never disagree — including for a dual-role user, whose active mode
+    /// decides.</summary>
+    private bool IsMentor =>
+        NavDefinitions.GetShell(_user) == NavDefinitions.Shell.Mentor;
+
+    /// <summary>The role's own בקשות destination, as declared in
+    /// NavDefinitions. Matched against the nav item's Href to decide which
+    /// pill carries the count — a literal "requests" would silently stop
+    /// matching the day either route moves.</summary>
+    private string RequestsRoute => IsMentor ? "mentor-requests" : "requests";
+
+    private string CalendarHref => IsMentor ? "/mentor/calendar" : "/milestones";
 
     private bool IsProfileRoute =>
         new Uri(Nav.Uri).AbsolutePath.Trim('/').Equals("settings", StringComparison.OrdinalIgnoreCase);
@@ -127,23 +163,36 @@
 
     private async Task RefreshRequestCountAsync()
     {
-        var mine = await _Requests.GetMyRequestsAsync();
-        if (mine is null) return;
+        if (IsMentor)
+        {
+            // Never throws and never returns null — an empty snapshot leaves
+            // the badge at 0 rather than blanking the bar.
+            var attention = await _Attention.GetAsync();
+            _actionRequestCount = attention.Counts.AwaitingRequests;
+        }
+        else
+        {
+            var mine = await _Requests.GetMyRequestsAsync();
+            if (mine is null) return;
 
-        _actionRequestCount = mine.Count(r => RequestBuckets.Of(r.Status) == RequestBucket.Waiting);
+            _actionRequestCount = mine.Count(r => RequestBuckets.Of(r.Status) == RequestBucket.Waiting);
+        }
+
         StateHasChanged();
     }
 
-    // Leaving /requests is the one navigation that can have changed the
-    // count (a reply moves a request out of "waiting on you"). Refreshing
-    // only there keeps the badge honest without an API call per page.
+    // Leaving the role's requests page is the one navigation that can have
+    // changed the count (a reply moves a request out of "waiting on you").
+    // Refreshing only there keeps the badge honest without an API call per
+    // page.
     private string _lastPath = "";
 
     private async void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
-        var path = new Uri(Nav.Uri).AbsolutePath.Trim('/');
-        bool leftRequests = _lastPath.Equals("requests", StringComparison.OrdinalIgnoreCase)
-                            && !path.Equals("requests", StringComparison.OrdinalIgnoreCase);
+        var path  = new Uri(Nav.Uri).AbsolutePath.Trim('/');
+        var route = RequestsRoute;
+        bool leftRequests = _lastPath.Equals(route, StringComparison.OrdinalIgnoreCase)
+                            && !path.Equals(route, StringComparison.OrdinalIgnoreCase);
         _lastPath = path;
 
         await InvokeAsync(StateHasChanged);

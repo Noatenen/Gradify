@@ -1707,6 +1707,13 @@ public static class DatabaseMigrator
         // Subsequent publishes maintain the invariant via the publish flow
         // in AssignmentManagementController.
         await EnsureSelectionMilestoneBackfillAsync(connection);
+
+        // ── Mentor QA Seed Data ──────────────────────────────────────────────
+        // Development/test seed data covering all Mentor screens and states:
+        // 4 teams across healthy/attention/risk states, attention items with
+        // varied aging, requests across all 4 buckets, multi-round submissions,
+        // personal tasks, calendar milestones, and mentor preferences.
+        await EnsureMentorQASeedDataAsync(connection);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2783,6 +2790,236 @@ public static class DatabaseMigrator
             "INSERT OR IGNORE INTO ProjectTypes (Id, Name) VALUES (2, 'Methodological')");
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureMentorQASeedDataAsync
+    //
+    //  Development/test seed data for validating the complete Mentor experience:
+    //    1. 4 mentored projects for Mentor test users (User 63 - ינאי כרמי, User 3 - אבי לוי)
+    //       with 4 distinct health states: At Risk (overdue milestone), Needs Attention
+    //       (pending submission), Open Request (active requests in progress), Healthy (on track).
+    //    2. Attention snapshot items with diverse aging & priority bands (Needs Attention / Waiting / New).
+    //    3. Request items across all 4 mentor buckets: AwaitingMentor, WithLecturer, AwaitingTeam, Closed.
+    //    4. Multi-round submission histories (Returned round with feedback + resubmitted Pending round; Approved round).
+    //    5. Personal tasks: Overdue, Due Today, Upcoming, and Completed.
+    //    6. Mentor preferences profile with realistic Hebrew expectations.
+    //
+    //  Strictly idempotent: Uses INSERT OR IGNORE / INSERT OR REPLACE with known IDs
+    //  so restarting the server never creates duplicate seed records.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureMentorQASeedDataAsync(SqliteConnection connection)
+    {
+        // ── 1. Ensure Mentor test users exist ───────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO users (Id, Email, PasswordHash, FirstName, LastName, IsVerified, Phone, IsActive, AcademicYear)
+            VALUES
+                (63, 'yanai.mentor.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'ינאי', 'כרמי', 1, '054-9876543', 1, '2025-2026'),
+                (3, 'noaspamail@gmail.com', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'אבי', 'לוי', 1, '052-1234567', 1, '2025-2026')");
+
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO UserRoles (UserId, Role)
+            VALUES
+                (63, 'Mentor'),
+                (3, 'Mentor')");
+
+        // ── 2. Ensure Student demo cohort users exist ─────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO users (Id, Email, PasswordHash, FirstName, LastName, IsVerified, Phone, IsActive, AcademicYear)
+            VALUES
+                (61, 'noa.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'נועה', 'כהן', 1, '050-1112233', 1, '2025-2026'),
+                (62, 'ofir.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'אופיר', 'שרעבי', 1, '050-2223344', 1, '2025-2026'),
+                (65, 'daniel.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'דניאל', 'אבני', 1, '050-3334455', 1, '2025-2026'),
+                (66, 'maya.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'מאיה', 'גולן', 1, '050-4445566', 1, '2025-2026'),
+                (67, 'idan.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'עידן', 'ברק', 1, '050-5556677', 1, '2025-2026'),
+                (68, 'shira.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'שירה', 'מזרחי', 1, '050-6667788', 1, '2025-2026'),
+                (70, 'roni.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'רוני', 'אשכנזי', 1, '050-7778899', 1, '2025-2026'),
+                (71, 'tal.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'טל', 'ברקוביץ''', 1, '050-8889900', 1, '2025-2026'),
+                (72, 'yuval.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'יובל', 'שני', 1, '050-9990011', 1, '2025-2026')");
+
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO UserRoles (UserId, Role)
+            VALUES
+                (61, 'Student'), (62, 'Student'), (65, 'Student'), (66, 'Student'),
+                (67, 'Student'), (68, 'Student'), (70, 'Student'), (71, 'Student'), (72, 'Student')");
+
+        // ── 3. Ensure Teams & Projects ───────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO Teams (Id, AcademicYearId, TeamName)
+            VALUES
+                (129, 1, 'צוות Motiva'),
+                (130, 1, 'צוות הספרייה הדיגיטלית'),
+                (131, 1, 'צוות המסחר האלקטרוני'),
+                (133, 1, 'צוות הכושר החכם')");
+
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO Projects (Id, ProjectNumber, AcademicYearId, TeamId, Title, Description, ProjectTypeId, Status, HealthStatus)
+            VALUES
+                (129, 9001, 1, 129, 'Motiva — Final Project Management Platform', 'פלטפורמה אחודה לניהול, ליווי והערכת פרויקטי גמר', 1, 'Active', 'AtRisk'),
+                (130, 9002, 1, 130, 'מערכת ניהול ספרייה דיגיטלית', 'מערכת חכמה לניהול השאלות, קטלוג אינטראקטיבי והזמנת ספרים דיגיטליים', 1, 'Active', 'NeedsAttention'),
+                (131, 9003, 1, 131, 'פלטפורמת מסחר אלקטרוני לעסקים קטנים', 'פלטפורמת מרקטפלייס מונגשת לקידום עסקים מקומיים ויצרנים זעירים', 1, 'Active', 'NeedsAttention'),
+                (133, 9005, 1, 133, 'אפליקציית אימונים אישית מבוססת AI', 'אפליקציית מובייל להתאמת תוכניות אימון וניטור מדדי כושר ובריאות', 1, 'Active', 'OnTrack')");
+
+        // Update health statuses and active status on the projects
+        await connection.ExecuteNonQueryAsync(@"
+            UPDATE Projects SET HealthStatus = 'AtRisk', Status = 'Active' WHERE Id = 129;
+            UPDATE Projects SET HealthStatus = 'NeedsAttention', Status = 'Active' WHERE Id = 130;
+            UPDATE Projects SET HealthStatus = 'NeedsAttention', Status = 'Active' WHERE Id = 131;
+            UPDATE Projects SET HealthStatus = 'OnTrack', Status = 'Active' WHERE Id = 133;");
+
+        // ── 4. Assign TeamMembers ───────────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO TeamMembers (TeamId, UserId, IsActive)
+            VALUES
+                (129, 61, 1), (129, 62, 1),
+                (130, 65, 1), (130, 66, 1),
+                (131, 67, 1), (131, 68, 1),
+                (133, 70, 1), (133, 71, 1), (133, 72, 1)");
+
+        // ── 5. Assign ProjectMentors ─────────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR IGNORE INTO ProjectMentors (ProjectId, UserId, AssignedAt)
+            VALUES
+                (129, 63, '2026-04-01 10:00:00'),
+                (130, 63, '2026-04-01 10:00:00'),
+                (131, 63, '2026-04-01 10:00:00'),
+                (133, 63, '2026-04-01 10:00:00'),
+                (129, 3, '2026-04-01 10:00:00'),
+                (130, 3, '2026-04-01 10:00:00'),
+                (131, 3, '2026-04-01 10:00:00'),
+                (133, 3, '2026-04-01 10:00:00')");
+
+        // ── 6. Milestones & Due Dates ────────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            UPDATE AcademicYearMilestones SET DueDate = '2026-08-18' WHERE Id = 124; -- Wireframes דיוק גבוה (Project 129 overdue)
+            UPDATE AcademicYearMilestones SET DueDate = '2026-08-28' WHERE Id = 133; -- Wireframes (Project 130 upcoming in 3d)
+            UPDATE AcademicYearMilestones SET DueDate = '2026-08-31' WHERE Id = 136; -- הגדרת בעיה (Project 131 upcoming in 6d)
+            UPDATE AcademicYearMilestones SET DueDate = '2026-09-15' WHERE Id = 146; -- הערכת משתמשים (Project 133 upcoming in 3w)
+        ");
+
+        // ── 7. Tasks ────────────────────────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO Tasks (Id, ProjectId, ProjectMilestoneId, Title, Description, TaskType, Status, DueDate, CreatedByUserId, AssignedToUserId, IsMandatory, IsSubmission)
+            VALUES
+                (614, 129, 796, 'מסמך אפיון UX סופי', 'מסמך אפיון מפורט כולל תרחישי שימוש, פרסונות וסכמת ניווט מלאה', 'MilestoneTask', 'SubmittedToMentor', '2026-08-18 23:59:00', 63, 61, 1, 1),
+                (615, 129, 796, 'סקר טכנולוגיות וכלי פיתוח', 'בחינת ספריות קומפוננטות ותשתיות אחסון בענן', 'ProjectTask', 'InProgress', '2026-08-20 23:59:00', 63, 62, 0, 0),
+                (616, 129, 794, 'Wireframes ברמת דיוק נמוכה', 'סקיצות ראשוניות של זרימת המשתמש המרכזית', 'MilestoneTask', 'Done', '2026-07-20 23:59:00', 63, 61, 1, 1),
+                (617, 130, 805, 'סקיצות ראשוניות ו-Wireframes', 'מבנה מסכים לקטלוג הספרים, השאלות ואזור אישי', 'MilestoneTask', 'SubmittedToMentor', '2026-08-28 23:59:00', 63, 65, 1, 1),
+                (618, 130, 804, 'מסמך אפיון ראשוני', 'הגדרת פונקציונליות ודרישות מערכת', 'MilestoneTask', 'Done', '2026-08-01 23:59:00', 63, 66, 1, 1),
+                (619, 131, 808, 'מסמך הגדרת דרישות איקומרס', 'פירוט דרישות מודול עגלת קניות ואינטגרציית סליקה', 'MilestoneTask', 'SubmittedToMentor', '2026-08-31 23:59:00', 63, 68, 1, 1),
+                (620, 133, 817, 'גרסה עובדת ראשונה - אפליקציית כושר AI', 'פרוטוטייפ עובד של מודול אימונים והתאמה אישית', 'MilestoneTask', 'Done', '2026-08-10 23:59:00', 63, 70, 1, 1),
+                (621, 133, 818, 'בניית מערך שאלונים להערכת משתמשים', 'שאלונים ומדדים לבחינת שביעות רצון ודיוק ההמלצות', 'MilestoneTask', 'InProgress', '2026-09-10 23:59:00', 63, 71, 0, 0)");
+
+        // ── 8. Task Submissions & Multi-round History ───────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO TaskSubmissions (Id, TaskId, SubmittedByUserId, SubmittedAt, Notes, Status, MentorStatus, MentorFeedback, MentorReviewedAt, DriveUrl)
+            VALUES
+                -- Project 129: Round 1 (Returned for revision)
+                (31, 614, 61, '2026-08-05 11:00:00', 'הגשת טיוטה ראשונה של מסמך האפיון.', 'Reviewed', 'Returned', 'עבודה יפה על מבנה המערכת, אך חסרה התייחסות למשתמשים בעלי מוגבלויות ולתרחישי שגיאה.', '2026-08-08 15:00:00', 'https://drive.google.com/file/d/motiva-ux-draft'),
+                -- Project 129: Round 2 (Pending review, 5 days old -> Needs Attention in Rose!)
+                (32, 614, 61, '2026-08-20 10:30:00', 'הוספנו את תרחישי השימוש המפורטים ומפת המסכים לפי המשוב הקודם.', 'Submitted', 'Pending', NULL, NULL, 'https://drive.google.com/file/d/motiva-ux-spec-v2'),
+                -- Project 130: Pending review (2 days old -> Waiting in Blue)
+                (33, 617, 65, '2026-08-23 16:15:00', 'העלינו את כל המסכים של מודול החיפוש וההזמנות בספרייה.', 'Submitted', 'Pending', NULL, NULL, 'https://drive.google.com/file/d/library-wireframes'),
+                -- Project 131: Pending review (Today -> New in Blue)
+                (34, 619, 68, '2026-08-25 09:00:00', 'הגשה ראשונה לבדיקת מנחה לאחר ראיון עם בעלי החנויות.', 'Submitted', 'Pending', NULL, NULL, 'https://drive.google.com/file/d/ecommerce-reqs'),
+                -- Project 133: Historical Approved submission
+                (35, 620, 70, '2026-08-08 14:00:00', 'גרסה עובדת ראשונה של מנוע ההמלצות וממשק האימונים.', 'Reviewed', 'Approved', 'יישום מרשים ומקצועי של אלגוריתם ה-AI וממשק המשתמש.', '2026-08-10 11:30:00', 'https://drive.google.com/file/d/fitness-ai-demo')");
+
+        // Submission Files
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO TaskSubmissionFiles (Id, TaskSubmissionId, OriginalFileName, StoredFileName, ContentType, SizeBytes, UploadedAt)
+            VALUES
+                (41, 31, 'Motiva_UX_Spec_Draft.pdf', 'motiva_draft_31.pdf', 'application/pdf', 1845000, '2026-08-05 11:00:00'),
+                (42, 32, 'Motiva_UX_Specification_v2.pdf', 'motiva_v2_32.pdf', 'application/pdf', 2480000, '2026-08-20 10:30:00'),
+                (43, 33, 'Library_Wireframes_Draft.pdf', 'library_wf_33.pdf', 'application/pdf', 4120000, '2026-08-23 16:15:00'),
+                (44, 34, 'Ecommerce_Requirements_v1.docx', 'ecom_reqs_34.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 1230000, '2026-08-25 09:00:00'),
+                (45, 35, 'FitnessAI_v1_Demo.mp4', 'fitness_demo_35.mp4', 'video/mp4', 12500000, '2026-08-08 14:00:00')");
+
+        // ── 9. Project Requests Across All 4 Buckets ─────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            -- 1. AwaitingMentor (PendingMentorRecommendation)
+            INSERT OR REPLACE INTO ProjectRequests (Id, ProjectId, CreatedByUserId, RequestType, Title, Description, Status, Priority, CreatedAt, UpdatedAt)
+            VALUES
+                (201, 129, 62, 'Extension', 'בקשת דחייה להגשת Wireframes ברמת דיוק גבוהה', 'אנו מבקשים דחייה של שבוע בהגשת ה-Wireframes עקב מחלה של חבר צוות והצורך לבצע בדיקות נוספות עם משתמשים.', 'PendingMentorRecommendation', 'Normal', '2026-08-20 14:00:00', '2026-08-20 14:00:00'),
+                (202, 130, 66, 'Extension', 'בקשת דחייה למסמך אפיון מסדי נתונים', 'מבקשים הארכה של 4 ימים לתיאום פגישה טכנית עם מנהל מערכות המידע של הספרייה.', 'PendingMentorRecommendation', 'Normal', '2026-08-24 11:30:00', '2026-08-24 11:30:00'),
+
+            -- 2. WithLecturer (PendingLecturerDecision / WaitingForStaff / InProgress)
+                (203, 129, 61, 'Extension', 'בקשת דחייה להצגת אב-טיפוס ראשוני (המלצת מנחה ניתנה)', 'מבקשים דחייה של 5 ימים לצורך ליטוש והרצת תרחישי בדיקה.', 'PendingLecturerDecision', 'Normal', '2026-08-15 10:00:00', '2026-08-18 10:30:00'),
+                (204, 131, 67, 'TechnicalSupport', 'תמיכה טכנית: בעיה בחיבור ל-API של ספק תשלומים', 'סביבת הבדיקות של ספק הסליקה מחזירה שגיאת 403. זקוקים לסיוע בהגדרת ה-Webhook וה-IP Whitelist.', 'WaitingForStaff', 'High', '2026-08-22 09:40:00', '2026-08-22 09:40:00'),
+                (205, 133, 71, 'ScopeChange', 'שינוי היקף: תמיכה במכשירי מדידה לבישים', 'בעקבות משוב מהלקוח, הצוות מבקש להתמקד בממשק Bluetooth לשעוני דופק במקום מדידה ידנית.', 'InProgress', 'Normal', '2026-08-19 16:20:00', '2026-08-21 12:00:00'),
+
+            -- 3. AwaitingTeam (NeedsInfo)
+                (206, 131, 68, 'SpecialResource', 'בקשה לציוד בדיקות ייעודי למובייל', 'בקשה לקבלת מכשירי בדיקות אנדרואיד ו-iOS ממעבדת המכללה לבדיקות שדה.', 'NeedsInfo', 'Normal', '2026-08-17 12:00:00', '2026-08-19 14:00:00'),
+
+            -- 4. Closed (Resolved / Closed)
+                (207, 133, 70, 'Consultation', 'בקשה לפגישת ייעוץ נוספת עם מומחה אבטחת מידע', 'תיאום מפגש ייעוץ לגבי שמירת נתוני בריאות ופרטיות משתמשים.', 'Resolved', 'Normal', '2026-08-01 10:00:00', '2026-08-06 17:00:00'),
+                (208, 130, 65, 'Extension', 'בקשת דחייה למפגש פתיחה עם הלקוח', 'תיאום מועד חדש מול הנהלת הספרייה עקב נסיעה.', 'Resolved', 'Normal', '2026-07-10 11:00:00', '2026-07-12 15:00:00'),
+                (209, 129, 62, 'TechnicalSupport', 'בקשה להחלפת שרת בדיקות ענן', 'הקצאת שרת בדיקות נוסף לסביבת הפיתוח.', 'Closed', 'Low', '2026-06-20 09:00:00', '2026-06-22 14:00:00')");
+
+        // Extensions data
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO ProjectRequestExtensions (Id, RequestId, TaskId, ProjectMilestoneId, CurrentDueDate, RequestedDueDate, Reason, MentorDecision, MentorDecidedByUserId, MentorDecidedAt, MentorNotes, FinalDecision)
+            VALUES
+                (51, 201, 614, 796, '2026-08-25', '2026-09-02', 'מחלת חבר צוות והשלמת בדיקות שימושיות', 'Pending', NULL, NULL, NULL, 'Pending'),
+                (52, 202, 617, 805, '2026-08-28', '2026-09-01', 'תיאום פגישה טכנית מול מנהל מערכות מידע', 'Pending', NULL, NULL, NULL, 'Pending'),
+                (53, 203, 614, 796, '2026-08-20', '2026-08-25', 'ליטוש הפרוטוטייפ ותרחישי שגיאה', 'Approved', 63, '2026-08-18 10:30:00', 'המנחה ממליץ לאשר: הצוות מתקדם היטב והתוספת נחוצה לאיכות הפתרון.', 'Pending'),
+                (54, 208, 618, 804, '2026-07-15', '2026-07-22', 'נסיעה מתוכננת של איש הקשר בארגון', 'Approved', 63, '2026-07-11 10:00:00', 'מומלץ לאשר, הפגישה נקבעה מחדש.', 'Approved')");
+
+        // Events data for requests
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO ProjectRequestEvents (Id, RequestId, UserId, EventType, Content, CreatedAt)
+            VALUES
+                (61, 201, 62, 'StatusChange', 'נוצרה בקשת דחייה חדשה', '2026-08-20 14:00:00'),
+                (62, 202, 66, 'StatusChange', 'נוצרה בקשת דחייה חדשה', '2026-08-24 11:30:00'),
+                (63, 203, 61, 'StatusChange', 'נוצרה בקשת דחייה חדשה', '2026-08-15 10:00:00'),
+                (64, 203, 63, 'MentorRecommendation', 'המנחה המליץ לאשר את בקשת הדחייה: הצוות מתקדם היטב והתוספת נחוצה לאיכות הפתרון.', '2026-08-18 10:30:00'),
+                (65, 206, 68, 'StatusChange', 'נוצרה בקשה לציוד מיוחד', '2026-08-17 12:00:00'),
+                (66, 206, 64, 'Comment', 'נא לפרט אילו דגמי מכשירים נדרשים, גרסאות מערכת הפעלה ולאיזו תקופה נדרש הציוד.', '2026-08-19 14:00:00'),
+                (67, 207, 70, 'StatusChange', 'נוצרה בקשת ייעוץ', '2026-08-01 10:00:00'),
+                (68, 207, 64, 'Resolution', 'הפגישה תואמה והתקיימה בהצלחה ביום 06.08 מול מומחה האבטחה.', '2026-08-06 17:00:00')");
+
+        // ── 10. Personal Tasks ───────────────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO PersonalTasks (Id, UserId, ProjectId, Title, Description, DueDate, IsDone, CreatedAt)
+            VALUES
+                -- For User 63 (ינאי כרמי)
+                (101, 63, 129, 'בדיקת הגשת אפיון צוות Motiva וכתיבת הערות', 'מעבר על פרק תרחישי השימוש ומפת המסכים החדשה.', '2026-08-22', 0, '2026-08-20 10:00:00'),
+                (102, 63, 130, 'תיאום מועד להצגת אב-טיפוס עם צוות הספרייה', 'פגישת מעקב בזום לקראת מסירת גרסת אלפא.', '2026-08-25', 0, '2026-08-21 11:00:00'),
+                (103, 63, 131, 'הכנת משוב לקראת בדיקת שימושיות - צוות מסחר', 'הגדרת מדדי הצלחה ושאלות מנחות לבדיקות שדה.', '2026-08-28', 0, '2026-08-22 12:00:00'),
+                (104, 63, 133, 'אישור סופי למטרות פרויקט כושר חכם', 'וידוא עמידה בקריטריונים אקדמיים ומטרות קורס.', '2026-08-31', 0, '2026-08-23 13:00:00'),
+                (105, 63, 129, 'סקירת מסמך הגדרת בעיה צוות Motiva', 'אישור ראשוני של שאלת המחקר והיקף הפרויקט.', '2026-08-11', 1, '2026-08-01 10:00:00'),
+                (106, 63, NULL, 'פגישת פתיחה חצי שנתית עם מרכזת הפרויקטים', 'סקירת קצב ההתקדמות של כלל צוותי הליווי.', '2026-07-31', 1, '2026-07-15 09:00:00'),
+
+                -- For User 3 (אבי לוי)
+                (107, 3, 129, 'בדיקת הגשת אפיון צוות Motiva וכתיבת הערות', 'מעבר על פרק תרחישי השימוש ומפת המסכים החדשה.', '2026-08-22', 0, '2026-08-20 10:00:00'),
+                (108, 3, 130, 'תיאום מועד להצגת אב-טיפוס עם צוות הספרייה', 'פגישת מעקב בזום לקראת מסירת גרסת אלפא.', '2026-08-25', 0, '2026-08-21 11:00:00'),
+                (109, 3, 131, 'הכנת משוב לקראת בדיקת שימושיות - צוות מסחר', 'הגדרת מדדי הצלחה ושאלות מנחות לבדיקות שדה.', '2026-08-28', 0, '2026-08-22 12:00:00'),
+                (110, 3, 133, 'אישור סופי למטרות פרויקט כושר חכם', 'וידוא עמידה בקריטריונים אקדמיים ומטרות קורס.', '2026-08-31', 0, '2026-08-23 13:00:00'),
+                (111, 3, 129, 'סקירת מסמך הגדרת בעיה צוות Motiva', 'אישור ראשוני של שאלת המחקר והיקף הפרויקט.', '2026-08-11', 1, '2026-08-01 10:00:00')");
+
+        // ── 11. Mentor Preferences ───────────────────────────────────────────
+        await connection.ExecuteNonQueryAsync(@"
+            INSERT OR REPLACE INTO MentorPreferences (
+                UserId, RoleDescription, InvolvementLevel, PreferredChannel, ExpectedResponseTime,
+                CommunicationFrequency, RequirePeriodicUpdates, UpdateFrequency, UpdateContent,
+                ClientInteractionFrequency, MentorInClientInteraction, SubmissionLeadTime,
+                ReviewIterations, FeedbackType, DecisionInvolvement, QualityDescription,
+                QualityFocusAreas, RedLines, AvailableTimes, MeetingFormat, SchedulingMethod,
+                PreferenceEvents, PreferenceFrequency
+            )
+            VALUES
+                (63, 'מלווה פרויקטים טכנולוגיים ומתודולוגיים בתחומי Full-Stack, UX ומערכות מידע.', 'high', 'slack', '24h',
+                 'weekly', 1, 'biweekly', 'progress,blockers,plans',
+                 'monthly', 'key_milestones', '3to5d',
+                 2, 'both', 'major,milestones', 'דגש על קוד נקי, ארכיטקטורה מודולרית, חוויית משתמש אינטואיטיבית ונגישות ברמה גבוהה.',
+                 'ux,technical,pedagogical', 'הגשות באיחור ללא תיאום מראש, אי-הגעה למפגשי ליווי שנקבעו.', 'ימי שלישי ורביעי בשעות 16:00–19:00, ימי שישי בבוקר בתיאום מראש.', 'both', 'student',
+                 'new_submission,delays,no_response', 'daily'),
+                (3, 'מלווה פרויקטים טכנולוגיים ומתודולוגיים בתחומי Full-Stack, UX ומערכות מידע.', 'high', 'slack', '24h',
+                 'weekly', 1, 'biweekly', 'progress,blockers,plans',
+                 'monthly', 'key_milestones', '3to5d',
+                 2, 'both', 'major,milestones', 'דגש על קוד נקי, ארכיטקטורה מודולרית, חוויית משתמש אינטואיטיבית ונגישות ברמה גבוהה.',
+                 'ux,technical,pedagogical', 'הגשות באיחור ללא תיאום מראש, אי-הגעה למפגשי ליווי שנקבעו.', 'ימי שלישי ורביעי בשעות 16:00–19:00, ימי שישי בבוקר בתיאום מראש.', 'both', 'student',
+                 'new_submission,delays,no_response', 'daily')");
+    }
+
     private static async Task ExecuteNonQueryAsync(this SqliteConnection connection, string sql)
     {
         await using var cmd = connection.CreateCommand();
@@ -2790,3 +3027,4 @@ public static class DatabaseMigrator
         await cmd.ExecuteNonQueryAsync();
     }
 }
+

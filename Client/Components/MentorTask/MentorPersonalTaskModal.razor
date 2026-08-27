@@ -19,31 +19,40 @@
     react to the result — they never reimplement create, update or delete.
 *@
 
-<MModal IsOpen="@IsOpen" Size="MModal.ModalSize.Small"
-        Title="@(EditingTask is null ? "משימה חדשה" : "עריכת משימה")"
-        OnClose="CloseAsync">
-    <ChildContent>
-        <label class="mpt-field-label" for="mpt-title">שם המשימה</label>
-        <input id="mpt-title" class="mpt-field" maxlength="200"
-               placeholder="למשל: סיכום פגישה עם הצוות"
-               disabled="@_saving" @bind="_formTitle" @bind:event="oninput" />
+@{
+    // ── ONE editor, two shells ────────────────────────────────────────────
+    // The fields and the actions are hoisted into fragments so the modal shell
+    // and the calendar's inline card can render the IDENTICAL markup. Nothing
+    // below is duplicated: same state, same validation, same save order, same
+    // Google Calendar story. Only the box around them changes.
+    RenderFragment fields = @<text>
+        <div class="mpt-row mpt-row-grow">
+            <label class="mpt-field-label" for="mpt-title">שם המשימה</label>
+            <input id="mpt-title" class="mpt-field" maxlength="200"
+                   placeholder="למשל: סיכום פגישה עם הצוות"
+                   disabled="@_saving" @bind="_formTitle" @bind:event="oninput" />
+        </div>
 
         @* Options come from the caller's own authorized project list, so the
            select cannot offer a project this mentor may not use. The server
            re-validates every save regardless. *@
-        <label class="mpt-field-label" for="mpt-project">פרויקט משויך (אופציונלי)</label>
-        <select id="mpt-project" class="mpt-field" disabled="@_saving" @bind="_formProjectId">
-            <option value="0">ללא שיוך</option>
-            @foreach (var p in Projects)
-            {
-                <option value="@p.Id">@ProjectOptionLabel(p)</option>
-            }
-        </select>
+        <div class="mpt-row mpt-row-grow">
+            <label class="mpt-field-label" for="mpt-project">פרויקט משויך (אופציונלי)</label>
+            <select id="mpt-project" class="mpt-field" disabled="@_saving" @bind="_formProjectId">
+                <option value="0">ללא שיוך</option>
+                @foreach (var p in Projects)
+                {
+                    <option value="@p.Id">@ProjectOptionLabel(p)</option>
+                }
+            </select>
+        </div>
 
-        <label class="mpt-field-label" for="mpt-notes">תיאור / הערות (אופציונלי)</label>
-        <textarea id="mpt-notes" class="mpt-field mpt-field-notes" rows="3" maxlength="1000"
-                  placeholder="פרטים, החלטות או מה צריך להכין…"
-                  disabled="@_saving" @bind="_formDescription"></textarea>
+        <div class="mpt-row mpt-row-full">
+            <label class="mpt-field-label" for="mpt-notes">תיאור / הערות (אופציונלי)</label>
+            <textarea id="mpt-notes" class="mpt-field mpt-field-notes" rows="3" maxlength="1000"
+                      placeholder="פרטים, החלטות או מה צריך להכין…"
+                      disabled="@_saving" @bind="_formDescription"></textarea>
+        </div>
 
         @*
             ── SCHEDULING ─────────────────────────────────────────────────────
@@ -63,19 +72,21 @@
             The steps are text links, not fields: they are offers, and an offer
             must not look like something waiting to be filled in.
         *@
-        <label class="mpt-field-label" for="mpt-due">
-            תאריך יעד@(DateIsRequired ? "" : " (אופציונלי)")
-            @if (DateIsRequired)
-            {
-                <span class="mpt-required" aria-hidden="true">*</span>
-            }
-        </label>
-        <MDateField Value="@_formDue"
-                    ValueChanged="OnDueChangedAsync"
-                    Label="תאריך יעד"
-                    Placeholder="בחירת תאריך"
-                    Disabled="@_saving"
-                    Invalid="@(DateIsRequired && _formDue is null)" />
+        <div class="mpt-row">
+            <label class="mpt-field-label" for="mpt-due">
+                תאריך יעד@(DateIsRequired ? "" : " (אופציונלי)")
+                @if (DateIsRequired)
+                {
+                    <span class="mpt-required" aria-hidden="true">*</span>
+                }
+            </label>
+            <MDateField Value="@_formDue"
+                        ValueChanged="OnDueChangedAsync"
+                        Label="תאריך יעד"
+                        Placeholder="בחירת תאריך"
+                        Disabled="@_saving"
+                        Invalid="@(DateIsRequired && _formDue is null)" />
+        </div>
 
         @if (_formDue is not null && !_showTime)
         {
@@ -221,9 +232,9 @@
                happened. *@
             <p class="mpt-gcal-partial" role="status">המשימה נשמרה, אך לא נוספה ליומן Google.</p>
         }
-    </ChildContent>
+    </text>;
 
-    <FooterContent>
+    RenderFragment actions = @<text>
         @* Delete lives inside the editor, the same place TeamTaskEditModal puts
            it — a destructive action belongs with the thing it destroys, not on
            the row where a mis-click costs a task. Only on edit; there is nothing
@@ -260,10 +271,69 @@
                      OnClick="SaveAsync" Loading="@_saving" LoadingText="שומרת…"
                      Disabled="@(_saving || string.IsNullOrWhiteSpace(_formTitle))">שמירה</MButton>
         }
-    </FooterContent>
-</MModal>
+    </text>;
+}
+
+@if (Presentation == EditorPresentation.Inline)
+{
+    @*  The reference's create/edit card: a gradient hairline over an opaque
+        fill, sitting in the page above the grid. Rendered only while open —
+        an inline editor has no backdrop to hide behind. *@
+    @if (IsOpen)
+    {
+        <div class="mpt-inline" role="group"
+             aria-label="@(EditingTask is null ? "אירוע / משימה חדשים" : "עריכת פריט")">
+            <p class="mpt-inline-title">@(EditingTask is null ? "אירוע / משימה חדשים" : "עריכת פריט")</p>
+
+            <div class="mpt-inline-fields">
+                @fields
+            </div>
+
+            <div class="mpt-inline-actions">
+                @actions
+            </div>
+        </div>
+    }
+}
+else
+{
+    <MModal IsOpen="@IsOpen" Size="MModal.ModalSize.Small"
+            Title="@(EditingTask is null ? "משימה חדשה" : "עריכת משימה")"
+            OnClose="CloseAsync">
+        <ChildContent>
+            @fields
+        </ChildContent>
+
+        <FooterContent>
+            @actions
+        </FooterContent>
+    </MModal>
+}
 
 @code {
+    /// <summary>Which shell to draw. The FIELDS, the validation, the save order
+    /// and the whole Google Calendar story are identical either way.</summary>
+    public enum EditorPresentation
+    {
+        /// <summary>MModal — what /mentor/tasks has always opened. Unchanged.</summary>
+        Modal,
+
+        /// <summary>
+        /// The finalized Calendar reference's gradient-bordered card, rendered
+        /// in the page above the grid.
+        ///
+        /// <para>A second presentation rather than a second editor, for the
+        /// same reason MentorRequestDetail grew one: this component is the only
+        /// place in the product that knows how to talk to Google Calendar for a
+        /// mentor task — the connect prompt, the idempotent schedule call, the
+        /// confirm-before-removal, and the "saved, but not added" state. A
+        /// hand-rolled inline form would have been a second copy of all four.</para>
+        /// </summary>
+        Inline
+    }
+
+    [Parameter] public EditorPresentation Presentation { get; set; } = EditorPresentation.Modal;
+
     [Parameter] public bool IsOpen { get; set; }
 
     /// <summary>Task to edit, or null to create.</summary>
@@ -278,6 +348,16 @@
     /// over the day the mentor selected; the field stays editable, so the date
     /// is a starting point and never a decision the caller locks in.</summary>
     [Parameter] public DateTime? InitialDueDate { get; set; }
+
+    /// <summary>Seeds שיוך לפרויקט when CREATING — the same "starting point,
+    /// not a decision" contract as <see cref="InitialDueDate"/>: the select
+    /// stays enabled and "ללא שיוך" remains choosable.
+    ///
+    /// <para>Added for the project workspace's קביעת פגישת הנחיה button, which
+    /// opens this editor from inside one project and should not make the mentor
+    /// re-pick the project they are already looking at. Ignored when editing an
+    /// existing task, whose own association always wins.</para></summary>
+    [Parameter] public int? InitialProjectId { get; set; }
 
     [Parameter] public EventCallback OnClose { get; set; }
 
@@ -414,7 +494,7 @@
     {
         _formTitle       = EditingTask?.Title ?? "";
         _formDescription = EditingTask?.Description;
-        _formProjectId   = EditingTask?.ProjectId ?? 0;
+        _formProjectId   = EditingTask?.ProjectId ?? (EditingTask is null ? InitialProjectId ?? 0 : 0);
         _formDue         = EditingTask?.DueDate ?? (EditingTask is null ? InitialDueDate : null);
         _formStart       = EditingTask?.StartTime ?? "";
         _formEnd         = EditingTask?.EndTime   ?? "";

@@ -60,8 +60,17 @@ public sealed record MentorWorkspace(
     /// counts everything still live on the project, including requests the
     /// lecturer or the team currently holds.</summary>
     public int OpenRequestsFor(int projectId) =>
-        Requests.Count(r => r.ProjectId == projectId
-                            && r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed));
+        Requests.Count(r => r.ProjectId == projectId && IsOpen(r));
+
+    /// <summary>The same open requests, as rows rather than as a count — for
+    /// the surfaces that word WHICH request is waiting rather than how many.
+    /// One predicate serves both so a project cannot show "בקשה פתוחה" beside
+    /// a count of zero.</summary>
+    public IReadOnlyList<ProjectRequestRowDto> OpenRequestList(int projectId) =>
+        Requests.Where(r => r.ProjectId == projectId && IsOpen(r)).ToList();
+
+    private static bool IsOpen(ProjectRequestRowDto r) =>
+        r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed);
 }
 
 public interface IMentorWorkspaceService
@@ -78,8 +87,19 @@ public interface IMentorWorkspaceService
     /// <para>Still costs one call per project on top of that, because milestone
     /// and deliverable dates live only in the per-project detail payload and no
     /// cross-project endpoint returns them — see MentorCalendarPage.</para>
+    ///
+    /// <para><paramref name="details"/> lets a caller that ALREADY holds those
+    /// payloads hand them over instead of paying for them twice. The project
+    /// workspace at <c>/mentor/projects/{id}</c> loads its own detail and then
+    /// wants this exact dated view of it; without this it would either fetch the
+    /// same endpoint a second time or grow a second copy of the rules below,
+    /// and the second copy is the one that eventually disagrees. Omitted (the
+    /// default), the method fetches as it always has and every existing caller
+    /// is unaffected.</para>
     /// </summary>
-    Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(MentorWorkspace snapshot);
+    Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(
+        MentorWorkspace snapshot,
+        IReadOnlyList<MentorProjectDetailDto>? details = null);
 
     /// <summary>Loads the snapshot. Never throws and never returns null — each
     /// underlying call already swallows transport errors and yields an empty
@@ -129,7 +149,9 @@ public class MentorWorkspaceService : IMentorWorkspaceService
             await personalTask);
     }
 
-    public async Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(MentorWorkspace snapshot)
+    public async Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(
+        MentorWorkspace snapshot,
+        IReadOnlyList<MentorProjectDetailDto>? details = null)
     {
         var events = new List<MentorCalendarEvent>();
 
@@ -164,8 +186,18 @@ public class MentorWorkspaceService : IMentorWorkspaceService
 
             var date = isTimed ? t.DueDate!.Value.Date + start!.Value : t.DueDate!.Value;
 
+            // A team AND an hour is what makes this entry a MEETING rather than
+            // a reminder — the design's fifth type, taken off the same row
+            // rather than out of a new table. Either fact alone leaves it a
+            // personal task: a timed entry with no team is the mentor's own
+            // work block, and a team entry with no hour is a note about that
+            // team. See MentorCalendarModel for why this is not a fabrication.
+            var kind = hasContext && isTimed
+                ? MentorEventType.Meeting
+                : MentorEventType.PersonalTask;
+
             events.Add(new MentorCalendarEvent(
-                Id: $"pt-{t.Id}", Type: MentorEventType.PersonalTask,
+                Id: $"pt-{t.Id}", Type: kind,
                 Date: date, Title: t.Title,
                 ProjectId:    hasContext ? t.ProjectId : null,
                 ProjectTitle: hasContext ? t.ProjectTitle : null,
@@ -202,10 +234,11 @@ public class MentorWorkspaceService : IMentorWorkspaceService
         // ── Milestones and dated deliverables, per project.
         //    Fetched concurrently: sequential awaits here would make the
         //    calendar's load time scale with the mentor's caseload. ──
-        var details = await Task.WhenAll(
-            snapshot.Projects.Select(p => _projects.GetProjectDetailAsync(p.Id)));
+        var resolved = details
+            ?? await Task.WhenAll(
+                   snapshot.Projects.Select(p => _projects.GetProjectDetailAsync(p.Id)));
 
-        foreach (var detail in details)
+        foreach (var detail in resolved)
         {
             if (detail is null) continue;
             var team = snapshot.TeamNameFor(detail.Id) ?? detail.TeamName;

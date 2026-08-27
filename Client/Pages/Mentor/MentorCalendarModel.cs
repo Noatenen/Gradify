@@ -7,12 +7,22 @@ namespace AuthWithAdmin.Client.Pages.Mentor;
 //  Vocabulary for יומן ותכנון — the mentor's cross-project planning surface.
 //
 //  The design reference (Motiva Mentor Calendar.dc.html) defines five entry
-//  types. Four of them are backed by real data and are implemented here. The
-//  fifth — meeting — is NOT: the design's own prototype hardcodes a MEETINGS
-//  array because nothing in the schema stores a mentor-authored meeting, and
-//  inventing one here would be exactly the fabricated data this build refuses
-//  to ship. See MentorCalendarPage's header for the gap and what closing it
-//  would take.
+//  types, and all five are backed by real data here.
+//
+//  MEETINGS, AND WHY THEY ARE NO LONGER "UNBUILDABLE"
+//  An earlier pass left the design's fifth type out, on the grounds that
+//  nothing in the schema stores a mentor-authored meeting. That was true of a
+//  DEDICATED meetings entity — participants, location, invitees — and it is
+//  still true. It was not true of the thing the design actually draws: a dated
+//  entry with a start and an end, attached to a team, that syncs to the
+//  mentor's Google Calendar.
+//
+//  PersonalTasks already carries every one of those columns — ProjectId,
+//  DueDate, StartTime, EndTime — and GoogleCalendarEventService.ScheduleAsync
+//  already puts it in Google idempotently. So a meeting is not a new entity: it
+//  is the shape a mentor's own dated entry takes once it has BOTH a team and an
+//  hour. Nothing is fabricated and no table was added; the entry is simply
+//  named for what it is.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// <summary>What a calendar entry IS. Drives its colour, its glyph and its
@@ -30,6 +40,18 @@ public enum MentorEventType
 
     /// <summary>One of the mentor's own reminders.</summary>
     PersonalTask,
+
+    /// <summary>
+    /// A guidance meeting — the mentor's own dated entry that has BOTH a team
+    /// and an hour.
+    ///
+    /// <para>Not a separate entity: the same PersonalTask row as
+    /// <see cref="PersonalTask"/>, distinguished by carrying a project AND a
+    /// start time. The two facts together are what make an entry a meeting
+    /// rather than a reminder — a timed entry with no team is the mentor's own
+    /// work block, and a team entry with no hour is a note about that team.</para>
+    /// </summary>
+    Meeting,
 }
 
 /// <summary>
@@ -113,6 +135,12 @@ public sealed record MentorCalendarEvent(
             : string.Join(" · ", new[] { ProjectTitle, TeamName }
                 .Where(s => !string.IsNullOrWhiteSpace(s)));
 
+    /// <summary>The two types the mentor owns and may therefore edit. Everything
+    /// else on this calendar is somebody else's record, shown but not editable
+    /// from here.</summary>
+    public bool IsEditable =>
+        Type is MentorEventType.Meeting or MentorEventType.PersonalTask;
+
     public bool IsPast => Date.Date < DateTime.Now.Date;
 }
 
@@ -121,14 +149,16 @@ public static class MentorEventTypes
     /// <summary>Filter order, matching the design's own chip row.</summary>
     public static readonly IReadOnlyList<MentorEventType> Ordered = new[]
     {
+        MentorEventType.Meeting,
+        MentorEventType.PersonalTask,
         MentorEventType.Milestone,
         MentorEventType.Submission,
         MentorEventType.Review,
-        MentorEventType.PersonalTask,
     };
 
     public static string Label(MentorEventType t) => t switch
     {
+        MentorEventType.Meeting      => "פגישה",
         MentorEventType.Milestone    => "אבן דרך",
         MentorEventType.Submission   => "הגשה",
         MentorEventType.Review       => "ממתינה לבדיקה",
@@ -138,6 +168,7 @@ public static class MentorEventTypes
     /// <summary>Plural, for the filter chips.</summary>
     public static string FilterLabel(MentorEventType t) => t switch
     {
+        MentorEventType.Meeting      => "פגישות",
         MentorEventType.Milestone    => "אבני דרך",
         MentorEventType.Submission   => "הגשות",
         MentorEventType.Review       => "ממתינות לבדיקה",
@@ -157,10 +188,11 @@ public static class MentorEventTypes
     /// </summary>
     public static MKpiCard.KpiAccent Accent(MentorEventType t) => t switch
     {
+        MentorEventType.Meeting      => MKpiCard.KpiAccent.Violet,
         MentorEventType.Milestone    => MKpiCard.KpiAccent.Periwinkle,
-        MentorEventType.Submission   => MKpiCard.KpiAccent.Violet,
-        MentorEventType.Review       => MKpiCard.KpiAccent.Amber,
-        _                            => MKpiCard.KpiAccent.Teal,
+        MentorEventType.Submission   => MKpiCard.KpiAccent.Amber,
+        MentorEventType.Review       => MKpiCard.KpiAccent.Teal,
+        _                            => MKpiCard.KpiAccent.Periwinkle,
     };
 
     /// <summary>CSS modifier suffix — `mcal-dot-milestone`, etc.</summary>
@@ -168,9 +200,22 @@ public static class MentorEventTypes
 
     public static MentorGlyph.GlyphKind Glyph(MentorEventType t) => t switch
     {
+        MentorEventType.Meeting      => MentorGlyph.GlyphKind.Personal,
         MentorEventType.Milestone    => MentorGlyph.GlyphKind.Projects,
         MentorEventType.Submission   => MentorGlyph.GlyphKind.Review,
         MentorEventType.Review       => MentorGlyph.GlyphKind.Request,
         _                            => MentorGlyph.GlyphKind.Personal,
     };
+
+    /// <summary>
+    /// True for the two types a mentor can actually CREATE.
+    ///
+    /// <para>The design draws five type chips in its create form. Three of them
+    /// — אבן דרך, הגשה, ממתינה לבדיקה — are system-derived: a milestone belongs
+    /// to a project's plan, a deliverable to a milestone, a pending review to a
+    /// student's upload. There is no endpoint by which a mentor authors any of
+    /// them, so offering the chip would be a control that cannot work.</para>
+    /// </summary>
+    public static bool IsAuthorable(MentorEventType t) =>
+        t is MentorEventType.Meeting or MentorEventType.PersonalTask;
 }

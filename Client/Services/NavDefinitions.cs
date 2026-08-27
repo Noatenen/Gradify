@@ -89,8 +89,13 @@ public static class NavDefinitions
     // Restructured in Epic 1 to the six destinations of the mentor design
     // reference (design-reference/mentor-experience/project/Motiva Mentor
     // Home.dc.html:36-46 and every sibling screen, which all draw the same
-    // rail): בית · המשימות שלי · הפרויקטים שלי · בקשות · יומן ותכנון ·
+    // rail): בית · המשימות שלי · פרויקטים בהנחייתי · בקשות · יומן ותכנון ·
     // משאבים למנחים.
+    //
+    // "הפרויקטים שלי" was renamed to "פרויקטים בהנחייתי" — the list is scoped
+    // by ProjectMentors, i.e. the projects this mentor SUPERVISES, and a
+    // possessive read as ownership. Student and lecturer terminology is
+    // untouched: this list is the mentor rail only.
     //
     // WITHDRAWN FROM THE PRIMARY NAV — NOT DELETED
     //   ציר התקדמות     (/mentor/roadmap)
@@ -101,7 +106,7 @@ public static class NavDefinitions
     // Every one of those routes, pages, services and APIs is untouched and
     // still resolves — this list is the only thing that changed. Their
     // information is planned to return contextually: project health inside
-    // הפרויקטים שלי and מרחב הפרויקט, milestones/roadmap inside מרחב
+    // פרויקטים בהנחייתי and מרחב הפרויקט, milestones/roadmap inside מרחב
     // הפרויקט, submissions awaiting review inside המשימות שלי and מרחב
     // הפרויקט. None of those integrations exists yet.
     //
@@ -115,7 +120,7 @@ public static class NavDefinitions
         // /dashboard/lecturer and is no longer reachable from this rail.
         new NavItem("בית",            "dashboard/mentor", "oi-home",            NavLinkMatch.Prefix, NavIcons.Home),
         new NavItem("המשימות שלי",    "mentor/tasks",     "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
-        new NavItem("הפרויקטים שלי",  "mentor/projects",  "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
+        new NavItem("פרויקטים בהנחייתי", "mentor/projects", "oi-folder",         NavLinkMatch.Prefix, NavIcons.Projects),
         new NavItem("בקשות",          "mentor-requests",  "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
         new NavItem("יומן ותכנון",    "mentor/calendar",  "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),
         // The mentor's own read-only view of the shared library.
