@@ -195,11 +195,10 @@
                                                 <MRow Href="@r.Href"
                                                       Primary="@r.Title"
                                                       Secondary="@TeamLabel(r)"
-                                                      Meta="@StateLabel(r)"
-                                                      MetaTone="@ToneFor(r)"
+                                                      Status="@TimeChip(r)"
                                                       AriaLabel="@RowAriaLabel(r, $"פתיחת ההגשה {r.Title}")">
                                                     <Leading>
-                                                        <MStatusDot Tone="@DotToneFor(r)" />
+                                                        <MStatusBar Tone="@BarToneFor(r)" />
                                                     </Leading>
                                                 </MRow>
                                             }
@@ -239,11 +238,10 @@
                                                 <MRow OnClick="@(() => _openRequestId = id)"
                                                       Primary="@q.Title"
                                                       Secondary="@TeamLabel(q)"
-                                                      Meta="@StateLabel(q)"
-                                                      MetaTone="@ToneFor(q)"
+                                                      Status="@TimeChip(q)"
                                                       AriaLabel="@RowAriaLabel(q, $"פתיחת הבקשה {q.Title}")">
                                                     <Leading>
-                                                        <MStatusDot Tone="@DotToneFor(q)" />
+                                                        <MStatusBar Tone="@BarToneFor(q)" />
                                                     </Leading>
                                                 </MRow>
                                             }
@@ -308,8 +306,7 @@
                                                absence already reads as one. *@
                                             <MRow Class="@(t.IsDone ? "mt-task-done" : null)"
                                                   Secondary="@PersonalTeamLabel(t)"
-                                                  Meta="@(MentorTime.DeadlineLabel(t.DueDate) ?? "")"
-                                                  MetaTone="@(!t.IsDone && MentorTime.IsOverdue(t.DueDate) ? MRow.RowMetaTone.Rose : MRow.RowMetaTone.Default)">
+                                                  Status="@DueChip(t)">
                                                 <Leading>
                                                     <button type="button"
                                                             class="mt-check @(t.IsDone ? "mt-check-on" : "")"
@@ -621,17 +618,78 @@
     private static string StateLabel(MentorAttentionItemDto i) =>
         MentorAging.ShortLabel(i.WaitingDays);
 
-    /// <summary>Rose ONLY at NEEDS ATTENTION — a NEW item must not read as an
-    /// alarm.</summary>
-    private static MRow.RowMetaTone ToneFor(MentorAttentionItemDto i) =>
-        i.Age == MentorAttentionAge.NeedsAttention
-            ? MRow.RowMetaTone.Rose
-            : MRow.RowMetaTone.Default;
+    /// <summary>
+    /// The waiting age, as the dashboard's TIME CHIP rather than as coloured
+    /// text in the meta slot.
+    ///
+    /// <para>בית draws every deadline, waiting age and overdue duration on a
+    /// small pill — `.mh-task-due` and `.mh-attn-time-late` — and this screen
+    /// was drawing the same values as free-standing rose text. Same
+    /// information, two visual languages; the dashboard is the reference, so
+    /// the pill wins. It is <c>MStatusBadge</c> at
+    /// <c>BadgeSize.Small</c>, which is that pill's metrics extracted into the
+    /// shared primitive, so the two screens cannot draw it at two sizes.</para>
+    ///
+    /// <para>Tone is the SAME mapping the row's own MStatusBar already uses,
+    /// so the bar and the chip on one row can never disagree: rose once the
+    /// item has escalated, blue — the "waiting / in flight" role — before
+    /// that. Rose ONLY at NEEDS ATTENTION; a NEW item must not read as an
+    /// alarm.</para>
+    /// </summary>
+    private RenderFragment TimeChip(MentorAttentionItemDto i) => @<MStatusBadge
+        Size="MStatusBadge.BadgeSize.Small"
+        Variant="@(i.Age == MentorAttentionAge.NeedsAttention
+                   ? MStatusBadge.BadgeVariant.Rose
+                   : MStatusBadge.BadgeVariant.Info)"
+        Text="@StateLabel(i)" />;
 
-    private static MStatusDot.DotTone DotToneFor(MentorAttentionItemDto i) =>
+    /// <summary>
+    /// A personal task's deadline, on the same chip.
+    ///
+    /// <para>The four states are בית's own, class for class
+    /// (MentorHomePage.razor:960-963): an undated task shows NO chip rather
+    /// than an empty one, a finished task goes neutral — done beats late, a
+    /// completed task is not still overdue — an overdue one is rose, and
+    /// anything else (יעד היום · יעד מחר · בעוד N ימים) takes the blue the
+    /// dashboard gives every dated-and-not-late task.</para>
+    /// </summary>
+    private RenderFragment? DueChip(PersonalTaskDto t)
+    {
+        var label = MentorTime.DeadlineLabel(t.DueDate);
+        if (string.IsNullOrWhiteSpace(label)) return null;
+
+        var variant =
+            t.IsDone                          ? MStatusBadge.BadgeVariant.Neutral
+            : MentorTime.IsOverdue(t.DueDate) ? MStatusBadge.BadgeVariant.Rose
+            :                                   MStatusBadge.BadgeVariant.Info;
+
+        return @<MStatusBadge Size="MStatusBadge.BadgeSize.Small"
+                              Variant="@variant"
+                              Text="@label" />;
+    }
+
+    /// <summary>
+    /// The row's urgency marker — <b>MStatusBar, not MStatusDot</b>.
+    ///
+    /// <para>These two feeds and the בית dashboard's דורש את תשומת לבך card
+    /// render the SAME MentorAttentionItemDto out of the SAME
+    /// IMentorWorkspaceService, and were drawing it two different ways: a
+    /// 4×40 coloured bar there, an 8px dot here. One model, one marker — the
+    /// bar, because the dashboard is the design source and the bar is what it
+    /// draws. See Components/StatusBar for why the dot is still right on
+    /// פרויקטים בהנחייתי and בקשות.</para>
+    ///
+    /// <para>Rose ONLY at NEEDS ATTENTION — a NEW item must not read as an
+    /// alarm. The unescalated tone is blue rather than the violet the dot
+    /// used, which is the dashboard's own choice for the same state and the
+    /// finished palette's "in progress / waiting" role. Nothing about WHEN a
+    /// row escalates changed: <c>MentorAttentionAge</c> arrives already set by
+    /// GET /api/mentor/attention.</para>
+    /// </summary>
+    private static MStatusBar.BarTone BarToneFor(MentorAttentionItemDto i) =>
         i.Age == MentorAttentionAge.NeedsAttention
-            ? MStatusDot.DotTone.Rose
-            : MStatusDot.DotTone.Violet;
+            ? MStatusBar.BarTone.Rose
+            : MStatusBar.BarTone.Blue;
 
     /// <summary>The row's accessible name, with the escalation stated in words.
     ///
