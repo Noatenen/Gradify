@@ -30,7 +30,7 @@ public static class NavDefinitions
         new NavItem("הגשות ובקרה",    "lecturer/submissions", "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
         // Badge: OpenRequests count (shown by LecturerTopNav, same as student's בקשות badge).
         new NavItem("בקשות",          "management/requests", "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
-        new NavItem("יומן",           "milestones-overview", "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),
+        new NavItem("יומן",           "lecturer/calendar",   "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),
         new NavItem("משאבים",         "resource-files",      "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
         // Match.All: /management/* is owned by its own inner nav; this item
         // should only light up when the user is at /management exactly.

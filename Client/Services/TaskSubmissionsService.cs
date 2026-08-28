@@ -35,6 +35,9 @@ public interface ITaskSubmissionsService
 
     // ── Lecturer / admin-facing ──────────────────────────────────────────────
     Task<List<LecturerSubmissionRowDto>?>     GetAllForLecturerAsync();
+    /// <summary>Returns all submissions with MentorStatus='Approved' (mentor or
+    /// lecturer-override). Powers the "אושרו" tab in הגשות ובקרה.</summary>
+    Task<List<ApprovedSubmissionRowDto>?>     GetApprovedAsync();
     Task<TaskSubmissionDto?>                  GetSubmissionDetailAsync(int submissionId);
     Task<LecturerSubmissionDetailDto?>        GetLecturerDetailAsync(int submissionId);
     Task<bool>                                UpdateSubmissionStatusAsync(int submissionId, string status);
@@ -194,6 +197,16 @@ public class TaskSubmissionsService : ITaskSubmissionsService
         {
             return await _http.GetFromJsonAsync<List<LecturerSubmissionRowDto>>(
                 "api/task-submissions/all");
+        }
+        catch { return null; }
+    }
+
+    public async Task<List<ApprovedSubmissionRowDto>?> GetApprovedAsync()
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<List<ApprovedSubmissionRowDto>>(
+                "api/task-submissions/approved");
         }
         catch { return null; }
     }

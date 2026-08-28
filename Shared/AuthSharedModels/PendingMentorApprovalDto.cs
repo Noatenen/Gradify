@@ -52,6 +52,33 @@ public class PendingMentorApprovalRowDto
 }
 
 /// <summary>
+/// One row in the lecturer "אושרו" (approved submissions) list.
+/// Returned by GET /api/task-submissions/approved (Admin / Staff only).
+/// Covers both mentor-approved and lecturer-override-approved submissions.
+/// </summary>
+public class ApprovedSubmissionRowDto
+{
+    public int       SubmissionId   { get; set; }
+    public int       TaskId         { get; set; }
+    public string    TaskTitle      { get; set; } = "";
+
+    public int       ProjectId      { get; set; }
+    public int       ProjectNumber  { get; set; }
+    public string    ProjectTitle   { get; set; } = "";
+    public string?   TeamName       { get; set; }
+
+    /// <summary>Comma-separated mentor names for the project.</summary>
+    public string?   MentorName     { get; set; }
+    public string    MilestoneTitle { get; set; } = "";
+
+    public DateTime  SubmittedAt    { get; set; }
+    /// <summary>When MentorStatus was set to 'Approved' (either by mentor or override).</summary>
+    public DateTime? ApprovedAt     { get; set; }
+    /// <summary>"MentorApproved" | "LecturerOverride" — from ApprovalSources constants.</summary>
+    public string?   ApprovalSource { get; set; }
+}
+
+/// <summary>
 /// Payload for PUT /api/task-submissions/{id}/lecturer-override-approve.
 /// The reason is REQUIRED — it documents why the lecturer bypassed the mentor.
 /// It is internal-only and never returned to the student.

@@ -78,6 +78,8 @@ public class LecturerSubmissionDetailDto
     public string   SubmittedByName     { get; set; } = "";
     public DateTime SubmittedAt         { get; set; }
     public string?  Notes               { get; set; }
+    /// <summary>Google Drive link submitted by the student (null for legacy file-upload submissions).</summary>
+    public string?  DriveUrl            { get; set; }
 
     /// <summary>Mentor side</summary>
     public string?  MentorStatus        { get; set; }

@@ -21,6 +21,9 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject NavigationManager Nav
 @inject IDashboardOverviewService DashboardService
+@inject IPersonalTasksService PersonalTasks
+@inject IProjectRequestsService RequestsService
+@inject IPendingMentorApprovalsService ApprovalsService
 
 <div class="ldh-page" dir="rtl">
 
@@ -92,7 +95,7 @@
                     }
                     else
                     {
-                        @foreach (var item in AttentionItems)
+                        @foreach (var item in AttentionItems.Take(4))
                         {
                             <div class="ldh-att-row" @onclick="() => OpenPopup(item)"
                                  @onkeydown="e => OnAttentionKeyDown(e, item)"
@@ -136,25 +139,45 @@
 
             @* ── Side column ── *@
             <div class="ldh-side-col">
-                <section class="ldh-card ldh-upcoming-card" aria-label="בקרוב">
-                    <h2 class="ldh-card-title-sm" style="margin:0 0 6px">בקרוב</h2>
+                @* ── בקרוב ────────────────────────────────────────────────────
+                   Tile pattern transcribed from MentorHomePage: a 46px date block
+                   per entry with the urgency carried as a 2.5px inset top bar.
+                   The KindClass sets --ldh-kind so the tile bar matches item type. *@
+                <section class="ldh-card ldh-upcoming-card" aria-labelledby="ldh-up-h">
+                    <div class="ldh-card-header">
+                        <span class="ldh-head-icon" aria-hidden="true">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                                <path d="M16 2v4M8 2v4M3 10h18"></path>
+                            </svg>
+                        </span>
+                        <h2 class="ldh-card-title-sm" id="ldh-up-h">בקרוב</h2>
+                        <a class="ldh-card-link" href="/lecturer/calendar">ליומן המלא</a>
+                    </div>
 
                     @if (!UpcomingItems.Any())
                     {
-                        <p class="ldh-empty-desc" style="padding:12px 0">אין מועדים קרובים.</p>
+                        <p class="ldh-empty-desc">אין מועדים קרובים.</p>
                     }
                     else
                     {
-                        @foreach (var u in UpcomingItems)
-                        {
-                            <div class="ldh-upcoming-row">
-                                <span class="ldh-upcoming-date @u.WhenClass">@u.When</span>
-                                <span class="ldh-upcoming-label">@u.Label</span>
-                            </div>
-                        }
+                        <div class="ldh-up-list">
+                            @foreach (var u in UpcomingItems)
+                            {
+                                <a class="ldh-up-row @u.KindClass" href="@u.Href">
+                                    <span class="ldh-up-tile">
+                                        <span class="ldh-up-day">@u.Date.Day.ToString("00")</span>
+                                        <span class="ldh-up-month">@MotivaDates.ShortMonth(u.Date)</span>
+                                    </span>
+                                    <span class="ldh-up-body">
+                                        <span class="ldh-up-title" title="@u.Label">@u.Label</span>
+                                        <span class="ldh-up-meta">@u.When</span>
+                                    </span>
+                                </a>
+                            }
+                        </div>
                     }
-
-                    <a class="ldh-upcoming-footer" href="/milestones-overview">ליומן המלא</a>
                 </section>
             </div>
 
@@ -196,6 +219,10 @@
                     <div class="ldh-popup-row">
                         <span class="ldh-popup-row-label">@row.Label</span>
                         <span class="ldh-popup-row-val" style="color:@row.Color">@row.Value</span>
+                        @if (row.Value2 is not null)
+                        {
+                            <span class="ldh-popup-row-val" style="color:@row.Color2">@row.Value2</span>
+                        }
                     </div>
                 }
             </div>
@@ -222,7 +249,12 @@
 @code {
     [CascadingParameter] private User? _user { get; set; }
 
-    private DashboardOverviewDto? _data;
+    private DashboardOverviewDto?             _data;
+    private List<PersonalTaskDto>             _personalTasks    = new();
+    private List<ProjectRequestRowDto>             _requests          = new();
+    private List<PendingMentorApprovalRowDto>      _pendingApprovals  = new();
+    // Keyed by request ID — populated for actionable extension requests only.
+    private Dictionary<int, ExtensionRequestInfoDto> _extensionDetails = new();
     private bool _loading   = true;
     private bool _loadError;
 
@@ -275,7 +307,44 @@
         var result = await DashboardService.GetAsync("lecturer");
         _loadError = result is null;
         _data      = result;
-        _loading   = false;
+
+        // All three secondary sources are best-effort: failures degrade silently.
+        try   { _personalTasks    = await PersonalTasks.GetAsync(); }
+        catch { _personalTasks    = new(); }
+
+        try   { _requests         = await RequestsService.GetAllAsync() ?? new(); }
+        catch { _requests         = new(); }
+
+        try   { _pendingApprovals = await ApprovalsService.GetPendingAsync() ?? new(); }
+        catch { _pendingApprovals = new(); }
+
+        // Pre-fetch extension detail for every actionable extension request so
+        // the popup can show real CurrentDueDate and RequestedDueDate without
+        // an extra round-trip when the user clicks a row.
+        var actionableExtIds = _requests
+            .Where(r => r.RequestType == RequestTypes.Extension &&
+                        r.Status is RequestStatuses.New
+                               or RequestStatuses.WaitingForStaff
+                               or RequestStatuses.PendingLecturerDecision)
+            .Select(r => r.Id)
+            .ToList();
+
+        if (actionableExtIds.Count > 0)
+        {
+            var detailTasks = actionableExtIds.Select(id => RequestsService.GetByIdAsync(id));
+            try
+            {
+                var details = await Task.WhenAll(detailTasks);
+                for (int i = 0; i < actionableExtIds.Count; i++)
+                {
+                    if (details[i]?.Extension is { } ext)
+                        _extensionDetails[actionableExtIds[i]] = ext;
+                }
+            }
+            catch { /* extension detail is best-effort; rows still show without it */ }
+        }
+
+        _loading = false;
     }
 
     // ── Popup ─────────────────────────────────────────────────────────────────
@@ -295,125 +364,159 @@
         string Title, string TeamName, string Desc, string Href,
         IReadOnlyList<PopupRow> Rows, string? Note, string NoteLabel, string CtaLabel);
 
-    private sealed record PopupRow(string Label, string Value, string Color);
+    // Value2 / Color2: optional second span rendered inline after Value in the
+    // same row cell. Used for the extension "מועדים" comparison where the
+    // requested date must be visually distinct (purple) from the current date.
+    private sealed record PopupRow(string Label, string Value, string Color,
+        string? Value2 = null, string? Color2 = null);
 
-    private sealed record UpcomingItem(string When, string WhenClass, string Label, int ProjectId);
+    private sealed record UpcomingItem(string When, string KindClass, string Label, string Href, DateTime Date);
 
     private sealed record TeamItem(string TeamName, string Mentor, string Reason, int ProjectId);
 
     // ── Derived: attention items ──────────────────────────────────────────────
+    // ONE ROW = ONE SPECIFIC ACTION ITEM requiring lecturer attention.
+    // Sources: individual project requests + individual pending mentor approvals.
+    // (Dashboard aggregates are no longer used here — they only provide counts.)
 
     private IReadOnlyList<AttentionItem> AttentionItems
     {
         get
         {
-            if (_data is null) return Array.Empty<AttentionItem>();
-
             var items = new List<AttentionItem>();
 
-            // At-risk projects — highest urgency
-            foreach (var p in _data.Projects
-                .Where(p => p.HealthBucket == HealthBuckets.AtRisk)
-                .OrderBy(p => p.HealthScore)
-                .Take(3))
+            // ── Pending requests that need lecturer input ─────────────────
+            // PendingLecturerDecision (extension awaiting final call) comes
+            // first; the other open statuses follow ordered by submit date.
+            var actionable = new HashSet<string>
             {
-                items.Add(BuildItem(p,
-                    tag: "פרויקט בסיכון",
-                    tagBg: "rgba(224,51,95,.10)", tagColor: "#E0335F",
-                    barColor: "#E0335F",
-                    desc: BuildDesc(p),
-                    href: $"/projects/{p.ProjectId}/overview",
-                    ctaLabel: "לפרויקט"));
+                RequestStatuses.New,
+                RequestStatuses.WaitingForStaff,
+                RequestStatuses.PendingLecturerDecision,
+            };
+
+            foreach (var r in _requests
+                .Where(r => actionable.Contains(r.Status))
+                .OrderByDescending(r => r.Status == RequestStatuses.PendingLecturerDecision)
+                .ThenBy(r => r.CreatedAt))
+            {
+                bool isExtDecision = r.RequestType == RequestTypes.Extension
+                                  && r.Status == RequestStatuses.PendingLecturerDecision;
+
+                string tag   = RequestTypes.Label(r.RequestType);
+                string title = isExtDecision
+                    ? $"החלטה נדרשת — {r.Title}"
+                    : r.Title;
+
+                string? firstMentor = r.MentorNames.Count > 0 ? r.MentorNames[0] : null;
+
+                var rows = new List<PopupRow>();
+                rows.Add(new PopupRow("סוג בקשה", tag, "#4A4657"));
+                rows.Add(new PopupRow("סטטוס",
+                    RequestStatuses.Label(r.Status),
+                    isExtDecision ? "#6D28F5" : "#4A4657"));
+                if (!string.IsNullOrEmpty(r.ProjectTitle))
+                    rows.Add(new PopupRow("פרויקט", r.ProjectTitle, "#4A4657"));
+                if (!string.IsNullOrEmpty(firstMentor))
+                    rows.Add(new PopupRow("מנחה", firstMentor, "#4A4657"));
+                rows.Add(new PopupRow("נוצרה",
+                    r.CreatedAt.ToString("d/M/yyyy"), "#4A4657"));
+
+                // Extension-only: deadline comparison + mentor recommendation.
+                // Requires the pre-fetched detail; silently omitted if unavailable.
+                if (r.RequestType == RequestTypes.Extension
+                    && _extensionDetails.TryGetValue(r.Id, out var extDetail))
+                {
+                    string currentStr   = extDetail.CurrentDueDate?.ToString("dd.MM") ?? "—";
+                    string requestedStr = extDetail.RequestedDueDate.ToString("dd.MM");
+                    // Value  = "currentDate ← " (muted)
+                    // Value2 = "requestedDate (מבוקש)" (purple)
+                    rows.Add(new PopupRow(
+                        "מועדים",
+                        $"{currentStr} ← ", "#9B96A8",
+                        $"{requestedStr} (מבוקש)", "#6D28F5"));
+
+                    if (!string.IsNullOrEmpty(extDetail.MentorDecision)
+                        && extDetail.MentorDecision != ExtensionDecisionStatuses.Pending)
+                    {
+                        rows.Add(new PopupRow("המלצת מנחה",
+                            ExtensionDecisionStatuses.Label(extDetail.MentorDecision),
+                            extDetail.MentorDecision == ExtensionDecisionStatuses.Recommended
+                                ? "#0F8FA6" : "#E0335F"));
+                    }
+                }
+
+                items.Add(new AttentionItem(
+                    Tag:      tag,
+                    TagBg:    isExtDecision ? "rgba(109,40,245,.12)" : "rgba(109,40,245,.07)",
+                    TagColor: "#6D28F5",
+                    BarColor: "#E0335F",
+                    Title:    title,
+                    TeamName: r.TeamName ?? "",
+                    Desc:     BuildRequestDesc(r),
+                    Href:     "/management/requests",
+                    Rows:     rows,
+                    Note:     isExtDecision ? "בקשת הדחייה ממתינה להחלטתך הסופית." : null,
+                    NoteLabel: "נדרשת פעולה",
+                    CtaLabel: "לבקשות"));
             }
 
-            // Open requests (lecturer decision needed)
-            foreach (var p in _data.Projects
-                .Where(p => p.OpenRequestCount > 0 && p.HealthBucket != HealthBuckets.AtRisk)
-                .OrderByDescending(p => p.OpenRequestCount)
-                .Take(3))
+            // ── Pending mentor approvals (submission waiting for mentor) ──
+            // Ordered most-delayed first.
+            foreach (var t in _pendingApprovals
+                .OrderByDescending(t => t.DaysWaiting))
             {
-                items.Add(BuildItem(p,
-                    tag: "החלטה נדרשת",
-                    tagBg: "rgba(109,40,245,.10)", tagColor: "#6D28F5",
-                    barColor: "#6D28F5",
-                    desc: BuildDesc(p),
-                    href: "/management/requests",
-                    ctaLabel: "לבקשות"));
+                var rows = new List<PopupRow>();
+                rows.Add(new PopupRow("משימה", t.TaskTitle, "#4A4657"));
+                if (!string.IsNullOrEmpty(t.MilestoneTitle))
+                    rows.Add(new PopupRow("אבן דרך", t.MilestoneTitle, "#4A4657"));
+                rows.Add(new PopupRow("פרויקט", t.ProjectTitle, "#4A4657"));
+                if (!string.IsNullOrEmpty(t.TeamName))
+                    rows.Add(new PopupRow("צוות", t.TeamName, "#4A4657"));
+                if (!string.IsNullOrEmpty(t.MentorName))
+                    rows.Add(new PopupRow("מנחה", t.MentorName, "#4A4657"));
+                rows.Add(new PopupRow("ממתינה",
+                    $"{t.DaysWaiting} ימים",
+                    t.DaysWaiting > 7 ? "#E0335F"
+                    : t.DaysWaiting > 3 ? "#F59E0B"
+                    : "#4A4657"));
+
+                items.Add(new AttentionItem(
+                    Tag:      "הגשה ממתינה",
+                    TagBg:    "rgba(46,99,232,.10)",
+                    TagColor: "#2E63E8",
+                    BarColor: "#E0335F",
+                    Title:    $"הגשה ממתינה לאישור — {t.TaskTitle}",
+                    TeamName: t.TeamName ?? "",
+                    Desc:     BuildApprovalDesc(t),
+                    Href:     "/lecturer/submissions",
+                    Rows:     rows,
+                    Note:     t.DaysWaiting > 3
+                        ? $"ההגשה ממתינה לאישור המנחה {t.DaysWaiting} ימים. ניתן לשלוח תזכורת."
+                        : null,
+                    NoteLabel: "שים לב",
+                    CtaLabel: "לבדיקה"));
             }
 
-            // Missing submissions (awaiting lecturer, no open request, not at-risk)
-            foreach (var p in _data.Projects
-                .Where(p => p.MissingSubmissionCount > 0 && p.OpenRequestCount == 0 && p.HealthBucket != HealthBuckets.AtRisk)
-                .OrderByDescending(p => p.MissingSubmissionCount)
-                .Take(2))
-            {
-                items.Add(BuildItem(p,
-                    tag: "הגשה לאישורך",
-                    tagBg: "rgba(46,99,232,.10)", tagColor: "#2E63E8",
-                    barColor: "#2E63E8",
-                    desc: BuildDesc(p),
-                    href: "/assignments",
-                    ctaLabel: "לבדיקה"));
-            }
-
-            return items.Take(6).ToList();
+            return items.ToList();
         }
     }
 
-    private static AttentionItem BuildItem(
-        DashboardProjectRowDto p,
-        string tag, string tagBg, string tagColor, string barColor,
-        string desc, string href, string ctaLabel)
-    {
-        var rows = new List<PopupRow>();
-        if (!string.IsNullOrWhiteSpace(p.MentorNames))
-            rows.Add(new PopupRow("מנחה", p.MentorNames, "#4A4657"));
-        if (!string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle))
-            rows.Add(new PopupRow("אבן דרך", p.CurrentMilestoneTitle, "#4A4657"));
-        if (p.CurrentMilestoneDueDate.HasValue)
-            rows.Add(new PopupRow("תאריך יעד",
-                p.CurrentMilestoneDueDate.Value.ToString("d/M/yyyy"),
-                p.CurrentMilestoneDueDate.Value < DateTime.Today ? "#E0335F" : "#4A4657"));
-        if (p.OverdueTaskCount > 0)
-            rows.Add(new PopupRow("משימות באיחור", p.OverdueTaskCount.ToString(), "#E0335F"));
-        if (p.MissingSubmissionCount > 0)
-            rows.Add(new PopupRow("הגשות חסרות", p.MissingSubmissionCount.ToString(), "#2E63E8"));
-        if (p.OpenRequestCount > 0)
-            rows.Add(new PopupRow("בקשות פתוחות", p.OpenRequestCount.ToString(), "#6D28F5"));
-
-        string? note = null;
-        string noteLabel = "הערה";
-        if (p.HealthBucket == HealthBuckets.AtRisk)
-        {
-            note = $"ציון בריאות: {p.HealthScore:F0}/100 — הפרויקט דורש התערבות מיידית.";
-            noteLabel = "מצב הפרויקט";
-        }
-        else if (p.OpenRequestCount > 0)
-        {
-            note = $"{p.OpenRequestCount} בקשות ממתינות לאישורך.";
-            noteLabel = "נדרשת פעולה";
-        }
-
-        return new AttentionItem(
-            Tag: tag, TagBg: tagBg, TagColor: tagColor, BarColor: barColor,
-            Title: p.ProjectTitle,
-            TeamName: p.TeamName ?? "",
-            Desc: desc,
-            Href: href,
-            Rows: rows,
-            Note: note,
-            NoteLabel: noteLabel,
-            CtaLabel: ctaLabel);
-    }
-
-    private static string BuildDesc(DashboardProjectRowDto p)
+    private static string BuildRequestDesc(ProjectRequestRowDto r)
     {
         var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(p.TeamName))    parts.Add(p.TeamName);
-        if (!string.IsNullOrWhiteSpace(p.MentorNames)) parts.Add($"מנחה: {p.MentorNames}");
-        if (p.OverdueTaskCount > 0)        parts.Add($"{p.OverdueTaskCount} משימות באיחור");
-        if (p.MissingSubmissionCount > 0)  parts.Add($"{p.MissingSubmissionCount} הגשות חסרות");
-        if (p.OpenRequestCount > 0)        parts.Add($"{p.OpenRequestCount} בקשות פתוחות");
+        if (!string.IsNullOrWhiteSpace(r.TeamName))   parts.Add(r.TeamName);
+        if (r.MentorNames.Count > 0)                  parts.Add($"מנחה: {r.MentorNames[0]}");
+        parts.Add(RequestStatuses.Label(r.Status));
+        return string.Join(" · ", parts);
+    }
+
+    private static string BuildApprovalDesc(PendingMentorApprovalRowDto t)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(t.TeamName))   parts.Add(t.TeamName);
+        if (!string.IsNullOrWhiteSpace(t.MentorName)) parts.Add($"מנחה: {t.MentorName}");
+        parts.Add($"ממתינה {t.DaysWaiting} ימים");
         return string.Join(" · ", parts);
     }
 
@@ -449,35 +552,83 @@
 
     // ── Derived: upcoming deadlines ───────────────────────────────────────────
 
-    private IEnumerable<UpcomingItem> UpcomingItems
+    // Unified pool: project milestones + the lecturer's own personal tasks.
+    // Both sources use the same sort rule (proximity to today, take 5) so the
+    // calendar and the dashboard always agree on "what is near" without
+    // inventing a separate date-range rule for one of them.
+    private IReadOnlyList<UpcomingItem> UpcomingItems
     {
         get
         {
-            if (_data is null) return Enumerable.Empty<UpcomingItem>();
+            if (_data is null) return Array.Empty<UpcomingItem>();
 
-            return _data.Projects
+            // ── Milestone items ──────────────────────────────────────────
+            var milestoneItems = _data.Projects
                 .Where(p => p.CurrentMilestoneDueDate.HasValue)
-                .OrderBy(p => p.CurrentMilestoneDueDate)
-                .Take(5)
                 .Select(p =>
                 {
-                    var d = p.CurrentMilestoneDueDate!.Value;
+                    var d    = p.CurrentMilestoneDueDate!.Value;
                     int days = (d.Date - DateTime.Today).Days;
-                    string when;
-                    string cls;
 
-                    if (days == 0)       { when = "היום";            cls = "ldh-when-today"; }
-                    else if (days == 1)  { when = "מחר";             cls = "ldh-when-soon"; }
-                    else if (days <= 7)  { when = $"עוד {days} ימים"; cls = "ldh-when-soon"; }
-                    else if (days < 0)   { when = $"לפני {-days} ימים"; cls = "ldh-when-past"; }
-                    else                 { when = d.ToString("d/M", System.Globalization.CultureInfo.InvariantCulture); cls = "ldh-when-default"; }
+                    string when = days == 0             ? "היום"
+                                : days == 1             ? "מחר"
+                                : days is > 1 and <= 7  ? $"עוד {days} ימים"
+                                : days < 0              ? $"לפני {-days} ימים"
+                                : d.ToString("d/M", System.Globalization.CultureInfo.InvariantCulture);
+
+                    // Tile bar color: type, not urgency.
+                    string kindClass = p.MissingSubmissionCount > 0 ? "ldh-kind-submission"
+                                     : p.OpenRequestCount > 0       ? "ldh-kind-review"
+                                     :                                 "ldh-kind-milestone";
 
                     string label = string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle)
                         ? p.ProjectTitle
                         : $"{p.CurrentMilestoneTitle} — {p.ProjectTitle}";
 
-                    return new UpcomingItem(when, cls, label, p.ProjectId);
+                    return new UpcomingItem(when, kindClass, label,
+                        $"/projects/{p.ProjectId}/overview", d);
                 });
+
+            // ── Personal task items ──────────────────────────────────────
+            // Same data source the calendar uses (PersonalTasks.GetAsync),
+            // so a task created or edited from either surface is projected
+            // identically here — one entity, two views.
+            var personalItems = _personalTasks
+                .Where(t => !t.IsDone && t.DueDate is not null)
+                .Select(t =>
+                {
+                    var d    = t.DueDate!.Value.Date;
+                    int days = (d - DateTime.Today).Days;
+
+                    string when = days == 0             ? "היום"
+                                : days == 1             ? "מחר"
+                                : days is > 1 and <= 7  ? $"עוד {days} ימים"
+                                : days < 0              ? $"לפני {-days} ימים"
+                                : d.ToString("d/M", System.Globalization.CultureInfo.InvariantCulture);
+
+                    // If the task is linked to a project, show "title — project";
+                    // otherwise just the title.
+                    string label = t.ProjectId is int && !string.IsNullOrWhiteSpace(t.ProjectTitle)
+                        ? $"{t.Title} — {t.ProjectTitle}"
+                        : t.Title;
+
+                    // Project-linked tasks navigate to the project overview;
+                    // standalone personal tasks navigate to the calendar where
+                    // they were created and can be edited.
+                    string href = t.ProjectId is int pid
+                        ? $"/projects/{pid}/overview"
+                        : "/lecturer/calendar";
+
+                    return new UpcomingItem(when, "ldh-kind-personal", label, href, d);
+                });
+
+            // ── Union, sort, cap ─────────────────────────────────────────
+            return milestoneItems
+                .Concat(personalItems)
+                .OrderBy(u => Math.Abs((u.Date.Date - DateTime.Today).TotalDays))
+                .ThenBy(u => u.Date)
+                .Take(5)
+                .ToList();
         }
     }
 }

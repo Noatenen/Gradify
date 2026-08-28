@@ -1,0 +1,778 @@
+@page "/lecturer/calendar"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@namespace AuthWithAdmin.Client.Pages.Lecturer
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Mentor
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IDashboardOverviewService DashboardOverview
+@inject IPersonalTasksService PersonalTasks
+@inject IGoogleCalendarService GoogleCalendar
+@inject NavigationManager Nav
+
+@*
+    ── יומן — the lecturer's CROSS-PROJECT calendar ─────────────────────────
+    Visual source:   design/design-system/MotivaLecturerDesign/
+                     Motiva Lecturer Calendar.dc.html
+    Data sources:
+      • IDashboardOverviewService.GetAsync("lecturer")
+            → DashboardOverviewDto with List<DashboardProjectRowDto>
+              (ProjectId, ProjectTitle, TeamName, MentorNames,
+               CurrentMilestoneTitle, CurrentMilestoneDueDate,
+               MissingSubmissionCount, OpenRequestCount)
+      • IPersonalTasksService.GetAsync()
+            → List<PersonalTaskDto> — lecturer's own dated reminders
+
+    EVENT TYPE INFERENCE (no explicit type in the DTO):
+      MissingSubmissionCount > 0  → Submission ("הגשה חסרה — …")
+      OpenRequestCount > 0        → Review     ("בקשה פתוחה — …")
+      else                        → Milestone  (milestone title or project title)
+
+    REUSE:
+      MentorCalendarEvent / MentorEventType / MentorEventTypes — shared model
+      MentorPersonalTaskModal — same inline editor as the mentor calendar
+      mcal-* CSS — global via motiva-calendar.css; ::deep overrides are
+        in this page's own .razor.css (identical to the mentor's)
+
+    STRICT PARITY with MentorCalendarPage:
+      Same grid structure, same month/week views, same controls, same
+      drawer, same legend, same keyboard affordances. Only the data
+      source and the auth scope differ.
+*@
+
+<div class="mcal-header-bleed">
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Title="יומן"
+                 Subtitle="מועדי הקורס, פגישות והגשות של כל הצוותים — במקום אחד"
+                 Class="mcal-header">
+        <Actions>
+            @if (!_loading && !_failed)
+            {
+                <MFilterTabs Tabs="@ViewTabs"
+                             ActiveKey="@_view.ToString()"
+                             OnSelect="SelectView"
+                             AriaLabel="תצוגה" />
+
+                <div class="mcal-datenav">
+                    <button type="button" class="mcal-navbtn" aria-label="תקופה קודמת" @onclick="Prev">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m9 6 6 6-6 6"></path>
+                        </svg>
+                    </button>
+
+                    <span class="mcal-period" dir="ltr" aria-live="polite">@PeriodLabel</span>
+
+                    <button type="button" class="mcal-navbtn" aria-label="תקופה הבאה" @onclick="Next">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m15 6-6 6 6 6"></path>
+                        </svg>
+                    </button>
+
+                    <span class="mcal-navsep" aria-hidden="true"></span>
+
+                    <button type="button" class="mcal-today" @onclick="GoToday">היום</button>
+                </div>
+
+                <button type="button" class="mcal-create motiva-cta" @onclick="OpenCreate">
+                    <span class="mcal-create-plus" aria-hidden="true">+</span>אירוע / משימה
+                </button>
+            }
+        </Actions>
+    </MPageHeader>
+</div>
+
+<div class="mcal-body">
+
+    @if (!_loading && !_failed)
+    {
+        <MentorPersonalTaskModal Presentation="MentorPersonalTaskModal.EditorPresentation.Inline"
+                                 IsOpen="@_taskModalOpen"
+                                 EditingTask="@_editingTask"
+                                 Projects="@_projectsForModal"
+                                 InitialDueDate="@_newTaskDate"
+                                 OnClose="CloseTaskModal"
+                                 OnSaved="OnTaskSaved"
+                                 OnDeleted="OnTaskDeleted" />
+    }
+
+    @if (_loading)
+    {
+        <div class="mcal-state" role="status" aria-live="polite">
+            <span class="mcal-spinner" aria-hidden="true"></span>
+            <span>טוענת את היומן…</span>
+        </div>
+    }
+    else if (_failed)
+    {
+        <MEmptyState Title="לא הצלחנו לטעון את היומן"
+                     Description="ייתכן שיש תקלת רשת זמנית.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Primary"
+                         Size="MButton.ButtonSize.Small"
+                         OnClick="RetryAsync">
+                    נסי שוב
+                </MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_events.Count == 0)
+    {
+        <MEmptyState Title="אין עדיין מועדים ביומן"
+                     Description="אבני דרך, הגשות ומשימות אישיות עם תאריך יעד יופיעו כאן אוטומטית." />
+    }
+    else
+    {
+        <MCard Padding="MCard.CardPadding.None" Class="mcal-card">
+            @if (_view == View.Month)
+            {
+                <div class="mcal-grid" role="grid" aria-label="@($"לוח חודשי — {PeriodLabel}")">
+                    @foreach (var name in DayNames)
+                    {
+                        <div class="mcal-dayname" role="columnheader">@name</div>
+                    }
+
+                    @foreach (var day in MonthCells)
+                    {
+                        var d = day;
+                        var items = EventsOn(d);
+                        <div class="mcal-cell @(d.Month != _anchor.Month ? "mcal-cell-out" : "") @(d.Date == DateTime.Now.Date ? "mcal-cell-today" : "")"
+                             role="gridcell">
+                            <div class="mcal-cell-head">
+                                <span class="mcal-daynum">@d.Day</span>
+                                <button type="button"
+                                        class="mcal-add mcal-add-xs mcal-cell-add motiva-cta"
+                                        title="הוספת משימה"
+                                        aria-label="@($"הוספת משימה ל{DayAndMonth(d)}")"
+                                        @onclick="@(() => OpenNewTaskOn(d))">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"
+                                         stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                                </button>
+                            </div>
+                            <div class="mcal-cell-items">
+                                @foreach (var e in items.Take(3))
+                                {
+                                    var ev = e;
+                                    <button type="button"
+                                            class="mcal-item mcal-item-@MentorEventTypes.CssSuffix(ev.Type)"
+                                            title="@($"{ev.Title} — {ev.Context}")"
+                                            @onclick="@(() => _selected = ev)">
+                                        <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                        @if (ev.HasTime)
+                                        {
+                                            <span class="mcal-item-time" dir="ltr">@ev.Date.ToString("HH:mm")</span>
+                                        }
+                                        <span class="mcal-item-text">@ev.Title</span>
+                                    </button>
+                                }
+                            </div>
+                            @if (items.Count > 3)
+                            {
+                                <button type="button" class="mcal-more" @onclick="@(() => SelectDay(d))">
+                                    +@(items.Count - 3) נוספים
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                var wkToday  = DateTime.Now.Date;
+                var weekDays = WeekDays.ToList();
+
+                var weekTimed = weekDays.SelectMany(d => EventsOn(d).Where(e => e.HasTime)).ToList();
+                var weekHours = HourRange(weekTimed);
+
+                <div class="mcal-wk" role="group" aria-label="@($"לוח שבועי — {PeriodLabel}")">
+
+                    <div class="mcal-wk-row mcal-wk-headrow">
+                        <div class="mcal-wk-gutter" aria-hidden="true"></div>
+                        @foreach (var day in weekDays)
+                        {
+                            var d = day;
+                            <div class="mcal-wk-dayhead @(d == wkToday ? "mcal-wk-col-today" : "") @(_weekPick == d ? "mcal-wk-col-sel" : "")"
+                                 @onclick="@(() => _weekPick = d)">
+                                <span class="mcal-wk-dayname">@ShortDayNames[(int)d.DayOfWeek]</span>
+                                <span class="mcal-wk-daynum">@d.Day</span>
+                                <button type="button"
+                                        class="mcal-add mcal-add-xs mcal-wk-add motiva-cta"
+                                        title="הוספת משימה"
+                                        aria-label="@($"הוספת משימה ל{DayAndMonth(d)}")"
+                                        @onclick="@(() => OpenNewTaskOn(d))"
+                                        @onclick:stopPropagation="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"
+                                         stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                                </button>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="mcal-wk-row mcal-wk-alldayrow">
+                        <div class="mcal-wk-gutter mcal-wk-alldaylabel">ללא שעה</div>
+                        @foreach (var day in weekDays)
+                        {
+                            var d = day;
+                            var dayAllDay = EventsOn(d).Where(e => !e.HasTime).ToList();
+                            <div class="mcal-wk-alldaycell @(d == wkToday ? "mcal-wk-col-today" : "") @(_weekPick == d ? "mcal-wk-col-sel" : "")"
+                                 @onclick="@(() => _weekPick = d)">
+                                @foreach (var e in dayAllDay.Take(3))
+                                {
+                                    var ev = e;
+                                    <button type="button"
+                                            class="mcal-wk-chip mcal-wk-chip-@MentorEventTypes.CssSuffix(ev.Type)"
+                                            title="@($"{ev.Title} — {ev.Context}")"
+                                            aria-label="@($"פרטי {ev.Title}")"
+                                            @onclick="@(() => _selected = ev)"
+                                            @onclick:stopPropagation="true">
+                                        <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                        <span class="mcal-wk-chip-text">@ev.Title</span>
+                                    </button>
+                                }
+                                @if (dayAllDay.Count > 3)
+                                {
+                                    <button type="button" class="mcal-wk-more"
+                                            @onclick="@(() => SelectDay(d))"
+                                            @onclick:stopPropagation="true">
+                                        +@(dayAllDay.Count - 3) נוספים
+                                    </button>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <div class="mcal-wk-hours">
+                        @foreach (var (hour, index) in weekHours.Select((h, i) => (h, i)))
+                        {
+                            var h   = hour;
+                            var row = index + 1;
+                            <div class="mcal-wk-gutter mcal-wk-hourlabel" style="grid-row: @row">@h.ToString("00"):00</div>
+
+                            @foreach (var (day, col) in weekDays.Select((d, i) => (d, i)))
+                            {
+                                var d = day;
+                                <div class="mcal-wk-lane @(d == wkToday ? "mcal-wk-col-today" : "") @(_weekPick == d ? "mcal-wk-col-sel" : "") @(IsCurrentHour(d, h) ? "mcal-wk-slot-now" : "")"
+                                     style="grid-row: @row; grid-column: @(col + 2)" aria-hidden="true"></div>
+                            }
+                        }
+
+                        @foreach (var (day, col) in weekDays.Select((d, i) => (d, i)))
+                        {
+                            var d = day;
+                            foreach (var group in EventsOn(d).Where(e => e.HasTime)
+                                                             .GroupBy(e => e.Date.Hour)
+                                                             .OrderBy(g => g.Key))
+                            {
+                                var rowStart = weekHours.IndexOf(group.Key) + 1;
+                                if (rowStart <= 0) { continue; }
+
+                                <div class="mcal-wk-stack"
+                                     style="grid-row: @rowStart; grid-column: @(col + 2)">
+                                    @foreach (var e in group)
+                                    {
+                                        var ev = e;
+                                        <button type="button"
+                                                class="mcal-wk-chip mcal-wk-chip-@MentorEventTypes.CssSuffix(ev.Type) mcal-wk-chip-timed @(ev.IsPointInTime ? "mcal-wk-chip-point" : "")"
+                                                style="@(ev.IsPointInTime ? "" : $"height: calc(var(--mcal-wk-row-h) * {RowSpan(ev, weekHours)} - 4px)")"
+                                                title="@($"{ev.TimeRange} · {ev.Title} — {ev.Context}")"
+                                                aria-label="@($"פרטי {ev.Title}, {ev.TimeRange}")"
+                                                @onclick="@(() => _selected = ev)">
+                                            <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                                            <span class="mcal-wk-chip-text">@ev.Title</span>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            }
+        </MCard>
+
+        <div class="mcal-legend">
+            @foreach (var t in MentorEventTypes.Ordered)
+            {
+                <span class="mcal-legend-item">
+                    <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(t)" aria-hidden="true"></span>
+                    @MentorEventTypes.Label(t)
+                </span>
+            }
+
+            <span class="mcal-legend-sync">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                    <path d="M16 2v4M8 2v4M3 10h18"></path>
+                </svg>
+                = מסונכרן ליומן Google
+            </span>
+        </div>
+    }
+</div>
+
+@if (_selected is MentorCalendarEvent sel)
+{
+    <div class="mcal-scrim" @onclick="@(() => _selected = null)"></div>
+
+    <aside class="mcal-drawer" role="dialog" aria-modal="true" aria-label="@sel.Title">
+        <div class="mcal-drawer-top">
+            <span class="mcal-drawer-type mcal-drawer-type-@MentorEventTypes.CssSuffix(sel.Type)">
+                @MentorEventTypes.Label(sel.Type)
+            </span>
+            <button type="button" class="mcal-drawer-close" title="סגירה" aria-label="סגירה"
+                    @onclick="@(() => _selected = null)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M18 6 6 18M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+
+        <h2 class="mcal-drawer-title">@sel.Title</h2>
+
+        <div class="mcal-drawer-facts">
+            <div class="mcal-drawer-fact">
+                <span class="mcal-drawer-k">תאריך</span>
+                <span class="mcal-drawer-v">@FullDate(sel.Date)</span>
+            </div>
+
+            @if (sel.TimeRange is { Length: > 0 } range)
+            {
+                <div class="mcal-drawer-fact">
+                    <span class="mcal-drawer-k">שעות</span>
+                    <span class="mcal-drawer-v" dir="ltr">@range</span>
+                </div>
+            }
+
+            <div class="mcal-drawer-fact">
+                <span class="mcal-drawer-k">שיוך</span>
+                <span class="mcal-drawer-v">@sel.Context</span>
+            </div>
+
+            @if (sel.WaitingLabel is { Length: > 0 })
+            {
+                <div class="mcal-drawer-fact">
+                    <span class="mcal-drawer-k">מצב</span>
+                    <span class="mcal-drawer-v mcal-drawer-v-attn">@sel.WaitingLabel</span>
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(sel.Detail))
+            {
+                <div class="mcal-drawer-fact">
+                    <span class="mcal-drawer-k">פרטים</span>
+                    <span class="mcal-drawer-v">@sel.Detail</span>
+                </div>
+            }
+
+            @if (sel.IsEditable)
+            {
+                <div class="mcal-drawer-fact">
+                    <span class="mcal-drawer-k">יומן Google</span>
+                    <span class="@(IsSynced(sel) ? "mcal-drawer-sync-on" : "mcal-drawer-sync-off")">
+                        @(IsSynced(sel) ? "✓ מסונכרן ליומן Google" : "לא מסונכרן")
+                    </span>
+                </div>
+            }
+        </div>
+
+        @if (sel.IsEditable && IsSynced(sel))
+        {
+            <p class="mcal-drawer-note">
+                שינוי תאריך או שעה כאן יעדכן את האירוע הקיים ביומן Google — לא ייווצר אירוע כפול.
+            </p>
+        }
+
+        <div class="mcal-drawer-actions">
+            @if (sel.IsEditable)
+            {
+                <button type="button" class="mcal-drawer-edit" @onclick="@(() => OpenPersonalTask(sel))">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
+                    </svg>
+                    עריכה
+                </button>
+            }
+
+            @if (sel.Href is { Length: > 0 })
+            {
+                <button type="button" class="mcal-drawer-go motiva-cta" @onclick="OpenSelected">
+                    לפרטי הצוות
+                </button>
+            }
+        </div>
+    </aside>
+}
+
+<MModal IsOpen="@(_selectedDay is not null)"
+        Size="MModal.ModalSize.Medium"
+        Title="@(_selectedDay is DateTime sd ? DayAndMonth(sd) : "")"
+        OnClose="@(() => _selectedDay = null)">
+    <ChildContent>
+        @if (_selectedDay is not null)
+        {
+            <MRowList Inset="true" AriaLabel="מועדי היום">
+                @foreach (var e in EventsOn(_selectedDay.Value))
+                {
+                    var ev = e;
+                    <MRow OnClick="@(() => { _selectedDay = null; _selected = ev; })"
+                          Primary="@ev.Title"
+                          Secondary="@ev.Context"
+                          Meta="@MentorEventTypes.Label(ev.Type)">
+                        <Leading>
+                            <span class="mcal-dot mcal-dot-@MentorEventTypes.CssSuffix(ev.Type)" aria-hidden="true"></span>
+                        </Leading>
+                    </MRow>
+                }
+            </MRowList>
+        }
+    </ChildContent>
+    <FooterContent>
+        @if (_selectedDay is DateTime addDay)
+        {
+            <button type="button" class="mcal-add motiva-cta"
+                    title="הוספת משימה"
+                    aria-label="@($"הוספת משימה ל{DayAndMonth(addDay)}")"
+                    @onclick="@(() => OpenNewTaskOn(addDay))">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                     stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+        }
+        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="@(() => _selectedDay = null)">סגירה</MButton>
+    </FooterContent>
+</MModal>
+
+@code {
+    private enum View { Month, Week }
+
+    private static readonly string[] DayNames      = MotivaDates.DayNames;
+    private static readonly string[] ShortDayNames  = MotivaDates.ShortDayNames;
+    private static readonly string[] MonthNames     = MotivaDates.MonthNames;
+
+    private static string DayName(DateTime d)    => MotivaDates.DayName(d);
+    private static string DayAndMonth(DateTime d) => MotivaDates.DayAndMonth(d);
+    private static string FullDate(DateTime d)   => MotivaDates.FullDate(d);
+
+    private IReadOnlyList<MentorCalendarEvent>     _events          = Array.Empty<MentorCalendarEvent>();
+    private List<PersonalTaskDto>                  _personalTasks   = new();
+    private IReadOnlyList<MentorProjectSummaryDto> _projectsForModal = Array.Empty<MentorProjectSummaryDto>();
+    private HashSet<int>                           _syncedTaskIds   = new();
+
+    private bool _loading = true;
+    private bool _failed;
+
+    private View _view = View.Month;
+
+    private IReadOnlyList<MFilterTabs.Tab> ViewTabs => new[]
+    {
+        new MFilterTabs.Tab(View.Month.ToString(), "חודש"),
+        new MFilterTabs.Tab(View.Week.ToString(),  "שבוע"),
+    };
+
+    private void SelectView(string key)
+    {
+        if (Enum.TryParse<View>(key, out var v)) _view = v;
+    }
+
+    private void OpenCreate() => OpenNewTaskOn(GlobalAddDate);
+
+    private DateTime           _anchor    = DateTime.Now.Date;
+    private MentorCalendarEvent? _selected;
+    private DateTime?          _selectedDay;
+    private DateTime?          _weekPick;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _failed  = false;
+
+        try
+        {
+            var data          = await DashboardOverview.GetAsync("lecturer");
+            var personalTasks = await PersonalTasks.GetAsync();
+
+            if (data is null) throw new InvalidOperationException("dashboard returned null");
+
+            _personalTasks    = personalTasks;
+            _projectsForModal = data.Projects
+                .Select(p => new MentorProjectSummaryDto
+                {
+                    Id       = p.ProjectId,
+                    Title    = p.ProjectTitle,
+                    TeamName = p.TeamName ?? "",
+                })
+                .ToList();
+
+            _events = BuildCalendar(data, personalTasks);
+
+            _syncedTaskIds = (await GoogleCalendar.GetPersonalTaskSchedulesAsync())
+                             .Where(x => x.IsScheduled)
+                             .Select(x => x.TaskId)
+                             .ToHashSet();
+        }
+        catch
+        {
+            _failed           = true;
+            _events           = Array.Empty<MentorCalendarEvent>();
+            _personalTasks    = new();
+            _projectsForModal = Array.Empty<MentorProjectSummaryDto>();
+            _syncedTaskIds    = new();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RetryAsync()
+    {
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    // ── Calendar builder ────────────────────────────────────────────────────
+
+    private static IReadOnlyList<MentorCalendarEvent> BuildCalendar(
+        DashboardOverviewDto data,
+        List<PersonalTaskDto> personalTasks)
+    {
+        var events = new List<MentorCalendarEvent>();
+
+        // ── Personal tasks / meetings ──
+        foreach (var t in personalTasks.Where(t => !t.IsDone && t.DueDate is not null))
+        {
+            bool hasContext = t.ProjectId is int && !string.IsNullOrWhiteSpace(t.ProjectTitle);
+
+            var start   = MotivaDates.ParseWallClock(t.StartTime);
+            var end     = MotivaDates.ParseWallClock(t.EndTime);
+            bool isTimed = start is not null;
+            bool hasEnd  = isTimed && end is TimeSpan e0 && e0 > start!.Value;
+
+            var date = isTimed ? t.DueDate!.Value.Date + start!.Value : t.DueDate!.Value;
+
+            var kind = hasContext && isTimed
+                ? MentorEventType.Meeting
+                : MentorEventType.PersonalTask;
+
+            // Lecturers have no dedicated personal-tasks page, so no Href.
+            events.Add(new MentorCalendarEvent(
+                Id: $"pt-{t.Id}", Type: kind,
+                Date: date, Title: t.Title,
+                ProjectId:    hasContext ? t.ProjectId : null,
+                ProjectTitle: hasContext ? t.ProjectTitle : null,
+                TeamName:     hasContext ? t.TeamName : null,
+                Detail: t.Description,
+                Href: hasContext ? $"/projects/{t.ProjectId}/overview" : null,
+                HasTime: isTimed,
+                EndsAt:  hasEnd ? t.DueDate!.Value.Date + end!.Value : null));
+        }
+
+        // ── Project milestones, inferred from dashboard data ──
+        foreach (var p in data.Projects)
+        {
+            if (p.CurrentMilestoneDueDate is not DateTime due) continue;
+
+            var label = p.CurrentMilestoneTitle ?? p.ProjectTitle;
+
+            MentorEventType type;
+            string title;
+
+            if (p.MissingSubmissionCount > 0)
+            {
+                type  = MentorEventType.Submission;
+                title = $"הגשה חסרה — {label}";
+            }
+            else if (p.OpenRequestCount > 0)
+            {
+                type  = MentorEventType.Review;
+                title = $"בקשה פתוחה — {label}";
+            }
+            else
+            {
+                type  = MentorEventType.Milestone;
+                title = label ?? p.ProjectTitle;
+            }
+
+            events.Add(new MentorCalendarEvent(
+                Id:           $"proj-{p.ProjectId}",
+                Type:         type,
+                Date:         due,
+                Title:        title,
+                ProjectId:    p.ProjectId,
+                ProjectTitle: p.ProjectTitle,
+                TeamName:     p.TeamName,
+                Detail:       !string.IsNullOrWhiteSpace(p.MentorNames) ? p.MentorNames : null,
+                Href:         $"/projects/{p.ProjectId}/overview"));
+        }
+
+        return events.OrderBy(e => e.Date).ToList();
+    }
+
+    // ── Filtering ───────────────────────────────────────────────────────────
+
+    private IEnumerable<MentorCalendarEvent> Filtered => _events;
+
+    private List<MentorCalendarEvent> EventsOn(DateTime day) =>
+        Filtered.Where(e => e.Date.Date == day.Date).ToList();
+
+    // ── Period navigation ───────────────────────────────────────────────────
+
+    private void Prev()    => _anchor = _view == View.Month ? _anchor.AddMonths(-1) : _anchor.AddDays(-7);
+    private void Next()    => _anchor = _view == View.Month ? _anchor.AddMonths(1)  : _anchor.AddDays(7);
+    private void GoToday() => _anchor = DateTime.Now.Date;
+
+    private void SelectDay(DateTime d) => _selectedDay = d;
+
+    private DateTime GlobalAddDate => _view switch
+    {
+        View.Week => _weekPick ?? DefaultWithin(WeekStart, WeekStart.AddDays(6)),
+        _         => DefaultWithin(new DateTime(_anchor.Year, _anchor.Month, 1),
+                                   new DateTime(_anchor.Year, _anchor.Month, 1).AddMonths(1).AddDays(-1)),
+    };
+
+    private static DateTime DefaultWithin(DateTime from, DateTime to)
+    {
+        var today = DateTime.Now.Date;
+        return today >= from.Date && today <= to.Date ? today : from.Date;
+    }
+
+    private string PeriodLabel => _view switch
+    {
+        View.Month => $"{MonthNames[_anchor.Month - 1]} {_anchor.Year}",
+        _          => WeekLabel,
+    };
+
+    private string WeekLabel
+    {
+        get
+        {
+            var from = WeekStart;
+            var to   = WeekStart.AddDays(6);
+
+            return from.Month == to.Month
+                ? $"{from.Day}–{to.Day} ב{MonthNames[from.Month - 1]} {to.Year}"
+                : $"{DayAndMonth(from)} – {DayAndMonth(to)} {to.Year}";
+        }
+    }
+
+    private DateTime WeekStart => _anchor.AddDays(-(int)_anchor.DayOfWeek);
+
+    private IEnumerable<DateTime> WeekDays =>
+        Enumerable.Range(0, 7).Select(i => WeekStart.AddDays(i));
+
+    private IEnumerable<DateTime> MonthCells
+    {
+        get
+        {
+            var first = new DateTime(_anchor.Year, _anchor.Month, 1);
+            var start = first.AddDays(-(int)first.DayOfWeek);
+            return Enumerable.Range(0, 42).Select(i => start.AddDays(i));
+        }
+    }
+
+    private void OpenSelected()
+    {
+        var href = _selected?.Href;
+        _selected = null;
+        if (href is not null) Nav.NavigateTo(href);
+    }
+
+    // ── Personal tasks ──────────────────────────────────────────────────────
+
+    private bool             _taskModalOpen;
+    private PersonalTaskDto? _editingTask;
+    private DateTime?        _newTaskDate;
+
+    private const int DefaultFirstHour = 8;
+    private const int DefaultLastHour  = 20;
+
+    private static List<int> HourRange(IReadOnlyCollection<MentorCalendarEvent> timed)
+    {
+        int first = DefaultFirstHour;
+        int last  = DefaultLastHour;
+
+        foreach (var e in timed)
+        {
+            first = Math.Min(first, e.Date.Hour);
+            last  = Math.Max(last, e.EndsAt is DateTime ends
+                                       ? ends.AddMinutes(-1).Hour
+                                       : e.Date.Hour);
+        }
+
+        return Enumerable.Range(first, Math.Max(1, last - first + 1)).ToList();
+    }
+
+    private static int RowSpan(MentorCalendarEvent ev, List<int> hours)
+    {
+        if (ev.EndsAt is not DateTime ends) return 1;
+
+        int startRow = hours.IndexOf(ev.Date.Hour);
+        int endRow   = hours.IndexOf(ends.AddMinutes(-1).Hour);
+
+        if (startRow < 0) return 1;
+        if (endRow < startRow) endRow = hours.Count - 1;
+
+        return Math.Max(1, endRow - startRow + 1);
+    }
+
+    private static bool IsCurrentHour(DateTime day, int hour) =>
+        day.Date == DateTime.Now.Date && DateTime.Now.Hour == hour;
+
+    private void OpenNewTaskOn(DateTime day)
+    {
+        _selected      = null;
+        _selectedDay   = null;
+        _editingTask   = null;
+        _newTaskDate   = day.Date;
+        _taskModalOpen = true;
+    }
+
+    private bool IsSynced(MentorCalendarEvent ev) =>
+        ev.IsEditable
+        && ev.Id.StartsWith("pt-", StringComparison.Ordinal)
+        && int.TryParse(ev.Id.AsSpan(3), out var taskId)
+        && _syncedTaskIds.Contains(taskId);
+
+    private void OpenPersonalTask(MentorCalendarEvent ev)
+    {
+        if (!ev.IsEditable) return;
+        if (!int.TryParse(ev.Id.StartsWith("pt-") ? ev.Id[3..] : "", out var taskId)) return;
+
+        var task = _personalTasks.FirstOrDefault(t => t.Id == taskId);
+        if (task is null) return;
+
+        _selected      = null;
+        _editingTask   = task;
+        _newTaskDate   = null;
+        _taskModalOpen = true;
+    }
+
+    private void CloseTaskModal()
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+        _newTaskDate   = null;
+    }
+
+    private async Task OnTaskSaved(PersonalTaskDto _)
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+        _newTaskDate   = null;
+        await LoadAsync();
+    }
+
+    private async Task OnTaskDeleted(int _)
+    {
+        _taskModalOpen = false;
+        _editingTask   = null;
+        _newTaskDate   = null;
+        await LoadAsync();
+    }
+}
