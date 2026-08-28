@@ -135,8 +135,7 @@
                                     @* Pre-compute detail variables to avoid nested @{ } blocks *@
                                     var detail = _details.TryGetValue(row.Key, out var d) ? d : null;
                                     var studentFile = detail?.Files?.FirstOrDefault(f => !f.IsLecturerFeedback);
-                                    var notesUrl = detail?.Notes?.Trim();
-                                    var hasNotesUrl = !string.IsNullOrWhiteSpace(notesUrl) && Uri.IsWellFormedUriString(notesUrl, UriKind.Absolute);
+                                    var driveUrl = detail?.DriveUrl?.Trim();
                                     var mentorFeedback = detail?.MentorFeedback;
                                     var mentorName = detail?.MentorName ?? row.MentorName;
                                     var actionMsg = GetActionMessage(row.Key);
@@ -166,13 +165,13 @@
                                                 @studentFile.OriginalFileName
                                             </a>
                                         }
-                                        @if (hasNotesUrl)
+                                        @if (!string.IsNullOrWhiteSpace(driveUrl))
                                         {
-                                            <a href="@notesUrl" target="_blank" class="lsb-file-link">
+                                            <a href="@driveUrl" target="_blank" rel="noopener noreferrer" class="lsb-file-link">
                                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                                    <path d="M20 11.5 12 19.5a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.2l7-7" />
+                                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
                                                 </svg>
-                                                קישור להגשה
+                                                פתיחת הקישור בדרייב
                                             </a>
                                         }
                                         @if (row.ProjectId > 0)
@@ -270,7 +269,8 @@
     private bool _loading = true;
     private bool _loadError;
 
-    private List<PendingMentorApprovalRowDto> _pending = new();
+    private List<PendingMentorApprovalRowDto> _pending  = new();
+    private List<ApprovedSubmissionRowDto>   _approved = new();
 
     private Dictionary<string, LecturerSubmissionDetailDto?> _details = new();
     private HashSet<string> _detailLoading = new();
@@ -318,12 +318,16 @@
 
     protected override async Task OnInitializedAsync()
     {
-        var data = await PendingService.GetPendingAsync();
-        if (data is null)
+        var pending  = await PendingService.GetPendingAsync();
+        var approved = await SubmissionsService.GetApprovedAsync();
+
+        if (pending is null)
             _loadError = true;
         else
-            _pending = data;
-        _loading = false;
+            _pending = pending;
+
+        _approved = approved ?? new();
+        _loading  = false;
         RebuildTabs();
     }
 
@@ -368,9 +372,10 @@
     private IReadOnlyList<RowModel> RowsForGroup(string groupId) =>
         groupId switch
         {
-            "approve"   => _pending.Where(r => r.DaysWaiting >= 3).Select(ToRowModel).ToList(),
-            "mentor"    => _pending.Where(r => r.DaysWaiting < 3).Select(ToRowModel).ToList(),
-            _           => new List<RowModel>()
+            "approve" => _pending.Where(r => r.DaysWaiting >= 3).Select(ToRowModel).ToList(),
+            "mentor"  => _pending.Where(r => r.DaysWaiting < 3).Select(ToRowModel).ToList(),
+            "done"    => _approved.Select(ToApprovedRowModel).ToList(),
+            _         => new List<RowModel>()
         };
 
     private RowModel ToRowModel(PendingMentorApprovalRowDto r)
@@ -385,7 +390,7 @@
             stateColor = "#2E63E8";
             timeLabel  = "ממתין לאישורך";
             timeColor  = "#2E63E8";
-            dot        = "#2E63E8";
+            dot        = "#E0335F"; // attention: same entity shown in Dashboard "דורש את תשומת לבך"
         }
         else
         {
@@ -393,7 +398,7 @@
             stateColor = "#6B6779";
             timeLabel  = $"הוגש {submitted}";
             timeColor  = "#6B6779";
-            dot        = "#6B6779";
+            dot        = "#E0335F"; // attention: same entity shown in Dashboard "דורש את תשומת לבך"
         }
 
         return new RowModel(
@@ -409,6 +414,34 @@
             StateLine:    stateLine,
             StateColor:   stateColor,
             CanDecide:    canDecide,
+            MentorName:   r.MentorName ?? string.Empty,
+            SubmissionId: r.SubmissionId,
+            ProjectId:    r.ProjectId
+        );
+    }
+
+    private RowModel ToApprovedRowModel(ApprovedSubmissionRowDto r)
+    {
+        bool isOverride = string.Equals(r.ApprovalSource,
+            ApprovalSources.LecturerOverride, StringComparison.Ordinal);
+        var submitted = r.SubmittedAt != default ? r.SubmittedAt.ToString("dd.MM") : "—";
+        var approvedOn = r.ApprovedAt.HasValue ? r.ApprovedAt.Value.ToString("dd.MM") : "—";
+        string stateLabel = isOverride ? "אושר ע\"י מרצה" : "אושר ע\"י מנחה";
+        string timeLabel  = $"אושר {approvedOn}";
+
+        return new RowModel(
+            Key:          $"s{r.SubmissionId}",
+            Title:        r.TaskTitle,
+            Sub:          $"{r.TeamName} · {r.ProjectTitle} · מנחה: {r.MentorName}",
+            Submitted:    submitted,
+            Due:          "—",
+            DueColor:     "#6B6779",
+            Dot:          "#0FA8C2",
+            TimeLabel:    timeLabel,
+            TimeColor:    "#0FA8C2",
+            StateLine:    stateLabel,
+            StateColor:   "#0FA8C2",
+            CanDecide:    false,
             MentorName:   r.MentorName ?? string.Empty,
             SubmissionId: r.SubmissionId,
             ProjectId:    r.ProjectId
@@ -488,12 +521,18 @@
 
         if (err is null)
         {
+            // Remove from pending immediately for instant visual feedback.
             _pending     = _pending.Where(r => r.SubmissionId != row.SubmissionId).ToList();
             _expandedKey = null;
             _actionMessages.Remove(row.Key);
             _actionErrors.Remove(row.Key);
             _notes.Remove(row.Key);
             RebuildTabs();
+
+            // Reload approved list from server so the item appears under "אושרו"
+            // without requiring a full page refresh.
+            var freshApproved = await SubmissionsService.GetApprovedAsync();
+            if (freshApproved is not null) _approved = freshApproved;
         }
         else
         {

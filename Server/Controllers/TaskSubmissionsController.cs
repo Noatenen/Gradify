@@ -839,7 +839,13 @@ public class TaskSubmissionsController : ControllerBase
     //
     // Full detail for the lecturer review drawer: identity, mentor side,
     // lecturer review fields, and attached files in one round-trip.
-    // Visibility is gated on MentorStatus = 'Approved' so drafts never leak.
+    //
+    // The MentorStatus = 'Approved' gate has been removed. Lecturers need
+    // to see attachment detail (DriveUrl / legacy files) for PENDING
+    // submissions too — the "הגשות ובקרה" page shows pending items and the
+    // lecturer must be able to open the student's Drive link before deciding
+    // whether to override-approve. The endpoint is still Admin/Staff only,
+    // so no unauthorised access is possible.
     [HttpGet("{id:int}/lecturer-detail")]
     [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
     public async Task<IActionResult> GetLecturerDetail(int id, int authUserId)
@@ -857,6 +863,7 @@ public class TaskSubmissionsController : ControllerBase
                     u.FirstName || ' ' || u.LastName     AS SubmittedByName,
                     s.SubmittedAt,
                     s.Notes,
+                    s.DriveUrl,
                     s.MentorStatus,
                     s.MentorFeedback,
                     s.MentorReviewedAt,
@@ -881,14 +888,13 @@ public class TaskSubmissionsController : ControllerBase
             JOIN    MilestoneTemplates    mt  ON mt.Id  = aym.MilestoneTemplateId
             LEFT JOIN users               rb  ON rb.Id  = s.ReviewedByUserId
             WHERE   s.Id = @Id
-              AND   s.MentorStatus = 'Approved'
             LIMIT   1";
 
         var row = (await _db.GetRecordsAsync<LecturerSubmissionDetailDto>(
                       sql, new { Id = id }))?.FirstOrDefault();
 
         if (row is null)
-            return NotFound("ההגשה לא נמצאה או שטרם אושרה על ידי המנחה");
+            return NotFound("ההגשה לא נמצאה");
 
         const string filesSql = @"
             SELECT  Id, TaskSubmissionId, OriginalFileName, StoredFileName,
@@ -1315,6 +1321,49 @@ public class TaskSubmissionsController : ControllerBase
 
         var rows = await _db.GetRecordsAsync<PendingMentorApprovalRowDto>(sql, new { });
         return Ok(rows ?? Enumerable.Empty<PendingMentorApprovalRowDto>());
+    }
+
+    // ── GET /api/task-submissions/approved ───────────────────────────────────
+    //
+    // Returns submissions where MentorStatus = 'Approved', newest-approved first.
+    // Covers both regular mentor approvals and lecturer override-approvals.
+    // Powers the "אושרו" tab in the lecturer "הגשות ובקרה" monitoring page.
+    //
+    // ApprovalSource is COALESCE-ed to 'MentorApproved' for rows that predate
+    // the override-approval feature (they have NULL in that column).
+    [HttpGet("approved")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> GetApprovedSubmissions(int authUserId)
+    {
+        const string sql = @"
+            SELECT
+                s.Id                                  AS SubmissionId,
+                s.TaskId,
+                t.Title                               AS TaskTitle,
+                p.Id                                  AS ProjectId,
+                p.ProjectNumber,
+                p.Title                               AS ProjectTitle,
+                tm.TeamName                           AS TeamName,
+                mt.Title                              AS MilestoneTitle,
+                s.SubmittedAt,
+                s.MentorReviewedAt                    AS ApprovedAt,
+                COALESCE(s.ApprovalSource, 'MentorApproved') AS ApprovalSource,
+                (SELECT GROUP_CONCAT(mu.FirstName || ' ' || mu.LastName, ', ')
+                 FROM   ProjectMentors pmm
+                 JOIN   users          mu ON mu.Id = pmm.UserId
+                 WHERE  pmm.ProjectId = p.Id)         AS MentorName
+            FROM   TaskSubmissions        s
+            JOIN   Tasks                  t   ON t.Id   = s.TaskId
+            JOIN   ProjectMilestones      pm  ON pm.Id  = t.ProjectMilestoneId
+            JOIN   Projects               p   ON p.Id   = pm.ProjectId
+            LEFT JOIN Teams               tm  ON tm.Id  = p.TeamId
+            JOIN   AcademicYearMilestones aym ON aym.Id = pm.AcademicYearMilestoneId
+            JOIN   MilestoneTemplates     mt  ON mt.Id  = aym.MilestoneTemplateId
+            WHERE  s.MentorStatus = 'Approved'
+            ORDER  BY COALESCE(s.MentorReviewedAt, s.SubmittedAt) DESC";
+
+        var rows = await _db.GetRecordsAsync<ApprovedSubmissionRowDto>(sql, new { });
+        return Ok(rows ?? Enumerable.Empty<ApprovedSubmissionRowDto>());
     }
 
     // ── POST /api/task-submissions/{id}/remind-mentor ─────────────────────────
