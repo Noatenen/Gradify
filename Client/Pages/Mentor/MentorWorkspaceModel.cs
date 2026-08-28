@@ -1,4 +1,5 @@
 using AuthWithAdmin.Client.Components;
+using AuthWithAdmin.Client.Services;
 using AuthWithAdmin.Shared.AuthSharedModels;
 
 namespace AuthWithAdmin.Client.Pages.Mentor;
@@ -635,4 +636,141 @@ public static class MentorLinks
     /// <summary>One personal task's editor. Same link the calendar and the
     /// attention model already use, so all three open the same modal.</summary>
     public static string PersonalTask(int taskId) => $"/mentor/tasks?editTask={taskId}";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MentorProjectCard — one project, resolved into everything a Quick View draws.
+//
+//  WHY IT LEFT פרויקטים בהנחייתי. It was that page's private `Row` record until
+//  the Quick View became the mentor experience's shared inspection popup: בית
+//  and המשימות שלי now open the SAME panel over the SAME facts, and a second
+//  copy of this resolution is a second place for the signal, the note and the
+//  waiting phrase to drift from the queue they came from. Nothing here is new —
+//  the fields, the fallbacks and the ordering keys are the ones that screen has
+//  always used.
+//
+//  Nothing here fetches. Every value is derived from the snapshot the caller
+//  already holds, plus the roadmap progress when the caller has it: a page that
+//  does not load the roadmap passes null and falls back to the project summary's
+//  own milestone, exactly as פרויקטים בהנחייתי does when a cycle has no stages
+//  configured.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Everything one project row and its Quick View draw, resolved once at load
+/// rather than per render — the signal, the phrases and the two lists the panel
+/// reads are each derived from three sources, and recomputing them inside the
+/// markup would run them on every keystroke in a search box.
+/// </summary>
+public sealed record MentorProjectCard(
+    MentorProjectSummaryDto               Project,
+    MentorProjectSignal                   Signal,
+    string                                TeamLabel,
+    string                                ProjectLabel,
+    string                                DrawerSubtitle,
+    string                                Stage,
+    int                                   StagePct,
+    string                                Milestone,
+    string                                Note,
+    string?                               MeetingLabel,
+    IReadOnlyList<string>                 Members,
+    IReadOnlyList<MentorAttentionItemDto> PendingReviews,
+    IReadOnlyList<ProjectRequestRowDto>   OpenRequests,
+    DateTime?                             NextDue,
+    string                                SearchText)
+{
+    /// <summary>מרחב הפרויקט — the existing per-project route, unchanged.</summary>
+    public string ProjectHref => $"/mentor/projects/{Project.Id}";
+
+    /// <summary>Builds the card from the shared snapshot and, when the caller
+    /// has it, the roadmap progress that owns the stage and the next
+    /// milestone.</summary>
+    public static MentorProjectCard Build(
+        MentorWorkspace ws,
+        MentorProjectSummaryDto p,
+        ProjectRoadmapProgressDto? progress)
+    {
+        var stage = progress?.Stages.FirstOrDefault(s => s.Status == RoadmapStageStatuses.Current);
+
+        //  The next milestone the team owes. The roadmap answers it precisely —
+        //  an overdue one outranks an upcoming one, exactly as ציר התקדמות
+        //  renders it — and the project summary's own "first incomplete
+        //  milestone" is the fallback when no stages are configured.
+        var next      = progress?.Overdue ?? progress?.Upcoming;
+        var nextTitle = next?.Title ?? p.CurrentMilestoneTitle;
+        var nextDue   = next is not null ? next.DueDate : p.CurrentMilestoneDueDate;
+
+        var pendingReviews = ws.Reviews.Where(i => i.ProjectId == p.Id).ToList();
+        var openRequests   = ws.OpenRequestList(p.Id)
+                               .OrderByDescending(r => r.UpdatedAt)
+                               .ToList();
+
+        var signal = MentorProjectSignals.Of(
+            milestoneOverdue: MentorTime.IsOverdue(nextDue),
+            pendingReviews:   pendingReviews.Count,
+            openRequests:     openRequests.Count);
+
+        var team     = string.IsNullOrWhiteSpace(p.TeamName) ? p.Title : p.TeamName;
+        var sameName = string.Equals(team, p.Title, StringComparison.Ordinal);
+
+        var members = (p.StudentNames ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        return new MentorProjectCard(
+            Project:        p,
+            Signal:         signal,
+            TeamLabel:      team,
+            ProjectLabel:   sameName ? p.ProjectType : p.Title,
+            DrawerSubtitle: sameName ? p.ProjectType : $"פרויקט: {p.Title}",
+            Stage:          stage?.Name
+                            ?? (string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle)
+                                    ? "טרם החל" : p.CurrentMilestoneTitle!),
+            StagePct:       stage?.ProgressPct ?? p.MilestoneProgressPct,
+            Milestone:      MilestoneLine(nextTitle, nextDue),
+            Note:           MentorProjectSignals.Note(signal, nextDue, pendingReviews.Count, openRequests),
+            MeetingLabel:   NextMeetingLabel(ws, p.Id),
+            Members:        members,
+            PendingReviews: pendingReviews,
+            OpenRequests:   openRequests,
+            NextDue:        nextDue,
+            SearchText:     $"{p.TeamName} {p.Title} {p.StudentNames} {stage?.Name} {nextTitle}");
+    }
+
+    private static string MilestoneLine(string? title, DateTime? due)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return "אין אבן דרך פעילה";
+
+        var deadline = MentorTime.DeadlineLabel(due);
+        return deadline is null ? title! : $"{title} · {deadline}";
+    }
+
+    /// <summary>
+    /// The team's next scheduled meeting, off the mentor's own personal tasks.
+    ///
+    /// <para>Same rule <c>MentorWorkspaceService.BuildCalendarAsync</c> uses to
+    /// call an entry a meeting rather than a reminder: a project association AND
+    /// an hour someone actually chose. Reading it off the snapshot rather than
+    /// fetching anything new is what keeps the calling screens at the round-trips
+    /// they already made — and it means the panel can never name a meeting the
+    /// יומן does not draw.</para>
+    /// </summary>
+    private static string? NextMeetingLabel(MentorWorkspace ws, int projectId)
+    {
+        var today = DateTime.Now.Date;
+
+        var next = ws.PersonalTasks
+            .Where(t => !t.IsDone
+                        && t.ProjectId == projectId
+                        && t.DueDate is DateTime d && d.Date >= today
+                        && MotivaDates.ParseWallClock(t.StartTime) is not null)
+            .OrderBy(t => t.DueDate!.Value.Date)
+            .ThenBy(t => MotivaDates.ParseWallClock(t.StartTime)!.Value)
+            .FirstOrDefault();
+
+        if (next is null) return null;
+
+        var at = MotivaDates.FormatWallClock(MotivaDates.ParseWallClock(next.StartTime)!.Value);
+        return $"{MotivaDates.DayAndMonth(next.DueDate!.Value)} · {at} · {next.Title}";
+    }
 }

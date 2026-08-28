@@ -1,0 +1,258 @@
+@namespace AuthWithAdmin.Client.Pages.Mentor
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    ── Quick View — the mentor experience's ONE project inspection popup ─────
+
+    WHAT IT IS. The detail rail פרויקטים בהנחייתי has always opened over its
+    own list, lifted out of that page verbatim — same box, same 380px inset,
+    same entrance, same facts, same two buttons. Nothing about it was
+    redesigned in the move; it simply stopped being one screen's private
+    markup.
+
+    WHY IT MOVED. Every mentor overview draws the same clickable entities —
+    a team, an attention row, a request, a submission — and clicking one used
+    to NAVIGATE to /mentor/projects/{id} (sometimes with a query parameter that
+    then opened a popup on arrival). Two things happened at once for one click,
+    and the mentor lost the screen they were reading. The rule now is that a
+    click from an overview INSPECTS in place and a click on the CTA inside this
+    panel NAVIGATES. That rule needs a panel any page can mount, so this is it.
+
+    THE CTA IS THE ONLY WAY OUT. <see cref="Focus"/> is what the mentor
+    actually clicked — a specific submission, a specific request — and the
+    primary button opens THAT item's own screen. With no focus the panel falls
+    back to what the project is waiting for, and to מרחב הפרויקט when it is
+    waiting for nothing. Both hrefs are the existing routes, unchanged.
+
+    IT IS NO LONGER A RAIL. It shipped as a 380px panel pinned to the reading
+    end of the viewport, which is the design's "side panel" surface — the one
+    the Resources and Calendar detail panels legitimately use. Inspecting an
+    entity is a different act, and the finished design gives it a different
+    surface: a centred popup over the page
+    (`design-reference/Motiva Mentor Home.dc.html:163-189`). The shell now
+    comes from MModal's QuickView variant, so this file owns the facts and the
+    two buttons and nothing about the box around them. Not one fact, label,
+    href or rule changed in the move.
+*@
+
+@if (Card is MentorProjectCard sel)
+{
+    <MModal IsOpen="true"
+            Variant="MModal.ModalVariant.QuickView"
+            AriaLabelledBy="@_titleId"
+            OnClose="OnClose">
+
+        <HeaderContent>
+            <span class="mpq-drawer-stage">@sel.Stage</span>
+
+            @if (sel.Signal != MentorProjectSignal.None)
+            {
+                <span class="mpq-drawer-alert @NoteClass(sel.Signal)">
+                    <span class="mpq-drawer-alert-dot" aria-hidden="true"></span>
+                    @MentorProjectSignals.Label(sel.Signal)
+                </span>
+            }
+        </HeaderContent>
+
+        <ChildContent>
+        <h2 class="mpq-drawer-title" id="@_titleId">@sel.TeamLabel</h2>
+        <p class="mpq-drawer-sub">@sel.DrawerSubtitle</p>
+
+        @if (sel.Members.Count > 0)
+        {
+            <div class="mpq-members">
+                @foreach (var m in sel.Members)
+                {
+                    <span class="mpq-member">
+                        <span class="mpq-member-initials" aria-hidden="true">@Initials(m)</span>
+                        @m
+                    </span>
+                }
+            </div>
+        }
+
+        <div class="mpq-facts">
+
+            <div class="mpq-fact">
+                <span class="mpq-fact-k">שלב נוכחי</span>
+                <span class="mpq-fact-v mpq-fact-v-stage">@sel.Stage · @sel.StagePct%</span>
+            </div>
+
+            <div class="mpq-fact">
+                <span class="mpq-fact-k">אבן דרך הבאה</span>
+                <span class="mpq-fact-v">@sel.Milestone</span>
+            </div>
+
+            <div class="mpq-fact">
+                <span class="mpq-fact-k">פגישה קרובה</span>
+                <span class="mpq-fact-v">@(sel.MeetingLabel ?? "לא נקבעה פגישה קרובה")</span>
+            </div>
+
+            @*  Only the submissions genuinely sitting with this mentor. The
+                waiting phrase is the attention model's own, so the panel, the
+                queue on המשימות שלי and the daily digest say the same thing.
+
+                A focused submission is named first — it is the row the mentor
+                clicked, and reading a different one back at them is exactly the
+                unpredictability this pass removes. *@
+            @if (FocusedReview(sel) is MentorAttentionItemDto review)
+            {
+                var others = sel.PendingReviews.Count - 1;
+                <div class="mpq-fact">
+                    <span class="mpq-fact-k">הגשה לבדיקה</span>
+                    <span class="mpq-fact-v mpq-fact-stack">
+                        <a class="mpq-fact-link" href="@review.Href">@review.Title</a>
+                        <span class="mpq-fact-note">
+                            @review.WaitingLabel@(others > 0 ? $" · ועוד {others} ממתינות" : "")
+                        </span>
+                    </span>
+                </div>
+            }
+
+            @if (FocusedRequest(sel) is ProjectRequestRowDto req)
+            {
+                var others = sel.OpenRequests.Count - 1;
+                <div class="mpq-fact">
+                    <span class="mpq-fact-k">בקשה פתוחה</span>
+                    <span class="mpq-fact-v mpq-fact-stack">
+                        @*  The request's own title, and deliberately NOT prefixed
+                            with its type. Two reasons, both observed on live rows:
+                            a team names the request after its type anyway ("בקשת
+                            דחייה להגשת Wireframes…"), so the prefix read as a
+                            stutter; and the database carries RequestType values
+                            outside the Shared constant list (e.g. "ScopeChange"),
+                            which RequestTypes.Label passes through verbatim —
+                            putting a raw English identifier at the head of a Hebrew
+                            line. The bucket phrase under the link already says what
+                            the mentor needs, and בקשות itself states the type. *@
+                        <a class="mpq-fact-link" href="@RequestHref(req)">@req.Title</a>
+                        <span class="mpq-fact-note">
+                            @MentorRequestBuckets.RowLabel(MentorRequestBuckets.Of(req.Status))@(others > 0
+                                ? $" · ועוד {others} פתוחות" : "")
+                        </span>
+                    </span>
+                </div>
+            }
+        </div>
+        </ChildContent>
+
+        @*  Two destinations, both existing routes. The primary is whatever the
+            mentor came here for — the item they clicked, else whatever this
+            project is waiting for, else the project workspace.
+
+            The shell's QuickView footer rules the row off and pushes the last
+            child to the far end, so the ordering here IS the placement. *@
+        <FooterContent>
+            <a class="mpq-drawer-alt" href="@SecondaryHref(sel)">@SecondaryLabel(sel)</a>
+            <a class="mpq-drawer-go motiva-cta" href="@PrimaryHref(sel)">
+                @PrimaryLabel(sel)
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 6l-6 6 6 6"></path>
+                </svg>
+            </a>
+        </FooterContent>
+    </MModal>
+}
+
+@code {
+    /// <summary>The project to inspect. Null closes the panel — the same
+    /// "the value IS the open state" contract <c>MentorRequestModal</c> uses,
+    /// so a host page holds one nullable field and nothing else.</summary>
+    [Parameter] public MentorProjectCard? Card { get; set; }
+
+    /// <summary>The attention item the mentor actually clicked, when they
+    /// clicked one rather than the project itself. It decides which submission
+    /// or request the panel names and where the primary CTA goes; a focus for a
+    /// different project, or one this snapshot no longer carries, is ignored
+    /// rather than trusted.</summary>
+    [Parameter] public MentorAttentionItemDto? Focus { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>The team name heads the body, not the shell's header row (which
+    /// carries the stage and signal chips), so the dialog is pointed at it
+    /// explicitly rather than left unnamed.</summary>
+    private readonly string _titleId = $"mpq-title-{Guid.NewGuid():N}";
+
+    // ── What the panel names ────────────────────────────────────────────────
+
+    private MentorAttentionItemDto? FocusedReview(MentorProjectCard c)
+    {
+        if (Focus is { Kind: MentorAttentionKind.Submission } f
+            && c.PendingReviews.FirstOrDefault(r => r.EntityId == f.EntityId) is { } hit)
+            return hit;
+
+        return c.PendingReviews.Count > 0 ? c.PendingReviews[0] : null;
+    }
+
+    private ProjectRequestRowDto? FocusedRequest(MentorProjectCard c)
+    {
+        if (Focus is { Kind: MentorAttentionKind.Request } f
+            && c.OpenRequests.FirstOrDefault(r => r.Id == f.EntityId) is { } hit)
+            return hit;
+
+        return c.OpenRequests.Count > 0 ? c.OpenRequests[0] : null;
+    }
+
+    // ── The two buttons ─────────────────────────────────────────────────────
+
+    /// <summary>The item the primary CTA opens, or null when the project has
+    /// nothing specific queued and the CTA should open the workspace.</summary>
+    private (string Href, string Label)? Queued(MentorProjectCard c)
+    {
+        //  A focus wins outright: the mentor clicked THAT row, so that row's own
+        //  screen is where the CTA goes — even when the project's overall signal
+        //  points at something else.
+        if (Focus is MentorAttentionItemDto f && f.Href is { Length: > 0 })
+            return f.Kind switch
+            {
+                MentorAttentionKind.Submission   => (f.Href, "לבדיקת ההגשה"),
+                MentorAttentionKind.Request      => (f.Href, "לבקשה"),
+                MentorAttentionKind.PersonalTask => (f.Href, "למשימה"),
+                _                                => null,
+            };
+
+        if (c.Signal == MentorProjectSignal.Submission && c.PendingReviews.Count > 0)
+            return (c.PendingReviews[0].Href, "לבדיקת ההגשה");
+
+        if (c.Signal == MentorProjectSignal.Request && c.OpenRequests.Count > 0)
+            return (RequestHref(c.OpenRequests[0]), "לבקשה");
+
+        return null;
+    }
+
+    private string PrimaryHref(MentorProjectCard c)  => Queued(c)?.Href  ?? c.ProjectHref;
+    private string PrimaryLabel(MentorProjectCard c) => Queued(c)?.Label ?? "למרחב הפרויקט";
+
+    /// <summary>The secondary button never repeats the primary one: when the
+    /// primary already opens the project workspace it offers the calendar
+    /// instead.</summary>
+    private string SecondaryHref(MentorProjectCard c) =>
+        Queued(c) is not null ? c.ProjectHref : MentorLinks.Calendar;
+
+    private string SecondaryLabel(MentorProjectCard c) =>
+        Queued(c) is not null ? "מרחב הפרויקט" : "יומן ותכנון";
+
+    // ── Wording and tone ────────────────────────────────────────────────────
+
+    private static string NoteClass(MentorProjectSignal s) => s switch
+    {
+        MentorProjectSignal.Request => "mpq-tone-violet",
+        MentorProjectSignal.None    => "mpq-tone-quiet",
+        _                           => "mpq-tone-rose",
+    };
+
+    private static string RequestHref(ProjectRequestRowDto r) =>
+        $"{MentorLinks.RequestsInbox}?requestId={r.Id}";
+
+    private static string Initials(string? text)
+    {
+        var parts = (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "?";
+        return parts.Length == 1
+            ? parts[0][..1]
+            : $"{parts[0][..1]}{parts[1][..1]}";
+    }
+}

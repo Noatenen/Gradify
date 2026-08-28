@@ -8,6 +8,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IMentorWorkspaceService Workspace
 @inject IPersonalTasksService PersonalTasks
+@inject IRoadmapStagesService Roadmap
 @inject NavigationManager Nav
 
 @*
@@ -199,24 +200,27 @@
                                         </span>
                                     </button>
 
-                                    @* Opened IN PLACE, not in a dialog — the reference
-                                       expands the group under its own row. Every item is
-                                       still a link to that one item's own screen, so the
-                                       navigation contract is unchanged: one item opens
-                                       itself, with its id in the URL. *@
+                                    @* The group expands IN PLACE, as the reference draws
+                                       it, and so does the item inside it: a row opens its
+                                       own popup OVER this dashboard rather than navigating
+                                       to the screen that owns it. Each popup carries the
+                                       CTA that does the navigating — see OpenAttentionItem. *@
                                     @if (open)
                                     {
                                         <div class="mh-attn-items" id="@($"mh-g-{g.Key}")">
                                             @foreach (var item in g.Items)
                                             {
-                                                <a class="mh-attn-item" href="@item.Href">
-                                                    <MStatusBadge Variant="@MentorAttentionRows.TypeVariant(item)"
-                                                                  Text="@MentorAttentionRows.TypeLabel(item)" />
-                                                    <span class="mh-attn-item-title" title="@item.Title">@item.Title</span>
-                                                    <span class="@(MentorAttentionRows.IsEscalated(item) ? "mh-attn-item-time mh-attn-time-late" : "mh-attn-item-time")">
-                                                        @MentorAttentionRows.TimeLabel(item)
+                                                var it = item;
+                                                <button type="button" class="mh-attn-item"
+                                                        @onclick="@(() => OpenAttentionItem(it))"
+                                                        aria-label="@($"פתיחת {it.Title}")">
+                                                    <MStatusBadge Variant="@MentorAttentionRows.TypeVariant(it)"
+                                                                  Text="@MentorAttentionRows.TypeLabel(it)" />
+                                                    <span class="mh-attn-item-title" title="@it.Title">@it.Title</span>
+                                                    <span class="@(MentorAttentionRows.IsEscalated(it) ? "mh-attn-item-time mh-attn-time-late" : "mh-attn-item-time")">
+                                                        @MentorAttentionRows.TimeLabel(it)
                                                     </span>
-                                                </a>
+                                                </button>
                                             }
                                         </div>
                                     }
@@ -259,7 +263,10 @@
                     <div class="mh-up-list">
                         @foreach (var e in _upcoming)
                         {
-                            <a class="mh-up-row" href="@(e.Href ?? MentorLinks.Calendar)">
+                            var ev = e;
+                            <button type="button" class="mh-up-row"
+                                    @onclick="@(() => OpenEvent(ev))"
+                                    aria-label="@($"פתיחת {ev.Title}")">
                                 <span class="@($"mh-up-tile mh-kind-{MentorEventTypes.CssSuffix(e.Type)}")">
                                     <span class="mh-up-day">@e.Date.Day.ToString("00")</span>
                                     <span class="mh-up-month">@MotivaDates.ShortMonth(e.Date)</span>
@@ -268,7 +275,7 @@
                                     <span class="mh-up-title" title="@e.Title">@e.Title</span>
                                     <span class="mh-up-meta">@UpcomingRelative(e) · @UpcomingContext(e)</span>
                                 </span>
-                            </a>
+                            </button>
                         }
                     </div>
                 }
@@ -326,8 +333,9 @@
                                     }
                                 </button>
 
-                                <a class="@(t.IsDone ? "mh-task-title mh-task-title-done" : "mh-task-title")"
-                                   href="@MentorLinks.PersonalTask(id)" title="@t.Title">@t.Title</a>
+                                <button type="button"
+                                        class="@(t.IsDone ? "mh-task-title mh-task-title-done" : "mh-task-title")"
+                                        @onclick="@(() => OpenTask(t))" title="@t.Title">@t.Title</button>
 
                                 <span class="@TaskDueClass(t)">@TaskDue(t)</span>
                             </div>
@@ -364,7 +372,9 @@
                         @foreach (var t in _teams)
                         {
                             var team = TeamRow(t);
-                            <a class="mh-team-row" href="@($"/mentor/projects/{t.Id}")">
+                            <button type="button" class="mh-team-row"
+                                    @onclick="@(() => OpenProject(t.Id))"
+                                    aria-label="@($"פתיחת פרטי {team.Name}")">
                                 <span class="mh-team-id">
                                     <span class="@($"mh-team-dot mh-tone-{team.Tone}")" role="img"
                                           aria-label="@team.Label"></span>
@@ -376,7 +386,7 @@
                                     </span>
                                 </span>
                                 <span class="@($"mh-team-note mh-tone-{team.Tone}")" title="@team.Note">@team.Note</span>
-                            </a>
+                            </button>
                         }
                     </div>
                 }
@@ -410,6 +420,28 @@
     }
 </div>
 
+@*  ── Inspection popups, all opened OVER this dashboard ────────────────────
+    The rule this screen now follows: clicking an entity on an overview
+    INSPECTS it here; only the CTA inside the popup navigates. None of these
+    is a page-local implementation — the Quick View is the same panel
+    פרויקטים בהנחייתי opens, the request modal is the same one המשימות שלי
+    opens, and the task editor is the same one יומן ותכנון opens. *@
+<MentorProjectQuickView Card="@_openProject"
+                        Focus="@_openProjectFocus"
+                        OnClose="CloseProject" />
+
+<MentorRequestModal RequestId="@_openRequestId"
+                    WaitingLabel="@OpenRequestWaitingLabel"
+                    OnClose="@(() => _openRequestId = null)"
+                    OnChanged="ReloadAsync" />
+
+<MentorPersonalTaskModal IsOpen="@(_openTask is not null)"
+                         EditingTask="@_openTask"
+                         Projects="@_ws.Projects"
+                         OnClose="@(() => _openTask = null)"
+                         OnSaved="@(_ => TaskChangedAsync())"
+                         OnDeleted="@(_ => TaskChangedAsync())" />
+
 @code {
     [CascadingParameter] private User? _user { get; set; }
 
@@ -442,6 +474,50 @@
 
     /// <summary>בקרוב fills in after the rest of the screen. See LoadUpcomingAsync.</summary>
     private bool _upcomingLoading = true;
+
+    // ── Inspection state ────────────────────────────────────────────────
+    //
+    // WHY THESE ARE FIELDS AND NOT ROUTES. Every one of them used to be an
+    // href: a team row went to /mentor/projects/{id}, a submission to that
+    // route with ?submissionId=, a request to /mentor-requests?requestId= and
+    // a personal task to /mentor/tasks?editTask=. Each of those navigations
+    // then opened a popup on ARRIVAL, so one click cost the mentor the screen
+    // they were reading in order to show them a panel that could just as well
+    // have opened here. Clicking an entity on an overview is INSPECTION, and
+    // inspection does not move you. The destinations are all still reachable —
+    // each popup carries the CTA that goes there, and that CTA is now the only
+    // thing on this screen that changes the URL.
+
+    /// <summary>The project whose Quick View is open, or null.</summary>
+    private MentorProjectCard? _openProject;
+
+    /// <summary>The attention row the mentor clicked, when the Quick View was
+    /// opened from one. It decides which submission the panel names and where
+    /// its primary CTA goes, so clicking the second of two waiting submissions
+    /// does not offer the first.</summary>
+    private MentorAttentionItemDto? _openProjectFocus;
+
+    private int?             _openRequestId;
+    private PersonalTaskDto? _openTask;
+
+    /// <summary>Roadmap progress per project, for the Quick View's stage line.
+    ///
+    /// <para>Loaded in the BACKGROUND, exactly like בקרוב and for the same
+    /// reason: this dashboard paints from one fast snapshot, and holding it
+    /// behind a second round-trip to fill in one line of a panel that is not
+    /// open yet would be paying for it on every visit. Absent, the card falls
+    /// back to the project summary's own milestone — the same degradation
+    /// פרויקטים בהנחייתי takes when a cycle has no stages configured.</para></summary>
+    private IReadOnlyDictionary<int, ProjectRoadmapProgressDto> _roadmap =
+        new Dictionary<int, ProjectRoadmapProgressDto>();
+
+    /// <summary>Waiting phrase for the request currently open, taken from the
+    /// same attention item the row rendered — so the modal and the row it was
+    /// opened from cannot word one request two ways.</summary>
+    private string? OpenRequestWaitingLabel =>
+        _openRequestId is int id
+            ? _ws.AwaitingMe.FirstOrDefault(r => r.EntityId == id)?.WaitingLabel
+            : null;
 
     /// <summary>
     /// How many rows each list shows — a SHORTLIST, not a window onto the
@@ -490,6 +566,132 @@
         // one block that needs it, so Home paints from the single fast snapshot
         // and בקרוב fills itself in a moment later.
         _ = LoadUpcomingAsync();
+        _ = LoadRoadmapAsync();
+    }
+
+    /// <summary>Roadmap progress, off the critical path. Same contract as
+    /// LoadUpcomingAsync: it fills a detail in, it never gates the paint, and a
+    /// failure leaves the fallback wording rather than an error.</summary>
+    private async Task LoadRoadmapAsync()
+    {
+        try
+        {
+            var entries = await Roadmap.GetMentorProjectsProgressAsync()
+                          ?? new List<MentorRoadmapEntryDto>();
+
+            _roadmap = entries.GroupBy(e => e.ProjectId)
+                              .ToDictionary(g => g.Key, g => g.First().Progress);
+        }
+        catch
+        {
+            _roadmap = new Dictionary<int, ProjectRoadmapProgressDto>();
+        }
+    }
+
+    // ── Opening an entity, in place ─────────────────────────────────────
+
+    /// <summary>Opens one project's Quick View over this dashboard.</summary>
+    private void OpenProject(int projectId, MentorAttentionItemDto? focus = null)
+    {
+        var project = _ws.Projects.FirstOrDefault(p => p.Id == projectId);
+
+        // A project the snapshot does not carry cannot be summarised honestly,
+        // so fall back to the route rather than opening an empty panel.
+        if (project is null)
+        {
+            Nav.NavigateTo(focus?.Href ?? $"/mentor/projects/{projectId}");
+            return;
+        }
+
+        _openProjectFocus = focus;
+        _openProject      = MentorProjectCard.Build(_ws, project, _roadmap.GetValueOrDefault(projectId));
+    }
+
+    private void CloseProject()
+    {
+        _openProject      = null;
+        _openProjectFocus = null;
+    }
+
+    /// <summary>
+    /// One attention row, opened in the popup that owns its kind.
+    ///
+    /// <para>A request opens the request modal and a personal task opens its
+    /// editor — both the shared components, both already the in-place behaviour
+    /// on המשימות שלי. A submission opens the project's Quick View FOCUSED on
+    /// it: the mentor sees which submission is waiting and how long it has
+    /// waited without leaving the dashboard, and the panel's primary CTA is
+    /// that submission's own review screen. There is no shared review popup to
+    /// mount here — the review drawer belongs to מרחב הפרויקט — and inventing a
+    /// second one is exactly the duplication this pass is avoiding.</para></summary>
+    private void OpenAttentionItem(MentorAttentionItemDto item)
+    {
+        switch (item.Kind)
+        {
+            case MentorAttentionKind.Request:
+                _openRequestId = item.EntityId;
+                break;
+
+            case MentorAttentionKind.PersonalTask:
+                OpenTask(_ws.PersonalTasks.FirstOrDefault(t => t.Id == item.EntityId));
+                break;
+
+            default:
+                if (item.ProjectId is int pid) OpenProject(pid, item);
+                else Nav.NavigateTo(item.Href);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// One בקרוב row, opened in place like everything else on this screen.
+    ///
+    /// <para>The three kinds this list carries used to be three different
+    /// navigations: a personal task or a meeting went to /mentor/tasks?editTask=
+    /// and opened its editor there, a review went to the project route with
+    /// ?submissionId= and opened the drawer there, and a milestone or a dated
+    /// deliverable went to the project workspace. Two of the three were the
+    /// navigate-then-popup pattern; all three now open the panel here and offer
+    /// the same destination as a CTA.</para></summary>
+    private void OpenEvent(MentorCalendarEvent e)
+    {
+        switch (e.Type)
+        {
+            case MentorEventType.PersonalTask:
+            case MentorEventType.Meeting:
+                OpenTask(_ws.PersonalTasks.FirstOrDefault(t => t.Id == e.EntityId));
+                break;
+
+            case MentorEventType.Review when e.ProjectId is int reviewPid:
+                OpenProject(reviewPid, _ws.Reviews.FirstOrDefault(r => r.EntityId == e.EntityId));
+                break;
+
+            // A milestone or a dated deliverable is not an entity a mentor
+            // opens — it is a date ON a project, so the project is what the
+            // panel shows.
+            default:
+                if (e.ProjectId is int pid) OpenProject(pid);
+                else                        Nav.NavigateTo(e.Href ?? MentorLinks.Calendar);
+                break;
+        }
+    }
+
+    /// <summary>The shared personal-task editor. Null — a task the snapshot no
+    /// longer carries — falls back to המשימות שלי rather than opening the
+    /// editor on nothing.</summary>
+    private void OpenTask(PersonalTaskDto? task)
+    {
+        if (task is null) Nav.NavigateTo(MentorLinks.PersonalTasks);
+        else              _openTask = task;
+    }
+
+    /// <summary>A save or a delete closes the editor and re-reads the snapshot,
+    /// so the attention count, the group summaries and the task list all move
+    /// together rather than one of them going stale.</summary>
+    private async Task TaskChangedAsync()
+    {
+        _openTask = null;
+        await ReloadAsync();
     }
 
     /// <summary>בקרוב, from the same builder /mentor/calendar renders — so a

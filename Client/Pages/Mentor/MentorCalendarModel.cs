@@ -112,7 +112,22 @@ public sealed record MentorCalendarEvent(
     /// anyone decided. The grid draws it as a marker on that hour instead of
     /// inventing a length for it.</para>
     /// </summary>
-    DateTime? EndsAt = null)
+    DateTime? EndsAt = null,
+
+    /// <summary>
+    /// The row this entry was built FROM — a PersonalTasks id for a personal
+    /// task or a meeting, a TaskSubmissions id for a review. 0 for a milestone
+    /// or a deliverable, which are dates on a project rather than entities a
+    /// mentor opens.
+    ///
+    /// <para>It exists so a caller can open the entry IN PLACE instead of
+    /// following <see cref="Href"/> to the screen that owns it: a mentor
+    /// clicking "בקרוב" on the dashboard gets the task editor or the project
+    /// Quick View over the dashboard, and the href becomes the CTA inside it.
+    /// Parsing it back out of <see cref="Id"/> would work and would also make
+    /// the id's string format load-bearing, which it is not.</para>
+    /// </summary>
+    int EntityId = 0)
 {
     /// <summary>"09:00–11:00" for a block, "10:30" for an hour-deadline, null
     /// when the entry is date-only. The one place times are formatted, so the

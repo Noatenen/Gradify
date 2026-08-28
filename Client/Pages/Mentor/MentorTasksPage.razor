@@ -8,6 +8,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IMentorWorkspaceService Workspace
 @inject IPersonalTasksService PersonalTasks
+@inject IRoadmapStagesService Roadmap
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -111,8 +112,9 @@
         החזרה לתיקון on the row. A mentor has no approve-or-return endpoint for
         a submission — their only decision endpoint is the extension
         recommendation — so those two buttons would be controls that cannot
-        work. Rows keep the navigation contract they have always had: a
-        submission opens its project, a request opens MentorRequestModal.
+        work. Rows keep their INSPECTION contract instead: a submission opens
+        MentorProjectQuickView and a request opens MentorRequestModal, both
+        over this queue, and each popup carries the CTA that navigates.
       * Generic אישור / דחייה on any request row; see MentorRequestModal.
 *@
 
@@ -192,7 +194,13 @@
                                         <MRowList AriaLabel="הגשות לבדיקה">
                                             @foreach (var r in _reviews)
                                             {
-                                                <MRow Href="@r.Href"
+                                                @*  Opens the shared Quick View OVER this queue,
+                                                    focused on THIS submission — it used to be
+                                                    Href="@r.Href", which navigated to the project
+                                                    and opened the review drawer on arrival. The
+                                                    panel's primary CTA is that same href. *@
+                                                var sub = r;
+                                                <MRow OnClick="@(() => OpenSubmission(sub))"
                                                       Primary="@r.Title"
                                                       Secondary="@TeamLabel(r)"
                                                       Status="@TimeChip(r)"
@@ -366,6 +374,15 @@
     }
 </div>
 
+@* ── Project Quick View — a submission, inspected in place ──
+     The same panel פרויקטים בהנחייתי and בית open, focused on the submission
+     the mentor clicked. Its CTA opens the review drawer at
+     /mentor/projects/{id}?submissionId={n} — the route this row used to
+     navigate to on click. *@
+<MentorProjectQuickView Card="@_openProject"
+                        Focus="@_openProjectFocus"
+                        OnClose="CloseProject" />
+
 @* ── Request details, opened in place ── *@
 <MentorRequestModal RequestId="@_openRequestId"
                     WaitingLabel="@OpenRequestWaitingLabel"
@@ -415,6 +432,17 @@
     private bool     _personalExpanded;
     private int?     _openRequestId;
     private int?     _togglingId;
+
+    /// <summary>The project whose Quick View is open, and the submission the
+    /// mentor clicked to open it. See OpenSubmission.</summary>
+    private MentorProjectCard?      _openProject;
+    private MentorAttentionItemDto? _openProjectFocus;
+
+    /// <summary>Roadmap progress per project, for the Quick View's stage line.
+    /// Loaded off the critical path — this queue must not wait on it, and the
+    /// card falls back to the project summary's own milestone without it.</summary>
+    private IReadOnlyDictionary<int, ProjectRoadmapProgressDto> _roadmap =
+        new Dictionary<int, ProjectRoadmapProgressDto>();
 
     private bool    _taskModalOpen;
 
@@ -495,6 +523,61 @@
 
         SplitPersonal(_ws.PersonalTasks);
         _loading = false;
+
+        // Not awaited: it fills one line of a panel that is not open yet, and
+        // holding the queue behind a second round-trip to get it would be paying
+        // for it on every visit.
+        _ = LoadRoadmapAsync();
+    }
+
+    private async Task LoadRoadmapAsync()
+    {
+        try
+        {
+            var entries = await Roadmap.GetMentorProjectsProgressAsync()
+                          ?? new List<MentorRoadmapEntryDto>();
+
+            _roadmap = entries.GroupBy(e => e.ProjectId)
+                              .ToDictionary(g => g.Key, g => g.First().Progress);
+        }
+        catch
+        {
+            _roadmap = new Dictionary<int, ProjectRoadmapProgressDto>();
+        }
+    }
+
+    /// <summary>
+    /// A waiting submission, inspected without leaving the queue.
+    ///
+    /// <para>The row used to be a link to <c>item.Href</c> — the project route
+    /// with <c>?submissionId=</c> on it — so one click both moved the mentor to
+    /// another screen AND opened a drawer once they got there. It opens the
+    /// shared Quick View here instead, focused on this submission, and the
+    /// panel's primary CTA is that same href. Nothing about the review flow or
+    /// its URL changed; only the moment the mentor commits to it.</para>
+    ///
+    /// <para>A submission whose project is not in this snapshot cannot be
+    /// summarised, so it falls back to the link it always had.</para></summary>
+    private void OpenSubmission(MentorAttentionItemDto item)
+    {
+        var project = item.ProjectId is int pid
+            ? _ws.Projects.FirstOrDefault(p => p.Id == pid)
+            : null;
+
+        if (project is null)
+        {
+            Nav.NavigateTo(item.Href);
+            return;
+        }
+
+        _openProjectFocus = item;
+        _openProject      = MentorProjectCard.Build(_ws, project, _roadmap.GetValueOrDefault(project.Id));
+    }
+
+    private void CloseProject()
+    {
+        _openProject      = null;
+        _openProjectFocus = null;
     }
 
     private void SplitPersonal(IEnumerable<PersonalTaskDto> all)

@@ -5,7 +5,13 @@
 
 ## Purpose
 
-Single shared modal shell (overlay + dialog + header/body/footer slots), replacing 9+ independent overlay implementations found by the Phase 1 audit (`tdm-overlay`, `pm-modal-*`, …) across 38 files that touch modal concepts. Not yet wired into any production page — `MentorProfileModal.razor` and other existing modals are untouched in this phase.
+Single shared modal shell (overlay + dialog + header/body/footer slots), replacing independent overlay implementations across the app.
+
+**It is the product's one Quick View / inspection surface.** When a click inspects an entity rather than asking to navigate, the user stays on the page, a centred modal opens over preserved page state, and only an explicit CTA inside the modal navigates. Domain components supply the *content*; they never re-implement the box. Student and Mentor share this shell — `motiva-mentor-final/README.md:44` states the student token/geometry spec applies to the mentor screens unchanged, and the mentor design file draws the inspection popup centred (`design-reference/Motiva Mentor Home.dc.html:163-189`).
+
+Migrated onto it: `TaskDetailModal` (student task inspection), `MilestoneDetailModal`, `MentorProjectQuickView` (was a 380px rail), `MentorRequestModal`, `MentorPersonalTaskModal`, `PersonalTaskPopover`, `MilestoneDetailPopover`.
+
+**Not modals, deliberately.** `ResourceDetailPanel` and the Calendar detail rails are the design's own *side panel* surface (`motiva-student-final/README.md:113`, "fixed, top/bottom:26px, inset-inline-end:26px, w360"). `TeamQuickInfoPopover` is an anchored popover. `MConfirmDialog` is a documented exception. Create/edit forms (`SubmissionModal`, `NewRequestModal`, `TeamTaskEditModal`) are not inspection surfaces.
 
 ## Parameters
 
@@ -64,5 +70,5 @@ Overlay/dialog layout uses `display: flex` centering (no `left`/`right`), header
 ## Known limitations / approved exceptions
 
 - **Backdrop scrim color (`rgba(0, 0, 0, 0.48)`) is a literal, not a `--motiva-*` token.** No token represents a translucent modal scrim in `motiva-tokens.css`; the existing `MentorProfileModal.razor.css` already uses this exact literal for the same purpose, so it's reused here rather than inventing a second, slightly different value.
-- **Body scroll is not locked while the modal is open**, per the Phase 3 instruction to preserve existing scrolling behavior unless the project already has a reusable scroll-lock solution — it doesn't (confirmed: no existing modal in the codebase locks `document.body` scroll), so none was added here either.
+- **Body scroll is not locked while the modal is open.** No modal in this codebase locks `document.body` scroll and none was added here — that would need JS interop. The overlay does carry `overscroll-behavior: contain`, so a wheel that reaches the end of the modal's own scroll area no longer chains into the page behind it, which was the visible half of the problem.
 - No focus trap — see the dedicated section above.

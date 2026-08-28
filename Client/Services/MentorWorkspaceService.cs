@@ -206,7 +206,8 @@ public class MentorWorkspaceService : IMentorWorkspaceService
                 // Straight to THIS task's editor, not the section.
                 Href: MentorLinks.PersonalTask(t.Id),
                 HasTime: isTimed,
-                EndsAt:  hasEnd ? t.DueDate!.Value.Date + end!.Value : null));
+                EndsAt:  hasEnd ? t.DueDate!.Value.Date + end!.Value : null,
+                EntityId: t.Id));
         }
 
         // ── Submissions already sitting with the mentor. Dated by ARRIVAL,
@@ -228,7 +229,8 @@ public class MentorWorkspaceService : IMentorWorkspaceService
                 // row and the daily digest all land in the same drawer.
                 Href: r.Href,
                 Age: r.Age,
-                WaitingLabel: r.WaitingLabel));
+                WaitingLabel: r.WaitingLabel,
+                EntityId: r.EntityId));
         }
 
         // ── Milestones and dated deliverables, per project.
