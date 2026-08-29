@@ -1,6 +1,8 @@
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IMentorPreferencesService MentorPrefs
+@implements IAsyncDisposable
+@inject IJSRuntime JS
 
 @*
     Shared read-only mentor profile modal.
@@ -276,6 +278,7 @@
     private bool _loadError;
     private int  _lastFetchedId;
     private ElementReference _overlayRef;
+    private bool _scrollLocked;
 
     /// <summary>Modal name source: prefer the freshly-fetched DTO once
     /// available, otherwise fall back to whatever the caller passed in.</summary>
@@ -286,6 +289,13 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        var isOpen = IsOpen;
+        if (isOpen && !_scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.lock"); } catch { }
+        else if (!isOpen && _scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
+        _scrollLocked = isOpen;
+
         // Lazy-fetch on open. Re-fetch only when MentorUserId actually changes.
         if (!IsOpen) return;
         if (MentorUserId <= 0) { _loadError = true; _loading = false; return; }
@@ -391,4 +401,10 @@
         => _model is null || !Has(_model.ExpectedResponseTime)
             ? ""
             : MentorResponseTimes.Label(_model.ExpectedResponseTime!);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
+    }
 }

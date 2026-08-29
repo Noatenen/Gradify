@@ -97,14 +97,16 @@
                     {
                         @foreach (var item in AttentionItems.Take(4))
                         {
-                            <div class="ldh-att-row" @onclick="() => OpenPopup(item)"
-                                 @onkeydown="e => OnAttentionKeyDown(e, item)"
+                            var captured = item;
+                            <div class="ldh-att-row"
                                  role="button" tabindex="0"
-                                 aria-label="@item.Title — לחץ לפרטים">
-                                <span class="ldh-att-bar" style="background:@item.BarColor"></span>
+                                 aria-label="@captured.Title — לחץ לפרטים"
+                                 @onclick="() => OpenPopup(captured)"
+                                 @onkeydown="e => OnAttentionKeyDown(e, captured)">
+                                <span class="ldh-att-bar" style="background:@captured.BarColor"></span>
                                 <div class="ldh-att-text">
-                                    <span class="ldh-att-title">@item.Title</span>
-                                    <span class="ldh-att-desc">@item.Desc</span>
+                                    <span class="ldh-att-title">@captured.Title</span>
+                                    <span class="ldh-att-desc">@captured.Desc</span>
                                 </div>
                                 <svg class="ldh-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -125,12 +127,13 @@
                         </div>
                         @foreach (var t in TeamItems)
                         {
-                            <div class="ldh-team-row">
+                            <a class="ldh-team-row" href="/projects?open=@t.ProjectId"
+                               aria-label="@($"פתח פרטי {t.TeamName} — {t.Reason}")">
                                 <span class="ldh-team-dot"></span>
                                 <span class="ldh-team-name">@t.TeamName</span>
                                 <span class="ldh-team-mentor">@t.Mentor</span>
                                 <span class="ldh-team-reason">@t.Reason</span>
-                            </div>
+                            </a>
                         }
                     </section>
                 }
@@ -238,8 +241,8 @@
 
             @* Footer *@
             <div class="ldh-popup-footer">
-                <button type="button" class="ldh-popup-btn-close" @onclick="ClosePopup">סגור</button>
-                <a class="ldh-popup-cta" href="@_popup.Href">@_popup.CtaLabel</a>
+                <button type="button" class="ldh-popup-btn-close" @onclick="ClosePopup">סגירה</button>
+                <button type="button" class="ldh-popup-cta" @onclick="NavigateFromPopup">@_popup.CtaLabel</button>
             </div>
 
         </div>
@@ -253,8 +256,6 @@
     private List<PersonalTaskDto>             _personalTasks    = new();
     private List<ProjectRequestRowDto>             _requests          = new();
     private List<PendingMentorApprovalRowDto>      _pendingApprovals  = new();
-    // Keyed by request ID — populated for actionable extension requests only.
-    private Dictionary<int, ExtensionRequestInfoDto> _extensionDetails = new();
     private bool _loading   = true;
     private bool _loadError;
 
@@ -318,32 +319,6 @@
         try   { _pendingApprovals = await ApprovalsService.GetPendingAsync() ?? new(); }
         catch { _pendingApprovals = new(); }
 
-        // Pre-fetch extension detail for every actionable extension request so
-        // the popup can show real CurrentDueDate and RequestedDueDate without
-        // an extra round-trip when the user clicks a row.
-        var actionableExtIds = _requests
-            .Where(r => r.RequestType == RequestTypes.Extension &&
-                        r.Status is RequestStatuses.New
-                               or RequestStatuses.WaitingForStaff
-                               or RequestStatuses.PendingLecturerDecision)
-            .Select(r => r.Id)
-            .ToList();
-
-        if (actionableExtIds.Count > 0)
-        {
-            var detailTasks = actionableExtIds.Select(id => RequestsService.GetByIdAsync(id));
-            try
-            {
-                var details = await Task.WhenAll(detailTasks);
-                for (int i = 0; i < actionableExtIds.Count; i++)
-                {
-                    if (details[i]?.Extension is { } ext)
-                        _extensionDetails[actionableExtIds[i]] = ext;
-                }
-            }
-            catch { /* extension detail is best-effort; rows still show without it */ }
-        }
-
         _loading = false;
     }
 
@@ -352,6 +327,13 @@
     private void OpenPopup(AttentionItem item) => _popup = item;
     private void ClosePopup() => _popup = null;
 
+    private void NavigateFromPopup()
+    {
+        var href = _popup?.Href;
+        _popup = null;
+        if (href is not null) Nav.NavigateTo(href);
+    }
+
     private void OnAttentionKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, AttentionItem item)
     {
         if (e.Key is "Enter" or " ") OpenPopup(item);
@@ -359,16 +341,15 @@
 
     // ── Data models ───────────────────────────────────────────────────────────
 
+    // Value2 / Color2: optional second value span in the same row — used for
+    // the extension deadline comparison (current date vs. requested date).
+    private sealed record PopupRow(string Label, string Value, string Color,
+        string? Value2 = null, string? Color2 = null);
+
     private sealed record AttentionItem(
         string Tag, string TagBg, string TagColor, string BarColor,
         string Title, string TeamName, string Desc, string Href,
         IReadOnlyList<PopupRow> Rows, string? Note, string NoteLabel, string CtaLabel);
-
-    // Value2 / Color2: optional second span rendered inline after Value in the
-    // same row cell. Used for the extension "מועדים" comparison where the
-    // requested date must be visually distinct (purple) from the current date.
-    private sealed record PopupRow(string Label, string Value, string Color,
-        string? Value2 = null, string? Color2 = null);
 
     private sealed record UpcomingItem(string When, string KindClass, string Label, string Href, DateTime Date);
 
@@ -408,8 +389,6 @@
                     ? $"החלטה נדרשת — {r.Title}"
                     : r.Title;
 
-                string? firstMentor = r.MentorNames.Count > 0 ? r.MentorNames[0] : null;
-
                 var rows = new List<PopupRow>();
                 rows.Add(new PopupRow("סוג בקשה", tag, "#4A4657"));
                 rows.Add(new PopupRow("סטטוס",
@@ -417,34 +396,12 @@
                     isExtDecision ? "#6D28F5" : "#4A4657"));
                 if (!string.IsNullOrEmpty(r.ProjectTitle))
                     rows.Add(new PopupRow("פרויקט", r.ProjectTitle, "#4A4657"));
-                if (!string.IsNullOrEmpty(firstMentor))
-                    rows.Add(new PopupRow("מנחה", firstMentor, "#4A4657"));
-                rows.Add(new PopupRow("נוצרה",
+                if (!string.IsNullOrEmpty(r.TeamName))
+                    rows.Add(new PopupRow("צוות", r.TeamName, "#4A4657"));
+                if (r.MentorNames.Count > 0)
+                    rows.Add(new PopupRow("מנחה", r.MentorNames[0], "#4A4657"));
+                rows.Add(new PopupRow("הוגשה",
                     r.CreatedAt.ToString("d/M/yyyy"), "#4A4657"));
-
-                // Extension-only: deadline comparison + mentor recommendation.
-                // Requires the pre-fetched detail; silently omitted if unavailable.
-                if (r.RequestType == RequestTypes.Extension
-                    && _extensionDetails.TryGetValue(r.Id, out var extDetail))
-                {
-                    string currentStr   = extDetail.CurrentDueDate?.ToString("dd.MM") ?? "—";
-                    string requestedStr = extDetail.RequestedDueDate.ToString("dd.MM");
-                    // Value  = "currentDate ← " (muted)
-                    // Value2 = "requestedDate (מבוקש)" (purple)
-                    rows.Add(new PopupRow(
-                        "מועדים",
-                        $"{currentStr} ← ", "#9B96A8",
-                        $"{requestedStr} (מבוקש)", "#6D28F5"));
-
-                    if (!string.IsNullOrEmpty(extDetail.MentorDecision)
-                        && extDetail.MentorDecision != ExtensionDecisionStatuses.Pending)
-                    {
-                        rows.Add(new PopupRow("המלצת מנחה",
-                            ExtensionDecisionStatuses.Label(extDetail.MentorDecision),
-                            extDetail.MentorDecision == ExtensionDecisionStatuses.Recommended
-                                ? "#0F8FA6" : "#E0335F"));
-                    }
-                }
 
                 items.Add(new AttentionItem(
                     Tag:      tag,
@@ -454,15 +411,17 @@
                     Title:    title,
                     TeamName: r.TeamName ?? "",
                     Desc:     BuildRequestDesc(r),
-                    Href:     "/management/requests",
+                    Href:     $"/management/requests?open={r.Id}",
                     Rows:     rows,
-                    Note:     isExtDecision ? "בקשת הדחייה ממתינה להחלטתך הסופית." : null,
+                    Note:     isExtDecision ? "בקשת ההדחייה ממתינה להחלטתך הסופית." : null,
                     NoteLabel: "נדרשת פעולה",
-                    CtaLabel: "לבקשות"));
+                    CtaLabel: "לפתיחת הבקשה"));
             }
 
             // ── Pending mentor approvals (submission waiting for mentor) ──
             // Ordered most-delayed first.
+            // Submissions page is deprecated; navigate to the project overview
+            // which shows submission status in context.
             foreach (var t in _pendingApprovals
                 .OrderByDescending(t => t.DaysWaiting))
             {
@@ -489,13 +448,13 @@
                     Title:    $"הגשה ממתינה לאישור — {t.TaskTitle}",
                     TeamName: t.TeamName ?? "",
                     Desc:     BuildApprovalDesc(t),
-                    Href:     "/lecturer/submissions",
+                    Href:     $"/projects/{t.ProjectId}/overview",
                     Rows:     rows,
                     Note:     t.DaysWaiting > 3
-                        ? $"ההגשה ממתינה לאישור המנחה {t.DaysWaiting} ימים. ניתן לשלוח תזכורת."
+                        ? $"ההגשה ממתינה לאישור המנחה {t.DaysWaiting} ימים."
                         : null,
                     NoteLabel: "שים לב",
-                    CtaLabel: "לבדיקה"));
+                    CtaLabel: "לפתיחת הפרויקט"));
             }
 
             return items.ToList();
@@ -613,11 +572,11 @@
                         : t.Title;
 
                     // Project-linked tasks navigate to the project overview;
-                    // standalone personal tasks navigate to the calendar where
-                    // they were created and can be edited.
+                    // standalone personal tasks deep-link to the calendar event
+                    // so it opens with the drawer pre-selected.
                     string href = t.ProjectId is int pid
                         ? $"/projects/{pid}/overview"
-                        : "/lecturer/calendar";
+                        : $"/lecturer/calendar?open=pt-{t.Id}";
 
                     return new UpcomingItem(when, "ldh-kind-personal", label, href, d);
                 });

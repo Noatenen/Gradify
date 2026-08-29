@@ -120,6 +120,20 @@ window.gradify = {
             viewportWidth:  window.innerWidth  || document.documentElement.clientWidth,
             viewportHeight: window.innerHeight || document.documentElement.clientHeight
         };
-    }
+    },
+
+    // Prevents the page from scrolling behind an open modal.
+    // Uses a depth counter so multiple modals stacking never double-unlock.
+    scrollLock: (function () {
+        var depth = 0;
+        return {
+            lock: function () {
+                if (++depth === 1) document.body.style.overflow = 'hidden';
+            },
+            unlock: function () {
+                if (depth > 0 && --depth === 0) document.body.style.overflow = '';
+            }
+        };
+    })()
 
 };
