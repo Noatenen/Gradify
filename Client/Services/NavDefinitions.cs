@@ -12,7 +12,8 @@ namespace AuthWithAdmin.Client.Services;
 public static class NavDefinitions
 {
     // ── Admin / Staff (Lecturer) ─────────────────────────────────────
-    // Seven destinations matching the approved Motiva Lecturer design
+    // EIGHT destinations. המשימות שלי joined the seven below — see the note on
+    // that entry; the other seven match the approved Motiva Lecturer design
     // (design/design-system/MotivaLecturerDesign/דשבורד מרצה 268.pdf).
     // The pill nav renders these identically to the student and mentor
     // bars — same pill track, same badge mechanism, same action cluster.
@@ -26,6 +27,12 @@ public static class NavDefinitions
     {
         // Match.All: prevents /dashboard/lecturer/anything from keeping "בית" lit.
         new NavItem("בית",            "dashboard/lecturer",  "oi-home",            NavLinkMatch.All,    NavIcons.Home),
+        // המשימות שלי — the lecturer's OWN reminders (/lecturer/tasks), in the
+        // second slot the mentor's list gives the same item. It is personal
+        // tasks only: the mentor's other two feeds are ProjectMentors-scoped
+        // and return nothing for this role, and הגשות / בקשות already have
+        // their own entries two and three rows down.
+        new NavItem("המשימות שלי",    "lecturer/tasks",      "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
         new NavItem("הצוותים שלי",    "projects",            "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
         new NavItem("הגשות ובקרה",    "lecturer/submissions", "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
         // Badge: OpenRequests count (shown by LecturerTopNav, same as student's בקשות badge).
@@ -90,7 +97,7 @@ public static class NavDefinitions
     // reference (design-reference/mentor-experience/project/Motiva Mentor
     // Home.dc.html:36-46 and every sibling screen, which all draw the same
     // rail): בית · המשימות שלי · פרויקטים בהנחייתי · בקשות · יומן ותכנון ·
-    // משאבים למנחים.
+    // משאבים.
     //
     // "הפרויקטים שלי" was renamed to "פרויקטים בהנחייתי" — the list is scoped
     // by ProjectMentors, i.e. the projects this mentor SUPERVISES, and a
@@ -129,7 +136,12 @@ public static class NavDefinitions
         // not just a styling gap: that page is [Authorize(Admin, Staff)], so a
         // mentor following their own nav item was refused. /mentor/resources
         // reads the same corpus through a mentor-authorised endpoint.
-        new NavItem("משאבים למנחים",  "mentor/resources", "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
+        //
+        // Labelled "משאבים", matching the lecturer's and the student's entry:
+        // /mentor/resources now renders the SAME screen the lecturer sees
+        // (ResourcesLibrary), so "למנחים" would name a mentor-specific product
+        // that no longer exists. The destination and the route are unchanged.
+        new NavItem("משאבים",         "mentor/resources", "oi-book",            NavLinkMatch.Prefix, NavIcons.Knowledge),
     };
 
     // Empty, like the student's: הגדרות is reached from the profile card at

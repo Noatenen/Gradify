@@ -7,16 +7,98 @@
 @*
     UserModeToggle
     ──────────────
-    Global pill toggle that lets users with BOTH Staff/Lecturer and Mentor
-    roles flip the navigation/dashboards between the two views. Single-role
-    users see nothing (the component renders no markup).
+    The one control that lets a user holding BOTH Staff/Lecturer and Mentor
+    roles flip the navigation and dashboards between the two views.
+    Single-role users see nothing at all — `_available.Count >= 2` below is
+    the only gate, and it is the same gate in both variants.
 
-    Lives in AppSideNav so it's always visible. State sits in the static
-    UserModeService so any subscriber (e.g. AppSideNav itself) can react to
-    a change.
+    TWO VARIANTS, ONE COMPONENT
+    ───────────────────────────
+    `Segmented`  the original: both modes side by side in a pill track.
+                 Sized for the 248px sidebar it was written for, and what
+                 AppSideNav still renders. Untouched.
+
+    `Menu`       a compact chip naming the ACTIVE mode ("מרצה" / "מנחה")
+                 that opens a two-item menu. This is what the Motiva top
+                 bar renders, beside the avatar.
+
+    WHY A MENU AND NOT THE SEGMENTED CONTROL IN THE BAR. The segmented
+    version has to draw both modes at all times, so at bar height it is two
+    similar-looking pills competing with the seven-item nav pill track a few
+    pixels away — three rows of pills, none of which is obviously "who am I
+    right now". The chip answers that question first and asks for a click
+    before it shows the alternative, which is the same bargain the avatar
+    and the bell in that cluster already make.
+
+    NOTHING ABOUT THE MODE LOGIC IS DUPLICATED OR RE-IMPLEMENTED. Both
+    variants share this component's state, its UserModeService calls, its
+    localStorage persistence and the post-login redirect below. The variant
+    decides markup and nothing else.
 *@
 
-@if (_available.Count >= 2)
+@if (_available.Count >= 2 && Variant == ToggleVariant.Menu)
+{
+    @* Escape closes, from wherever focus sits inside the control — the
+       chip or a menu item. Nothing else on the bar traps focus, so this
+       is the whole keyboard contract beyond the buttons' own. *@
+    <div class="umt-menu-wrap" dir="rtl" @onkeydown="OnKeyDown">
+
+        <button type="button"
+                class="umt-chip @(_open ? "umt-chip-open" : "")"
+                aria-haspopup="menu"
+                aria-expanded="@_open.ToString().ToLowerInvariant()"
+                aria-label="@($"מצב תצוגה: {ShortLabel(_current)}. החלפת מצב")"
+                title="החלפת מצב תצוגה"
+                @onclick="ToggleOpen">
+            <span class="umt-chip-label">@ShortLabel(_current)</span>
+            <span class="umt-chip-caret" aria-hidden="true">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 9l6 6 6-6"></path>
+                </svg>
+            </span>
+        </button>
+
+        @if (_open)
+        {
+            @* The bell's own pattern: a full-viewport invisible backdrop
+               that closes on any outside click, under the panel. *@
+            <div class="umt-backdrop" @onclick="Close"></div>
+
+            <div class="umt-menu" role="menu" aria-label="מצב תצוגה">
+                <p class="umt-menu-head">מצב תצוגה</p>
+
+                @foreach (var mode in _available)
+                {
+                    var m        = mode;
+                    var isActive = m == _current;
+
+                    <button type="button"
+                            role="menuitemradio"
+                            aria-checked="@isActive.ToString().ToLowerInvariant()"
+                            class="umt-menu-item @(isActive ? "umt-menu-item-active" : "")"
+                            @onclick="@(() => ChooseAsync(m))">
+                        <span class="umt-menu-item-text">
+                            <span class="umt-menu-item-label">@ShortLabel(m)</span>
+                            <span class="umt-menu-item-desc">@DescriptionFor(m)</span>
+                        </span>
+
+                        <span class="umt-menu-item-check" aria-hidden="true">
+                            @if (isActive)
+                            {
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M20 6 9 17l-5-5"></path>
+                                </svg>
+                            }
+                        </span>
+                    </button>
+                }
+            </div>
+        }
+    </div>
+}
+else if (_available.Count >= 2)
 {
     <div class="umt-wrap" dir="rtl" role="group" aria-label="מצב תצוגה">
         @foreach (var mode in _available)
@@ -35,8 +117,29 @@
 }
 
 @code {
+    /// <summary>Which markup this instance draws. See the header note — the
+    /// variant decides presentation only; every instance shares the same
+    /// state, the same UserModeService calls and the same persistence.</summary>
+    public enum ToggleVariant
+    {
+        /// <summary>Both modes side by side in a pill track. The original,
+        /// sized for the 248px sidebar, and AppSideNav's.</summary>
+        Segmented,
+
+        /// <summary>A compact chip naming the active mode, opening a menu.
+        /// The Motiva top bar's.</summary>
+        Menu,
+    }
+
     [CascadingParameter] private User? _user { get; set; }
     [Parameter] public bool NavigateOnSwitch { get; set; } = true;
+
+    /// <summary>Defaults to <see cref="ToggleVariant.Segmented"/> so the
+    /// existing AppSideNav call site renders exactly what it always did.</summary>
+    [Parameter] public ToggleVariant Variant { get; set; } = ToggleVariant.Segmented;
+
+    /// <summary>Menu variant only: whether the popup is showing.</summary>
+    private bool _open;
 
     private IReadOnlyList<string> _available = Array.Empty<string>();
     private string _current = UserModes.Lecturer;
@@ -105,8 +208,57 @@
     private void OnModeChanged()
     {
         _current = UserModeService.EffectiveMode(_user);
+        // Anything that moves the mode also settles the question the menu is
+        // open to ask.
+        _open = false;
         InvokeAsync(StateHasChanged);
     }
+
+    // ── Menu variant ─────────────────────────────────────────────────────
+
+    private void ToggleOpen() => _open = !_open;
+    private void Close()      => _open = false;
+
+    private void OnKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key is "Escape" or "Esc") _open = false;
+    }
+
+    private async Task ChooseAsync(string mode)
+    {
+        _open = false;
+        await SwitchAsync(mode);
+    }
+
+    /// <summary>
+    /// The mode's name without the "מצב " prefix — "מרצה", not "מצב מרצה".
+    ///
+    /// <para>The chip is already labelled "מצב תצוגה" by its title and its
+    /// aria-label, and the menu is headed with it, so repeating the word on
+    /// every item is the noun said three times in one popover.</para>
+    ///
+    /// <para>Derived from <see cref="UserModes.Label"/> rather than declared
+    /// as a second mapping: the wording stays owned by one place, and
+    /// renaming a mode there follows through to here.</para></summary>
+    private static string ShortLabel(string mode)
+    {
+        const string prefix = "מצב ";
+        var label = UserModes.Label(mode);
+        return label.StartsWith(prefix, StringComparison.Ordinal)
+            ? label[prefix.Length..]
+            : label;
+    }
+
+    /// <summary>What each mode actually shows, in the fewest words that
+    /// distinguish them. The point of the menu is that a dual-role user can
+    /// tell which view they are asking for before they land on it.</summary>
+    private static string DescriptionFor(string mode) =>
+        mode switch
+        {
+            UserModes.Mentor   => "הצוותים שאני מנחה",
+            UserModes.Lecturer => "כלל הפרויקטים והבקרה",
+            _                  => "",
+        };
 
     private static string IconFor(string mode) =>
         mode switch

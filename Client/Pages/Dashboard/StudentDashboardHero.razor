@@ -1,31 +1,71 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 
 @* ─────────────────────────────────────────────────────────────
-   StudentDashboardHero — how the finalized Dashboard opens.
-   Visual source: design-reference/motiva-student-final/README.md,
-   "Dashboard" and "Journey stepper" (Motiva Student dashboard final).
+   StudentDashboardHero — how the Dashboard opens.
 
-   The finalized screen opens with TWO things, not one band:
+     1. an h1 greeting sitting directly on the canvas
+     2. a "מסע הפרויקט" section card holding the PHASE STRIP
 
-     1. an h1 greeting sitting directly on the canvas — no ambient
-        band, no context line beside it
-     2. a "מסע הפרויקט" section card holding the journey stepper
+   ── WHY A PHASE STRIP AND NOT THE STEPPER ────────────────────
+   This project has fourteen milestones. Rendered as fourteen equally
+   prominent stepper stages they are a wall of 12px labels that answers
+   none of the three questions a student opens a dashboard with — where
+   am I, what is next, how much is left — and costs ~135px of the fold
+   to not answer them.
 
-   That is the whole header. The context the old band carried in a
-   two-ended line (current milestone ⟷ overall progress) is now read
-   off the stepper itself: the current stage is the only violet one and
-   it states its own percentage.
+   So the dashboard now shows the journey GROUPED, at most four bands:
 
-   WHAT MOVED, NOT WHAT WENT
-   The expandable per-milestone checklist is gone from here — the
-   finalized stepper is one line with one label per stage and no
-   disclosure. Nothing was lost: clicking a stage still opens the full
-   MilestoneDetailModal, which is the richer view the checklist was
-   always a preview of.
+       הושלמו · בעבודה עכשיו · הבא בתור · בהמשך
+
+   Each band is a run of the SAME milestones, in the same order, under
+   a name that describes the run rather than one invented for it. A band
+   with no milestones is not rendered, so a project that has not started
+   shows two bands and one that is finished shows one.
+
+   ── NOTHING IS HIDDEN, AND NOTHING IS SUMMARISED AWAY ────────
+   A band expands IN PLACE to its own milestones, and every row still
+   calls OnOpenMilestone — the same callback the stepper's dots called,
+   opening the same MilestoneDetailModal with the same milestone. The
+   full fourteen-stage stepper is untouched and still renders on
+   /project and inside the milestone modal, which is where a stage-by-
+   stage reading belongs. This screen is the summary; that one is the
+   detail.
+
+   ── WHY NOT THE PRODUCT'S OWN SEVEN STAGES ───────────────────
+   Gradify HAS a real phase concept — RoadmapStages ("בחירה ושיבוצים",
+   "התנעה", "אפיון", …), and this cycle's milestones are fully bound to
+   it. It would be the better grouping and it is deliberately NOT used:
+   every roadmap endpoint is [Authorize(Admin, Staff, Mentor)] and
+   MilestoneSummaryDto carries no stage id, so reaching it from a
+   student session needs a permission or DTO change — which this pass is
+   explicitly not allowed to make. Rather than GUESS at stage boundaries
+   from dates (they do not line up: one אפיון milestone falls due after
+   a פיתוח one), the bands are derived from state, which is a fact this
+   payload already carries. Swap the source, keep the strip, if the
+   endpoint is ever opened to students.
+
+   ── WHY THE BANDS DO NOT READ IsCurrentlyOpen ────────────────
+   The stepper's own StateOf calls a milestone active when it is
+   IsCurrentlyOpen — inside its visibility window. That is right for a
+   stepper, where each stage has its own dot, and useless for banding:
+   on live data SIX of this project's fourteen milestones are inside
+   their window at once, so every remaining milestone landed in
+   "בעבודה עכשיו" and the strip collapsed to two bands with no next.
+
+   "Open for submission" is not "being worked on". So a band's active
+   set is the milestone the WHOLE DASHBOARD already calls current —
+   StudentDashboardModel.CurrentMilestone, the same pick the focus card
+   and /tasks read — plus any milestone that has actually started
+   (InProgress / Delayed, or some of its tasks already done). Everything
+   still ahead splits into the very next one and the rest.
+
+   Nothing about any milestone's real status changes here, and the
+   fourteen-stage stepper on /project still uses its own StateOf,
+   untouched, IsCurrentlyOpen and all.
    ───────────────────────────────────────────────────────────── *@
 
 @* The wrapper is not decoration: scoped-CSS ::deep needs an element that
-   belongs to THIS component to hang off, and both children here are
+   belongs to THIS component to hang off, and MPageHeader/MCard are
    components with their own roots. *@
 <div class="sdh-open">
 
@@ -36,13 +76,85 @@
 @if (Milestones.Count > 0)
 {
     <MCard Padding="MCard.CardPadding.Large" Class="sdh-journey">
-        <MSectionHeading Text="מסע הפרויקט" Class="sdh-journey-heading">
-            <Trailing>
-                <span class="sdh-journey-count">@_completedCount מתוך @Milestones.Count אבני דרך הושלמו</span>
-            </Trailing>
-        </MSectionHeading>
+        @* The mentor dashboard's head — the glyph ALONE (no chip), the
+           title at the quiet card's step, the count at the reading end. *@
+        <div class="sd-head sdh-journey-heading">
+            <span class="sd-head-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="6" cy="19" r="3"></circle>
+                    <circle cx="18" cy="5" r="3"></circle>
+                    <path d="M9 19h4a5 5 0 0 0 0-10H9"></path>
+                </svg>
+            </span>
+            <h2 class="sd-head-title">מסע הפרויקט</h2>
+            <span class="sdh-journey-count">@_completedCount מתוך @Milestones.Count אבני דרך הושלמו</span>
+        </div>
 
-        <MJourneyStepper Stages="@_stages" OnStageClick="OpenMilestoneAt" />
+        @*
+            THE STRIP, in the mentor project workspace's own phase grammar
+            (MentorProjectDetailPage ".mpw-stages"): equal-width bands, a
+            5px rounded track each, then dot · name · a quiet detail line.
+            Same geometry, same four-state colour logic, student content.
+
+            A band's track is SOLID in its state's colour, as the mentor
+            draws it. An earlier pass part-filled the active band with its
+            own task completion; on real data that fill is often near
+            zero, which rendered the one band that matters as the palest
+            thing on the strip. The percentage is not lost — it is on
+            every milestone inside the band, one click away.
+        *@
+        <ol class="sdh-phases" style="--sdh-phase-count:@_phases.Count" aria-label="שלבי הפרויקט">
+            @foreach (var phase in _phases)
+            {
+                var p    = phase;
+                var open = _openPhase == p.Key;
+
+                <li class="@($"sdh-phase sdh-phase-{p.Key}")">
+                    <button type="button"
+                            class="sdh-phase-btn"
+                            @onclick="@(() => TogglePhase(p.Key))"
+                            aria-expanded="@open"
+                            aria-controls="@($"sdh-p-{p.Key}")"
+                            aria-label="@($"{p.Name} — {p.Count} אבני דרך. פתיחת הרשימה")">
+
+                        <span class="sdh-phase-track" aria-hidden="true"></span>
+
+                        <span class="sdh-phase-name">
+                            <span class="sdh-phase-dot" aria-hidden="true"></span>
+                            <span class="sdh-phase-text" title="@p.Name">@p.Name</span>
+                            <span class="sdh-phase-count-chip">@p.Count</span>
+                        </span>
+
+                        <span class="sdh-phase-detail" title="@p.Detail">@p.Detail</span>
+                    </button>
+                </li>
+            }
+        </ol>
+
+        @*
+            The expanded band — opened IN PLACE under the strip, one at a
+            time, exactly as the mentor dashboard opens an attention
+            group. Every row is a real milestone and still opens THAT
+            milestone's own modal.
+        *@
+        @if (_openPhase is not null && _openMilestones.Count > 0)
+        {
+            <div class="sdh-phase-items" id="@($"sdh-p-{_openPhase}")">
+                @foreach (var ms in _openMilestones)
+                {
+                    var m = ms;
+                    <button type="button"
+                            class="sdh-ms-row"
+                            @onclick="@(() => OnOpenMilestone.InvokeAsync(m))"
+                            aria-label="@($"פתיחת אבן הדרך {m.Title}")">
+                        <span class="@($"sdh-ms-dot sdh-ms-dot-{ToneOf(m)}")" aria-hidden="true"></span>
+                        <span class="sdh-ms-title" title="@m.Title">@m.Title</span>
+                        <span class="@(IsPast(m) ? "sdh-ms-due sdh-ms-due-past" : "sdh-ms-due")">@DueText(m)</span>
+                    </button>
+                }
+            </div>
+        }
     </MCard>
 }
 
@@ -53,11 +165,36 @@
     [Parameter]                 public string?                            FirstName       { get; set; }
     [Parameter]                 public EventCallback<MilestoneSummaryDto> OnOpenMilestone { get; set; }
 
-    private int _overallPct => StudentDashboardModel.OverallPercent(Milestones);
+    /// <summary>The expanded band's key, or null. ONE AT A TIME — a second
+    /// click closes the first, which is what keeps the card's height from
+    /// running away and is the same rule the mentor dashboard's attention
+    /// groups follow. Pure view state: nothing is persisted or sent.</summary>
+    private string? _openPhase;
 
-    // V4 opens on "בוקר טוב" — a time-of-day greeting, not stored data. The
-    // name comes from the cascaded user; the band renders correctly without
-    // one rather than showing an empty comma.
+    /// <summary>The bands, rebuilt whenever the milestone list changes rather
+    /// than on every access — the strip reads it, the expanded list reads it,
+    /// and the aria labels read it.</summary>
+    private List<Phase> _phases = new();
+
+    protected override void OnParametersSet()
+    {
+        _phases = BuildPhases();
+
+        // A band the new data no longer has cannot stay open.
+        if (_openPhase is not null && _phases.All(p => p.Key != _openPhase))
+            _openPhase = null;
+    }
+
+    private void TogglePhase(string key) => _openPhase = _openPhase == key ? null : key;
+
+    private List<MilestoneSummaryDto> _openMilestones =>
+        _phases.FirstOrDefault(p => p.Key == _openPhase)?.Items ?? new();
+
+    // ── Copy ────────────────────────────────────────────────────────────
+
+    // A time-of-day greeting, not stored data. The name comes from the
+    // cascaded user; it renders correctly without one rather than showing an
+    // empty comma.
     private string Greeting
     {
         get
@@ -72,66 +209,128 @@
 
     private int _completedCount => Milestones.Count(m => m.Status == "Completed");
 
-    /// <summary>The milestones, mapped onto the journey the design draws.
+    // ── The bands ───────────────────────────────────────────────────────
+
+    /// <summary>One band of the strip.</summary>
+    private sealed record Phase(
+        string Key,
+        string Name,
+        int    Count,
+        string Detail,
+        List<MilestoneSummaryDto> Items);
+
+    /// <summary>
+    /// The milestone list, grouped — never filtered, never re-sorted, never
+    /// re-stated.
     ///
-    /// <para>Exactly one stage can be Current — StudentDashboardModel.CurrentMilestone
-    /// is the single source of truth for which, the same one the focus card and
-    /// the tasks page read, so the stepper can never disagree with them about
-    /// where the project is.</para></summary>
-    private IReadOnlyList<MJourneyStepper.JourneyStage> _stages
+    /// <para>Every milestone lands in exactly one band and the bands are
+    /// emitted in journey order, so reading the strip left to right (RTL:
+    /// right to left) walks the same sequence the full stepper walks on
+    /// /project. A band with nothing in it is not rendered at all, which is
+    /// what lets a project that has not started show two bands and a finished
+    /// one show a single band, without a special case for either.</para>
+    /// </summary>
+    private List<Phase> BuildPhases()
     {
-        get
+        // The dashboard's canonical "where you are". Reading it here is what
+        // guarantees the strip and the focus card under it cannot disagree.
+        var anchor = StudentDashboardModel.CurrentMilestone(Milestones);
+
+        var done  = new List<MilestoneSummaryDto>();
+        var now   = new List<MilestoneSummaryDto>();
+        var ahead = new List<MilestoneSummaryDto>();
+
+        foreach (var m in Milestones)
         {
-            // Emphasis only — NOT a gate. The canonical "where you are"
-            // milestone gets the wider track; every other stage still reports
-            // its own real state and progress.
-            var primaryId = StudentDashboardModel.CurrentMilestone(Milestones)?.ProjectMilestoneId;
-
-            return Milestones
-                .Select(m => new MJourneyStepper.JourneyStage(
-                    Label:   m.Title,
-                    State:   StateOf(m),
-                    // Every stage reports ITS OWN task completion, whatever
-                    // the stages around it are doing.
-                    Percent: PercentOf(m),
-                    Primary: m.ProjectMilestoneId == primaryId))
-                .ToList();
+            if (m.Status == "Completed")      done.Add(m);
+            else if (IsInWork(m, anchor))     now.Add(m);
+            else                              ahead.Add(m);
         }
+
+        // "הבא בתור" is the first one still ahead in the PROJECT'S OWN ORDER,
+        // not the earliest by date. The two genuinely differ in live data — a
+        // late אפיון milestone can fall due after an early פיתוח one — and the
+        // sequence is what /project's stepper draws, so picking by date here
+        // would have the two screens disagree about what comes next.
+        var next  = ahead.FirstOrDefault();
+        var later = ahead.Skip(1).ToList();
+
+        var phases = new List<Phase>();
+
+        if (done.Count > 0)
+            phases.Add(new Phase("done", "הושלמו", done.Count,
+                                 $"{StudentDashboardModel.OverallPercent(Milestones)}% מהמסע", done));
+
+        if (now.Count > 0)
+            phases.Add(new Phase("now", "בעבודה עכשיו", now.Count,
+                                 NowDetail(now), now));
+
+        if (next is not null)
+            phases.Add(new Phase("next", "הבא בתור", 1,
+                                 NextDetail(next),
+                                 new List<MilestoneSummaryDto> { next }));
+
+        if (later.Count > 0)
+            phases.Add(new Phase("later", "בהמשך", later.Count,
+                                 LaterDetail(later), later));
+
+        return phases;
     }
 
-    /// <summary>A milestone's state, computed from THAT milestone alone.
+    /// <summary>Whether a milestone is genuinely being worked on: the one the
+    /// dashboard calls current, one the data says is InProgress/Delayed, or one
+    /// that already has finished tasks in it.
     ///
-    /// <para>Milestones are independent — several can be under way at once, and
-    /// a later one may have progress while an earlier one is still open. So
-    /// this never asks whether the previous milestone finished, and it does not
-    /// single out one "current" stage: a milestone is active when the data says
-    /// it is open/in-progress, or when it simply has work done in it.</para></summary>
-    private static MJourneyStepper.JourneyState StateOf(MilestoneSummaryDto m)
+    /// <para>Deliberately NOT IsCurrentlyOpen — see the header note. Being
+    /// inside a visibility window says a milestone CAN be worked on, not that
+    /// it is, and six of them are open at once on real data.</para></summary>
+    private static bool IsInWork(MilestoneSummaryDto m, MilestoneSummaryDto? anchor) =>
+        m.ProjectMilestoneId == anchor?.ProjectMilestoneId
+        || m.Status is "InProgress" or "Delayed"
+        || (m.Tasks.Count > 0 && m.Tasks.Any(StudentDashboardModel.IsComplete));
+
+    /// <summary>The active band names the milestone the rest of the dashboard
+    /// is already built around — StudentDashboardModel.CurrentMilestone, the
+    /// same pick the focus card and the tasks page read — so the strip cannot
+    /// disagree with the card beneath it about where the project is.</summary>
+    private string NowDetail(List<MilestoneSummaryDto> now)
     {
-        if (m.Status == "Completed") return MJourneyStepper.JourneyState.Complete;
+        var primary = StudentDashboardModel.CurrentMilestone(Milestones);
+        var lead    = now.FirstOrDefault(m => m.ProjectMilestoneId == primary?.ProjectMilestoneId)
+                      ?? now[0];
 
-        bool hasProgress = m.Tasks.Count > 0 && m.Tasks.Any(StudentDashboardModel.IsComplete);
-
-        return m.IsCurrentlyOpen || m.Status is "InProgress" or "Delayed" || hasProgress
-            ? MJourneyStepper.JourneyState.Current
-            : MJourneyStepper.JourneyState.Future;
+        return now.Count == 1 ? lead.Title : $"{lead.Title} · ועוד {now.Count - 1}";
     }
 
-    /// <summary>Completion of the current stage, from its own tasks. A stage
-    /// with no tasks reports 0 rather than 100 — "nothing to do yet" is not
-    /// "finished", and showing it full would misreport the project.</summary>
-    private static int PercentOf(MilestoneSummaryDto m)
+    private static string NextDetail(MilestoneSummaryDto m) =>
+        m.DueDate is DateTime d ? $"{m.Title} · עד {d:dd.MM}" : m.Title;
+
+    private static string LaterDetail(List<MilestoneSummaryDto> later)
     {
-        if (m.Tasks.Count == 0) return 0;
-        var done = m.Tasks.Count(StudentDashboardModel.IsComplete);
-        return (int)Math.Round(done * 100.0 / m.Tasks.Count);
+        var last = later.Where(m => m.DueDate.HasValue).Max(m => m.DueDate);
+        return last is DateTime d ? $"עד {d:dd.MM}" : "ללא מועד יעד";
     }
 
-    // Clicking the dot itself opens the full milestone detail — the richer
-    // view (dates, every task's submission state, what caused an attention
-    // flag) that the inline checklist deliberately does not duplicate.
-    private Task OpenMilestoneAt(int index) =>
-        index >= 0 && index < Milestones.Count
-            ? OnOpenMilestone.InvokeAsync(Milestones[index])
-            : Task.CompletedTask;
+    // ── The expanded rows ───────────────────────────────────────────────
+
+    /// <summary>A row's dot, in its own band's colour, so an expanded band
+    /// reads as part of the band that opened it.</summary>
+    private string ToneOf(MilestoneSummaryDto m) =>
+        m.Status == "Completed"                                           ? "done"
+        : IsInWork(m, StudentDashboardModel.CurrentMilestone(Milestones)) ? "now"
+        :                                                                   "later";
+
+    /// <summary>Whether the milestone's own due date has already passed.
+    ///
+    /// <para>This decides the TONE of a date the row prints either way. It
+    /// adds no label, no status and no claim the product does not already
+    /// make — it is the same soft rose every other passed date on this
+    /// dashboard wears.</para></summary>
+    private static bool IsPast(MilestoneSummaryDto m) =>
+        m.Status != "Completed" && m.DueDate is DateTime d && d.Date < DateTime.Today;
+
+    private static string DueText(MilestoneSummaryDto m) =>
+        m.Status == "Completed"   ? "הושלם"
+        : m.DueDate is DateTime d ? $"עד {d:dd.MM}"
+        :                           "—";
 }

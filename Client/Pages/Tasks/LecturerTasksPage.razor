@@ -1,0 +1,987 @@
+@page "/lecturer/tasks"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Mentor
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IProjectRequestsService          Requests
+@inject IPendingMentorApprovalsService   Approvals
+@inject IDashboardOverviewService        Overview
+@inject IPersonalTasksService            PersonalTasks
+@implements IDisposable
+
+@*
+    ── המשימות שלי — the lecturer's work centre ─────────────────────────────
+    Visual source:  MentorTasksPage (המשימות שלי) and the finalized Lecturer
+                    dashboard. Every surface is a shared M* primitive under
+                    `.motiva-final`; this page declares almost nothing.
+
+    ── AN ACTION VIEW OVER EXISTING DATA, NOT A TASK DATABASE ───────────────
+    Four feeds, each read from the endpoint that already owns it, each row
+    still belonging to its own entity and still opening that entity's own
+    screen. Nothing is copied into a new table, nothing is merged into
+    PersonalTasks, and no new task type exists.
+
+      בקשות הדורשות החלטה      GET api/project-requests
+                               → /management/requests
+      הגשות הדורשות טיפול       GET api/task-submissions/pending-mentor-approvals
+                               → /lecturer/submissions
+      משימות אישיות            GET api/projects/personal-tasks
+                               → the shared editor, in place
+
+    Every one of those endpoints existed and was already authorised for this
+    role — verified live, not assumed. Nothing was added to the server, the
+    DTOs or the schema.
+
+    ── WHICH REQUESTS COUNT AS "MINE", AND WHOSE RULE THAT IS ───────────────
+    RequestsManagement.BucketOf() is the product's own classifier, and this
+    page uses the same three buckets rather than inventing a fourth:
+
+      decision  New · InProgress · WaitingForStaff · NeedsInfo ·
+                PendingLecturerDecision      → the lecturer's
+      mentor    PendingMentorRecommendation  → blocked on a MENTOR, not shown
+      done      Resolved · Closed            → not shown
+
+    So a request that is waiting on someone else never appears here. Reusing
+    the existing helper's rule — rather than writing a narrower one — is what
+    keeps this page and /management/requests from disagreeing about what is
+    open.
+
+    ONE PRE-EXISTING DISCREPANCY, REPORTED NOT FIXED. The nav badge and the
+    dashboard chip read Summary.OpenRequests, which the server computes as
+    "status NOT IN (Resolved, Closed)" — that includes the three requests
+    waiting on a mentor. So the badge can read 18 while this page's tab reads
+    15. Both are correct about their own question; reconciling them would mean
+    changing a server-side count, which this pass must not do.
+
+    ── WHAT IS DELIBERATELY NOT HERE ────────────────────────────────────────
+      * The census, the health split, the four counter chips and every other
+        aggregate. They answer "how is the portfolio", which is the
+        dashboard's question. This page answers "what do I do next", and a
+        number with no row under it is not something you can do.
+      * PendingMentorRecommendation requests and MentorAttention's feeds —
+        both are other people's queues.
+      * Overdue STUDENT tasks. Summary.OverdueTasks and
+        Charts.OverdueByMilestone are real and already on the dashboard, but
+        they are students' tasks in aggregate: there is no per-task row a
+        lecturer can act on, and no route that would open one. A section that
+        cannot link anywhere is a metric wearing a row's clothes.
+      * PROJECTS THE SERVER SCORED AtRisk. This page carried them as a fourth
+        section and no longer does: a team's risk is a state of a team, and
+        הצוותים שלי is the screen that owns teams. Two homes for one fact is
+        the duplication this page exists to remove, not to create. The feed
+        and its endpoint call are gone from here; that screen is untouched.
+
+    ── DUAL-ROLE, AND WHAT מצב מנחה DOES ────────────────────────────────────
+    THE WORKSPACE IS PERMANENT. This page, its route, its three panes and every
+    one of its feeds exist in BOTH modes. Nothing here is gated on מצב מנחה
+    ("guidance mode") being on or off — a lecturer's queue does not stop being
+    their queue when they put a mentor hat on, so the page is never hidden,
+    emptied or disabled by a mode.
+
+    GUIDANCE MODE IS A SCOPE, AND ONLY A SCOPE. When a user who genuinely holds
+    BOTH roles is in מצב מנחה, the two project-keyed feeds that can meaningfully
+    be narrowed are narrowed to the projects that user actually mentors:
+
+        בקשות הדורשות החלטה       filtered by ProjectId ∈ guidance set
+        הגשות הדורשות טיפול        filtered by ProjectId ∈ guidance set
+        משימות אישיות             NEVER filtered; they are the person's own,
+                                  keyed on UserId alone and true in both modes
+
+    ONE RULE, BOTH WORK FEEDS. Every feed that describes work arriving from
+    a project is scoped the same way, through the same InGuidanceScope predicate
+    on the same guidance set — so the three panes can never disagree about what
+    "in my guidance context" means. Personal tasks are the deliberate exception
+    and the only one: they are not work arriving from a project, they are the
+    person's own list.
+
+    The guidance set is GET api/dashboard?scope=mentor — the mentor dashboard's
+    own endpoint, whose scope the SERVER resolves from the caller's roles. No
+    new API, no new rule, and no way for this page to widen what the user may
+    see. It is fetched only when guidance is actually active; the rest of the
+    time the scope is null and every feed passes through whole.
+
+    BOTH HALVES OF GuidanceActive MATTER. UserModeService.CurrentMode is a
+    process-wide static, so a Staff-only lecturer can hold a stale "mentor"
+    value; IsDualRole is what makes the scope inert for anyone with no guidance
+    context. It also avoids a real trap — api/dashboard?scope=mentor answers a
+    Staff-ONLY caller with the LECTURER scope, so filtering on it for such a
+    user would narrow nothing while looking like it had.
+
+    MentorTasksPage remains the mentor's own three ProjectMentors-scoped feeds
+    at /mentor/tasks; the two pages do not merge, and the mentor rail still
+    points there in מצב מנחה.
+*@
+
+@* ── המשימות שלי — THE MENTOR'S WORKSPACE, WITH THE LECTURER'S FEEDS ──────
+     This page went to a Kanban board and then to a Bento grid, and both
+     were wrong for the same reason: they were compositions invented for
+     this screen alone, so /mentor/tasks and /lecturer/tasks stopped being
+     the same product's answer to the same question. It is MentorTasksPage's
+     composition again — header bleed with the switcher on the title row,
+     one viewport-filling workspace row, the incoming queues stacked in the
+     wide column and משימות אישיות as a full-height rail, every panel
+     scrolling inside itself so the page never does.
+
+     ── THREE FEEDS, NOT FOUR ────────────────────────────────────────────
+     צוותים בסיכון IS GONE. A team at risk is a state of a team, and
+     הצוותים שלי is the screen that owns teams — carrying it here as well
+     made one fact live in two places, which is the duplication this page
+     was created to remove. The feed, its cards, its health gauge and its
+     icon signals are all deleted; nothing about הצוותים שלי is touched.
+
+       בקשות הדורשות החלטה   GET api/project-requests
+                             → /management/requests
+       הגשות הדורשות טיפול   GET api/task-submissions/pending-mentor-approvals
+                             → /lecturer/submissions
+       משימות אישיות         GET api/projects/personal-tasks
+                             → the shared editor, in place
+
+     The lecturer's three map onto the mentor's three: something teams have
+     sent that is waiting on a decision, something waiting on a review, and
+     the person's own list. Order follows obligation — a decision only this
+     person can make comes before a review someone else is holding.
+
+     ── THE FILTER IS THE MENTOR'S, NOT THE KANBAN'S ─────────────────────
+     The tabs were הכל / דורש טיפול / באיחור / קרוב למועד, a cross-workspace
+     priority lens built for a board of four columns. It is replaced by the
+     mentor's own switcher — הכל plus one tab per section, each carrying its
+     count — because that is what this workspace's control is, and because a
+     lens that needed four columns to justify itself does not survive the
+     board it was built for.
+
+     Priority is still scannable, and by better means than a filter: each
+     tab shows its queue's size, and every row carries its waiting age on
+     the shared three-step ladder (see AgeChip).
+
+     ── WHAT IS PRESERVED FROM THE REFINEMENTS ───────────────────────────
+       * rows carry ONE short context line and nothing else
+       * the waiting-age chip escalates neutral → brand tint → rose, from
+         MentorAttention's single shared threshold
+       * count bubbles are the product-wide `.motiva-count` — gradient tint,
+         dark digits, never violet ink
+       * headings are dark ink, and there is no coloured bar on a row
+       * a click INSPECTS in place; the panel's CTA is what navigates
+
+     ── UNCHANGED ────────────────────────────────────────────────────────
+     No endpoint, DTO, permission, route, filter rule or scoping rule. The
+     guidance scope and RequestsManagement's bucket rule are byte-for-byte
+     what they were. *@
+
+@* ── The section glyphs' ink ──
+     ONE <linearGradient>, referenced by all three icons. An SVG stroke cannot
+     take a CSS gradient — `stroke` resolves a paint server, not a background —
+     so the gradient has to exist as a document node and be referenced by id.
+     Defining it once here rather than inside each glyph keeps the three marks
+     provably identical and avoids three competing ids in one document.
+
+     Rendered outside the loading branch so the reference is never dangling:
+     an icon that paints before its paint server exists renders with no stroke
+     at all. `to left` in SVG terms is x1=1 → x2=0, violet at the reading start
+     to cyan at the reading end, matching --motiva-gradient-signature. *@
+<svg class="lt-grad-def" aria-hidden="true" focusable="false">
+    <defs>
+        <linearGradient id="ltIconGradient" x1="1" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#6D28F5" />
+            <stop offset="60%"  stop-color="#2E63E8" />
+            <stop offset="100%" stop-color="#0FA8C2" />
+        </linearGradient>
+    </defs>
+</svg>
+
+<div class="lt-header-bleed">
+    @* The reference puts the switcher on the title row, pushed to the
+       reading end — not on a full-width row of its own. *@
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                 Title="המשימות שלי"
+                 Subtitle="בקשות, הגשות ותזכורות אישיות שממתינות לפעולה שלך.">
+        <Actions>
+            @if (!_loading)
+            {
+                <MFilterTabs Tabs="@FilterTabs"
+                             ActiveKey="@ActiveTabKey"
+                             OnSelect="SelectFocus"
+                             AriaLabel="סינון תור העבודה" />
+            }
+        </Actions>
+    </MPageHeader>
+</div>
+
+<div class="lt-body">
+
+    @if (_loading)
+    {
+        <MLoadingState Label="טוענת את המשימות…" />
+    }
+    else
+    {
+        <div class="lt-workspace @WorkspaceClass">
+
+            @if (ShowsPrimary)
+            {
+                <div class="lt-primary">
+
+                @* ── 1. בקשות הדורשות החלטה ── *@
+                @if (Shows(Section.Requests))
+                {
+                    <section id="requests" class="lt-pane @QuietWhenEmpty(_requests.Count)">
+                        <MCard Padding="MCard.CardPadding.None" Fill="true">
+                            <div class="lt-card">
+                                <div class="lt-card-head">
+                                    <MSectionHeading Class="lt-head" Text="בקשות הדורשות החלטה"
+                                                     Count="@CountLabel(_requests.Count)"
+                                                     LinkHref="/management/requests" LinkText="לכל הבקשות">
+                                        <Icon>
+                                            <span class="lt-ico">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="url(#ltIconGradient)" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M4 13h4l1.4 2.6h5.2L16 13h4"></path>
+                                                    <path d="M4.6 12.6 6.9 5.4A1.6 1.6 0 0 1 8.4 4.3h7.2a1.6 1.6 0 0 1 1.5 1.1l2.3 7.2v4.8a1.8 1.8 0 0 1-1.8 1.8H6.4a1.8 1.8 0 0 1-1.8-1.8z"></path>
+                                                </svg>
+                                            </span>
+                                        </Icon>
+                                    </MSectionHeading>
+                                </div>
+
+                                <MScrollArea Tabbable="false">
+
+                                    @if (_requests.Count == 0)
+                                    {
+                                        <MEmptyState Title="אין בקשות שדורשות את החלטתך."
+                                                     Description="בקשות שממתינות להחלטתך יופיעו כאן."
+                                                     Class="lt-empty" />
+                                    }
+                                    else
+                                    {
+                                        <MRowList AriaLabel="בקשות הדורשות החלטה">
+                                            @foreach (var r in _requests.Take(PreviewCount))
+                                            {
+                                                @* Opens the shared Quick View OVER this queue. The
+                                                   panel's CTA is what navigates, to the same
+                                                   /management/requests this row used to open. *@
+                                                var req = r;
+                                                <MRow OnClick="@(() => Inspect(req))"
+                                                      Primary="@r.Title"
+                                                      Secondary="@OneOf(r.TeamName, r.ProjectTitle)"
+                                                      Status="@AgeChip(WaitingLabel(DaysOpen(r)), MentorAttentionRows.AgeVariant(DaysOpen(r)))"
+                                                      Tooltip="@Details(r.Title, RequestStatuses.Label(r.Status), TypeLabel(r.RequestType), r.TeamName, r.ProjectTitle, MentorTime.AgoLabel(r.CreatedAt))"
+                                                      AriaLabel="@($"{r.Title} — {RequestStatuses.Label(r.Status)}, {WaitingLabel(DaysOpen(r))}. הצגת פרטי הבקשה")" />
+                                            }
+                                        </MRowList>
+                                    }
+                                </MScrollArea>
+
+                                @if (_requests.Count > PreviewCount)
+                                {
+                                    <div class="lt-expand">
+                                        <a class="lt-more" href="/management/requests">
+                                            לכל הבקשות<span class="lt-more-n">@_requests.Count</span>
+                                        </a>
+                                    </div>
+                                }
+                            </div>
+                        </MCard>
+                    </section>
+                }
+
+                @* ── 2. הגשות הדורשות טיפול ── *@
+                @if (Shows(Section.Approvals))
+                {
+                    <section id="approvals" class="lt-pane @QuietWhenEmpty(_approvals.Count)">
+                        <MCard Padding="MCard.CardPadding.None" Fill="true">
+                            <div class="lt-card">
+                                <div class="lt-card-head">
+                                    <MSectionHeading Class="lt-head" Text="הגשות הדורשות טיפול"
+                                                     Count="@CountLabel(_approvals.Count)"
+                                                     LinkHref="/lecturer/submissions" LinkText="לכל ההגשות">
+                                        <Icon>
+                                            <span class="lt-ico">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="url(#ltIconGradient)" stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M14 3.2H7.4a1.9 1.9 0 0 0-1.9 1.9v13.8a1.9 1.9 0 0 0 1.9 1.9h9.2a1.9 1.9 0 0 0 1.9-1.9V7.6z"></path>
+                                                    <path d="M14 3.2v4.4h4.5"></path>
+                                                    <path d="m9.1 14.4 1.9 1.9 3.9-3.9"></path>
+                                                </svg>
+                                            </span>
+                                        </Icon>
+                                    </MSectionHeading>
+                                </div>
+
+                                <MScrollArea Tabbable="false">
+
+                                    @if (_approvals.Count == 0)
+                                    {
+                                        <MEmptyState Title="אין הגשות שתקועות אצל מנחה."
+                                                     Description="הגשות שממתינות לאישור מנחה יופיעו כאן."
+                                                     Class="lt-empty" />
+                                    }
+                                    else
+                                    {
+                                        <MRowList AriaLabel="הגשות הדורשות טיפול">
+                                            @foreach (var a in _approvals.Take(PreviewCount))
+                                            {
+                                                @* DaysWaiting is the SERVER's figure, and the same one
+                                                   the submissions screen gates "תזכורת למנחה" on at
+                                                   >= 3 — which is also MentorAttention's single
+                                                   threshold, so the chip escalates at the moment the
+                                                   action unlocks. Never באיחור: a mentor approval has
+                                                   no deadline to be late for. *@
+                                                var app = a;
+                                                <MRow OnClick="@(() => Inspect(app))"
+                                                      Primary="@a.TaskTitle"
+                                                      Secondary="@OneOf(a.TeamName, a.ProjectTitle)"
+                                                      Status="@AgeChip(WaitingLabel(a.DaysWaiting), MentorAttentionRows.AgeVariant(a.DaysWaiting))"
+                                                      Tooltip="@Details(a.TaskTitle, WaitingLabel(a.DaysWaiting), a.TeamName, a.ProjectTitle, a.MilestoneTitle, MentorLabel(a.MentorName))"
+                                                      AriaLabel="@($"{a.TaskTitle} — {WaitingLabel(a.DaysWaiting)}. הצגת פרטי ההגשה")" />
+                                            }
+                                        </MRowList>
+                                    }
+                                </MScrollArea>
+
+                                @if (_approvals.Count > PreviewCount)
+                                {
+                                    <div class="lt-expand">
+                                        <a class="lt-more" href="/lecturer/submissions">
+                                            לכל ההגשות<span class="lt-more-n">@_approvals.Count</span>
+                                        </a>
+                                    </div>
+                                }
+                            </div>
+                        </MCard>
+                    </section>
+                }
+
+                </div>
+            }
+
+            @if (Shows(Section.Personal))
+            {
+                <div class="lt-rail">
+                @* ── 3. משימות אישיות ── *@
+                <section id="personal" class="lt-pane">
+                    <MCard Padding="MCard.CardPadding.None" Fill="true">
+                        <div class="lt-card">
+                            <div class="lt-card-head">
+                                <MSectionHeading Class="lt-head" Text="משימות אישיות"
+                                                 Count="@CountLabel(_personalOpen.Count)">
+                                    <Icon>
+                                        <span class="lt-ico">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="url(#ltIconGradient)" stroke-linecap="round" stroke-linejoin="round">
+                                                <rect x="4" y="4" width="16" height="16" rx="4.5"></rect>
+                                                <path d="m8.6 12.1 2.3 2.3 4.5-4.5"></path>
+                                            </svg>
+                                        </span>
+                                    </Icon>
+                                    <Trailing>
+                                        @* PERSONAL tasks only, and it sits on their own heading.
+                                           These carry a real DueDate, so באיחור is a true
+                                           statement about them; it would not be about a request
+                                           or a submission, neither of which has a deadline. *@
+                                        @if (OverdueCount > 0)
+                                        {
+                                            <span class="lt-overdue">@OverdueCount באיחור</span>
+                                        }
+                                        <button type="button" class="lt-add"
+                                                title="הוספת משימה" aria-label="הוספת משימה אישית"
+                                                @onclick="OpenNewTask">
+                                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                                                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                                 aria-hidden="true">
+                                                <path d="M12 5v14M5 12h14"></path>
+                                            </svg>
+                                        </button>
+                                    </Trailing>
+                                </MSectionHeading>
+                            </div>
+
+                            <MScrollArea Tabbable="false">
+
+                                @if (_visiblePersonal.Count == 0)
+                                {
+                                    <MEmptyState Title="אין תזכורות פתוחות."
+                                                 Description="תזכורות שתוסיף/י לעצמך יופיעו כאן."
+                                                 Class="lt-empty" />
+                                }
+                                else
+                                {
+                                    <MRowList AriaLabel="משימות אישיות">
+                                        @foreach (var t in _visiblePersonal)
+                                        {
+                                            var id = t.Id;
+                                            <MRow Class="@(t.IsDone ? "lt-task-done" : null)"
+                                                  Secondary="@OneOf(t.TeamName, t.ProjectTitle)"
+                                                  Status="@DueChip(t)"
+                                                  Tooltip="@Details(t.Title, MentorTime.DeadlineLabel(t.DueDate), t.TeamName, t.ProjectTitle, t.Description)">
+                                                <Leading>
+                                                    <button type="button"
+                                                            class="lt-check @(t.IsDone ? "lt-check-on" : "")"
+                                                            role="checkbox"
+                                                            aria-checked="@t.IsDone"
+                                                            aria-label="@($"סימון \"{t.Title}\" כהושלמה")"
+                                                            disabled="@(_togglingId == id)"
+                                                            @onclick="@(() => ToggleAsync(id))">
+                                                        @if (t.IsDone)
+                                                        {
+                                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                 stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                <path d="m5 13 4.5 4.5L19 7"></path>
+                                                            </svg>
+                                                        }
+                                                    </button>
+                                                </Leading>
+                                                <PrimaryContent>
+                                                    @* The title opens the editor. A personal task is the
+                                                       lecturer's OWN item, so unlike a request or a
+                                                       submission it is editable in place — the checkbox
+                                                       stays a separate hit target so completing a task
+                                                       never risks opening a dialog. *@
+                                                    <button type="button" class="lt-task-title lt-task-edit"
+                                                            @onclick="@(() => OpenEditTask(t))"
+                                                            aria-label="@($"עריכת \"{t.Title}\"")">
+                                                        @t.Title
+                                                    </button>
+                                                </PrimaryContent>
+                                            </MRow>
+                                        }
+                                    </MRowList>
+                                }
+
+                            </MScrollArea>
+
+                            @* Show the toggle whenever the collapsed view is actually hiding
+                               something — open rows past the cap, or completed ones behind it. *@
+                            @if (_personalOpen.Count > PersonalCollapsedCount || _personalDone.Count > 0)
+                            {
+                                <div class="lt-expand">
+                                    @* An EXPANDER, not a link, and that is not an
+                                       inconsistency to fix: personal reminders have no
+                                       module of their own for a lecturer — יומן goes to
+                                       /milestones-overview, and /mentor/calendar is the
+                                       mentor's screen. There is nowhere for "לכל
+                                       המשימות" to lead, so the full list opens here. *@
+                                    <button type="button" class="lt-expand-btn" @onclick="TogglePersonalExpanded">
+                                        @(_personalExpanded ? "הצג פחות" : "הצג הכל")
+                                        @if (!_personalExpanded && HiddenPersonal > 0)
+                                        {
+                                            <span class="lt-more-n">@(_personalOpen.Count + _personalDone.Count)</span>
+                                        }
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    </MCard>
+                </section>
+                </div>
+            }
+
+        </div>
+    }
+</div>
+
+@* ── Inspect an incoming item ──
+     ONE surface for both incoming kinds, the same rule the mentor screens
+     follow: a click from a queue inspects in place, and the panel's CTA is
+     what navigates. Personal tasks keep their own editor below — they are
+     the one feed the lecturer OWNS and edits, which is a different act. *@
+<LecturerItemQuickView Item="@_inspecting"
+                       OnClose="CloseInspect"
+                       OnChanged="StateHasChanged" />
+
+@* ── New / edit personal task ──
+     The shared editor, not a copy: /mentor/tasks and /mentor/calendar open the
+     very same component. `Projects` is left at its default empty list, because
+     the server grants a task's ProjectId only through ProjectMentors — see the
+     note at MentorPersonalTaskModal's project row. *@
+<MentorPersonalTaskModal IsOpen="@_modalOpen"
+                         EditingTask="@_editing"
+                         OnClose="CloseModal"
+                         OnSaved="OnTaskSaved"
+                         OnDeleted="OnTaskDeleted" />
+
+@code {
+    /// <summary>The three feeds. Also the tab vocabulary — one enum, so a tab
+    /// and a section cannot disagree about what they mean.</summary>
+    private enum Section { Requests, Approvals, Personal }
+
+    /// <summary>
+    /// How many rows a section shows before it hands off to the full module.
+    ///
+    /// <para>This page is an overview, not a list: the panels no longer scroll
+    /// inside themselves, so what is on screen is what the section shows and
+    /// the footer action is how the rest is reached. Six is the mentor rail's
+    /// own collapsed depth, used for all three so the sections cannot disagree
+    /// about what "a preview" means.</para>
+    ///
+    /// <para>WHAT SURVIVES THE CAP IS DECIDED BY THE EXISTING ORDER, not by a
+    /// new rule: requests are longest-waiting first and submissions are
+    /// longest-stuck first, both set in ReloadAsync and both unchanged.</para>
+    ///
+    /// <para><b>Why three and not six.</b> Six rows per section came to ~847px
+    /// of workspace against ~610px of viewport, which put הגשות below the fold
+    /// — so the page's second question could only be reached by scrolling past
+    /// its first. An overview that hides a section to keep a longer preview has
+    /// the trade backwards. Measured at this desktop height: three rows in each
+    /// of the two stacked sections fits, four does not (~684px). The rest of
+    /// each queue is one click away in the footer, which is what the footer is
+    /// for.</para></summary>
+    private const int PreviewCount = 3;
+
+    /// <summary>The rail's collapsed depth. The same number, named separately
+    /// because the rail's control expands in place rather than navigating.</summary>
+    private const int PersonalCollapsedCount = PreviewCount;
+
+    /// <summary>How many personal rows the collapsed rail is holding back,
+    /// completed ones included — they are reachable only through the expander.</summary>
+    private int HiddenPersonal =>
+        Math.Max(0, _personalOpen.Count - PersonalCollapsedCount) + _personalDone.Count;
+
+    /// <summary>The age at which the submissions screen unlocks "תזכורת
+    /// למנחה" — and, not by coincidence, MentorAttention's own single
+    /// threshold. Restated here only to classify a row; the gate itself lives
+    /// on that screen and on the server, and this page performs no action.</summary>
+    private const int ReminderThresholdDays = 3;
+
+    // ── The section switcher ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Which single section is in focus, or null for all of them.
+    ///
+    /// <para>This replaced a four-way priority lens
+    /// (הכל / דורש טיפול / באיחור / קרוב למועד) that was built for a Kanban
+    /// board of four columns and did not outlive it. What a task workspace's
+    /// switcher is for is focusing ONE queue, which is what the mentor's does
+    /// and what this now does.</para>
+    ///
+    /// <para>Priority did not leave with it: every tab carries its queue's
+    /// size, and every row carries its waiting age on the shared ladder.</para></summary>
+    private Section? _focus;
+
+    private bool Shows(Section s) => _focus is null || _focus == s;
+
+    /// <summary>True while either INCOMING queue is on screen, i.e. whenever
+    /// the wide column has something to hold.</summary>
+    private bool ShowsPrimary => Shows(Section.Requests) || Shows(Section.Approvals);
+
+    /// <summary>The two-column row is the "הכל" composition. Every filter
+    /// leaves exactly one column standing, and a two-track grid with one empty
+    /// track is a half-width panel beside bare canvas — so the row goes
+    /// single-track instead and the surviving panel takes the full width.</summary>
+    private string WorkspaceClass => _focus is null ? "" : "lt-workspace-solo";
+
+    /// <summary>The section's size, as MSectionHeading's count pill — the same
+    /// `.motiva-count` bubble the filter tabs carry, so the two places this
+    /// page prints a number are the same object. Empty at zero: a section
+    /// already saying "אין בקשות שדורשות את החלטתך" does not also need a "0".</summary>
+    private static string? CountLabel(int count) => count == 0 ? null : count.ToString();
+
+    /// <summary>A panel in the wide column with nothing in it sizes to its own
+    /// empty state instead of claiming an equal share of the column.</summary>
+    private static string QuietWhenEmpty(int count) => count == 0 ? "lt-pane-quiet" : "";
+
+    /// <summary>The switcher — the mentor's control and vocabulary, carrying
+    /// this role's counts. A zero renders no badge at all, so a queue that has
+    /// emptied stops advertising itself.</summary>
+    private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
+    {
+        new MFilterTabs.Tab("",          "הכל"),
+        new MFilterTabs.Tab("requests",  "בקשות",          _requests.Count),
+        new MFilterTabs.Tab("approvals", "הגשות",          _approvals.Count),
+        new MFilterTabs.Tab("personal",  "משימות אישיות",  _personalOpen.Count),
+    };
+
+    private string ActiveTabKey => _focus is null ? "" : Slug(_focus.Value);
+
+    /// <summary>Selecting is not toggling: "הכל" is what clears.</summary>
+    private void SelectFocus(string key)
+    {
+        _focus = FromSlug(key);
+        _personalExpanded = false;
+        RebuildVisiblePersonal();
+    }
+
+    private static string Slug(Section s) => s switch
+    {
+        Section.Requests  => "requests",
+        Section.Approvals => "approvals",
+        _                 => "personal",
+    };
+
+    private static Section? FromSlug(string? key) => key switch
+    {
+        "requests"  => Section.Requests,
+        "approvals" => Section.Approvals,
+        "personal"  => Section.Personal,
+        _           => null,
+    };
+
+    // ── State ───────────────────────────────────────────────────────────────
+
+    private List<ProjectRequestRowDto>        _requests  = new();
+    private List<PendingMentorApprovalRowDto> _approvals = new();
+
+    private List<PersonalTaskDto> _personalOpen    = new();
+    private List<PersonalTaskDto> _personalDone    = new();
+    private List<PersonalTaskDto> _visiblePersonal = new();
+    private bool _personalExpanded;
+
+    /// <summary>Needed only to answer "is this person a mentor as well, and are
+    /// they currently in מצב מנחה". Nothing on this page is gated on it — see
+    /// GuidanceActive.</summary>
+    [CascadingParameter] private User? _user { get; set; }
+
+    /// <summary>The projects this user MENTORS, when guidance mode is on. Empty
+    /// set and null mean different things: null is "not scoped", an empty set
+    /// is "scoped, and nothing is in scope".</summary>
+    private HashSet<int>? _guidanceProjectIds;
+
+    private bool _loading = true;
+    private int? _togglingId;
+
+    private bool             _modalOpen;
+    private PersonalTaskDto? _editing;
+
+    /// <summary>The incoming item being inspected, or null for none. One field
+    /// for both kinds, because there is one panel — see
+    /// LecturerItemQuickView.Item for why the union is typed as object.</summary>
+    private object? _inspecting;
+
+    /// <summary>A click on an incoming row opens the panel. It does NOT
+    /// navigate: the panel's own CTA does, to the same route the row used to go
+    /// to directly.</summary>
+    private void Inspect(object item) => _inspecting = item;
+
+    private void CloseInspect() => _inspecting = null;
+
+    private int OverdueCount => _personalOpen.Count(t => MentorTime.IsOverdue(t.DueDate));
+
+    // ── Guidance scope ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether מצב מנחה ("guidance mode") is currently in effect FOR THIS USER.
+    ///
+    /// <para>This is a SCOPE switch and nothing more. The workspace itself is
+    /// never gated on it: the page, its route, its panes and every one of its
+    /// feeds exist in both modes, because a lecturer's queue does not stop
+    /// being their queue when they put a mentor hat on.</para>
+    ///
+    /// <para>Both halves of the test are load-bearing. UserModeService.CurrentMode
+    /// is a process-wide static, so a Staff-only lecturer can be left holding a
+    /// stale "mentor" value from a previous dual-role session; IsDualRole is what
+    /// makes this false for anyone who has no guidance context to scope TO. That
+    /// matters beyond tidiness — api/dashboard?scope=mentor answers a Staff-only
+    /// caller with the LECTURER scope, so filtering on its answer for such a user
+    /// would narrow nothing while looking like it had.</para></summary>
+    private bool GuidanceActive =>
+        UserModeService.IsDualRole(_user)
+        && UserModeService.EffectiveMode(_user) == UserModes.Mentor;
+
+    /// <summary>Scoping predicate for the two project-keyed feeds that guidance
+    /// mode narrows. Passes everything when guidance is off, which is what makes
+    /// the default view the full lecturer queue.</summary>
+    private bool InGuidanceScope(int projectId) =>
+        _guidanceProjectIds is null || _guidanceProjectIds.Contains(projectId);
+
+    // ── Loading ──────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        UserModeService.CurrentModeChanged += OnModeChanged;
+    }
+
+    /// <summary>
+    /// Three independent GETs, issued together rather than in sequence: none of
+    /// them needs another's answer, and awaiting them one at a time would make
+    /// the page as slow as their sum.
+    ///
+    /// <para>Each service already swallows its own transport failure and
+    /// answers null, so one feed being down empties its panel and leaves the
+    /// others intact — the page never fails whole.</para>
+    ///
+    /// <para>It was four. The lecturer-scoped Overview call fed צוותים בסיכון
+    /// and nothing else, so it left with that section; the mentor-scoped
+    /// Overview call below is a different question and stays.</para></summary>
+    private async Task ReloadAsync()
+    {
+        var requestsTask  = Requests.GetAllAsync();
+        var approvalsTask = Approvals.GetPendingAsync();
+        var personalTask  = PersonalTasks.GetAsync();
+
+        // The guidance scope, and ONLY when there is one to fetch. This is the
+        // one call that depends on mode; it narrows two feeds and gates nothing.
+        // Same endpoint the mentor dashboard reads, with the scope resolved
+        // server-side from the caller's own roles — no new API, and no way for
+        // this page to widen what the user may see.
+        var guidanceTask = GuidanceActive ? Overview.GetAsync("mentor") : null;
+
+        await Task.WhenAll(requestsTask, approvalsTask, personalTask);
+
+        // Null when guidance is off, so InGuidanceScope passes everything and
+        // the default view is the complete lecturer queue.
+        _guidanceProjectIds = guidanceTask is null
+            ? null
+            : (await guidanceTask)?.Projects.Select(p => p.ProjectId).ToHashSet();
+
+        // The product's own classifier decides what is the lecturer's — see the
+        // header note. Longest-waiting first: the panel scrolls, so nothing is
+        // hidden, and the row that has waited longest on a decision is the one
+        // that should meet the eye first. /management/requests still owns the
+        // full set and its own order; no filter, scope or count moved.
+        _requests = (await requestsTask ?? new())
+            .Where(r => IsAwaitingLecturer(r.Status))
+            .Where(r => InGuidanceScope(r.ProjectId))
+            .OrderBy(r => r.CreatedAt)
+            .ToList();
+
+        // Longest wait first: the whole point of this inbox is the one that has
+        // been stuck longest, and DaysWaiting is the server's own figure.
+        _approvals = (await approvalsTask ?? new())
+            .Where(a => InGuidanceScope(a.ProjectId))
+            .OrderByDescending(a => a.DaysWaiting)
+            .ToList();
+
+        SplitPersonal(await personalTask);
+
+        _loading = false;
+    }
+
+    /// <summary>
+    /// RequestsManagement.BucketOf()'s "decision" bucket, restated as a
+    /// predicate.
+    ///
+    /// <para>Written as an exclusion of the two buckets that are NOT the
+    /// lecturer's rather than a list of the five that are, so a status added to
+    /// RequestStatuses later shows up here by default. A new status is far more
+    /// likely to be another thing waiting on staff than another terminal or
+    /// mentor state, and a request that wrongly appears is noticed; one that
+    /// silently never appears is not.</para></summary>
+    private static bool IsAwaitingLecturer(string status) =>
+        status is not (RequestStatuses.Resolved
+                    or RequestStatuses.Closed
+                    or RequestStatuses.PendingMentorRecommendation);
+
+    // ── Personal tasks ───────────────────────────────────────────────────────
+
+    private void SplitPersonal(IEnumerable<PersonalTaskDto> all)
+    {
+        var list = all.ToList();
+
+        _personalOpen = list.Where(t => !t.IsDone)
+                            .OrderBy(t => t.DueDate ?? DateTime.MaxValue)
+                            .ToList();
+
+        _personalDone = list.Where(t => t.IsDone)
+                            .OrderByDescending(t => t.CreatedAt)
+                            .ToList();
+
+        RebuildVisiblePersonal();
+    }
+
+    /// <summary>Collapsed shows OPEN tasks only, capped at
+    /// PersonalCollapsedCount. Expanded shows everything, completed last — so a
+    /// row that was just ticked is still reachable rather than disappearing
+    /// with its own undo.
+    ///
+    /// <para>The cap no longer varies with the filter. It used to fall to the
+    /// page-wide preview cap under "הכל", which existed because four sections
+    /// shared one scroll; the rail now scrolls on its own, so the collapsed
+    /// depth is the same in every filter — MentorTasksPage's rule.</para></summary>
+    private void RebuildVisiblePersonal() =>
+        _visiblePersonal = _personalExpanded
+            ? _personalOpen.Concat(_personalDone).ToList()
+            : _personalOpen.Take(PersonalCollapsedCount).ToList();
+
+    private void TogglePersonalExpanded()
+    {
+        _personalExpanded = !_personalExpanded;
+        RebuildVisiblePersonal();
+    }
+
+    private async Task ToggleAsync(int id)
+    {
+        _togglingId = id;
+        var ok = await PersonalTasks.ToggleAsync(id);
+        _togglingId = null;
+
+        if (!ok) return;
+
+        // Flip locally rather than refetching every feed to learn one bit.
+        var all = _personalOpen.Concat(_personalDone).ToList();
+        var hit = all.FirstOrDefault(t => t.Id == id);
+        if (hit is not null) hit.IsDone = !hit.IsDone;
+        SplitPersonal(all);
+    }
+
+    private void OpenNewTask()
+    {
+        _editing   = null;
+        _modalOpen = true;
+    }
+
+    private void OpenEditTask(PersonalTaskDto task)
+    {
+        _editing   = task;
+        _modalOpen = true;
+    }
+
+    private void CloseModal()
+    {
+        _modalOpen = false;
+        _editing   = null;
+    }
+
+    private void OnTaskSaved(PersonalTaskDto saved)
+    {
+        var all = _personalOpen.Concat(_personalDone).ToList();
+        if (!all.Any(t => t.Id == saved.Id)) all.Add(saved);
+
+        SplitPersonal(all);
+        CloseModal();
+    }
+
+    private void OnTaskDeleted(int deletedId)
+    {
+        SplitPersonal(_personalOpen.Concat(_personalDone).Where(t => t.Id != deletedId));
+        CloseModal();
+    }
+
+    // ── Row state chips ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The row's one state chip, sitting at the reading start of the context
+    /// line so the states align down a column and can be read without reading
+    /// the titles.
+    ///
+    /// <para>Neutral by default, and that is the change: every row used to
+    /// carry a tinted chip, which spent the page's colour budget on the fact
+    /// that a row exists. Rose is now reserved for a genuine escalation — a
+    /// submission past the shared reminder threshold, an at-risk team's health
+    /// score, an overdue personal task — so red on this page always means the
+    /// same thing.</para></summary>
+    private static RenderFragment AgeChip(string label, MStatusBadge.BadgeVariant variant) => @<MStatusBadge
+        Size="MStatusBadge.BadgeSize.Small"
+        Variant="@variant"
+        Text="@label" />;
+
+    /// <summary>
+    /// How long a request has been open, in browser-local calendar days.
+    ///
+    /// <para><b>Why this is computed here and not read from the DTO.</b>
+    /// <c>ProjectRequestRowDto</c> carries no server-side waiting age —
+    /// only submissions do, via <c>DaysWaiting</c>. The row's chip has always
+    /// printed a browser-local age anyway (MentorTime.AgoLabel reads the same
+    /// CreatedAt the same way), so this adds no clock that was not already on
+    /// screen; it lets the chip's COLOUR agree with the text beside it instead
+    /// of contradicting it.</para>
+    ///
+    /// <para>It is deliberately NOT added back to <c>MentorTime</c>, which had
+    /// exactly this helper removed on purpose: the harm there was four call
+    /// sites comparing a local age against two different hardcoded thresholds.
+    /// This one is compared against <c>MentorAttention.AgeOf</c> — the single
+    /// shared threshold — and nothing else. The durable fix is a server-computed
+    /// WaitingDays on the request row, which is a server change this pass does
+    /// not make.</para></summary>
+    private static int DaysOpen(ProjectRequestRowDto r) =>
+        Math.Max(0, (int)(DateTime.Now.Date - r.CreatedAt.ToLocalTime().Date).TotalDays);
+
+    /// <summary>A personal task's deadline chip. Null when the task carries no
+    /// due date, so a task without one simply has no chip — the same rule
+    /// MentorTasksPage applies.</summary>
+    private RenderFragment? DueChip(PersonalTaskDto t)
+    {
+        var label = MentorTime.DeadlineLabel(t.DueDate);
+        if (string.IsNullOrWhiteSpace(label)) return null;
+
+        var variant =
+            t.IsDone                            ? MStatusBadge.BadgeVariant.Neutral
+            : MentorTime.IsOverdue(t.DueDate)   ? MStatusBadge.BadgeVariant.Rose
+                                                : MStatusBadge.BadgeVariant.Neutral;
+
+        return @<MStatusBadge Size="MStatusBadge.BadgeSize.Small" Variant="@variant" Text="@label" />;
+    }
+
+    // ── Row copy ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The context line's ONE fact — the first of the two that is actually
+    /// present.
+    ///
+    /// <para>This replaced a "team · project" chain, and the reason is the
+    /// board: with the three feeds side by side, a project title long enough to
+    /// need its own line ("Motiva — Final Project Management Platform") pushed
+    /// every column into ellipsis and made three rows read as one paragraph.
+    /// Team names are short and recognisable, which is why the team leads
+    /// wherever there is one; the fact that loses is never lost, it moves to
+    /// the row's hover and to the screen the row opens.</para></summary>
+    private static string OneOf(string? first, string? second) =>
+        !string.IsNullOrWhiteSpace(first)  ? first!.Trim()
+        : !string.IsNullOrWhiteSpace(second) ? second!.Trim()
+        : "";
+
+    /// <summary>Everything the row deliberately does not print, joined for its
+    /// hover. Blanks fall out, so a row with no mentor and no milestone simply
+    /// has a shorter tooltip rather than a string of separators.</summary>
+    private static string Details(params string?[] parts) =>
+        string.Join(" · ", parts.Where(v => !string.IsNullOrWhiteSpace(v))
+                                .Select(v => v!.Trim()));
+
+    /// <summary>
+    /// A request's type, IN HEBREW OR NOT AT ALL.
+    ///
+    /// <para><c>RequestTypes.Label</c> falls back to returning the raw
+    /// identifier for a type it does not know, which is right for a screen
+    /// that must not silently drop a value — but live and seeded rows carry
+    /// types outside the Shared constant list, so putting it straight on a row
+    /// printed "ScopeChange" and "SpecialResource" in English in the middle of
+    /// a Hebrew column.</para>
+    ///
+    /// <para>A context line is an aid, not a record: when there is no Hebrew
+    /// word for the type, the row simply shows its team instead. The exact
+    /// value is still on the row's hover and on the requests screen, so
+    /// nothing is lost — and no list, filter or constant is touched.</para></summary>
+    private static string? TypeLabel(string type) =>
+        RequestTypes.All.Contains(type) ? RequestTypes.Label(type) : null;
+
+    /// <summary>"מנחה: …" for the tooltip, or nothing when no mentor is
+    /// assigned. Named rather than inlined so the two feeds that mention a
+    /// mentor word it identically.</summary>
+    private static string? MentorLabel(string? names) =>
+        string.IsNullOrWhiteSpace(names) ? null : $"מנחה: {names.Trim()}";
+
+    /// <summary>
+    /// How long something has been waiting — the wording BOTH incoming feeds
+    /// now use, on the row and in the panel.
+    ///
+    /// <para>The requests chip used to print MentorTime.AgoLabel ("לפני 134
+    /// ימים"), which answers a different question: when the request was
+    /// opened, not how long it has been waiting on anyone. Beside a chip that
+    /// escalates, "לפני" reads as an event receding into the past while the
+    /// colour insists something is getting worse. "ממתינה" says the thing the
+    /// escalation is actually about.</para>
+    ///
+    /// <para>A WAIT, NEVER "באיחור". There is no deadline on a request or on a
+    /// mentor approval, so nothing measured here can be late — the same
+    /// distinction MentorAttention documents and MentorAging enforces by
+    /// leaving lateness vocabulary out of its vocabulary entirely.</para></summary>
+    private static string WaitingLabel(int days) => days switch
+    {
+        0 => "ממתינה היום",
+        1 => "ממתינה יום",
+        2 => "ממתינה יומיים",
+        _ => $"ממתינה {days} ימים",
+    };
+
+    /// <summary>Flipping מצב מנחה changes what the two scoped feeds contain, so
+    /// the page refetches rather than just repainting the rows it already had.
+    /// It does NOT change whether the workspace is available — every pane is
+    /// rendered in both modes.</summary>
+    private void OnModeChanged() => InvokeAsync(async () =>
+    {
+        _loading = true;
+        StateHasChanged();
+        await ReloadAsync();
+        StateHasChanged();
+    });
+
+    public void Dispose() => UserModeService.CurrentModeChanged -= OnModeChanged;
+}

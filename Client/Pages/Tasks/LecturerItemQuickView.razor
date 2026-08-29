@@ -1,0 +1,329 @@
+@namespace AuthWithAdmin.Client.Pages.Tasks
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Mentor
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IPendingMentorApprovalsService Approvals
+
+@*
+    ── Quick View — המשימות שלי's ONE item-inspection popup ──────────────────
+
+    WHAT IT IS. The lecturer's three incoming feeds each used to be a link:
+    a request opened /management/requests, a submission opened
+    /lecturer/submissions, an at-risk team opened its project workspace.
+    Three clicks, three modules, and the screen you were reading gone every
+    time — which made המשימות שלי read as a page of links to other products
+    rather than as a workspace.
+
+    The rule is now the mentor experience's, adopted whole:
+    A CLICK FROM AN OVERVIEW INSPECTS IN PLACE; THE CTA INSIDE THE PANEL
+    NAVIGATES.
+
+    ── IT IS THE SAME SURFACE THE MENTOR ALREADY USES ───────────────────────
+    MentorProjectQuickView established the pattern and MModal's QuickView
+    variant already carries the shell — the centred popup, the 480px cap, the
+    header lead row, the ruled footer whose last child sits at the far end.
+    This file supplies the facts and the buttons and owns nothing about the
+    box around them, exactly as that one does.
+
+    THE FACT-ROW LAYOUT IS THE SECOND COPY. `.mpq-fact*` in
+    MentorProjectQuickView.razor.css and `.lqv-fact*` beside this file are the
+    same object at the same values. Extracting it into a shared MFactList is
+    the right end state and is deliberately NOT done here, because it would
+    mean rewriting the approved mentor panel in the pass that introduces this
+    one. Reported rather than done quietly; a third copy should force it.
+
+    ── ONE STRUCTURE, THREE CONTENTS ────────────────────────────────────────
+    Every kind renders the identical shape — two header chips (what this is,
+    what state it is in), a title, a context line, a fact list, and the footer
+    — so moving between a request, a submission and a team is a change of
+    content and never a change of interface.
+
+    ── THE CTA IS "WHATEVER YOU CAME HERE FOR" ──────────────────────────────
+    The end slot holds the most useful thing the panel can offer, and the
+    outline button beside it holds the way to the full screen when the CTA is
+    something else:
+
+      submission ≥ 3 days   CTA = תזכורת למנחה      alt = פתיחת המסך המלא
+      everything else       CTA = פתיחת המסך המלא   (no alt — it would be the
+                                                     same destination twice)
+
+    ONLY ONE SAFE IN-PANEL ACTION EXISTS, and that is a finding about the
+    product rather than a shortcut. The reminder is idempotent, reversible in
+    effect and already gated server-side at the same 3 days the submissions
+    screen gates it at, so it is safe to offer from a popup. The other two are
+    not: a request decision is a status change that wants a comment, and the
+    lecturer override needs a mandatory written reason
+    (LecturerOverrideApproveRequest.OverrideReason). Both belong on the screen
+    that owns them, and this panel links there instead of half-implementing
+    them.
+
+    NO NEW ENDPOINT, DTO OR RULE. Every fact below is a field the four feeds
+    already deliver, and the one action calls the service the host page had
+    already injected.
+*@
+
+@if (Item is not null)
+{
+    <MModal IsOpen="true"
+            Variant="MModal.ModalVariant.QuickView"
+            AriaLabelledBy="@_titleId"
+            OnClose="OnClose">
+
+        <HeaderContent>
+            <span class="lqv-kind">@KindLabel</span>
+            @if (StateLabel is string state)
+            {
+                <span class="lqv-state @StateToneClass">
+                    <span class="lqv-state-dot" aria-hidden="true"></span>
+                    @state
+                </span>
+            }
+        </HeaderContent>
+
+        <ChildContent>
+            <h2 class="lqv-title" id="@_titleId">@Title</h2>
+            @if (!string.IsNullOrWhiteSpace(Subtitle))
+            {
+                <p class="lqv-sub">@Subtitle</p>
+            }
+
+            <div class="lqv-facts">
+                @switch (Item)
+                {
+                    case ProjectRequestRowDto r:
+                        @Fact("סטטוס", RequestStatuses.Label(r.Status))
+                        @Fact("סוג", TypeLabel(r.RequestType))
+                        @Fact("מבקש/ת", r.CreatedByName)
+                        @Fact("נפתחה", MentorTime.AgoLabel(r.CreatedAt))
+                        @Fact("עדכון אחרון", MentorTime.AgoLabel(r.UpdatedAt))
+                        @* Priority only when it is not the default: a "רגילה"
+                           row states nothing the reader did not assume. *@
+                        @Fact("דחיפות", r.Priority == RequestPriorities.Normal ? null : RequestPriorities.Label(r.Priority))
+                        @Fact("קבצים מצורפים", r.AttachmentCount > 0 ? r.AttachmentCount.ToString() : null)
+                        break;
+
+                    case PendingMentorApprovalRowDto a:
+                        @Fact("אבן דרך", a.MilestoneTitle)
+                        @Fact("צוות", OneOf(a.TeamName, a.ProjectTitle))
+                        @Fact("מנחה", a.MentorName)
+                        @Fact("הוגשה", $"{a.SubmittedAt.ToLocalTime():dd.MM.yyyy} · {WaitingLabel(a.DaysWaiting)}")
+                        @* The one fact that decides whether pressing the button
+                           again is useful, and the reason it is worth a row. *@
+                        @Fact("תזכורת אחרונה", a.LastMentorReminderAt is DateTime sent
+                                                ? MentorTime.AgoLabel(sent)
+                                                : "לא נשלחה")
+                        break;
+
+                }
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <p class="lqv-msg @(_failed ? "lqv-msg-bad" : "")" role="status">@_message</p>
+            }
+        </ChildContent>
+
+        <FooterContent>
+            @if (CanRemind)
+            {
+                <a class="lqv-alt" href="@Destination">פתיחת המסך המלא</a>
+
+                <button type="button" class="lqv-go motiva-cta"
+                        disabled="@_busy"
+                        @onclick="RemindAsync">
+                    @(_busy ? "שולח…" : "תזכורת למנחה")
+                </button>
+            }
+            else
+            {
+                <a class="lqv-go motiva-cta" href="@Destination">
+                    פתיחת המסך המלא
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M15 6l-6 6 6 6"></path>
+                    </svg>
+                </a>
+            }
+        </FooterContent>
+    </MModal>
+}
+
+@code {
+    /// <summary>
+    /// The item to inspect, or null to close — the same "the value IS the open
+    /// state" contract MentorProjectQuickView uses, so the host holds ONE
+    /// nullable field and nothing else.
+    ///
+    /// <para>Typed as <c>object?</c> because it is a union of two unrelated
+    /// DTOs and C# has no union type. The alternatives were a wrapper record
+    /// (which would mean mapping every field twice) or two nullable parameters
+    /// (which would let a caller set both). It is pattern-matched in exactly
+    /// the places below and nowhere else.</para>
+    ///
+    /// <para>It carried a third kind, DashboardProjectRowDto, for צוותים
+    /// בסיכון. That section left this page for הצוותים שלי, which owns teams,
+    /// and its branch went with it.</para></summary>
+    [Parameter] public object? Item { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised after the reminder lands, so the host repaints the row
+    /// whose LastMentorReminderAt just moved.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private readonly string _titleId = $"lqv-title-{Guid.NewGuid():N}";
+
+    private bool    _busy;
+    private bool    _failed;
+    private string? _message;
+
+    /// <summary>A new item gets a clean panel: a message left over from the
+    /// last one would read as this one's result.</summary>
+    private object? _lastItem;
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_lastItem, Item))
+        {
+            _lastItem = Item;
+            _message  = null;
+            _failed   = false;
+            _busy     = false;
+        }
+    }
+
+    // ── What the panel says it is ───────────────────────────────────────────
+
+    private string KindLabel => Item switch
+    {
+        ProjectRequestRowDto        => "בקשה",
+        PendingMentorApprovalRowDto => "הגשה",
+        _                           => "",
+    };
+
+    private string Title => Item switch
+    {
+        ProjectRequestRowDto r        => r.Title,
+        PendingMentorApprovalRowDto a => a.TaskTitle,
+        _                             => "",
+    };
+
+    private string? Subtitle => Item switch
+    {
+        ProjectRequestRowDto r        => OneOf(r.TeamName, r.ProjectTitle),
+        PendingMentorApprovalRowDto a => OneOf(a.TeamName, a.ProjectTitle),
+        _                             => null,
+    };
+
+    /// <summary>The state chip — the same phrase the row outside was showing,
+    /// so opening the panel confirms what was clicked rather than restating it
+    /// in different words.</summary>
+    private string? StateLabel => Item switch
+    {
+        ProjectRequestRowDto r        => WaitingLabel(DaysOpen(r)),
+        PendingMentorApprovalRowDto a => WaitingLabel(a.DaysWaiting),
+        _                             => null,
+    };
+
+    /// <summary>
+    /// The state chip's tone, on the SAME three-rung ladder the row outside
+    /// uses — so opening a panel never recolours what was just clicked.
+    ///
+    /// <para>Both kinds go through <c>MentorAttentionRows.AgeVariant</c>, which
+    /// reads the product's single attention threshold.</para></summary>
+    private string StateToneClass => Item switch
+    {
+        ProjectRequestRowDto r        => ToneClass(MentorAttentionRows.AgeVariant(DaysOpen(r))),
+        PendingMentorApprovalRowDto a => ToneClass(MentorAttentionRows.AgeVariant(a.DaysWaiting)),
+        _                             => "",
+    };
+
+    private static string ToneClass(MStatusBadge.BadgeVariant v) => v switch
+    {
+        MStatusBadge.BadgeVariant.Rose        => "lqv-state-rose",
+        MStatusBadge.BadgeVariant.Approaching => "lqv-state-approaching",
+        MStatusBadge.BadgeVariant.Attention   => "lqv-state-attention",
+        _                                     => "",
+    };
+
+    /// <summary>Mirrors LecturerTasksPage.DaysOpen — a request carries no
+    /// server-side waiting age, so the age its chip already prints is the age
+    /// its colour reads. See that method for why this is not in MentorTime.</summary>
+    private static int DaysOpen(ProjectRequestRowDto r) =>
+        Math.Max(0, (int)(DateTime.Now.Date - r.CreatedAt.ToLocalTime().Date).TotalDays);
+
+    // ── Where the CTA goes ──────────────────────────────────────────────────
+
+    /// <summary>The existing destinations, unchanged. This panel adds a step
+    /// before them; it does not replace or reroute them.</summary>
+    private string Destination => Item switch
+    {
+        ProjectRequestRowDto        => "/management/requests",
+        PendingMentorApprovalRowDto => "/lecturer/submissions",
+        _                           => "/",
+    };
+
+    /// <summary>The product's own 3-day gate, restated for the button's enabled
+    /// state only — the server enforces it, and this panel performs no check
+    /// the submissions screen does not perform.</summary>
+    private const int ReminderThresholdDays = 3;
+
+    private bool CanRemind =>
+        Item is PendingMentorApprovalRowDto a && a.DaysWaiting >= ReminderThresholdDays;
+
+    private async Task RemindAsync()
+    {
+        if (Item is not PendingMentorApprovalRowDto a) return;
+
+        _busy = true;
+        var err = await Approvals.RemindMentorAsync(a.SubmissionId);
+        _busy   = false;
+
+        _failed  = err is not null;
+        _message = err ?? "תזכורת נשלחה למנחה";
+
+        // The server has just stamped the reminder; reflect it locally rather
+        // than refetching four feeds to learn one timestamp. Same trick the
+        // personal-task toggle on the host page uses.
+        if (err is null)
+        {
+            a.LastMentorReminderAt = DateTime.Now;
+            await OnChanged.InvokeAsync();
+        }
+    }
+
+    // ── Copy ────────────────────────────────────────────────────────────────
+
+    /// <summary>One fact row, or nothing at all when the value is missing — an
+    /// empty row is a question the panel could not answer, printed as though it
+    /// had.</summary>
+    private RenderFragment? Fact(string key, string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? null
+            : @<div class="lqv-fact">
+                   <span class="lqv-fact-k">@key</span>
+                   <span class="lqv-fact-v">@value</span>
+               </div>;
+
+    /// <summary>Hebrew or nothing: RequestTypes.Label passes an unknown type
+    /// through verbatim, and live rows carry types outside the Shared list, so
+    /// an unguarded call prints "ScopeChange" in a Hebrew panel.</summary>
+    private static string? TypeLabel(string type) =>
+        RequestTypes.All.Contains(type) ? RequestTypes.Label(type) : null;
+
+    private static string OneOf(string? first, string? second) =>
+        !string.IsNullOrWhiteSpace(first)    ? first!.Trim()
+        : !string.IsNullOrWhiteSpace(second) ? second!.Trim()
+        : "";
+
+    /// <summary>A WAIT, never "באיחור": a mentor approval has no deadline to be
+    /// late for — the same distinction MentorAttention documents and the host
+    /// page's own rows use.</summary>
+    private static string WaitingLabel(int days) => days switch
+    {
+        0 => "ממתינה היום",
+        1 => "ממתינה יום",
+        2 => "ממתינה יומיים",
+        _ => $"ממתינה {days} ימים",
+    };
+}

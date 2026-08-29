@@ -1,4 +1,5 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Components
 
 @* ─────────────────────────────────────────────────────────────
    UpcomingSubmissionsCard — "הגשות ומועדים קרובים"
@@ -27,8 +28,19 @@
        Class="usc-card"
        Fill="true">
     <div class="usc-body">
-        <div class="usc-head">
-            <h2 class="usc-title">הגשות ומועדים קרובים</h2>
+        @* Mentor head grammar — glyph, title, link at the reading end. The
+           calendar glyph is the same mark בקרוב carries on the mentor
+           dashboard, because this card answers the same question. *@
+        <div class="sd-head usc-head">
+            <span class="sd-head-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                    <path d="M16 2v4M8 2v4M3 10h18"></path>
+                </svg>
+            </span>
+            <h2 class="sd-head-title usc-title">הגשות ומועדים קרובים</h2>
+            <a class="sd-head-link" href="/tasks">לכל המשימות</a>
         </div>
 
         @if (_rows.Count == 0)
@@ -38,24 +50,49 @@
         }
         else
         {
-            <MRowList Class="usc-list" AriaLabel="הגשות ומועדים קרובים">
+            @*
+                THE DATE BLOCK, from the mentor dashboard's בקרוב list: a 46px
+                tile carrying day over month, the title and its milestone
+                beside it, and the relative phrasing at the row's end.
+
+                THIS IS A RE-SLOTTING, NOT NEW CONTENT. The row used to state
+                "dd.MM · נותרו 3 ימים" in one meta string; the tile now holds
+                the date half and the end label the relative half. Same facts,
+                same source, same phrasing helper (StudentDashboardModel.DaysText),
+                and the selection, ordering, exclusion and urgency rules in
+                BuildRows/ToRow are untouched.
+            *@
+            <div class="usc-list" role="list" aria-label="הגשות ומועדים קרובים">
                 @foreach (var row in _rows)
                 {
                     var captured = row;
-                    <MRow Class="usc-row"
-                          Primary="@row.Title"
-                          Secondary="@row.Subtitle"
-                          Meta="@row.DueLabel"
-                          MetaTone="@row.Tone"
-                          OnClick="@(() => Open(captured))"
-                          AriaLabel="@($"פתיחת {row.Title}")" />
-                }
-            </MRowList>
-        }
+                    <button type="button"
+                            class="usc-row"
+                            role="listitem"
+                            @onclick="@(() => Open(captured))"
+                            aria-label="@($"פתיחת {row.Title}")">
+                        @* The tile's fill never changes, so the column reads as
+                           a column of dates; only the inset bar carries the
+                           semantic — the mentor's own two-hue rule, rose while
+                           the deadline is pressing and blue otherwise. *@
+                        <span class="@(row.Urgent ? "usc-tile usc-tile-urgent" : "usc-tile")">
+                            <span class="usc-day">@row.Due.Day.ToString("00")</span>
+                            <span class="usc-month">@MotivaDates.ShortMonth(row.Due)</span>
+                        </span>
 
-        <div class="usc-foot">
-            <a class="usc-all" href="/tasks">לכל המשימות</a>
-        </div>
+                        <span class="usc-entry">
+                            <span class="usc-row-title" title="@row.Title">@row.Title</span>
+                            <span class="usc-row-sub" title="@row.Subtitle">@row.Subtitle</span>
+                        </span>
+
+                        @if (!string.IsNullOrEmpty(row.WhenLabel))
+                        {
+                            <span class="@(row.Urgent ? "usc-when usc-when-urgent" : "usc-when")">@row.WhenLabel</span>
+                        }
+                    </button>
+                }
+            </div>
+        }
     </div>
 </MCard>
 
@@ -71,7 +108,11 @@
 
     private const int MaxRows = 3;
 
-    private sealed record Row(string Title, string Subtitle, string DueLabel, MRow.RowMetaTone Tone, int? TaskId);
+    /// <summary>A row, as the date-block list renders it: the due date itself
+    /// (the tile), the relative phrasing (the end label, null when there is
+    /// nothing honest to say) and whether the deadline is pressing. These are
+    /// the same three facts the single meta string used to concatenate.</summary>
+    private sealed record Row(string Title, string Subtitle, DateTime Due, string? WhenLabel, bool Urgent, int? TaskId);
 
     private List<Row> _rows => BuildRows();
 
@@ -114,15 +155,19 @@
         var days       = StudentDashboardModel.DaysUntil(due) ?? 0;
         var studentLate = days < 0 && !submitted;
 
-        var meta = days < 0 && submitted
-            ? $"{due:dd.MM}"
-            : $"{due:dd.MM} · {StudentDashboardModel.DaysText(days)}";
+        // The date is the tile now, so this carries the RELATIVE half of what
+        // the meta string used to say. A submitted-but-past-due row still
+        // carries no relative phrasing at all — the same silence the "date
+        // alone" branch expressed before, for the same reason above.
+        var when = days < 0 && submitted
+            ? null
+            : StudentDashboardModel.DaysText(days);
 
-        var tone = studentLate || (days >= 0 && days <= 3)
-            ? MRow.RowMetaTone.Rose
-            : MRow.RowMetaTone.Default;
+        // Unchanged predicate — only its name and type moved from a row tone
+        // to a boolean the tile and the end label both read.
+        var urgent = studentLate || (days >= 0 && days <= 3);
 
-        return new Row(title, subtitle, meta, tone, taskId);
+        return new Row(title, subtitle, due, when, urgent, taskId);
     }
 
     private async Task Open(Row row)

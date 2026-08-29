@@ -1,0 +1,563 @@
+@namespace AuthWithAdmin.Client.Pages.Learning
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@inject IJSRuntime        JS
+@inject NavigationManager Nav
+
+@*
+    ── ResourcesLibrary — the shared משאבים screen ─────────────────────────
+    Visual source:  design/design-system/MotivaLecturerDesign/
+                    Motiva Lecturer Resources.dc.html
+                    משאבים מרצה 268.pdf
+
+    WHAT THIS IS
+    ────────────
+    The approved Lecturer Resources screen, extracted verbatim from
+    LecturerResourcesPage so the Mentor can render THE SAME PRODUCT instead of
+    a second near-identical page. Not one visual decision changed in the move:
+    the markup, the class names and the whole `lrs-` stylesheet came across
+    unedited, and LecturerResourcesPage is now a five-line host over it.
+
+    ROLE IS A PERMISSION, NOT A LAYOUT
+    ──────────────────────────────────
+    Everything a role can differ on is a parameter, and all of them are about
+    WHAT THE USER MAY DO or WHICH ROWS THEY MAY SEE — never about structure:
+
+      • Loader        — the endpoint the caller is authorised to call.
+                        Lecturer: GetAllAsync (api/resourcefiles, Admin/Staff).
+                        Mentor:   GetForMentorAsync (api/mentor/resources).
+                        The component never picks an endpoint by role, so it
+                        cannot widen anyone's access by accident.
+      • CanManage     — the "ניהול משאבים" link and the empty-state CTA into
+                        /management/resources. False for the mentor, whose
+                        every management route is Admin/Staff-only anyway.
+      • CurrentStageLoader — a delegate returning "which stage is it now",
+                        resolved by the HOST against an endpoint that host is
+                        authorised to call. Lecturer/Mentor read api/dashboard
+                        (Admin/Staff/Mentor only, scope resolved server-side);
+                        the Student reads api/projects/my-dashboard for their
+                        OWN project's milestone. This is a delegate rather than
+                        a scope string precisely because no single endpoint
+                        serves all three roles — a student calling api/dashboard
+                        would be refused, so the component must not know about
+                        it at all.
+      • StageTitle /  the strip answers a different QUESTION per role — "my
+        StageNote /   project's stage" for a student, "the cohort's stage" for
+        AllowStage-   staff — so its copy and its willingness to fall back are
+        Fallback      the host's call, not a shared default.
+      • FavoritesKey  — favourites are localStorage and per-person, so each
+                        role keeps its own key (as both pages already did).
+
+    The browse experience itself — search, stage strip, category chips, card
+    grid, detail panel, video modal, favourites — is identical for both, which
+    is the point: one mental model for browsing across the platform.
+
+    SHARED COMPONENTS
+    ─────────────────
+    ResourceCard, ResourceDetailPanel and KnowledgeCenterModel are reused
+    unchanged; they were already role-neutral (they take resources, not users)
+    and every action they expose is read-only: download, open in a tab, play.
+*@
+
+<div class="lrs-page" dir="rtl">
+
+    <!-- ── Title row — same structure as Teams / Submissions / Requests ── -->
+    <div class="lrs-title-row">
+        <div class="lrs-title-block">
+            <h1 class="lrs-h1">@Title</h1>
+            <p class="lrs-subtitle">@Subtitle</p>
+        </div>
+
+        @if (!_loadError && !_loading)
+        {
+            <div class="lrs-search-wrap">
+                <MSearchField @bind-Value="_query"
+                              MaxWidth="280px"
+                              Placeholder="חיפוש משאב…"
+                              AriaLabel="חיפוש במשאבים" />
+            </div>
+        }
+    </div>
+
+    <!-- ── Loading / error ── -->
+    @if (_loading)
+    {
+        <div class="lrs-loading" role="status" aria-live="polite">
+            <span class="lrs-spinner" aria-hidden="true"></span>
+            <span>טוענת משאבים…</span>
+        </div>
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Live="true"
+                     Title="לא הצלחנו לטעון את המשאבים"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">נסי שוב</MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_resources.Count == 0)
+    {
+        @* The CTA is the one thing the empty state cannot share: it points at
+           /management/resources, which a mentor may not open. *@
+        @if (CanManage)
+        {
+            <MEmptyState Title="אין עדיין משאבים בספרייה"
+                         Description="ניתן להוסיף קבצים וסרטונים דרך אזור הניהול.">
+                <Action>
+                    <MButton Variant="MButton.ButtonVariant.Secondary"
+                             OnClick="@(() => Nav.NavigateTo("/management/resources"))">
+                        מעבר לניהול משאבים
+                    </MButton>
+                </Action>
+            </MEmptyState>
+        }
+        else
+        {
+            <MEmptyState Title="אין עדיין משאבים בספרייה"
+                         Description="@EmptyDescription" />
+        }
+    }
+    else
+    {
+        <!-- ── Stage strip: resources relevant to the current course stage ── -->
+        @* The section is gated on having a STAGE to talk about, not on having
+           picks for it. Gating on picks is what made the student screen lose
+           the whole relevance block — and with it the shared composition —
+           whenever nothing happened to be pinned to their milestone. A role
+           that allows fallback always has picks, so this is a no-op for them. *@
+        @if (HasStageSection && !(HideStageWhileSearching && IsSearching))
+        {
+            <section class="lrs-stage" aria-labelledby="@_stageTitleId">
+                <div class="lrs-stage-head">
+                    <h2 class="lrs-stage-title" id="@_stageTitleId">@StageTitle</h2>
+                    @if (!string.IsNullOrWhiteSpace(_currentStage))
+                    {
+                        <span class="lrs-stage-chip">
+                            <span class="lrs-stage-dot" aria-hidden="true"></span>
+                            @_currentStage
+                        </span>
+                    }
+                    <span class="lrs-stage-note">@StageNote</span>
+                </div>
+
+                @if (StagePicks.Count == 0)
+                {
+                    @* Reached only when the host forbids fallback (the student)
+                       and nothing is genuinely pinned to their stage. Saying so
+                       is the whole point: the alternative is either a missing
+                       section or a resource from another stage presented as
+                       personally relevant. Both were rejected. *@
+                    <p class="lrs-stage-empty">@StageEmptyText</p>
+                }
+                else
+                {
+                <div class="lrs-stage-row">
+                    @foreach (var pick in StagePicks)
+                    {
+                        var p = pick;
+                        <button type="button"
+                                class="lrs-pick"
+                                style="--lrs-accent:@p.Accent"
+                                @onclick="() => OpenDetail(p)">
+                            <span class="lrs-pick-icon" aria-hidden="true">
+                                <KnowledgeIcon Category="p.Category" Size="16" />
+                            </span>
+                            <span class="lrs-pick-text">
+                                <span class="lrs-pick-title">@p.Title</span>
+                                <span class="lrs-pick-type">@p.TypeLabel</span>
+                            </span>
+                            <span class="lrs-pick-mark" aria-hidden="true">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m15 6-6 6 6 6"></path>
+                                </svg>
+                            </span>
+                        </button>
+                    }
+                </div>
+                }
+            </section>
+        }
+
+        <!-- ── Main library ── -->
+        <section class="lrs-lib" aria-label="ספריית המשאבים">
+
+            <div class="lrs-lib-head">
+                <div class="lrs-chips" role="group" aria-label="סינון לפי סוג">
+                    <button type="button"
+                            class="@ChipClass(FilterAll)"
+                            aria-pressed="@(_filter == FilterAll)"
+                            @onclick="() => SetFilter(FilterAll)">
+                        הכל
+                    </button>
+
+                    @foreach (var category in KnowledgeCenterModel.Categories)
+                    {
+                        var key = category.Key.ToString();
+                        <button type="button"
+                                class="@ChipClass(key)"
+                                aria-pressed="@(_filter == key)"
+                                @onclick="() => SetFilter(key)">
+                            @category.ChipLabel
+                        </button>
+                    }
+
+                    <button type="button"
+                            class="@ChipClass(FilterFavorites)"
+                            aria-pressed="@(_filter == FilterFavorites)"
+                            @onclick="() => SetFilter(FilterFavorites)">
+                        מועדפים
+                    </button>
+                </div>
+
+                <div class="lrs-lib-actions">
+                    <span class="lrs-count" role="status" aria-live="polite">@CountLabel</span>
+                    @if (CanManage)
+                    {
+                        <a class="lrs-manage-link" href="/management/resources">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                            ניהול משאבים
+                        </a>
+                    }
+                </div>
+            </div>
+
+            @{
+                var shown = Visible;
+            }
+
+            @if (shown.Count > 0)
+            {
+                <div class="lrs-grid">
+                    @foreach (var resource in shown)
+                    {
+                        var r = resource;
+                        <ResourceCard Resource="r"
+                                      IsFavorite="_favorites.Contains(r.Id)"
+                                      IsSelected="_selected?.Id == r.Id"
+                                      OnOpen="OpenDetail"
+                                      OnToggleFavorite="ToggleFavoriteAsync" />
+                    }
+                </div>
+            }
+            else if (IsEmptyFavorites)
+            {
+                <div class="lrs-empty">
+                    <span class="lrs-empty-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.8" stroke-linejoin="round">
+                            <path d="m12 2.6 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.4l-5.8 3.1 1.1-6.5L2.6 9.4l6.5-.9Z"></path>
+                        </svg>
+                    </span>
+                    <p class="lrs-empty-title">עדיין אין משאבים מועדפים</p>
+                    <p class="lrs-empty-note">אפשר לסמן משאבים בכוכב כדי למצוא אותם כאן במהירות.</p>
+                </div>
+            }
+            else
+            {
+                <div class="lrs-empty" role="status" aria-live="polite">
+                    <span class="lrs-empty-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round">
+                            <circle cx="11" cy="11" r="7"></circle>
+                            <path d="m20 20-3.6-3.6"></path>
+                        </svg>
+                    </span>
+                    <p class="lrs-empty-title">לא נמצאו משאבים מתאימים</p>
+                    <p class="lrs-empty-note">נסו מילה אחרת או שנו את הסינון</p>
+                    <button type="button" class="lrs-empty-clear" @onclick="ClearFilters">
+                        ניקוי חיפוש וסינון
+                    </button>
+                </div>
+            }
+        </section>
+    }
+
+</div>
+
+<!-- ── Overlays (position:fixed, out of flow) ── -->
+<div class="lrs-overlays">
+
+    <ResourceDetailPanel Resource="_selected"
+                         OnClose="CloseDetail"
+                         OnPlay="OpenVideo" />
+
+    <MModal IsOpen="_playing is not null"
+            Title="@(_playing?.Title)"
+            Size="MModal.ModalSize.Large"
+            Class="lrs-video-modal"
+            OnClose="CloseVideo">
+        @if (_playing is not null)
+        {
+            var embed = KnowledgeCenterModel.ToEmbedUrl(_playing.VideoUrl);
+            if (embed is not null)
+            {
+                <div class="lrs-video-frame">
+                    <iframe src="@embed"
+                            title="@_playing.Title"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowfullscreen></iframe>
+                </div>
+            }
+            else
+            {
+                <MEmptyState Title="הסרטון אינו זמין להצגה כאן"
+                             Description="אפשר לפתוח אותו במקור בכרטיסייה חדשה.">
+                    <Action>
+                        <a class="lrs-video-external"
+                           href="@_playing.VideoUrl"
+                           target="_blank"
+                           rel="noopener noreferrer">
+                            פתיחה בכרטיסייה חדשה ↗
+                        </a>
+                    </Action>
+                </MEmptyState>
+            }
+        }
+    </MModal>
+
+</div>
+
+@code {
+    // ── Role-aware parameters ───────────────────────────────────────────
+
+    [Parameter] public string Title { get; set; } = "משאבים";
+
+    [Parameter] public string Subtitle { get; set; } = "נהלים, מחוונים וחומרי הוראה — לכל הקורס";
+
+    /// <summary>The list endpoint the CALLER is authorised to call. Required,
+    /// so the shared screen can never choose an endpoint on a role's behalf.</summary>
+    [Parameter, EditorRequired]
+    public Func<Task<List<ResourceFileDto>?>> Loader { get; set; } = default!;
+
+    /// <summary>localStorage key for this role's favourites — they are
+    /// device-local and personal, so the two roles never share a key.</summary>
+    [Parameter, EditorRequired] public string FavoritesKey { get; set; } = default!;
+
+    /// <summary>Gates every management affordance: the "ניהול משאבים" link and
+    /// the empty-state CTA into /management/resources. Never true for a mentor.</summary>
+    [Parameter] public bool CanManage { get; set; }
+
+    /// <summary>Resolves the current stage title, or null when there is none.
+    /// Supplied by the host so each role queries only the endpoint it is
+    /// authorised for. Null disables the strip's stage awareness entirely.</summary>
+    [Parameter] public Func<Task<string?>>? CurrentStageLoader { get; set; }
+
+    /// <summary>Heading of the stage strip.</summary>
+    [Parameter] public string StageTitle { get; set; } = "רלוונטי לתקופה בקורס";
+
+    /// <summary>The quiet note at the end of the stage strip's head row.</summary>
+    [Parameter] public string StageNote { get; set; } = "מבוסס על שלב הקורס הנוכחי";
+
+    /// <summary>When no resource is pinned to the current stage, whether the
+    /// strip may show other resources instead.
+    ///
+    /// <para>True for staff, whose strip is a convenience shortcut into a
+    /// library they own. FALSE for the student, whose strip claims PERSONAL
+    /// relevance — showing an unrelated resource under "רלוונטי לשלב שלך"
+    /// would be a false statement, not a graceful degradation.</para></summary>
+    [Parameter] public bool AllowStageFallback { get; set; } = true;
+
+    /// <summary>Shown inside the stage section when the current stage is known
+    /// but nothing is pinned to it. Role-neutral by default: only a host that
+    /// forbids fallback can reach it.</summary>
+    [Parameter] public string StageEmptyText { get; set; } =
+        "אין כרגע משאבים המשויכים לשלב הזה. חומרים חדשים יופיעו כאן עם פרסומם.";
+
+    /// <summary>Whether an active query hides the stage strip. The staff
+    /// screens hide it (the query owns the viewport); the student screen keeps
+    /// it, which is the behaviour its final design shipped with.</summary>
+    [Parameter] public bool HideStageWhileSearching { get; set; } = true;
+
+    /// <summary>Shown when the library is empty and the user cannot manage it.</summary>
+    [Parameter] public string EmptyDescription { get; set; } =
+        "כשצוות הקורס יעלה מדריכים, טפסים או מסמכים, הם יופיעו כאן.";
+
+    // ── State ───────────────────────────────────────────────────────────
+
+    private const string FilterAll       = "all";
+    private const string FilterFavorites = "favorites";
+    private const int    StagePickLimit  = 3;
+
+    private bool _loading  = true;
+    private bool _loadError;
+
+    private List<KnowledgeResource> _resources = new();
+    private HashSet<int>            _favorites = new();
+
+    private string _query  = "";
+    private string _filter = FilterAll;
+
+    private KnowledgeResource? _selected;
+    private KnowledgeResource? _playing;
+
+    // Unique per instance: the heading id must stay unique if a page ever
+    // renders two libraries.
+    private readonly string _stageTitleId = $"lrs-stage-title-{Guid.NewGuid():N}";
+
+    /// <summary>The most common CurrentMilestoneTitle across the projects in
+    /// scope. Null when the dashboard is unavailable or no project has a
+    /// current milestone.</summary>
+    private string? _currentStage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFavoritesAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading   = true;
+        _loadError = false;
+
+        var files = await Loader();
+        _loadError = files is null;
+        _resources = files is null ? new() : KnowledgeCenterModel.ToResources(files);
+
+        // Stage strip is an enhancement — the library renders regardless.
+        await LoadCurrentStageAsync();
+
+        _loading = false;
+    }
+
+    private async Task LoadCurrentStageAsync()
+    {
+        _currentStage = null;
+        if (CurrentStageLoader is null) return;
+
+        // The strip is an enhancement, never a gate: a host whose stage source
+        // is unavailable still gets the full library.
+        try   { _currentStage = await CurrentStageLoader(); }
+        catch { _currentStage = null; }
+    }
+
+    // ── Derivation ──────────────────────────────────────────────────────
+
+    private bool IsSearching => _query.Trim().Length > 0;
+
+    /// <summary>Whether the relevance section renders at all. True when there
+    /// is a real current stage to name, OR when there are picks to show (the
+    /// fallback case, where the stage itself may be unknown). False only when
+    /// there is neither — nothing to say, so no empty furniture.</summary>
+    private bool HasStageSection =>
+        !string.IsNullOrWhiteSpace(_currentStage) || StagePicks.Count > 0;
+
+    private List<KnowledgeResource> StagePicks
+    {
+        get
+        {
+            if (_resources.Count == 0) return new();
+
+            // 1st choice: resources pinned to the detected current stage
+            if (!string.IsNullOrWhiteSpace(_currentStage))
+            {
+                var stagePicks = _resources
+                    .Where(r => r.HasMilestone &&
+                                string.Equals(r.MilestoneLabel, _currentStage, StringComparison.OrdinalIgnoreCase))
+                    .Take(StagePickLimit)
+                    .ToList();
+                if (stagePicks.Count > 0) return stagePicks;
+            }
+
+            // Everything below is a FALLBACK — a guess at what is useful, not a
+            // claim that it matches the current stage. A host whose heading
+            // promises personal relevance opts out.
+            if (!AllowStageFallback) return new();
+
+            // 2nd choice: any milestoned resources (most relevant when stage unknown)
+            var milestoned = _resources.Where(r => r.HasMilestone).Take(StagePickLimit).ToList();
+            if (milestoned.Count > 0) return milestoned;
+
+            // Fallback: first resources in the library (newest first, as returned by API)
+            return _resources.Take(StagePickLimit).ToList();
+        }
+    }
+
+    private List<KnowledgeResource> Visible
+    {
+        get
+        {
+            var pool = _filter switch
+            {
+                FilterAll       => _resources,
+                FilterFavorites => _resources.Where(r => _favorites.Contains(r.Id)).ToList(),
+                _               => Enum.TryParse<KnowledgeCategoryKey>(_filter, out var key)
+                                       ? _resources.Where(r => r.Category == key).ToList()
+                                       : _resources,
+            };
+
+            return KnowledgeCenterModel.Search(pool, _query);
+        }
+    }
+
+    private bool IsEmptyFavorites =>
+        _filter == FilterFavorites && string.IsNullOrWhiteSpace(_query) && _favorites.Count == 0;
+
+    private string CountLabel
+    {
+        get
+        {
+            var count = Visible.Count;
+            return _filter == FilterFavorites
+                ? count == 1 ? "מועדף אחד" : $"{count} מועדפים"
+                : count == 1 ? "משאב אחד"  : $"{count} משאבים";
+        }
+    }
+
+    private string ChipClass(string key) =>
+        _filter == key ? "lrs-chip lrs-chip-active" : "lrs-chip";
+
+    // ── Interaction ─────────────────────────────────────────────────────
+
+    private void SetFilter(string key) => _filter = key;
+
+    private void ClearFilters()
+    {
+        _filter = FilterAll;
+        _query  = "";
+    }
+
+    private void OpenDetail(KnowledgeResource resource) => _selected = resource;
+    private void CloseDetail() => _selected = null;
+
+    private void OpenVideo(KnowledgeResource resource)
+    {
+        _playing  = resource;
+        _selected = null;
+    }
+
+    private void CloseVideo() => _playing = null;
+
+    // ── Favourites ──────────────────────────────────────────────────────
+
+    private async Task ToggleFavoriteAsync(KnowledgeResource resource)
+    {
+        if (!_favorites.Add(resource.Id)) _favorites.Remove(resource.Id);
+
+        try { await JS.InvokeVoidAsync("localStorage.setItem", FavoritesKey, string.Join(",", _favorites)); }
+        catch { /* storage blocked — fully usable without favorites */ }
+    }
+
+    private async Task LoadFavoritesAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", FavoritesKey);
+            if (!string.IsNullOrWhiteSpace(raw))
+                _favorites = raw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => int.TryParse(x, out var v) ? v : -1)
+                                .Where(v => v > 0)
+                                .ToHashSet();
+        }
+        catch { /* storage unavailable — page is fully usable */ }
+    }
+}

@@ -555,6 +555,33 @@ public static class MentorAttentionRows
         return $"עד {i.DueDate.Value:dd.MM}";
     }
 
+    /// <summary>
+    /// The chip colour for a WAITING AGE, and the one place that mapping is
+    /// made.
+    ///
+    /// <para><b>It reuses the product's own threshold and adds none.</b>
+    /// <see cref="MentorAttention.AgeOf"/> is the single definition of how long
+    /// is too long — one number, 3 calendar days, shared by submissions and
+    /// requests, consolidated there precisely because four files once carried
+    /// two different hardcoded answers. This turns its three buckets into three
+    /// chips and stops.</para>
+    ///
+    /// <para><b>NOTHING HERE IS EVER ROSE, and that is the point.</b> The
+    /// product has no SLA and no review deadline — MentorAttentionDto's header
+    /// says so outright and MentorAging omits lateness vocabulary by
+    /// construction — so an item measured by this method has no deadline it
+    /// could be past. The ladder is neutral → brand tint → stronger brand tint
+    /// for "arrived / has been sitting / wants a person", and red is reserved
+    /// for the one thing on these screens that carries a real date: a personal
+    /// task past its own DueDate.</para></summary>
+    public static MStatusBadge.BadgeVariant AgeVariant(int waitingDays) =>
+        MentorAttention.AgeOf(waitingDays) switch
+        {
+            MentorAttentionAge.NeedsAttention => MStatusBadge.BadgeVariant.Attention,
+            MentorAttentionAge.Waiting        => MStatusBadge.BadgeVariant.Approaching,
+            _                                 => MStatusBadge.BadgeVariant.Neutral,
+        };
+
     /// <summary>The waiting age at column width. <c>MentorAging.WaitingLabel</c>
     /// is the full sentence and is still what the digest and the detail panels
     /// print; a 90px cell cannot hold it.</summary>

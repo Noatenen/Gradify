@@ -488,10 +488,19 @@
                 else
                 {
                     <div class="mpw-rows">
+                        @* Each row opens IN PLACE — a submission in this page's own
+                           review drawer, a request in the בקשות tab below, a personal
+                           task in the shared editor. They used to be links to
+                           item.Href, which for a request left the workspace entirely
+                           and for a submission re-navigated this same route with
+                           ?submissionId= on it just to open a drawer already mounted
+                           here. See OpenAttentionItem. *@
                         @foreach (var item in _attention)
                         {
                             var a = item;
-                            <a class="mpw-attn-row" href="@a.Href">
+                            <button type="button" class="mpw-attn-row"
+                                    @onclick="@(() => OpenAttentionItemAsync(a))"
+                                    aria-label="@($"פתיחת {a.Title}")">
                                 <MStatusBadge Variant="@MentorAttentionRows.TypeVariant(a)"
                                               Text="@MentorAttentionRows.TypeLabel(a)" />
                                 <span class="mpw-attn-main">
@@ -501,7 +510,7 @@
                                 <span class="mpw-attn-time @(MentorAttentionRows.IsEscalated(a) ? "mpw-late" : "")">
                                     @MentorAttentionRows.TimeLabel(a)
                                 </span>
-                            </a>
+                            </button>
                         }
                     </div>
                 }
@@ -610,15 +619,17 @@
                             @foreach (var task in WorkTasks)
                             {
                                 var k = task;
-                                if (k.Href is { Length: > 0 })
+                                if (k.Task is PersonalTaskDto own)
                                 {
-                                    <a class="mpw-task-row" href="@k.Href">
+                                    <button type="button" class="mpw-task-row"
+                                            @onclick="@(() => OpenTask(own))"
+                                            aria-label="@($"עריכת {k.Title}")">
                                         <span class="mpw-owner @(k.IsMine ? "mpw-owner-mine" : "")">@(k.IsMine ? "שלי" : "צוות")</span>
                                         <span class="mpw-row-title" title="@k.Title">@k.Title</span>
                                         <span class="mpw-row-meta" title="@k.Assignee">@k.Assignee</span>
                                         <span class="mpw-row-due @(k.Overdue ? "mpw-late" : "")">@k.Due</span>
                                         <span class="mpw-row-state @k.StateClass">@k.State</span>
-                                    </a>
+                                    </button>
                                 }
                                 else
                                 {
@@ -659,7 +670,9 @@
                         @foreach (var ev in UpcomingDates)
                         {
                             var e = ev;
-                            <a class="mpw-date-row" href="@(e.Href ?? MentorLinks.Calendar)">
+                            <button type="button" class="mpw-date-row"
+                                    @onclick="@(() => OpenEventAsync(e))"
+                                    aria-label="@($"פתיחת {e.Title}")">
                                 <span class="mpw-date-box @(e.Date.Date == DateTime.Today ? "mpw-date-today" : "")">
                                     <span class="mpw-date-day">@e.Date.ToString("dd")</span>
                                     <span class="mpw-date-month">@MotivaDates.ShortMonth(e.Date)</span>
@@ -669,7 +682,7 @@
                                     <span class="mpw-attn-sub">@MentorEventTypes.Label(e.Type)</span>
                                 </span>
                                 <span class="mpw-date-time">@(e.TimeRange ?? "")</span>
-                            </a>
+                            </button>
                         }
                     </div>
                 }
@@ -707,13 +720,15 @@
                         @foreach (var entry in Activity)
                         {
                             var v = entry;
-                            <a class="mpw-act-row" href="@v.Href">
+                            <button type="button" class="mpw-act-row"
+                                    @onclick="@(() => OpenActivityAsync(v))"
+                                    aria-label="@($"פתיחת {v.Text}")">
                                 <span class="mpw-act-dot @v.ToneClass" aria-hidden="true"></span>
                                 <span class="mpw-act-main">
                                     <span class="mpw-act-text" title="@v.Text">@v.Text</span>
                                     <span class="mpw-attn-sub">@v.Meta</span>
                                 </span>
-                            </a>
+                            </button>
                         }
                     </div>
                 }
@@ -722,18 +737,25 @@
     }
 </div>
 
-@* ── קביעת פגישת הנחיה ────────────────────────────────────────────────────
+@* ── קביעת פגישת הנחיה / עריכת משימה אישית ────────────────────────────────
     The mentor calendar's own editor, opened here with this project already
     chosen. Not a second create flow: same component, same POST, same Google
     sync — the only thing this page supplies is the project the mentor is
-    already looking at, and the select stays editable. *@
+    already looking at, and the select stays editable.
+
+    It EDITS as well as creates now, so a personal task on this page — in
+    דורש את תשומת לבך, in the משימות tab, in the activity list — opens its
+    editor here instead of sending the mentor to /mentor/tasks?editTask= to
+    meet the very same modal on another screen. *@
 @if (_summary is not null)
 {
-    <MentorPersonalTaskModal IsOpen="@_scheduleOpen"
+    <MentorPersonalTaskModal IsOpen="@(_scheduleOpen || _editingTask is not null)"
+                             EditingTask="@_editingTask"
                              Projects="@(new[] { _summary })"
                              InitialProjectId="@Id"
-                             OnClose="@(() => _scheduleOpen = false)"
-                             OnSaved="OnMeetingSavedAsync" />
+                             OnClose="CloseTaskModal"
+                             OnSaved="OnMeetingSavedAsync"
+                             OnDeleted="@(_ => OnTaskRemovedAsync())" />
 }
 
 @code {
@@ -764,6 +786,11 @@
     private string _tab = TabSubs;
     private int?   _expandedRequestId;
     private bool   _scheduleOpen;
+
+    /// <summary>The personal task being edited in the shared modal, or null.
+    /// Separate from <see cref="_scheduleOpen"/> because that one CREATES a
+    /// meeting on this project and this one opens an existing row.</summary>
+    private PersonalTaskDto? _editingTask;
 
     // ── Review drawer state (unchanged) ─────────────────────────────────────
     private MentorSubmissionContextDto? _reviewCtx;
@@ -1162,9 +1189,15 @@
         }
     }
 
+    /// <summary><paramref name="Task"/> is the mentor's own personal task when
+    /// the row is one, and null for a team task. It replaced an
+    /// <c>Href</c> to /mentor/tasks?editTask=: the row now opens the shared
+    /// editor over this workspace rather than navigating to המשימות שלי to open
+    /// the same modal there. A team task stays unclickable — this page has no
+    /// editor for one.</summary>
     private sealed record WorkTaskRow(
         bool IsMine, string Title, string Assignee, string Due, bool Overdue,
-        string State, string StateClass, string? Href);
+        string State, string StateClass, PersonalTaskDto? Task);
 
     /// <summary>
     /// The open work on this project, from both sides of it: the team's own
@@ -1192,7 +1225,7 @@
                         Overdue:    t.IsOverdue,
                         State:      TaskStatusLabel(t),
                         StateClass: TaskStateClass(t),
-                        Href:       null));
+                        Task:       null));
                 }
             }
 
@@ -1207,9 +1240,9 @@
                     Overdue:    overdue,
                     State:      overdue ? "באיחור" : "פתוחה",
                     StateClass: overdue ? "mpw-late" : "mpw-state-quiet",
-                    // The mentor's own task opens its editor — the same link the
-                    // calendar and the attention model already use.
-                    Href:       MentorLinks.PersonalTask(t.Id)));
+                    // The mentor's own task opens its editor — the same shared
+                    // modal the calendar and המשימות שלי open, mounted here.
+                    Task:       t));
             }
 
             return rows
@@ -1273,15 +1306,121 @@
 
     private void OpenScheduler() => _scheduleOpen = true;
 
-    private async Task OnMeetingSavedAsync(PersonalTaskDto _)
+    /// <summary>The shared editor, opened over this workspace.</summary>
+    private void OpenTask(PersonalTaskDto task) => _editingTask = task;
+
+    private void CloseTaskModal()
     {
         _scheduleOpen = false;
+        _editingTask  = null;
+    }
+
+    private async Task OnTaskRemovedAsync()
+    {
+        CloseTaskModal();
+        await LoadAsync();
+    }
+
+    // ── Opening an entity, in place ─────────────────────────────────────────
+    //
+    // THE RULE, AND WHY THIS PAGE OBEYS IT TOO. A click on an entity inside an
+    // overview list INSPECTS it where the reader already is; only an explicit
+    // CTA navigates. This screen is a destination, but its lists are overviews
+    // of the same four kinds — and every one of them used to be an href that
+    // moved the mentor somewhere else in order to open a panel. The submission
+    // case was the plainest: the row re-navigated THIS route with
+    // ?submissionId= on it, remounting the page to open a drawer that was
+    // already there.
+    //
+    // Nothing about the destinations changed. Every one of them is still
+    // reachable, from the CTA inside whatever this opens.
+
+    /// <summary>One attention row, opened in whichever surface owns its kind.</summary>
+    private async Task OpenAttentionItemAsync(MentorAttentionItemDto item)
+    {
+        switch (item.Kind)
+        {
+            case MentorAttentionKind.Submission:
+                await OpenReviewDrawer(item.EntityId);
+                break;
+
+            // The בקשות tab already embeds the real request flow — the same
+            // MentorRequestDetail the inbox expands, with the same one POST.
+            case MentorAttentionKind.Request when _requests.Any(r => r.Id == item.EntityId):
+                _tab = TabReqs;
+                _expandedRequestId = item.EntityId;
+                break;
+
+            case MentorAttentionKind.PersonalTask
+                 when _personal.FirstOrDefault(t => t.Id == item.EntityId) is { } own:
+                OpenTask(own);
+                break;
+
+            // A kind this page has no surface for keeps the link it always had.
+            default:
+                Nav.NavigateTo(item.Href);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// One פגישות ומועדים row.
+    ///
+    /// <para>A meeting or a personal task opens the shared editor here, and a
+    /// review opens this page's own drawer — both used to leave the workspace
+    /// to reach the very same panel. A milestone or a dated deliverable has no
+    /// entity to open and its old link pointed at THIS page, so it stays put
+    /// rather than pretending to do something.</para></summary>
+    private async Task OpenEventAsync(MentorCalendarEvent e)
+    {
+        if (e.Type == MentorEventType.Review)
+        {
+            await OpenReviewDrawer(e.EntityId);
+            return;
+        }
+
+        if (e.Type is MentorEventType.PersonalTask or MentorEventType.Meeting
+            && _personal.FirstOrDefault(t => t.Id == e.EntityId) is { } own)
+        {
+            OpenTask(own);
+        }
+    }
+
+    /// <summary>One activity row. Same routing as an attention row, on the
+    /// entity the entry was built from; Href is the fallback for an entry this
+    /// page cannot open itself.</summary>
+    private async Task OpenActivityAsync(ActivityRow row)
+    {
+        if (row.Kind is MentorAttentionKind kind)
+        {
+            await OpenAttentionItemAsync(new MentorAttentionItemDto
+            {
+                Kind     = kind,
+                EntityId = row.EntityId,
+                Href     = row.Href,
+            });
+            return;
+        }
+
+        Nav.NavigateTo(row.Href);
+    }
+
+    private async Task OnMeetingSavedAsync(PersonalTaskDto _)
+    {
+        CloseTaskModal();
         await ReloadAsync();
     }
 
     // ── Recent activity ─────────────────────────────────────────────────────
 
-    private sealed record ActivityRow(DateTime When, string Text, string Meta, string Href, string ToneClass);
+    /// <summary><paramref name="Kind"/> and <paramref name="EntityId"/> are
+    /// what the row actually points AT, so clicking it can open that entity in
+    /// place through the same routing an attention row uses.
+    /// <paramref name="Href"/> stays as the fallback destination for a row this
+    /// page has no surface for, and as the CTA a popup then offers.</summary>
+    private sealed record ActivityRow(
+        DateTime When, string Text, string Meta, string Href, string ToneClass,
+        MentorAttentionKind? Kind = null, int EntityId = 0);
 
     /// <summary>
     /// Only what a real column can date.
@@ -1307,7 +1446,7 @@
                     string.IsNullOrWhiteSpace(r.CreatedByName)
                         ? r.CreatedAt.ToLocalTime().ToString("dd.MM")
                         : $"{r.CreatedByName} · {r.CreatedAt.ToLocalTime():dd.MM}",
-                    href, "mpw-dot-violet"));
+                    href, "mpw-dot-violet", MentorAttentionKind.Request, r.Id));
 
                 // Only when something actually moved after it was filed.
                 if (r.UpdatedAt.Date != r.CreatedAt.Date || r.UpdatedAt > r.CreatedAt.AddMinutes(1))
@@ -1315,7 +1454,7 @@
                     rows.Add(new ActivityRow(
                         r.UpdatedAt, $"עדכון בבקשה — {r.Title}",
                         $"{MentorRequestBuckets.RowLabel(MentorRequestBuckets.Of(r.Status))} · {r.UpdatedAt.ToLocalTime():dd.MM}",
-                        href, "mpw-dot-grey"));
+                        href, "mpw-dot-grey", MentorAttentionKind.Request, r.Id));
                 }
             }
 
@@ -1334,7 +1473,7 @@
                         s.SubmittedAt, $"הגשה התקבלה — {s.TaskTitle}",
                         $"{s.SubmittedBy} · {s.SubmittedAt.ToLocalTime():dd.MM}",
                         string.IsNullOrWhiteSpace(href) ? MentorLinks.Reviews : href!,
-                        "mpw-dot-blue"));
+                        "mpw-dot-blue", MentorAttentionKind.Submission, s.SubmissionId));
                 }
             }
 
@@ -1344,7 +1483,8 @@
                 rows.Add(new ActivityRow(
                     t.DueDate!.Value, $"פגישת הנחיה התקיימה — {t.Title}",
                     $"{t.DueDate.Value:dd.MM} · {t.StartTime}",
-                    MentorLinks.PersonalTask(t.Id), "mpw-dot-teal"));
+                    MentorLinks.PersonalTask(t.Id), "mpw-dot-teal",
+                    MentorAttentionKind.PersonalTask, t.Id));
             }
 
             return rows.OrderByDescending(r => r.When).Take(6).ToList();
