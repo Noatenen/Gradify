@@ -2,6 +2,8 @@
 @using AuthWithAdmin.Client.Services
 @inject ITasksService          TasksService
 @inject ITaskSubmissionsService SubmissionsService
+@implements IAsyncDisposable
+@inject IJSRuntime JS
 
 @* ═══════════════════════════════════════════════════════════════════════════
    TaskDetailModal  — full task detail view for students
@@ -779,10 +781,19 @@
     [Obsolete("Course-submission flow removed; finalisation lives in Moodle.")]
     private bool CanSubmitToCourse => false;
 
+    private bool _scrollLocked;
+
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     protected override async Task OnParametersSetAsync()
     {
+        var isOpen = TaskId > 0;
+        if (isOpen && !_scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.lock"); } catch { }
+        else if (!isOpen && _scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
+        _scrollLocked = isOpen;
+
         if (TaskId <= 0) return;
 
         _loading      = true;
@@ -1208,5 +1219,11 @@
         if (bytes < 1024)      return $"{bytes} B";
         if (bytes < 1_048_576) return $"{bytes / 1024} KB";
         return $"{bytes / 1_048_576.0:F1} MB";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
     }
 }

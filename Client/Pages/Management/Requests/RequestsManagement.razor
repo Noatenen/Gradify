@@ -40,6 +40,7 @@
 
 @inject IProjectRequestsService RequestsService
 @inject IRequestTypesService RequestTypesService
+@inject IJSRuntime JS
 
 <div class="lrq-page" dir="rtl">
 
@@ -213,7 +214,7 @@
                                         var isOpen = _expandedId == r.Id;
                                         var detail = _details.TryGetValue(r.Id, out var d) ? d : null;
 
-                                        <div class="lrq-row-wrap @(isOpen ? "lrq-row-wrap-open" : "")">
+                                        <div class="lrq-row-wrap @(isOpen ? "lrq-row-wrap-open" : "")" id="request-@r.Id">
 
                                             @if (!isOpen)
                                             {
@@ -580,6 +581,13 @@
 </div>@* lrq-page *@
 
 @code {
+    // ── Query-string deep-link ────────────────────────────────────────────────
+    /// <summary>When navigating from the dashboard's attention list, the
+    /// clicked request's Id is passed as ?open=N so the accordion row
+    /// expands automatically on arrival.</summary>
+    [Parameter, SupplyParameterFromQuery(Name = "open")]
+    public int? OpenRequestId { get; set; }
+
     // ── State ─────────────────────────────────────────────────────────────────
 
     private List<ProjectRequestRowDto> _all = new();
@@ -607,6 +615,10 @@
     // "טופלו" group starts collapsed
     private bool _doneOpen;
 
+    // Set to true after the deep-link target is expanded so OnAfterRenderAsync
+    // can scroll it into view once it has rendered in the DOM.
+    private bool _scrollPending;
+
     // Type name cache from RequestTypesService
     private Dictionary<string, string> _typeNames = new();
 
@@ -630,6 +642,29 @@
                    .ToDictionary(g => g.Key, g => g.First().Name);
 
         _loading = false;
+
+        // Auto-expand the request coming from a dashboard deep-link (?open=N).
+        // Runs after _all is populated so the row is always findable.
+        if (OpenRequestId is int reqId && _all.Any(r => r.Id == reqId))
+        {
+            // Ensure the request is visible regardless of bucket or done-state.
+            _activeTab = "all";
+            var targetRow = _all.FirstOrDefault(r => r.Id == reqId);
+            if (targetRow is not null && BucketOf(targetRow.Status) == "done")
+                _doneOpen = true;
+            await Toggle(reqId);
+            // Scroll to the expanded row after it renders.
+            _scrollPending = true;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_scrollPending && OpenRequestId is int reqId)
+        {
+            _scrollPending = false;
+            await JS.InvokeVoidAsync("gradify.scrollToAnchor", $"request-{reqId}");
+        }
     }
 
     private async Task LoadAsync()

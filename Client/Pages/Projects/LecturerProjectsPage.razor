@@ -43,6 +43,7 @@
 @inject IDashboardOverviewService DashboardService
 @inject IProjectOverviewService   ProjectOverview
 @inject NavigationManager         Nav
+@inject IJSRuntime                JS
 
 <div class="ltp-page" dir="rtl">
 
@@ -130,6 +131,7 @@
                     bool isLast = idx == Visible.Count - 1;
                     <button type="button"
                             class="ltp-row @(isLast ? "ltp-row-last" : "")"
+                            id="project-@row.ProjectId"
                             @onclick="@(() => OpenPanel(row))"
                             aria-label="@($"פרטי הצוות {row.TeamName ?? row.ProjectTitle}")">
 
@@ -324,6 +326,13 @@
         new("ok",        "מתקדם כרגיל"),
     };
 
+    // ── Query-string deep-link ────────────────────────────────────────────
+    /// <summary>When navigating from the dashboard's attention list, the
+    /// clicked team's ProjectId is passed as ?open=N so the panel opens
+    /// automatically on arrival.</summary>
+    [Parameter, SupplyParameterFromQuery(Name = "open")]
+    public int? OpenProjectId { get; set; }
+
     // ── State ─────────────────────────────────────────────────────────────
     private List<DashboardProjectRowDto> _all    = new();
     private string _query  = "";
@@ -335,6 +344,9 @@
     private DashboardProjectRowDto? _selectedRow;
     private ProjectOverviewDto?     _panelDetail;
     private bool                    _panelLoading;
+
+    // Set after deep-link auto-open so OnAfterRenderAsync can scroll the row into view.
+    private bool _scrollPending;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
@@ -351,6 +363,28 @@
                 .ToList();
         }
         _loading = false;
+
+        // Auto-open the team panel when arriving via a dashboard deep-link
+        // (?open=N). Runs after _all is populated so FindOrNull always works.
+        if (OpenProjectId is int pid)
+        {
+            var row = _all.FirstOrDefault(r => r.ProjectId == pid);
+            if (row is not null)
+            {
+                await OpenPanel(row);
+                // Scroll the row into view after it renders.
+                _scrollPending = true;
+            }
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_scrollPending && OpenProjectId is int pid)
+        {
+            _scrollPending = false;
+            await JS.InvokeVoidAsync("gradify.scrollToAnchor", $"project-{pid}");
+        }
     }
 
     // ── Filtering ─────────────────────────────────────────────────────────

@@ -1,4 +1,6 @@
 @namespace AuthWithAdmin.Client.Components
+@implements IAsyncDisposable
+@inject IJSRuntime JS
 
 @*
     Reusable visual/behavioral modal shell. Follows the same overlay +
@@ -109,6 +111,7 @@
     private readonly string _titleId = $"m-modal-title-{Guid.NewGuid():N}";
     private ElementReference _overlayRef;
     private bool _wasOpen;
+    private bool _scrollLocked;
 
     private string? ResolvedLabelledBy =>
         !string.IsNullOrWhiteSpace(AriaLabelledBy) ? AriaLabelledBy :
@@ -119,7 +122,18 @@
         + (Variant == ModalVariant.QuickView ? " m-modal-quickview" : "")
         + (string.IsNullOrWhiteSpace(Class) ? "" : $" {Class}");
 
+
     private string BodyClass => FlushBody ? "m-modal-body m-modal-body-flush" : "m-modal-body";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsOpen && !_scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.lock"); } catch { }
+        else if (!IsOpen && _scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
+
+        _scrollLocked = IsOpen;
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -132,6 +146,12 @@
             catch { /* element may not be attached yet on prerender */ }
         }
         _wasOpen = IsOpen;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_scrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
     }
 
     private async Task HandleBackdropClickAsync()
