@@ -101,8 +101,8 @@
                             <div class="ldh-att-row"
                                  role="button" tabindex="0"
                                  aria-label="@captured.Title — לחץ לפרטים"
-                                 @onclick="() => OpenPopup(captured)"
-                                 @onkeydown="e => OnAttentionKeyDown(e, captured)">
+                                 @onclick="async () => await OpenPopup(captured)"
+                                 @onkeydown="async e => await OnAttentionKeyDown(e, captured)">
                                 <span class="ldh-att-bar" style="background:@captured.BarColor"></span>
                                 <div class="ldh-att-text">
                                     <span class="ldh-att-title">@captured.Title</span>
@@ -132,7 +132,7 @@
                                 <span class="ldh-team-dot"></span>
                                 <span class="ldh-team-name">@t.TeamName</span>
                                 <span class="ldh-team-mentor">@t.Mentor</span>
-                                <span class="ldh-team-reason">@t.Reason</span>
+                                <span class="ldh-team-reason" style="color:@t.ReasonColor">@t.Reason</span>
                             </a>
                         }
                     </section>
@@ -215,31 +215,87 @@
                 <p class="ldh-popup-team">@_popup.TeamName</p>
             }
 
-            @* Detail rows *@
-            <div class="ldh-popup-rows">
-                @foreach (var row in _popup.Rows)
-                {
-                    <div class="ldh-popup-row">
-                        <span class="ldh-popup-row-label">@row.Label</span>
-                        <span class="ldh-popup-row-val" style="color:@row.Color">@row.Value</span>
-                        @if (row.Value2 is not null)
-                        {
-                            <span class="ldh-popup-row-val" style="color:@row.Color2">@row.Value2</span>
-                        }
-                    </div>
-                }
-            </div>
-
-            @* Note *@
-            @if (!string.IsNullOrEmpty(_popup.Note))
+            @* Detail rows — loading shimmer while fetching *@
+            @if (_popupDetailLoading)
             {
-                <div class="ldh-popup-note">
-                    <span class="ldh-popup-note-label">@_popup.NoteLabel</span>
-                    <p class="ldh-popup-note-text">@_popup.Note</p>
+                <div class="ldh-popup-detail-loading" role="status">
+                    <span class="ldh-spinner" aria-hidden="true"></span>
+                    <span>טוען פרטים…</span>
                 </div>
             }
+            else
+            {
+                <div class="ldh-popup-rows">
 
-            @* Footer *@
+                    @* Extension-only: date-change row + target + mentor recommendation *@
+                    @if (_popupDetail?.Extension is { } ext)
+                    {
+                        @* Dates row — always show when extension detail is present *@
+                        <div class="ldh-popup-row">
+                            <span class="ldh-popup-row-label">מועדים</span>
+                            <span class="ldh-popup-dates">
+                                @if (ext.CurrentDueDate.HasValue)
+                                {
+                                    <span class="ldh-popup-date-cur">@ext.CurrentDueDate.Value.ToString("dd.MM")</span>
+                                    <span class="ldh-popup-date-arrow" aria-hidden="true">←</span>
+                                }
+                                <span class="ldh-popup-date-req">@ext.RequestedDueDate.ToString("dd.MM")</span>
+                                <span class="ldh-popup-date-req-lbl">(מבוקש)</span>
+                            </span>
+                        </div>
+
+                        @* Scope: which task / milestone is targeted *@
+                        @if (!string.IsNullOrEmpty(ext.TaskTitle) || !string.IsNullOrEmpty(ext.MilestoneTitle))
+                        {
+                            <div class="ldh-popup-row">
+                                <span class="ldh-popup-row-label">יעד</span>
+                                <span class="ldh-popup-row-val" style="color:#4A4657">
+                                    @(ext.TaskTitle ?? ext.MilestoneTitle)
+                                </span>
+                            </div>
+                        }
+
+                        @* Mentor recommendation — show only after a decision has been made *@
+                        @if (ext.MentorDecision != ExtensionDecisionStatuses.Pending)
+                        {
+                            <div class="ldh-popup-row">
+                                <span class="ldh-popup-row-label">המלצת מנחה</span>
+                                <span class="ldh-popup-row-val" style="color:@MentorDecisionColor(ext.MentorDecision)">
+                                    @ExtensionDecisionStatuses.Label(ext.MentorDecision)
+                                    @if (!string.IsNullOrEmpty(ext.MentorDecidedByName))
+                                    {
+                                        <span style="color:#9B96A8"> · @ext.MentorDecidedByName</span>
+                                    }
+                                </span>
+                            </div>
+                        }
+                    }
+
+                    @* Shared contextual rows (project, mentor, submitted date) *@
+                    @foreach (var row in _popup.Rows)
+                    {
+                        <div class="ldh-popup-row">
+                            <span class="ldh-popup-row-label">@row.Label</span>
+                            <span class="ldh-popup-row-val" style="color:@row.Color">@row.Value</span>
+                            @if (row.Value2 is not null)
+                            {
+                                <span class="ldh-popup-row-val" style="color:@row.Color2">@row.Value2</span>
+                            }
+                        </div>
+                    }
+                </div>
+
+                @* Action-required note *@
+                @if (!string.IsNullOrEmpty(_popup.Note))
+                {
+                    <div class="ldh-popup-note">
+                        <span class="ldh-popup-note-label">@_popup.NoteLabel</span>
+                        <p class="ldh-popup-note-text">@_popup.Note</p>
+                    </div>
+                }
+            }
+
+            @* Footer — always visible so the user can close even while loading *@
             <div class="ldh-popup-footer">
                 <button type="button" class="ldh-popup-btn-close" @onclick="ClosePopup">סגירה</button>
                 <button type="button" class="ldh-popup-cta" @onclick="NavigateFromPopup">@_popup.CtaLabel</button>
@@ -259,7 +315,9 @@
     private bool _loading   = true;
     private bool _loadError;
 
-    private AttentionItem? _popup;
+    private AttentionItem?            _popup;
+    private ProjectRequestDetailDto?  _popupDetail;
+    private bool                      _popupDetailLoading;
 
     // ── Time / greeting ──────────────────────────────────────────────────────
 
@@ -324,20 +382,48 @@
 
     // ── Popup ─────────────────────────────────────────────────────────────────
 
-    private void OpenPopup(AttentionItem item) => _popup = item;
-    private void ClosePopup() => _popup = null;
+    private async Task OpenPopup(AttentionItem item)
+    {
+        _popup        = item;
+        _popupDetail  = null;
+
+        if (item.RequestRow is not null)
+        {
+            _popupDetailLoading = true;
+            StateHasChanged();
+            try   { _popupDetail = await RequestsService.GetByIdAsync(item.RequestRow.Id); }
+            catch { _popupDetail = null; }
+            _popupDetailLoading = false;
+        }
+    }
+
+    private void ClosePopup()
+    {
+        _popup       = null;
+        _popupDetail = null;
+    }
 
     private void NavigateFromPopup()
     {
         var href = _popup?.Href;
-        _popup = null;
+        _popup       = null;
+        _popupDetail = null;
         if (href is not null) Nav.NavigateTo(href);
     }
 
-    private void OnAttentionKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, AttentionItem item)
+    private async Task OnAttentionKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, AttentionItem item)
     {
-        if (e.Key is "Enter" or " ") OpenPopup(item);
+        if (e.Key is "Enter" or " ") await OpenPopup(item);
     }
+
+    private static string MentorDecisionColor(string decision) => decision switch
+    {
+        ExtensionDecisionStatuses.Recommended    => "#22A05A",
+        ExtensionDecisionStatuses.NotRecommended => "#E0335F",
+        ExtensionDecisionStatuses.Approved       => "#22A05A",
+        ExtensionDecisionStatuses.Rejected       => "#E0335F",
+        _                                        => "#4A4657",
+    };
 
     // ── Data models ───────────────────────────────────────────────────────────
 
@@ -349,11 +435,12 @@
     private sealed record AttentionItem(
         string Tag, string TagBg, string TagColor, string BarColor,
         string Title, string TeamName, string Desc, string Href,
-        IReadOnlyList<PopupRow> Rows, string? Note, string NoteLabel, string CtaLabel);
+        IReadOnlyList<PopupRow> Rows, string? Note, string NoteLabel, string CtaLabel,
+        ProjectRequestRowDto? RequestRow = null);
 
     private sealed record UpcomingItem(string When, string KindClass, string Label, string Href, DateTime Date);
 
-    private sealed record TeamItem(string TeamName, string Mentor, string Reason, int ProjectId);
+    private sealed record TeamItem(string TeamName, string Mentor, string Reason, string ReasonColor, int ProjectId);
 
     // ── Derived: attention items ──────────────────────────────────────────────
     // ONE ROW = ONE SPECIFIC ACTION ITEM requiring lecturer attention.
@@ -389,33 +476,30 @@
                     ? $"החלטה נדרשת — {r.Title}"
                     : r.Title;
 
+                // For extension requests, dates/mentor rec come from detail (fetched async).
+                // Rows here carry the context fields only.
                 var rows = new List<PopupRow>();
-                rows.Add(new PopupRow("סוג בקשה", tag, "#4A4657"));
-                rows.Add(new PopupRow("סטטוס",
-                    RequestStatuses.Label(r.Status),
-                    isExtDecision ? "#6D28F5" : "#4A4657"));
                 if (!string.IsNullOrEmpty(r.ProjectTitle))
                     rows.Add(new PopupRow("פרויקט", r.ProjectTitle, "#4A4657"));
-                if (!string.IsNullOrEmpty(r.TeamName))
-                    rows.Add(new PopupRow("צוות", r.TeamName, "#4A4657"));
                 if (r.MentorNames.Count > 0)
                     rows.Add(new PopupRow("מנחה", r.MentorNames[0], "#4A4657"));
                 rows.Add(new PopupRow("הוגשה",
                     r.CreatedAt.ToString("d/M/yyyy"), "#4A4657"));
 
                 items.Add(new AttentionItem(
-                    Tag:      tag,
-                    TagBg:    isExtDecision ? "rgba(109,40,245,.12)" : "rgba(109,40,245,.07)",
-                    TagColor: "#6D28F5",
-                    BarColor: "#E0335F",
-                    Title:    title,
-                    TeamName: r.TeamName ?? "",
-                    Desc:     BuildRequestDesc(r),
-                    Href:     $"/management/requests?open={r.Id}",
-                    Rows:     rows,
-                    Note:     isExtDecision ? "בקשת ההדחייה ממתינה להחלטתך הסופית." : null,
+                    Tag:       tag,
+                    TagBg:     isExtDecision ? "rgba(109,40,245,.12)" : "rgba(109,40,245,.07)",
+                    TagColor:  "#6D28F5",
+                    BarColor:  "#E0335F",
+                    Title:     title,
+                    TeamName:  r.TeamName ?? "",
+                    Desc:      BuildRequestDesc(r),
+                    Href:      $"/management/requests?open={r.Id}",
+                    Rows:      rows,
+                    Note:      isExtDecision ? "בקשת ההדחייה ממתינה להחלטתך הסופית." : null,
                     NoteLabel: "נדרשת פעולה",
-                    CtaLabel: "לפתיחת הבקשה"));
+                    CtaLabel:  "לפתיחת הבקשה",
+                    RequestRow: r));
             }
 
             // ── Pending mentor approvals (submission waiting for mentor) ──
@@ -492,10 +576,11 @@
                 .OrderBy(p => p.HealthScore)
                 .Take(5)
                 .Select(p => new TeamItem(
-                    TeamName:  p.TeamName ?? p.ProjectTitle,
-                    Mentor:    p.MentorNames ?? "—",
-                    Reason:    BuildReason(p),
-                    ProjectId: p.ProjectId))
+                    TeamName:    p.TeamName ?? p.ProjectTitle,
+                    Mentor:      p.MentorNames ?? "—",
+                    Reason:      BuildReason(p),
+                    ReasonColor: p.HealthBucket == HealthBuckets.AtRisk ? "#E0335F" : "#6B6779",
+                    ProjectId:   p.ProjectId))
                 .ToList();
         }
     }
