@@ -216,7 +216,8 @@ public class MentorController : ControllerBase
                     pt.Name             AS ProjectType,
                     p.Description,
                     p.OrganizationName  AS Organization,
-                    t.TeamName
+                    t.TeamName,
+                    t.Id                AS TeamId
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId        = t.Id
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
@@ -243,12 +244,19 @@ public class MentorController : ControllerBase
             .ToList();
 
         // ── 4. Milestones ────────────────────────────────────────────────────
+        //
+        // EFFECTIVE due date, not the global one. This is the canonical chain
+        // ProjectOverviewController (the lecturer's view of the same project)
+        // has always used:  TeamMilestoneDueDateOverrides -> AcademicYearMilestones.
+        // Reading aym.DueDate raw is what let one project read "באיחור" on the
+        // mentor workspace and on time on the lecturer's, for the same milestone
+        // on the same day.
         const string milestonesSql = @"
             SELECT  pm.Id          AS ProjectMilestoneId,
                     mt.Title,
                     mt.OrderIndex,
                     pm.Status,
-                    aym.DueDate,
+                    COALESCE(mo.OverrideDueDate, aym.DueDate) AS DueDate,
                     (SELECT COUNT(*) FROM Tasks tk WHERE tk.ProjectMilestoneId = pm.Id)
                                    AS TotalTasks,
                     (SELECT COUNT(*) FROM Tasks tk WHERE tk.ProjectMilestoneId = pm.Id
@@ -257,21 +265,32 @@ public class MentorController : ControllerBase
             FROM    ProjectMilestones       pm
             JOIN    AcademicYearMilestones  aym ON pm.AcademicYearMilestoneId = aym.Id
             JOIN    MilestoneTemplates      mt  ON aym.MilestoneTemplateId    = mt.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                            ON mo.TeamId = @TeamId AND mo.ProjectMilestoneId = pm.Id
             WHERE   pm.ProjectId = @ProjectId
             ORDER   BY mt.OrderIndex";
 
         var milestoneRows = ((await _db.GetRecordsAsync<MentorMilestoneRow>(
-            milestonesSql, new { ProjectId = id })) ?? Enumerable.Empty<MentorMilestoneRow>())
+            milestonesSql, new { ProjectId = id, TeamId = projectRow.TeamId }))
+            ?? Enumerable.Empty<MentorMilestoneRow>())
             .ToList();
 
         // ── 5. Tasks ─────────────────────────────────────────────────────────
+        //
+        // Same story as the milestones above, one level deeper: the canonical
+        // chain is TeamTaskDueDateOverrides -> TeamMilestoneDueDateOverrides ->
+        // Tasks.DueDate, and globals are never compared raw. ClosedAt and
+        // HasSubmission come along because the overdue RULE below needs them —
+        // see the note there.
         const string tasksSql = @"
             SELECT  t.Id,
                     t.Title,
                     t.Status,
-                    t.DueDate,
+                    COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     t.ProjectMilestoneId,
                     t.IsSubmission,
+                    t.ClosedAt,
+                    EXISTS (SELECT 1 FROM TaskSubmissions s WHERE s.TaskId = t.Id) AS HasSubmission,
                     COALESCE(u.FirstName || ' ' || u.LastName, '') AS AssignedToName,
                     (SELECT ts2.Status
                      FROM   TaskSubmissions ts2
@@ -281,11 +300,16 @@ public class MentorController : ControllerBase
                      WHERE  ts2.TaskId = t.Id ORDER BY ts2.CreatedAt DESC LIMIT 1) AS LatestMentorStatus
             FROM    Tasks t
             LEFT JOIN users u ON t.AssignedToUserId = u.Id
+            LEFT JOIN TeamTaskDueDateOverrides tto
+                            ON tto.TeamId = @TeamId AND tto.TaskId = t.Id
+            LEFT JOIN TeamMilestoneDueDateOverrides mo
+                            ON mo.TeamId = @TeamId AND mo.ProjectMilestoneId = t.ProjectMilestoneId
             WHERE   t.ProjectId = @ProjectId
-            ORDER   BY t.DueDate";
+            ORDER   BY DueDate";
 
         var taskRows = ((await _db.GetRecordsAsync<MentorTaskRow>(
-            tasksSql, new { ProjectId = id })) ?? Enumerable.Empty<MentorTaskRow>())
+            tasksSql, new { ProjectId = id, TeamId = projectRow.TeamId }))
+            ?? Enumerable.Empty<MentorTaskRow>())
             .ToList();
 
         // ── 6. Pending submissions ───────────────────────────────────────────
@@ -311,15 +335,25 @@ public class MentorController : ControllerBase
             pendingSql, new { ProjectId = id })) ?? Enumerable.Empty<MentorPendingSubmissionDto>())
             .ToList();
 
+        // ── Team working links (ProjectResources) ──────────────────────────
+        // The team's own links, read-only here. Same rows their /project
+        // workspace shows; this route's scope guard above already limits who
+        // gets here.
+        const string resourcesSql = @"
+            SELECT  Id, Label, Url
+            FROM    ProjectResources
+            WHERE   ProjectId = @ProjectId
+            ORDER   BY Id";
+        var resources = (await _db.GetRecordsAsync<ProjectResourceDto>(
+            resourcesSql, new { ProjectId = id }))?.ToList() ?? new();
+
         // ── 7. Aggregates ────────────────────────────────────────────────────
         int totalTasks      = taskRows.Count;
         int openTasks       = taskRows.Count(t => t.Status == "Open");
         int inProgressTasks = taskRows.Count(t =>
             t.Status is "InProgress" or "SubmittedToMentor" or "ReturnedForRevision" or "RevisionSubmitted");
         int completedTasks = taskRows.Count(t => t.Status is "Done" or "Completed" or "ApprovedForSubmission");
-        int overdueTasks   = taskRows.Count(t =>
-            t.DueDate.HasValue && t.DueDate < DateTime.UtcNow &&
-            t.Status is not ("Done" or "Completed" or "ApprovedForSubmission"));
+        int overdueTasks   = taskRows.Count(IsTaskOverdue);
         int pendingReview  = taskRows.Count(t => t.LatestMentorStatus == "Pending");
 
         int totalMs     = milestoneRows.Count;
@@ -345,8 +379,7 @@ public class MentorController : ControllerBase
                     Title                  = t.Title,
                     Status                 = NormalizeTaskStatus(t.Status),
                     DueDate                = t.DueDate,
-                    IsOverdue              = t.DueDate.HasValue && t.DueDate < DateTime.UtcNow
-                                                && t.Status is not ("Done" or "ApprovedForSubmission"),
+                    IsOverdue              = IsTaskOverdue(t),
                     IsSubmission           = t.IsSubmission,
                     AssignedToName         = t.AssignedToName,
                     LatestSubmissionStatus = t.LatestSubmissionStatus,
@@ -376,6 +409,7 @@ public class MentorController : ControllerBase
             PendingMentorReview  = pendingReview,
             Milestones           = milestones,
             PendingSubmissions   = pendingRows,
+            Resources            = resources,
         });
     }
 
@@ -618,6 +652,41 @@ public class MentorController : ControllerBase
         public int       PendingMentorReview     { get; set; }
     }
 
+    /// <summary>
+    /// Is this task late?
+    ///
+    /// <para>THE LECTURER'S RULE, VERBATIM — see ProjectOverviewController step
+    /// 6. Two screens describing the same task disagreed about it in three
+    /// separate ways, and every one of them is a real difference rather than a
+    /// rounding one:</para>
+    ///
+    /// <list type="bullet">
+    /// <item>the due date it compared (raw global vs. the team's effective one —
+    /// fixed in the two queries above);</item>
+    /// <item><c>DateTime.UtcNow</c> vs. <c>DateTime.Today</c>, which makes a task
+    /// due today read as overdue for the first hours of an Israeli morning;</item>
+    /// <item>a submitted deliverable. The lecturer stops calling a task late once
+    /// anything has been handed in — the work arrived, the reviewing is someone
+    /// else's clock — and treats <c>SubmittedToMentor</c> as closed. Neither was
+    /// true here.</item>
+    /// </list>
+    ///
+    /// <para>Consequence, stated plainly: some rows that used to carry
+    /// "באיחור" on the mentor workspace no longer do. That is the point — the
+    /// ones that stopped are the ones the lecturer never considered late.</para>
+    /// </summary>
+    private static bool IsTaskOverdue(MentorTaskRow t)
+    {
+        bool open = t.Status is not ("Done" or "Completed" or "SubmittedToMentor"
+                                     or "ApprovedForSubmission");
+
+        return open
+               && t.ClosedAt is null
+               && t.HasSubmission == 0
+               && t.DueDate is not null
+               && t.DueDate.Value.Date < DateTime.Today;
+    }
+
     private sealed class MentorProjectHeaderRow
     {
         public int     Id           { get; set; }
@@ -629,6 +698,8 @@ public class MentorController : ControllerBase
         public string? Description  { get; set; }
         public string? Organization { get; set; }
         public string  TeamName     { get; set; } = "";
+        /// <summary>Needed for the effective-due-date override chain below.</summary>
+        public int     TeamId       { get; set; }
     }
 
     private sealed class MentorMilestoneRow
@@ -650,6 +721,11 @@ public class MentorController : ControllerBase
         public DateTime? DueDate                { get; set; }
         public int?      ProjectMilestoneId     { get; set; }
         public bool      IsSubmission           { get; set; }
+        /// <summary>Set when the task was closed out; a closed task is never
+        /// overdue, whatever its due date says.</summary>
+        public DateTime? ClosedAt               { get; set; }
+        /// <summary>Any submission row exists for this task.</summary>
+        public int       HasSubmission          { get; set; }
         public string    AssignedToName         { get; set; } = "";
         public string?   LatestSubmissionStatus { get; set; }
         public string?   LatestMentorStatus     { get; set; }

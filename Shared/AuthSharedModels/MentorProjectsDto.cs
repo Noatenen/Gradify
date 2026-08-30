@@ -67,6 +67,12 @@ public class MentorProjectDetailDto
     // Milestones with nested tasks
     public List<MentorMilestoneDto>          Milestones          { get; set; } = new();
     public List<MentorPendingSubmissionDto>  PendingSubmissions  { get; set; } = new();
+
+    /// <summary>The team's own working links (ProjectResources) — the Drive
+    /// folder, the spec, the design file, the repository. See the note on
+    /// ProjectOverviewHeaderDto.Resources for why these travel on the payload
+    /// the workspace already fetches.</summary>
+    public List<ProjectResourceDto> Resources { get; set; } = new();
 }
 
 public class MentorTeamMemberDto

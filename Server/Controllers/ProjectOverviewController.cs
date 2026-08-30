@@ -101,6 +101,34 @@ public class ProjectOverviewController : ControllerBase
         var milestones = (await _db.GetRecordsAsync<MilestoneRow>(
             milestonesSql, new { ProjectId = projectId, TeamId = teamId }))?.ToList() ?? new();
 
+        // ── 2b. Team members ───────────────────────────────────────────────
+        // The same four columns, from the same two tables, that
+        // MentorController hands its own workspace — so the shared identity
+        // block draws the same team for both roles.
+        const string membersSql = @"
+            SELECT  u.Id                             AS UserId,
+                    u.FirstName || ' ' || u.LastName AS FullName,
+                    u.Email,
+                    COALESCE(u.Phone, '')            AS Phone
+            FROM    TeamMembers tm
+            JOIN    users       u ON u.Id = tm.UserId
+            WHERE   tm.TeamId = @TeamId
+              AND   tm.IsActive = 1";
+        var members = (await _db.GetRecordsAsync<MentorTeamMemberDto>(
+            membersSql, new { TeamId = teamId }))?.ToList() ?? new();
+
+        // ── Team working links (ProjectResources) ──────────────────────────
+        // The team's own links, read-only here. Same rows their /project
+        // workspace shows; this route's scope guard above already limits who
+        // gets here.
+        const string resourcesSql = @"
+            SELECT  Id, Label, Url
+            FROM    ProjectResources
+            WHERE   ProjectId = @ProjectId
+            ORDER   BY Id";
+        var resources = (await _db.GetRecordsAsync<ProjectResourceDto>(
+            resourcesSql, new { ProjectId = projectId }))?.ToList() ?? new();
+
         // ── 3. Tasks (effective due date + overdue + has-submission) ───────
         const string tasksSql = @"
             SELECT  t.Id                AS TaskId,
@@ -141,6 +169,53 @@ public class ProjectOverviewController : ControllerBase
             LIMIT   50";
         var openRequests = (await _db.GetRecordsAsync<ProjectOverviewRequestDto>(
             requestsSql, new { ProjectId = projectId }))?.ToList() ?? new();
+
+        // ── What this caller may do with each request ────────────────────
+        //
+        // The SAME resolver ProjectRequestsController gates /extension/decision
+        // on. This page words a request row's status from these flags, so it
+        // cannot print "ממתינה להחלטתך" over a request nobody may decide — which
+        // is what it did while it inferred the claim from the status plus the
+        // reader's roles.
+        var viewerMentorsThisProject = (await _db.GetRecordsAsync<int>(
+            "SELECT 1 FROM ProjectMentors WHERE ProjectId = @P AND UserId = @U LIMIT 1",
+            new { P = projectId, U = authUserId }))?.FirstOrDefault() == 1;
+
+        if (openRequests.Count > 0)
+        {
+            const string reqDecisionsSql = @"
+                SELECT  e.RequestId, e.MentorDecision, e.LecturerDecision, e.FinalDecision
+                FROM    ProjectRequestExtensions e
+                JOIN    ProjectRequests r ON r.Id = e.RequestId
+                WHERE   r.ProjectId = @ProjectId";
+
+            var decisions = ((await _db.GetRecordsAsync<ExtensionDecisionStateRow>(
+                                 reqDecisionsSql, new { ProjectId = projectId }))
+                             ?? Enumerable.Empty<ExtensionDecisionStateRow>())
+                            .ToDictionary(e => e.RequestId, e => e);
+
+            bool isAdminOrStaff = User.IsInRole(Roles.Admin) || User.IsInRole(Roles.Staff);
+            bool holdsMentorRole = User.IsInRole(Roles.Mentor);
+
+            foreach (var r in openRequests)
+            {
+                decisions.TryGetValue(r.RequestId, out var d);
+
+                var caps = ExtensionWorkflow.Resolve(
+                    requestType:      r.RequestType,
+                    status:           r.Status,
+                    mentorDecision:   d?.MentorDecision,
+                    lecturerDecision: d?.LecturerDecision,
+                    finalDecision:    d?.FinalDecision,
+                    isAdminOrStaff:   isAdminOrStaff,
+                    holdsMentorRole:  holdsMentorRole,
+                    isProjectMentor:  viewerMentorsThisProject);
+
+                r.ViewerCanRecommend  = caps.CanRecommend;
+                r.ViewerCanDecide     = caps.CanDecide;
+                r.MentorStageComplete = caps.MentorStageComplete;
+            }
+        }
 
         // ── 5. Recent submissions (latest 10) ──────────────────────────────
         const string submissionsSql = @"
@@ -230,9 +305,23 @@ public class ProjectOverviewController : ControllerBase
         int msCompleted    = milestoneDtos.Count(m => m.Status == "Completed");
         int progressPct    = totalTasks == 0 ? 0 : (int)Math.Round(completedTasks * 100.0 / totalTasks);
 
+        // Milestone completion is the project's HEADLINE progress on both
+        // workspaces; the task figure above stays as the secondary number the
+        // task area shows.
+        //
+        // TRUNCATING INTEGER DIVISION, deliberately — byte for byte the
+        // expression MentorController uses at BOTH its call sites (the projects
+        // list and the project detail). Rounding here instead read 67% beside
+        // the mentor's 66% for the same two-of-three milestones, which is
+        // exactly the kind of disagreement stating one figure was meant to end.
+        // If this ever becomes Math.Round it has to become Math.Round in all
+        // three places at once.
+        int msProgressPct = msTotal == 0 ? 0 : msCompleted * 100 / msTotal;
+
         var summary = new ProjectOverviewSummaryDto
         {
-            OverallProgressPercent = progressPct,
+            OverallProgressPercent   = progressPct,
+            MilestoneProgressPercent = msProgressPct,
             MilestonesCompleted    = msCompleted,
             MilestonesTotal        = msTotal,
             TasksCompleted         = completedTasks,
@@ -251,6 +340,11 @@ public class ProjectOverviewController : ControllerBase
             ProjectType   = head.ProjectType,
             MentorNames   = string.IsNullOrWhiteSpace(head.MentorNames) ? null : head.MentorNames,
             HealthStatus  = head.HealthStatus,
+            TeamMembers   = members,
+            Resources     = resources,
+            // Their real relationship to this project, for the attention feed.
+            // Looked up once above, with the request capabilities that need it.
+            ViewerIsProjectMentor = viewerMentorsThisProject,
         };
 
         return Ok(new ProjectOverviewDto
@@ -265,6 +359,16 @@ public class ProjectOverviewController : ControllerBase
     }
 
     // ── Private row types ────────────────────────────────────────────────────
+
+    /// <summary>The three decision columns of an extension side-row — all
+    /// ExtensionWorkflow.Resolve needs.</summary>
+    private sealed class ExtensionDecisionStateRow
+    {
+        public int    RequestId        { get; set; }
+        public string MentorDecision   { get; set; } = "";
+        public string LecturerDecision { get; set; } = "";
+        public string FinalDecision    { get; set; } = "";
+    }
 
     private sealed class ProjectHeaderRow
     {

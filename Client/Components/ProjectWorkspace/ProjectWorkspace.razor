@@ -1,0 +1,605 @@
+@namespace AuthWithAdmin.Client.Components
+
+@*
+    ── מרחב הפרויקט — the shared Project Workspace ──────────────────────────
+
+    ONE PAGE SHAPE FOR TWO ROLES. A lecturer and a mentor open a project to
+    answer the same questions in the same order, so they get the same
+    composition — identity, then the journey, then the work itself, then the
+    handful of events that are not already on it. What differs is the CONTENT
+    of those sections and which rows can be acted on, and both of those arrive
+    as a ProjectWorkspaceView the host built from the endpoints its own role is
+    authorised for. This file contains no data access and no role check — the
+    host declares its Context and supplies content already scoped to it.
+
+    THE TAB BAR IS GONE, AND SO IS THE EXPANDING ROW. ────────────────────────
+
+    הגשות / בקשות / משימות used to be three tabs of one card. Two consequences,
+    both of them the reason this pass exists:
+
+      · A project's state could not be READ. Whichever tab was open, the other
+        two categories reported nothing — so "what has been submitted, what is
+        open, what is being worked on" took three clicks and a memory of the
+        first two answers. They are three separate cards now, all on the page
+        at once, each as tall as its own content.
+
+      · A request opened INTO the list. The row grew a large block underneath
+        it — dates, reason, attachments, a decision form — while the rows above
+        and below carried on as if nothing had happened. Nothing said which
+        item you were in, and the surface it opened looked like nothing else in
+        the product. A row now opens a real detail surface over the page (the
+        host mounts it; see OnWorkRowClick), and the row it came from is marked
+        while that surface is up.
+
+    NOT THREE EQUAL TILES. The sections carry different amounts and different
+    kinds of thing, so they get different weight: the first takes the page's
+    full measure, and the other two share the band beneath it, each hugging its
+    own content. Nothing stretches to match anything else.
+
+    AND NOT THREE COMPLETE LISTS. Showing every row a category holds replaced
+    one reading problem with another: a project with five deliverables, seven
+    requests and nine tasks put twenty-one rows on the page, of which three
+    needed anybody to do anything. A section draws what is waiting on this
+    viewer, what is late, and up to two recently-handled rows for orientation —
+    see PwRowRank. Everything else is one click away behind the section's own
+    "לכל…", which is where history belongs: reachable, and not competing.
+
+    A SECTION WITH NOTHING ACTIVE COLLAPSES rather than reserving space. Its
+    heading and its summary line are the whole card, because "4 מתוך 5 הוגשו"
+    beside the title already says everything a list of five settled rows would
+    have said, in one line instead of five.
+
+    VISUAL-LANGUAGE REFERENCE: LecturerTasksPage (המשימות שלי) — MCard panes,
+    MSectionHeading, MRow-style rows, MEmptyState, and nothing declared locally
+    that a shared primitive already draws.
+
+    NO KPI ROW. The lecturer page this replaces led with six counter cards, and
+    every number on them restated a section directly beneath it. The counts that
+    earn their place are the ones attached to something you can open: a
+    section's own summary line, the stage position, the progress figure in the
+    header.
+
+    THE SLOTS. Everything role-specific enters through a RenderFragment rather
+    than a flag, so this component never grows a branch per role:
+
+      IdentityActions   the role's own project controls, in the header —
+                        add-mentor and Moodle status for a lecturer, the
+                        guidance-meeting scheduler for a mentor
+
+    CLICKS RETURN A KEY, NOT AN ENTITY. Every row carries an opaque string the
+    host chose, and the callbacks hand it straight back. That is what lets a
+    mentor row open a submission review while the same-shaped lecturer row
+    opens its own, without this file knowing either exists.
+*@
+
+<div class="pw" data-pw-context="@Context.ToString().ToLowerInvariant()">
+
+    @* ── 1. Identity — ONE header, not four clusters ─────────────────────
+
+        Title and status on one line, the project's own sentence under it,
+        and then a SINGLE facts line carrying everything else: the type and
+        mentor chips, the role's own actions, the team, and how far along
+        they are.
+    *@
+    <header class="pw-head">
+
+        <div class="pw-head-top">
+            <h1 class="pw-title">@View.Identity.Title</h1>
+            @if (!string.IsNullOrWhiteSpace(View.Identity.StatusText))
+            {
+                <MStatusBadge Variant="@View.Identity.StatusVariant"
+                              Text="@View.Identity.StatusText" />
+            }
+        </div>
+
+        <p class="pw-sub">@IdentityLine</p>
+
+        <div class="pw-head-facts">
+
+            @* Metadata and the role's own actions — one group. *@
+            @if (View.Identity.Meta.Count > 0 || IdentityActions is not null)
+            {
+                <div class="pw-meta">
+                    @foreach (var chip in View.Identity.Meta)
+                    {
+                        <span class="pw-chip">
+                            @if (!string.IsNullOrWhiteSpace(chip.Icon))
+                            {
+                                <span class="oi @chip.Icon" aria-hidden="true"></span>
+                            }
+                            @chip.Text
+                        </span>
+                    }
+                    @IdentityActions
+                </div>
+            }
+
+            @* ── חומרי הפרויקט ────────────────────────────────────────────
+                PROJECT-LEVEL materials, and only those: the team's own
+                working links (ProjectResources) — the shared folder, the
+                spec, the design file, the repository. They are deliberately
+                NOT mixed with a submission's files or a request's
+                attachments, which belong to one item each and live inside
+                that item's own detail surface. Three different things, three
+                different homes; this one is the project's, so it lives on
+                the project's header and stays there while any item is open.
+
+                Nothing is stored or edited from here — the team owns these
+                on their own workspace, and this is a read-only way in. *@
+            @if (View.Identity.Materials.Count > 0)
+            {
+                <div class="pw-materials">
+                    <span class="pw-materials-icon" aria-hidden="true">
+                        <span class="oi oi-folder"></span>
+                    </span>
+
+                    @if (View.Identity.Materials.FirstOrDefault(m => m.IsPrimary) is { } folder)
+                    {
+                        <a class="pw-material-primary" href="@folder.Url"
+                           target="_blank" rel="noopener noreferrer">@folder.Label</a>
+                        <span class="pw-materials-sep" aria-hidden="true"></span>
+                    }
+
+                    <button type="button" class="pw-materials-toggle"
+                            aria-expanded="@(_materialsOpen ? "true" : "false")"
+                            @onclick="ToggleMaterials">
+                        חומרי הפרויקט
+                        <span class="pw-materials-count">@View.Identity.Materials.Count</span>
+                    </button>
+
+                    @if (_materialsOpen)
+                    {
+                        <div class="pw-materials-pop" role="group" aria-label="חומרי הפרויקט">
+                            @foreach (var m in View.Identity.Materials)
+                            {
+                                <a class="pw-material" href="@m.Url"
+                                   target="_blank" rel="noopener noreferrer" title="@m.Url">
+                                    <span class="pw-material-label">@m.Label</span>
+                                    <span class="pw-material-host">@HostOf(m.Url)</span>
+                                </a>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @* The team — a second group on the same line. *@
+            @if (View.Identity.Members.Count > 0)
+            {
+                <div class="pw-members">
+                    @foreach (var m in View.Identity.Members)
+                    {
+                        <span class="pw-member" title="@m">
+                            <span class="pw-member-initials" aria-hidden="true">@Initials(m)</span>
+                            @ShortName(m)
+                        </span>
+                    }
+                </div>
+            }
+
+            @* Progress, inline — the same figure and the same bar, laid on
+               the header's line rather than stacked off the end of it. *@
+            <div class="pw-progress">
+                <span class="pw-progress-pct">@View.Identity.ProgressPct%</span>
+                <span class="pw-progress-label">התקדמות אבני הדרך</span>
+                <span class="pw-progress-bar">
+                    <MProgressBar Value="@View.Identity.ProgressPct"
+                                  Size="MProgressBar.ProgressSize.Small"
+                                  AccessibleLabel="@($"התקדמות אבני הדרך: {View.Identity.ProgressPct}%")" />
+                </span>
+            </div>
+        </div>
+    </header>
+
+    @* ── 2. The journey ──────────────────────────────────────────────────── *@
+    <div class="pw-row pw-row-full">
+        <section class="pw-pane" aria-labelledby="pw-roadmap-h">
+            <MCard Padding="MCard.CardPadding.None" Fill="true">
+                <div class="pw-card">
+                    <div class="pw-card-head">
+                        @*  The same heading anatomy every card on this page
+                            uses: title, then a quiet count/summary in the
+                            trailing slot. It carried its own `.pw-card-note`
+                            here — a second class for the object the section
+                            cards call `.pw-sec-summary`. *@
+                        <MSectionHeading Text="מסלול אבני הדרך" LabelId="pw-roadmap-h">
+                            <Trailing>
+                                <span class="pw-sec-summary pw-tone-quiet">@View.StagesSummary</span>
+                            </Trailing>
+                        </MSectionHeading>
+                    </div>
+
+                    @if (View.Stages.Count == 0)
+                    {
+                        <p class="pw-empty">@View.StagesEmptyText</p>
+                    }
+                    else
+                    {
+                        <ol class="pw-stages" style="--pw-stage-count:@View.Stages.Count">
+                            @foreach (var stage in View.Stages)
+                            {
+                                var c = stage;
+                                <li class="pw-stage @StageClass(c.State)">
+                                    <span class="pw-stage-track" aria-hidden="true"></span>
+                                    <span class="pw-stage-name">
+                                        <span class="pw-stage-dot" aria-hidden="true"></span>
+                                        <span class="pw-stage-text" title="@c.Name">@c.Name</span>
+                                    </span>
+                                    <span class="pw-stage-date">@c.Date</span>
+                                </li>
+                            }
+                        </ol>
+                    }
+                </div>
+            </MCard>
+        </section>
+    </div>
+
+    @* ── 3. The work — three sections, three cards ────────────────────────
+
+        THE ORDER IS THE ORDER OF THE QUESTIONS, and it never changes with
+        the data: what has been submitted, what is open, what is being worked
+        on. A section that moved when its counts moved would make the page
+        unlearnable.
+
+        THE WEIGHT IS NOT EQUAL, on purpose. The first section takes the
+        page's full measure — it carries the most rows and the richest ones
+        (a title, a milestone, a deadline, a state and an action). The other
+        two share the band beneath it and each ends where its content ends;
+        `align-items: start` in the stylesheet is what stops the shorter of
+        the pair being padded out to match the taller.
+    *@
+    @*  ONE WIDE COLUMN AND A RAIL, which is the composition both
+        reference screens use. The two categories a supervisor ACTS on —
+        deliverables to review and requests to decide — stack in the wide
+        column at the reading edge; משימות is supporting information and
+        takes the rail, with the activity postscript beneath it.
+
+        The previous arrangement gave הגשות the page's full measure and
+        then split בקשות and משימות beneath it, so the most important card
+        on the page was also the emptiest: a project with one pending
+        review drew one row across 1300px. Width now follows how much a
+        card has to say, not what it is called. *@
+    <div class="pw-work">
+
+        <div class="pw-work-main">
+            @foreach (var sec in MainSections)
+            {
+                @SectionCard(sec, true)
+            }
+        </div>
+
+        <div class="pw-work-rail">
+            @foreach (var sec in RailSections)
+            {
+                @SectionCard(sec, false)
+            }
+
+    @* ── 4. פעילות אחרונה — a timeline, not a card ────────────────────────
+
+        WHAT IT MAY CONTAIN. Only events that are NOT already legible from
+        the three sections above: a submission arriving (who filed it and
+        when — the sections state the deliverable's state, never its author),
+        a request MOVING after it was filed, a guidance meeting that has
+        already happened. "A request was opened" is not one of them: that
+        request is a row in בקשות, with its status and its filing date on it,
+        two hundred pixels up the page.
+
+        WHAT IT IS. Six lines of small type under a label, at the bottom, in
+        no card at all. It used to be a full-width panel with the same
+        surface, inset and row rhythm as the work card above it — a piece of
+        reference material dressed as one of the page's subjects. When a
+        project has nothing unique to report, nothing renders: an empty card
+        whose only content is "אין פעילות מתועדת" was chrome around a blank.
+    *@
+    @if (View.Activity.Count > 0)
+    {
+        <section class="pw-timeline" aria-labelledby="pw-activity-h">
+            <p class="pw-timeline-h" id="pw-activity-h">פעילות אחרונה</p>
+
+            <ol class="pw-timeline-list">
+                @foreach (var entry in View.Activity)
+                {
+                    var v = entry;
+                    <li class="pw-timeline-item">
+                        @if (v.IsClickable)
+                        {
+                            <button type="button" class="pw-timeline-row pw-timeline-btn"
+                                    @onclick="@(() => OnActivityClick.InvokeAsync(v.Key))"
+                                    aria-label="@($"פתיחת {v.Text}")">
+                                @ActivityBody(v)
+                            </button>
+                        }
+                        else
+                        {
+                            <div class="pw-timeline-row">@ActivityBody(v)</div>
+                        }
+                    </li>
+                }
+            </ol>
+        </section>
+    }
+        </div>
+    </div>
+</div>
+
+
+@code {
+    [Parameter, EditorRequired] public ProjectWorkspaceView View { get; set; } = default!;
+
+    /// <summary>
+    /// Which workspace this is. REQUIRED, and each host passes a literal —
+    /// the lecturer route passes <see cref="PwContext.Lecturer"/> and the
+    /// mentor route <see cref="PwContext.Mentor"/>, so a dual-role account
+    /// gets the workspace it navigated into rather than whichever role a
+    /// predicate tested first. See PwContext for why this is not derived from
+    /// the role list or from UserModeService.
+    ///
+    /// <para>The component itself draws the same design either way; the
+    /// context is declared here so it is explicit at every call site, and it
+    /// surfaces as <c>data-pw-context</c> so which workspace rendered can be
+    /// read off the page rather than inferred.</para>
+    /// </summary>
+    [Parameter, EditorRequired] public PwContext Context { get; set; }
+
+    /// <summary>Header-end actions belonging to one role — add-mentor and the
+    /// Moodle control for a lecturer, the meeting scheduler for a mentor.</summary>
+    [Parameter] public RenderFragment? IdentityActions { get; set; }
+
+    /// <summary>A work row was activated. The host decides what that opens —
+    /// every one of them now opens a detail surface OVER this page rather than
+    /// expanding inside the list.</summary>
+    [Parameter] public EventCallback<string> OnWorkRowClick { get; set; }
+    [Parameter] public EventCallback<string> OnActivityClick { get; set; }
+
+    // ── חומרי הפרויקט ───────────────────────────────────────────────────────
+
+    private bool _materialsOpen;
+
+    private void ToggleMaterials() => _materialsOpen = !_materialsOpen;
+
+    /// <summary>The link's host, as the one piece of context a bare label
+    /// cannot give — "מסמך אפיון" says nothing about whether it opens Docs,
+    /// Figma or GitHub.</summary>
+    private static string HostOf(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u)
+            ? u.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? u.Host[4..] : u.Host
+            : "";
+
+    // ── Sections ────────────────────────────────────────────────────────────
+
+    /// <summary>The wide column — the categories a reader acts on. Written as
+    /// "the first two" rather than as "הגשות and בקשות" so this component still
+    /// knows nothing about what a host chose to put where.</summary>
+    private IReadOnlyList<PwSection> MainSections => View.Sections.Take(2).ToList();
+
+    /// <summary>The rail — supporting sections, at the narrower measure.</summary>
+    private IReadOnlyList<PwSection> RailSections => View.Sections.Skip(2).ToList();
+
+    /// <summary>Which sections have been asked to show everything they hold.
+    /// Local, and deliberately not a parameter: it is a reading preference on
+    /// one card, not a fact about the project.</summary>
+    private readonly HashSet<string> _expanded = new();
+
+    private void ToggleSection(string key)
+    {
+        if (!_expanded.Remove(key)) _expanded.Add(key);
+    }
+
+    private RenderFragment SectionCard(PwSection sec, bool isPrimary) =>@<text>
+        <section class="pw-pane @(isPrimary ? "pw-pane-primary" : "") @(sec.WaitingCount > 0 ? "pw-pane-live" : "")"
+                 aria-labelledby="@($"pw-sec-{sec.Key}")">
+            <MCard Padding="MCard.CardPadding.None" Fill="true">
+                <div class="pw-card @(sec.ActiveCount == 0 ? "pw-card-calm" : "")">
+
+                    <div class="pw-card-head">
+                        <MSectionHeading Text="@sec.Title" LabelId="@($"pw-sec-{sec.Key}")">
+                            <Icon>
+                                @*  A shape before the word. Both reference
+                                    screens introduce every section with one,
+                                    and it is what lets a reader find הגשות on
+                                    the page before reading anything. *@
+                                <span class="pw-sec-icon"><span class="oi @sec.Icon"></span></span>
+                            </Icon>
+                            <Trailing>
+                                @*  THE ONE PLACE THE SIGNATURE GRADIENT APPEARS
+                                    ON THIS PAGE, besides a primary CTA: the
+                                    count of things waiting on THIS reader. It
+                                    is the page's only "look here", so it has
+                                    to mean exactly that. *@
+                                @if (sec.WaitingCount > 0)
+                                {
+                                    <span class="pw-sec-count pw-sec-count-live">@sec.WaitingCount</span>
+                                }
+                                else if (sec.Rows.Count > 0)
+                                {
+                                    <span class="pw-sec-count">@sec.Rows.Count</span>
+                                }
+
+                                @if (sec.Rows.Count > 0 && !string.IsNullOrWhiteSpace(sec.Summary))
+                                {
+                                    <span class="pw-sec-summary @ToneClass(sec.SummaryTone)">@sec.Summary</span>
+                                }
+                                @if (sec is { AllHref: { Length: > 0 } href, AllLabel: { Length: > 0 } label })
+                                {
+                                    <a class="pw-all-link" href="@href">@label</a>
+                                }
+                            </Trailing>
+                        </MSectionHeading>
+                    </div>
+
+                    @if (sec.Rows.Count == 0)
+                    {
+                        <p class="pw-empty">@sec.EmptyText</p>
+                    }
+                    else if (VisibleRows(sec) is { Count: > 0 } rows)
+                    {
+                        <div class="pw-rows">
+                            @foreach (var row in rows)
+                            {
+                                var r = row;
+                                var quiet = r.Rank is not (PwRowRank.Waiting or PwRowRank.Exception);
+                                var cls = "pw-row-item"
+                                          + (quiet ? " pw-row-quiet" : "")
+                                          + (r == FirstQuiet(rows) ? " pw-row-quiet-start" : "")
+                                          + (r.IsOpen ? " pw-row-open" : "");
+
+                                @if (r.IsClickable)
+                                {
+                                    <button type="button" class="@cls"
+                                            @onclick="@(() => OnWorkRowClick.InvokeAsync(r.Key))"
+                                            aria-current="@(r.IsOpen ? "true" : null)"
+                                            aria-label="@($"פתיחת {r.Title}")">
+                                        @RowBody(r)
+                                    </button>
+                                }
+                                else
+                                {
+                                    <div class="@cls">@RowBody(r)</div>
+                                }
+                            }
+                        </div>
+                    }
+
+                    @if (sec.HiddenCount > 0 || !string.IsNullOrWhiteSpace(sec.Note))
+                    {
+                        <div class="pw-card-foot">
+                            @if (!string.IsNullOrWhiteSpace(sec.Note))
+                            {
+                                <span class="pw-card-note">@sec.Note</span>
+                            }
+                            @if (sec.HiddenCount > 0)
+                            {
+                                @*  Centred at the card's foot, the way both
+                                    reference screens end a capped list. It
+                                    reveals everything this section holds, in
+                                    place; the queue link in the heading is the
+                                    cross-project one. *@
+                                <button type="button" class="pw-more"
+                                        aria-expanded="@(_expanded.Contains(sec.Key) ? "true" : "false")"
+                                        @onclick="@(() => ToggleSection(sec.Key))">
+                                    @(_expanded.Contains(sec.Key)
+                                        ? "הצגה מצומצמת"
+                                        : $"{sec.MoreLabel ?? "הצגת הכל"} · {sec.Rows.Count}")
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            </MCard>
+        </section>
+    </text>;
+
+    /// <summary>The first non-active row in a drawn list, so the boundary
+    /// between "needs you" and "already handled" can be marked with air instead
+    /// of a caption. Null when a list is all one or all the other.</summary>
+    private static PwWorkRow? FirstQuiet(IReadOnlyList<PwWorkRow> rows) =>
+        rows.Any(r => r.Rank is PwRowRank.Waiting or PwRowRank.Exception)
+            ? rows.FirstOrDefault(r => r.Rank is not (PwRowRank.Waiting or PwRowRank.Exception))
+            : null;
+
+    private IReadOnlyList<PwWorkRow> VisibleRows(PwSection sec) =>
+        _expanded.Contains(sec.Key) ? sec.Ordered : sec.Default;
+
+    // ── Row bodies ──────────────────────────────────────────────────────────
+    //
+    // Written once as fragments because each of them is rendered from two
+    // branches — a <button> when the row opens something and a <div> when it
+    // does not. Duplicating the markup across those branches is how the
+    // clickable and unclickable versions of one row start to look different.
+
+    /// <summary>
+    /// TWO LINES, NOT FIVE SLOTS.
+    ///
+    /// <para>Both reference screens draw a row as a name over a context line,
+    /// with one soft pill and a date at the far end. This row used to string
+    /// its title, its context, its date, its state and its action across a
+    /// single line, which is what made a card of them read as a table: five
+    /// columns, ragged, and the title fighting four other things for the eye.
+    /// The context line costs no vertical space that the 11px row padding was
+    /// not already spending, and it lets the title be the only thing on its
+    /// own line.</para>
+    /// </summary>
+    private RenderFragment RowBody(PwWorkRow r) =>@<text>
+        <span class="pw-row-text">
+            <span class="pw-row-title" title="@r.Title">@r.Title</span>
+            @if (!string.IsNullOrWhiteSpace(r.Meta))
+            {
+                <span class="pw-row-meta" title="@r.Meta">@r.Meta</span>
+            }
+        </span>
+
+        <span class="pw-row-end">
+            @if (!string.IsNullOrWhiteSpace(r.State))
+            {
+                <span class="pw-pill @ToneClass(r.StateTone)" title="@r.State">@r.State</span>
+            }
+            @if (!string.IsNullOrWhiteSpace(r.Trailing))
+            {
+                <span class="pw-row-due @(r.TrailingLate ? "pw-late" : "")">@r.Trailing</span>
+            }
+            @if (!string.IsNullOrWhiteSpace(r.ActionLabel))
+            {
+                <span class="@(r.ActionIsPrimary ? "pw-cta" : "pw-cta-quiet")">@r.ActionLabel</span>
+            }
+        </span>
+    </text>;
+
+    /// <summary>ONE LINE: the sentence takes the reading edge and its actor
+    /// and date sit at the other end.</summary>
+    private RenderFragment ActivityBody(PwActivityRow v) =>@<text>
+        <span class="pw-act-dot @ToneClass(v.Tone)" aria-hidden="true"></span>
+        <span class="pw-act-text" title="@v.Text">@v.Text</span>
+        <span class="pw-act-meta">@v.Meta</span>
+    </text>;
+
+    // ── Display helpers ─────────────────────────────────────────────────────
+
+    /// <summary>"צוות אלפא · שלב נוכחי: אפיון" — team and stage on one quiet
+    /// line, with either half omitted rather than left dangling beside a
+    /// separator.</summary>
+    private string IdentityLine
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(View.Identity.TeamName)) parts.Add(View.Identity.TeamName!);
+            if (!string.IsNullOrWhiteSpace(View.Identity.StageName))
+                parts.Add($"שלב נוכחי: {View.Identity.StageName}");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    private static string StageClass(PwStageState s) => s switch
+    {
+        PwStageState.Late    => "pw-stage-late",
+        PwStageState.Current => "pw-stage-current",
+        PwStageState.Done    => "pw-stage-done",
+        _                    => "pw-stage-future",
+    };
+
+    private static string ToneClass(PwTone t) => t switch
+    {
+        PwTone.Blue   => "pw-tone-blue",
+        PwTone.Violet => "pw-tone-violet",
+        PwTone.Teal   => "pw-tone-teal",
+        PwTone.Late   => "pw-late",
+        _             => "pw-tone-quiet",
+    };
+
+    private static string Initials(string? text)
+    {
+        var parts = (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "?";
+        return parts.Length == 1 ? parts[0][..1] : $"{parts[0][..1]}{parts[1][..1]}";
+    }
+
+    /// <summary>Members are handed over as a full display string (name, and for
+    /// a mentor the contact details in the tooltip). The chip shows the name
+    /// only; everything else stays in the title attribute.</summary>
+    private static string ShortName(string text)
+    {
+        var cut = text.IndexOf(" · ", StringComparison.Ordinal);
+        return cut < 0 ? text : text[..cut];
+    }
+}

@@ -35,319 +35,299 @@
                         milestone list when a cycle has no stages configured
       attention         the shared mentor snapshot, filtered to this project
       requests          the same snapshot's request list, filtered likewise
-      dates + meetings  MentorWorkspaceService.BuildCalendarAsync over a
-                        snapshot narrowed to this project — the mentor
-                        calendar's own composer, not a second copy of it
+      last meeting      the project's own past personal tasks that carry an
+                        hour — see LastMeetingLabel. The dated view that
+                        MentorWorkspaceService.BuildCalendarAsync composed is
+                        gone with the מועדים קרובים card: every date this page
+                        still shows is on the row it belongs to (a milestone
+                        on the strip, a deliverable in הגשות, a task in
+                        משימות), so the composer had no consumer left and the
+                        page no longer pays for it on load.
 
-    THE ACTIVITY CARD IS DELIBERATELY NARROW. The reference draws five kinds of
-    activity line including "אבן דרך הושלמה" and "משימת צוות חדשה נוספה". This
-    product has no activity log and no project-scoped feed: Notifications carry
-    no ProjectId, milestones store no completion timestamp and a task stores no
-    created-at. So the card states only what a real column can date — a request
-    opened or last updated, a submission received, a guidance meeting held —
-    and says plainly when there is nothing rather than inventing a history.
+    פעילות אחרונה IS NOW A POSTSCRIPT, AND SMALLER THAN IT WAS. It used to
+    open with "בקשה נפתחה — X" for every request on the project; every one of
+    those is a row in the בקשות section, with its own status and its own
+    filing date on it, a few hundred pixels up the same page. A feed whose
+    top half restates the section above it is not a feed. What is left is what
+    nothing else on this page states: a submission ARRIVING (who filed it and
+    when — the sections carry the deliverable's state, never its author), a
+    request MOVING after it was opened, and a guidance meeting that has
+    already happened. The product still has no activity log — Notifications
+    carry no ProjectId, milestones store no completion timestamp, a task
+    stores no created-at — so nothing was invented to fill the gap; the block
+    simply got shorter, lost its card, and disappears entirely when a project
+    has none of the three.
 
     THE VERSION COLUMN IS NOT DRAWN, for the same reason: MentorTaskDto carries
     the latest submission's STATUS but no round number, and the round count
-    lives one call deeper, inside the review drawer that already shows it.
+    lives one call deeper, inside the review surface that already shows it.
 
-    THE REVIEW DRAWER BELOW IS UNCHANGED. It is the real review flow —
-    GET api/mentor/submissions/{id}/context and
-    PATCH api/task-submissions/{id}/mentor-review — including its round
-    history, its files and its return-requires-a-note rule. Nothing about it
-    was restyled or re-implemented for this pass; the workspace simply opens
-    it, and so does the ?submissionId= deep link the calendar sends.
+    THE REVIEW FLOW IS UNCHANGED — GET api/mentor/submissions/{id}/context and
+    PATCH api/task-submissions/{id}/mentor-review, with the same round history
+    and the same return-requires-a-note rule. What changed is the shell it is
+    drawn in: it is PwDetail now, the same surface a request opens in, rather
+    than an edge-attached drawer of its own. The ?submissionId= deep link the
+    calendar sends still opens it.
 *@
 
-<!-- ══ Review drawer backdrop ════════════════════════════════════════════════ -->
-@if (_reviewCtx is not null)
+@*  ══ The two detail surfaces this workspace opens ═══════════════════════
+
+    BOTH ARE PwDetail. A submission review and a request used to open two
+    unrelated things: an edge-attached drawer with its own header, section
+    rules and button vocabulary, and a block that grew inside the work list
+    between two rows that carried on as if nothing had happened. One surface
+    now, one hierarchy — eyebrow, title, status, who and when, then the
+    content, the files, the trail and the viewer's own action.
+
+    THE FLOWS ARE UNTOUCHED. The review is still
+    GET api/mentor/submissions/{id}/context and
+    PATCH api/task-submissions/{id}/mentor-review, with the same round
+    history and the same return-requires-a-note rule; the request is still
+    MentorRequestDetail with the same one recommendation POST. Only the shell
+    around them changed.
+*@
+
+@if (_reviewOpen)
 {
-    <div class="mpd-backdrop" @onclick="CloseDrawer"></div>
-    <div class="mpd-drawer">
+    <PwDetail IsOpen="true"
+              Loading="@_reviewLoading"
+              LoadingLabel="טוענת פרטי הגשה…"
+              Eyebrow="@_reviewCtx?.MilestoneTitle"
+              Title="@(_reviewCtx?.TaskTitle ?? "הגשה")"
+              StatusText="@(_reviewCtx is null ? null : DrawerMentorStatusLabel(_reviewCtx.MentorStatus))"
+              StatusTone="@(_reviewCtx is null ? PwTone.Quiet : ReviewTone(_reviewCtx.MentorStatus))"
+              Meta="@ReviewMeta"
+              OnClose="CloseDrawer">
 
-        <!-- Drawer header -->
-        <div class="mpd-drawer-header">
-            <div class="mpd-drawer-header-row">
-                <div>
-                    <div class="mpd-drawer-milestone">@_reviewCtx.MilestoneTitle</div>
-                    <div class="mpd-drawer-title">@_reviewCtx.TaskTitle</div>
-                </div>
-                <button class="mpd-drawer-close" @onclick="CloseDrawer" title="סגירה">
-                    <span class="oi oi-x" aria-hidden="true"></span>
-                </button>
-            </div>
-            <div class="mpd-drawer-meta">
-                <div class="mpd-drawer-meta-item">
-                    <span class="oi oi-person" aria-hidden="true"></span>
-                    @_reviewCtx.SubmittedBy
-                </div>
-                <div class="mpd-drawer-meta-item">
-                    <span class="oi oi-clock" aria-hidden="true"></span>
-                    @_reviewCtx.SubmittedAt.IsraelFormat()
-                </div>
-            </div>
-            <!-- Current mentor status badge -->
-            <div class="mpd-drawer-status-row">
-                <span class="mpd-drawer-status-badge @DrawerMentorStatusClass(_reviewCtx.MentorStatus)">
-                    @DrawerMentorStatusLabel(_reviewCtx.MentorStatus)
-                </span>
-            </div>
-        </div>
-
-        <!-- Drawer body -->
-        <div class="mpd-drawer-body">
-
-            @if (_reviewLoading)
+        <Side>
+            @if (_reviewCtx is not null)
             {
-                <div class="mpd-drawer-loading">
-                    <div class="mpd-drawer-spinner"></div>
-                    <span>טוען פרטי הגשה…</span>
-                </div>
-            }
-            else
-            {
-                <!-- Task description -->
-                @if (!string.IsNullOrWhiteSpace(_reviewCtx.TaskDescription))
-                {
-                    <div class="mpd-drawer-section">
-                        <div class="mpd-drawer-section-title">תיאור המשימה</div>
-                        <div class="mpd-drawer-text">@_reviewCtx.TaskDescription</div>
-                    </div>
-                }
-
-                <!-- Student notes -->
-                @if (!string.IsNullOrWhiteSpace(_reviewCtx.Notes))
-                {
-                    <div class="mpd-drawer-section">
-                        <div class="mpd-drawer-section-title">הערות הסטודנט</div>
-                        <div class="mpd-drawer-text mpd-drawer-notes">@_reviewCtx.Notes</div>
-                    </div>
-                }
-
-                <!-- Files -->
-                <div class="mpd-drawer-section">
-                    <div class="mpd-drawer-section-title">
-                        קבצים מצורפים
-                        <span class="mpd-drawer-file-count">@_reviewCtx.Files.Count</span>
-                    </div>
-                    @if (_reviewCtx.Files.Count == 0)
-                    {
-                        <div class="mpd-drawer-empty">לא צורפו קבצים להגשה זו</div>
-                    }
-                    else
-                    {
-                        <div class="mpd-drawer-file-list">
-                            @foreach (var f in _reviewCtx.Files)
-                            {
-                                <div class="mpd-drawer-file-item">
-                                    <span class="oi @FileIcon(f.ContentType) mpd-drawer-file-icon" aria-hidden="true"></span>
-                                    <div class="mpd-drawer-file-info">
-                                        <span class="mpd-drawer-file-name">@f.OriginalFileName</span>
-                                        <span class="mpd-drawer-file-size">@FormatSize(f.SizeBytes)</span>
-                                    </div>
-                                    <a class="mpd-drawer-file-dl"
-                                       href="/submissions/@f.StoredFileName"
-                                       download="@f.OriginalFileName"
-                                       title="הורדה">
-                                        <span class="oi oi-cloud-download" aria-hidden="true"></span>
-                                    </a>
-                                </div>
-                            }
-                        </div>
-                    }
-                </div>
-
-                <!-- Submission history — accordion per round, oldest first -->
-                @if (_reviewCtx.History.Count > 0)
-                {
-                    <div class="mpd-drawer-section">
-                        <div class="mpd-drawer-section-title">
-                            היסטוריית הגשות
-                            <span class="mpd-drawer-file-count">@_reviewCtx.History.Count סבבים</span>
-                        </div>
-                        <div class="mpd-drawer-history">
-                            @foreach (var round in _reviewCtx.History)
-                            {
-                                bool isCurrent  = round.SubmissionId == _reviewCtx.SubmissionId;
-                                bool isExpanded = _expandedRounds.Contains(round.SubmissionId);
-
-                                <div class="mpd-history-round @(isCurrent ? "mpd-history-current" : "")">
-
-                                    <!-- Round accordion header -->
-                                    <button class="mpd-history-round-btn"
-                                            @onclick="() => ToggleRound(round.SubmissionId)">
-                                        <div class="mpd-history-round-start">
-                                            <span class="mpd-history-round-num">סבב @round.RoundNumber</span>
-                                            @if (isCurrent)
-                                            {
-                                                <span class="mpd-history-current-tag">נוכחי</span>
-                                            }
-                                            <span class="mpd-history-date">@round.SubmittedAt.IsraelFormat("dd/MM/yy HH:mm")</span>
-                                        </div>
-                                        <div class="mpd-history-round-end">
-                                            <span class="mpd-history-mentor-badge mpd-hbadge-@round.MentorStatus.ToLower()">
-                                                @DrawerMentorStatusLabel(round.MentorStatus)
-                                            </span>
-                                            <span class="oi @(isExpanded ? "oi-chevron-top" : "oi-chevron-bottom") mpd-history-chevron"
-                                                  aria-hidden="true"></span>
-                                        </div>
-                                    </button>
-
-                                    <!-- Round detail (expanded) -->
-                                    @if (isExpanded)
-                                    {
-                                        <div class="mpd-history-round-body">
-
-                                            @if (!string.IsNullOrWhiteSpace(round.Notes))
-                                            {
-                                                <div class="mpd-history-block">
-                                                    <span class="mpd-history-block-label">הערות סטודנט</span>
-                                                    <div class="mpd-history-note-text">@round.Notes</div>
-                                                </div>
-                                            }
-
-                                            @if (round.Files.Count > 0)
-                                            {
-                                                <div class="mpd-history-block">
-                                                    <span class="mpd-history-block-label">קבצים (@round.Files.Count)</span>
-                                                    <div class="mpd-drawer-file-list">
-                                                        @foreach (var f in round.Files)
-                                                        {
-                                                            <div class="mpd-drawer-file-item">
-                                                                <span class="oi @FileIcon(f.ContentType) mpd-drawer-file-icon" aria-hidden="true"></span>
-                                                                <div class="mpd-drawer-file-info">
-                                                                    <span class="mpd-drawer-file-name">@f.OriginalFileName</span>
-                                                                    <span class="mpd-drawer-file-size">@FormatSize(f.SizeBytes)</span>
-                                                                </div>
-                                                                <a class="mpd-drawer-file-dl"
-                                                                   href="/submissions/@f.StoredFileName"
-                                                                   download="@f.OriginalFileName"
-                                                                   title="הורדה">
-                                                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
-                                                                </a>
-                                                            </div>
-                                                        }
-                                                    </div>
-                                                </div>
-                                            }
-
-                                            @if (!string.IsNullOrWhiteSpace(round.MentorFeedback))
-                                            {
-                                                <div class="mpd-history-feedback mpd-feedback-mentor">
-                                                    <div class="mpd-history-feedback-header">
-                                                        <span class="oi oi-person" aria-hidden="true"></span>
-                                                        <strong>פידבק מנחה</strong>
-                                                        @if (round.MentorReviewedAt.HasValue)
-                                                        {
-                                                            <span class="mpd-history-review-date">
-                                                                @round.MentorReviewedAt.IsraelFormat("dd/MM/yy HH:mm")
-                                                            </span>
-                                                        }
-                                                    </div>
-                                                    <p class="mpd-history-feedback-text">@round.MentorFeedback</p>
-                                                </div>
-                                            }
-
-                                            @if (!string.IsNullOrWhiteSpace(round.ReviewerFeedback))
-                                            {
-                                                <div class="mpd-history-feedback mpd-feedback-reviewer">
-                                                    <div class="mpd-history-feedback-header">
-                                                        <span class="oi oi-comment-square" aria-hidden="true"></span>
-                                                        <strong>פידבק מרצה</strong>
-                                                    </div>
-                                                    <p class="mpd-history-feedback-text">@round.ReviewerFeedback</p>
-                                                </div>
-                                            }
-
-                                        </div>
-                                    }
-
-                                </div>
-                            }
-                        </div>
-                    </div>
-                }
-
-                <!-- Review actions (only when status is still Pending) -->
+                @* ── What this mentor may do, and nothing else ── *@
                 @if (_reviewCtx.MentorStatus == "Pending")
                 {
-                    <div class="mpd-drawer-section mpd-drawer-review-section">
-                        <div class="mpd-drawer-section-title">סקירת מנחה</div>
+                    <section class="pwd-sec pwd-sec-action">
+                        <p class="pwd-sec-title">סקירת מנחה</p>
 
-                        <div class="mpd-review-feedback-wrap">
-                            <label class="mpd-review-feedback-label">פידבק (נדרש בעת החזרה לתיקון)</label>
-                            <textarea class="mpd-review-feedback"
-                                      rows="3"
+                        <div class="pwd-form">
+                            <label class="pwd-label" for="mpw-review-note">
+                                פידבק (נדרש בעת החזרה לתיקון)
+                            </label>
+                            <textarea id="mpw-review-note" class="pwd-textarea" rows="5"
                                       placeholder="הוסף הערות או הסברים לסטודנט…"
                                       value="@_reviewFeedback"
                                       @oninput="@((ChangeEventArgs e) => { _reviewFeedback = e.Value?.ToString() ?? string.Empty; if (_feedbackError.Length > 0) _feedbackError = string.Empty; })"
-                                      disabled="@_reviewing">
-                            </textarea>
-                        </div>
+                                      disabled="@_reviewing"></textarea>
 
-                        @if (!string.IsNullOrEmpty(_feedbackError))
-                        {
-                            <div class="mpd-review-error">
-                                <span class="oi oi-warning" aria-hidden="true"></span>
-                                @_feedbackError
-                            </div>
-                        }
-                        @if (_reviewError)
-                        {
-                            <div class="mpd-review-error">
-                                <span class="oi oi-warning" aria-hidden="true"></span>
-                                שגיאה בשמירה. נסה שנית.
-                            </div>
-                        }
+                            @if (!string.IsNullOrEmpty(_feedbackError))
+                            {
+                                <p class="pwd-error" role="alert">@_feedbackError</p>
+                            }
+                            @if (_reviewError)
+                            {
+                                <p class="pwd-error" role="alert">שגיאה בשמירה. נסה שנית.</p>
+                            }
 
-                        <div class="mpd-review-actions">
-                            <button class="mpd-btn-approve"
-                                    @onclick='() => SubmitReviewAsync("Approved")'
-                                    disabled="@_reviewing">
-                                @if (_reviewing && _pendingAction == "Approved")
-                                {
-                                    <span class="mpd-btn-spinner"></span>
-                                }
-                                else
-                                {
-                                    <span class="oi oi-circle-check" aria-hidden="true"></span>
-                                }
-                                <span>אשר הגשה</span>
-                            </button>
-                            <button class="mpd-btn-return"
-                                    @onclick='() => SubmitReviewAsync("Returned")'
-                                    disabled="@_reviewing">
-                                @if (_reviewing && _pendingAction == "Returned")
-                                {
-                                    <span class="mpd-btn-spinner"></span>
-                                }
-                                else
-                                {
-                                    <span class="oi oi-loop-circular" aria-hidden="true"></span>
-                                }
-                                <span>החזר לתיקון</span>
-                            </button>
+                            <div class="pwd-actions pwd-actions-stack">
+                                <button type="button" class="pwd-btn pwd-btn-approve"
+                                        @onclick='() => SubmitReviewAsync("Approved")'
+                                        disabled="@_reviewing">
+                                    @(_reviewing && _pendingAction == "Approved" ? "שומרת…" : "אשר הגשה")
+                                </button>
+                                <button type="button" class="pwd-btn pwd-btn-return"
+                                        @onclick='() => SubmitReviewAsync("Returned")'
+                                        disabled="@_reviewing">
+                                    @(_reviewing && _pendingAction == "Returned" ? "שומרת…" : "החזר לתיקון")
+                                </button>
+                            </div>
                         </div>
-                    </div>
+                    </section>
+                }
+                else if (!string.IsNullOrWhiteSpace(_reviewCtx.MentorFeedback))
+                {
+                    @*  THE VERDICT IS ALREADY IN THE HEADER. What this block
+                        uniquely holds is the words that were written, so it is
+                        drawn only when there are some. *@
+                    <section class="pwd-sec pwd-sec-action">
+                        <p class="pwd-sec-title">הערות שנכתבו לצוות</p>
+                        <p class="pwd-text pwd-quote">@_reviewCtx.MentorFeedback</p>
+                    </section>
+                }
+            }
+        </Side>
+
+        <ChildContent>
+        @if (_reviewCtx is not null)
+        {
+            @* ── What was asked for ── *@
+            @if (!string.IsNullOrWhiteSpace(_reviewCtx.TaskDescription))
+            {
+                <section class="pwd-sec">
+                    <p class="pwd-sec-title">תיאור המשימה</p>
+                    <p class="pwd-text">@_reviewCtx.TaskDescription</p>
+                </section>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_reviewCtx.Notes))
+            {
+                <section class="pwd-sec">
+                    <p class="pwd-sec-title">הערות הסטודנט</p>
+                    <p class="pwd-text pwd-quote">@_reviewCtx.Notes</p>
+                </section>
+            }
+
+            @*  ── THE DELIVERABLE ITSELF ────────────────────────────────
+                THE DRIVE LINK IS A FILE. Submissions have been Drive-link
+                only since 2026-05-19, and this section listed `Files` alone
+                — which is empty for every modern submission. So the surface
+                whose whole purpose is reviewing a deliverable said
+                "לא צורפו קבצים להגשה זו" while holding the URL of the
+                deliverable in the very payload it was drawing. The link is
+                the first row of this list now; the legacy uploads that still
+                exist follow it.
+
+                These are the SUBMISSION's files — not the project's shared
+                materials (the workspace header) and not a request's
+                attachments (that request's own surface). *@
+            <section class="pwd-sec">
+                <p class="pwd-sec-title">
+                    קבצי ההגשה
+                    @if (ReviewFileCount > 0)
+                    {
+                        <span class="pwd-count">@ReviewFileCount</span>
+                    }
+                </p>
+
+                @if (ReviewFileCount == 0)
+                {
+                    <p class="pwd-empty">לא צורפו קבצים ולא נמסר קישור להגשה זו</p>
                 }
                 else
                 {
-                    <!-- Already reviewed — show what was decided -->
-                    <div class="mpd-drawer-section">
-                        <div class="mpd-drawer-section-title">החלטת המנחה</div>
-                        <div class="mpd-review-done-banner mpd-review-done-@(_reviewCtx.MentorStatus.ToLower())">
-                            <span class="oi @(_reviewCtx.MentorStatus == "Approved" ? "oi-circle-check" : "oi-loop-circular")" aria-hidden="true"></span>
-                            @DrawerMentorStatusLabel(_reviewCtx.MentorStatus)
-                            @if (!string.IsNullOrWhiteSpace(_reviewCtx.MentorFeedback))
-                            {
-                                <span class="mpd-review-done-feedback">— @_reviewCtx.MentorFeedback</span>
-                            }
-                        </div>
+                    <div class="pwd-files">
+                        @if (!string.IsNullOrWhiteSpace(_reviewCtx.DriveUrl))
+                        {
+                            <a class="pwd-file pwd-file-drive" href="@_reviewCtx.DriveUrl"
+                               target="_blank" rel="noopener noreferrer">
+                                <span class="pwd-file-icon" aria-hidden="true">
+                                    <span class="oi oi-external-link"></span>
+                                </span>
+                                <span class="pwd-file-info">
+                                    <span class="pwd-file-name">ההגשה ב-Google Drive</span>
+                                    <span class="pwd-file-size">@HostOf(_reviewCtx.DriveUrl)</span>
+                                </span>
+                            </a>
+                        }
+
+                        @foreach (var f in _reviewCtx.Files)
+                        {
+                            <div class="pwd-file">
+                                <span class="pwd-file-icon" aria-hidden="true">
+                                    <span class="oi @FileIcon(f.ContentType)"></span>
+                                </span>
+                                <span class="pwd-file-info">
+                                    <span class="pwd-file-name">@f.OriginalFileName</span>
+                                    <span class="pwd-file-size">@FormatSize(f.SizeBytes)</span>
+                                </span>
+                                <a class="pwd-file-go"
+                                   href="/submissions/@f.StoredFileName"
+                                   download="@f.OriginalFileName"
+                                   title="הורדה">
+                                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                                </a>
+                            </div>
+                        }
                     </div>
                 }
+            </section>
+
+            @*  ── PREVIOUS ROUNDS, COLLAPSED ──────────────────────────
+                The current round's notes and files are the section above —
+                they are what the mentor is reviewing, not history. What is
+                left here is the rounds that came BEFORE, which matter only
+                when the reader goes looking, so they are a disclosure that
+                states its own size and opens on demand.
+
+                It used to render every round expanded-current-first inside
+                the main column, so the surface opened on an accordion and
+                the thing being reviewed was one item inside it. *@
+            @if (PreviousRounds.Count > 0)
+            {
+                <details class="pwd-more">
+                    <summary>
+                        סבבים קודמים
+                        <span class="pwd-count">@PreviousRounds.Count</span>
+                        <span class="oi oi-chevron-bottom pwd-more-chev" aria-hidden="true"></span>
+                    </summary>
+
+                    <div class="pwd-more-body">
+                        @foreach (var round in PreviousRounds)
+                        {
+                            <div class="pwd-round">
+                                <div class="pwd-round-btn" role="group">
+                                    <span class="pwd-round-start">
+                                        <span class="pwd-round-num">סבב @round.RoundNumber</span>
+                                        <span class="pwd-round-date">@round.SubmittedAt.IsraelFormat("dd/MM/yy HH:mm")</span>
+                                    </span>
+                                    <span class="pwd-round-end">
+                                        <span class="pwd-badge @ReviewToneClass(round.MentorStatus)">
+                                            @DrawerMentorStatusLabel(round.MentorStatus)
+                                        </span>
+                                    </span>
+                                </div>
+
+                                @if (!string.IsNullOrWhiteSpace(round.MentorFeedback))
+                                {
+                                    <div class="pwd-round-body">
+                                        <div class="pwd-fb pwd-fb-mentor">
+                                            <span class="pwd-fb-head">
+                                                <span class="oi oi-person" aria-hidden="true"></span>
+                                                פידבק מנחה
+                                            </span>
+                                            <p class="pwd-fb-text">@round.MentorFeedback</p>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </details>
             }
-        </div>
-    </div>
+
+        }
+        </ChildContent>
+    </PwDetail>
+}
+
+@*  ── One request, opened over the workspace ────────────────────────────
+    The real request flow, unchanged: the same MentorRequestDetail the בקשות
+    inbox draws, the same MarkRead and the same one recommendation POST. What
+    changed is where it appears — a surface that names the request it is
+    showing, instead of a block inside the list that named nothing. *@
+@if (_openRequestId is int openReqId && RequestRow(openReqId) is { } openReq)
+{
+    <PwDetail IsOpen="true"
+              Eyebrow="@RequestTypes.Label(openReq.RequestType)"
+              Title="@openReq.Title"
+              StatusText="@PwRequestVocabulary.StatusLabel(openReq.Status, ViewerOf(openReq))"
+              StatusTone="@PwRequestVocabulary.Tone(openReq.Status, ViewerOf(openReq))"
+              Meta="@RequestMeta(openReq)"
+              OnClose="CloseRequest">
+        <Side>
+            <MentorRequestDetail RequestId="@openReqId"
+                                 Layout="MentorRequestDetail.DetailLayout.Surface"
+                                 Part="MentorRequestDetail.DetailPart.Action"
+                                 ShowHeader="false"
+                                 OnChanged="ReloadAsync" />
+        </Side>
+
+        <ChildContent>
+            <MentorRequestDetail RequestId="@openReqId"
+                                 Layout="MentorRequestDetail.DetailLayout.Surface"
+                                 Part="MentorRequestDetail.DetailPart.Content"
+                                 ShowHeader="false"
+                                 OnChanged="ReloadAsync" />
+        </ChildContent>
+    </PwDetail>
 }
 
 
@@ -381,313 +361,56 @@
     }
     else
     {
-        @* ── Header ─────────────────────────────────────────────────────── *@
-        <header class="mpw-head">
-            <div class="mpw-id">
-                <div class="mpw-title-row">
-                    <h1 class="mpw-title">@_detail.Title</h1>
-                    <MStatusBadge Variant="@MentorProjectSignals.HealthVariant(Signal)"
-                                  Text="@MentorProjectSignals.HealthLabel(Signal)" />
-                </div>
-                <p class="mpw-sub">@_detail.TeamName · שלב נוכחי: @StageName</p>
-            </div>
+        @* ── The shared workspace ───────────────────────────────────────────
 
-            <div class="mpw-head-end">
-                <div class="mpw-progress">
-                    <div class="mpw-progress-top">
-                        <span class="mpw-progress-pct">@_detail.MilestoneProgressPct%</span>
-                        <span class="mpw-progress-label">התקדמות כוללת</span>
-                    </div>
-                    <MProgressBar Value="@_detail.MilestoneProgressPct"
-                                  Size="MProgressBar.ProgressSize.Small"
-                                  AccessibleLabel="@($"התקדמות אבני הדרך: {_detail.MilestoneProgressPct}%")" />
-                </div>
+            THE COMPOSITION MOVED, THE MENTOR'S WORK DID NOT. Identity, the
+            stage strip, the attention/work pair and the dates/activity pair are
+            now <ProjectWorkspace/> — the same component and the same stylesheet
+            the lecturer's מרחב הפרויקט draws, so one project cannot be laid out
+            two ways depending on who opened it.
 
-                @if (_detail.TeamMembers.Count > 0)
+            Everything this page actually DOES stayed here: the review surface
+            and the request surface above, the shared task editor, the deep
+            links and every routing rule in OpenAttentionItemAsync /
+            OpenActivityAsync. The component raises a row's key and this file
+            decides what opens.
+
+            THE FOUR OVERVIEW TILES ARE GONE. שלב נוכחי is the header's own
+            subtitle, אבן דרך הבאה is the strip directly beneath it, and
+            סטטוס הפרויקט is the badge beside the title — cards restating
+            things already on the screen.
+
+            THE MEETING SCHEDULER MOVED, IT DID NOT GO. קביעת פגישת הנחיה and
+            the "last meeting" line used to sit under מועדים קרובים; that card
+            is gone, and they are now in the header beside the project's other
+            controls, which is where a project-level action belongs. Same
+            button, same modal, same POST.
+        *@
+        @* CONTEXT IS THE ROUTE, not the role list. This file is only ever
+           reached through /mentor/projects/{id}, so it declares Mentor
+           unconditionally — a dual-role account (Staff + Mentor) that arrives
+           here from פרויקטים בהנחייתי gets the mentor's workspace even though
+           RoleService.IsAdminOrStaff would also answer true for them, and the
+           mentor vocabulary below ("דורש את פעולתך", "בבדיקת מרצה") is
+           correct for that reader. *@
+        <ProjectWorkspace View="@View"
+                          Context="PwContext.Mentor"
+                          OnWorkRowClick="OnWorkKeyAsync"
+                          OnActivityClick="OnActivityKeyAsync">
+
+            <IdentityActions>
+                @* The mentor's own project control, in the identity area.
+
+                   GATED ON MENTORING THIS PROJECT, not on holding the Mentor
+                   role. MentorPersonalTaskModal below is mounted only when
+                   _summary resolves — i.e. when api/mentor/projects, which is
+                   ProjectMentors-scoped, actually returned this project — so
+                   for anyone else the button was already inert: it set a flag
+                   for a modal that was never rendered. Staff and Admin can
+                   open this route (MentorController lets them), and that is
+                   exactly the account this dead control was shown to. *@
+                @if (IsProjectMentor)
                 {
-                    <div class="mpw-members">
-                        @foreach (var m in _detail.TeamMembers)
-                        {
-                            <span class="mpw-member" title="@($"{m.FullName} · {m.Email}")">
-                                <span class="mpw-member-initials" aria-hidden="true">@Initials(m.FullName)</span>
-                                @m.FullName
-                            </span>
-                        }
-                    </div>
-                }
-            </div>
-        </header>
-
-        @* ── Four overview tiles ────────────────────────────────────────── *@
-        <div class="mpw-tiles">
-            @foreach (var tile in Tiles)
-            {
-                var t = tile;
-                if (t.Href is { Length: > 0 })
-                {
-                    <a class="mpw-tile" href="@t.Href">
-                        <span class="mpw-tile-label">@t.Label</span>
-                        <span class="mpw-tile-value">@t.Value</span>
-                        <span class="mpw-tile-meta @t.MetaClass">@t.Meta</span>
-                    </a>
-                }
-                else
-                {
-                    <div class="mpw-tile mpw-tile-static">
-                        <span class="mpw-tile-label">@t.Label</span>
-                        <span class="mpw-tile-value">@t.Value</span>
-                        <span class="mpw-tile-meta @t.MetaClass">@t.Meta</span>
-                    </div>
-                }
-            }
-        </div>
-
-        @* ── Milestone roadmap ──────────────────────────────────────────── *@
-        <section class="mpw-card mpw-roadmap" aria-labelledby="mpw-roadmap-h">
-            <div class="mpw-card-head">
-                <h2 class="mpw-card-title" id="mpw-roadmap-h">מסלול אבני הדרך</h2>
-                <span class="mpw-card-note">@RoadmapSummary</span>
-            </div>
-
-            @if (StageCells.Count == 0)
-            {
-                <p class="mpw-empty">לא הוגדרו אבני דרך לפרויקט זה.</p>
-            }
-            else
-            {
-                <ol class="mpw-stages" style="--mpw-stage-count:@StageCells.Count">
-                    @foreach (var cell in StageCells)
-                    {
-                        var c = cell;
-                        <li class="mpw-stage @StageClass(c)">
-                            <span class="mpw-stage-track" aria-hidden="true"></span>
-                            <span class="mpw-stage-name">
-                                <span class="mpw-stage-dot" aria-hidden="true"></span>
-                                <span class="mpw-stage-text" title="@c.Name">@c.Name</span>
-                            </span>
-                            <span class="mpw-stage-date">@c.Date</span>
-                        </li>
-                    }
-                </ol>
-            }
-        </section>
-
-        <div class="mpw-split mpw-split-work">
-
-            @* ── דורש את תשומת לבך ──────────────────────────────────────── *@
-            <section class="mpw-card mpw-attn" aria-labelledby="mpw-attn-h">
-                <div class="mpw-card-head">
-                    <h2 class="mpw-card-title" id="mpw-attn-h">דורש את תשומת לבך</h2>
-                    <span class="mpw-count @(_attention.Count > 0 ? "mpw-count-live" : "")">@_attention.Count</span>
-                </div>
-
-                @if (_attention.Count == 0)
-                {
-                    <p class="mpw-empty">אין פריטים שממתינים לך בפרויקט זה</p>
-                }
-                else
-                {
-                    <div class="mpw-rows">
-                        @* Each row opens IN PLACE — a submission in this page's own
-                           review drawer, a request in the בקשות tab below, a personal
-                           task in the shared editor. They used to be links to
-                           item.Href, which for a request left the workspace entirely
-                           and for a submission re-navigated this same route with
-                           ?submissionId= on it just to open a drawer already mounted
-                           here. See OpenAttentionItem. *@
-                        @foreach (var item in _attention)
-                        {
-                            var a = item;
-                            <button type="button" class="mpw-attn-row"
-                                    @onclick="@(() => OpenAttentionItemAsync(a))"
-                                    aria-label="@($"פתיחת {a.Title}")">
-                                <MStatusBadge Variant="@MentorAttentionRows.TypeVariant(a)"
-                                              Text="@MentorAttentionRows.TypeLabel(a)" />
-                                <span class="mpw-attn-main">
-                                    <span class="mpw-attn-title" title="@a.Title">@a.Title</span>
-                                    <span class="mpw-attn-sub">@AttentionSub(a)</span>
-                                </span>
-                                <span class="mpw-attn-time @(MentorAttentionRows.IsEscalated(a) ? "mpw-late" : "")">
-                                    @MentorAttentionRows.TimeLabel(a)
-                                </span>
-                            </button>
-                        }
-                    </div>
-                }
-            </section>
-
-            @* ── הגשות / בקשות / משימות ─────────────────────────────────── *@
-            <section class="mpw-card mpw-work" aria-labelledby="mpw-work-h">
-                <h2 class="mpw-sr-only" id="mpw-work-h">הגשות, בקשות ומשימות</h2>
-
-                <div class="mpw-card-head mpw-work-head">
-                    <MFilterTabs Tabs="@WorkTabs"
-                                 ActiveKey="@_tab"
-                                 OnSelect="SelectTab"
-                                 AriaLabel="מעבר בין הגשות, בקשות ומשימות" />
-                    <a class="mpw-all-link" href="@TabAllHref">@TabAllLabel</a>
-                </div>
-
-                @if (_tab == TabSubs)
-                {
-                    @if (Submissions.Count == 0)
-                    {
-                        <p class="mpw-empty">אין משימות הגשה בפרויקט זה</p>
-                    }
-                    else
-                    {
-                        <div class="mpw-rows">
-                            @foreach (var row in Submissions)
-                            {
-                                var s = row;
-                                <div class="mpw-sub-row">
-                                    <span class="mpw-row-title" title="@s.Title">@s.Title</span>
-                                    <span class="mpw-row-meta" title="@s.Milestone">@s.Milestone</span>
-                                    <span class="mpw-row-state @s.StateClass" title="@s.State">@s.State</span>
-                                    @if (s.SubmissionId is int subId)
-                                    {
-                                        <button type="button" class="mpw-cta motiva-cta"
-                                                @onclick="@(() => OpenReviewDrawer(subId))">
-                                            לבדיקה
-                                        </button>
-                                    }
-                                    else
-                                    {
-                                        <span class="mpw-cta-quiet">@s.Trailing</span>
-                                    }
-                                </div>
-                            }
-                        </div>
-                    }
-                }
-                else if (_tab == TabReqs)
-                {
-                    @if (_requests.Count == 0)
-                    {
-                        <p class="mpw-empty">אין בקשות בפרויקט זה</p>
-                    }
-                    else
-                    {
-                        <div class="mpw-rows">
-                            @foreach (var request in _requests)
-                            {
-                                var r = request;
-                                var bucket = MentorRequestBuckets.Of(r.Status);
-                                var open = _expandedRequestId == r.Id;
-
-                                <div class="mpw-req @(open ? "mpw-req-open" : "")">
-                                    <button type="button" class="mpw-req-row"
-                                            aria-expanded="@(open ? "true" : "false")"
-                                            @onclick="@(() => ToggleRequest(r.Id))">
-                                        <span class="mpw-row-title" title="@r.Title">@r.Title</span>
-                                        <span class="mpw-row-meta">@r.CreatedAt.ToLocalTime().ToString("dd.MM")</span>
-                                        <span class="mpw-row-state @RequestStateClass(bucket)">
-                                            @MentorRequestBuckets.RowLabel(bucket)
-                                        </span>
-                                        <span class="@(MentorRequestBuckets.IsActionable(r.Status) ? "mpw-cta motiva-cta" : "mpw-cta-quiet")">
-                                            @(MentorRequestBuckets.IsActionable(r.Status) ? "להמלצה" : open ? "סגירה" : "לבקשה")
-                                        </span>
-                                    </button>
-
-                                    @if (open)
-                                    {
-                                        @* The real request flow, embedded — the same component
-                                           the בקשות inbox expands, with the same MarkRead and
-                                           the same one recommendation POST. *@
-                                        <div class="mpw-req-detail">
-                                            <MentorRequestDetail RequestId="@r.Id"
-                                                                 Layout="MentorRequestDetail.DetailLayout.Inline"
-                                                                 ShowHeader="false"
-                                                                 WaitingLabel="@WaitingLabelFor(r.Id)"
-                                                                 OnChanged="ReloadAsync" />
-                                        </div>
-                                    }
-                                </div>
-                            }
-                        </div>
-                    }
-                }
-                else
-                {
-                    @if (WorkTasks.Count == 0)
-                    {
-                        <p class="mpw-empty">אין משימות פתוחות בפרויקט זה</p>
-                    }
-                    else
-                    {
-                        <div class="mpw-rows">
-                            @foreach (var task in WorkTasks)
-                            {
-                                var k = task;
-                                if (k.Task is PersonalTaskDto own)
-                                {
-                                    <button type="button" class="mpw-task-row"
-                                            @onclick="@(() => OpenTask(own))"
-                                            aria-label="@($"עריכת {k.Title}")">
-                                        <span class="mpw-owner @(k.IsMine ? "mpw-owner-mine" : "")">@(k.IsMine ? "שלי" : "צוות")</span>
-                                        <span class="mpw-row-title" title="@k.Title">@k.Title</span>
-                                        <span class="mpw-row-meta" title="@k.Assignee">@k.Assignee</span>
-                                        <span class="mpw-row-due @(k.Overdue ? "mpw-late" : "")">@k.Due</span>
-                                        <span class="mpw-row-state @k.StateClass">@k.State</span>
-                                    </button>
-                                }
-                                else
-                                {
-                                    <div class="mpw-task-row">
-                                        <span class="mpw-owner @(k.IsMine ? "mpw-owner-mine" : "")">@(k.IsMine ? "שלי" : "צוות")</span>
-                                        <span class="mpw-row-title" title="@k.Title">@k.Title</span>
-                                        <span class="mpw-row-meta" title="@k.Assignee">@k.Assignee</span>
-                                        <span class="mpw-row-due @(k.Overdue ? "mpw-late" : "")">@k.Due</span>
-                                        <span class="mpw-row-state @k.StateClass">@k.State</span>
-                                    </div>
-                                }
-                            }
-                        </div>
-                    }
-                }
-            </section>
-        </div>
-
-        <div class="mpw-split mpw-split-bottom">
-
-            @* ── פגישות ומועדים ─────────────────────────────────────────── *@
-            <section class="mpw-card mpw-dates" aria-labelledby="mpw-dates-h">
-                <div class="mpw-card-head">
-                    <h2 class="mpw-card-title" id="mpw-dates-h">פגישות ומועדים</h2>
-                    @* The mentor calendar is cross-project by design — it carries
-                       no project filter to deep-link into — so this is the plain
-                       route rather than a parameter the page would ignore. *@
-                    <a class="mpw-all-link" href="@MentorLinks.Calendar">ליומן ותכנון</a>
-                </div>
-
-                @if (UpcomingDates.Count == 0)
-                {
-                    <p class="mpw-empty">אין מועדים קרובים בפרויקט זה</p>
-                }
-                else
-                {
-                    <div class="mpw-rows">
-                        @foreach (var ev in UpcomingDates)
-                        {
-                            var e = ev;
-                            <button type="button" class="mpw-date-row"
-                                    @onclick="@(() => OpenEventAsync(e))"
-                                    aria-label="@($"פתיחת {e.Title}")">
-                                <span class="mpw-date-box @(e.Date.Date == DateTime.Today ? "mpw-date-today" : "")">
-                                    <span class="mpw-date-day">@e.Date.ToString("dd")</span>
-                                    <span class="mpw-date-month">@MotivaDates.ShortMonth(e.Date)</span>
-                                </span>
-                                <span class="mpw-date-main">
-                                    <span class="mpw-row-title" title="@e.Title">@e.Title</span>
-                                    <span class="mpw-attn-sub">@MentorEventTypes.Label(e.Type)</span>
-                                </span>
-                                <span class="mpw-date-time">@(e.TimeRange ?? "")</span>
-                            </button>
-                        }
-                    </div>
-                }
-
-                <div class="mpw-dates-foot">
                     <button type="button" class="mpw-schedule motiva-cta" @onclick="OpenScheduler">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                              stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -695,45 +418,23 @@
                         </svg>
                         קביעת פגישת הנחיה
                     </button>
-                    <span class="mpw-card-note">@LastMeetingLabel</span>
-                </div>
-            </section>
-
-            @* ── פעילות אחרונה ──────────────────────────────────────────── *@
-            <section class="mpw-card mpw-activity" aria-labelledby="mpw-activity-h">
-                <div class="mpw-card-head">
-                    <h2 class="mpw-card-title" id="mpw-activity-h">פעילות אחרונה</h2>
-                </div>
-
-                @if (Activity.Count == 0)
-                {
-                    <p class="mpw-empty">
-                        אין פעילות מתועדת בפרויקט זה.
-                        <span class="mpw-empty-note">
-                            המערכת מתעדת מועדים של בקשות, הגשות ופגישות הנחיה בלבד.
-                        </span>
-                    </p>
+                    <span class="mpw-last-meeting">@LastMeetingLabel</span>
                 }
-                else
+                else if (CanUseLecturerWorkspace)
                 {
-                    <div class="mpw-rows">
-                        @foreach (var entry in Activity)
-                        {
-                            var v = entry;
-                            <button type="button" class="mpw-act-row"
-                                    @onclick="@(() => OpenActivityAsync(v))"
-                                    aria-label="@($"פתיחת {v.Text}")">
-                                <span class="mpw-act-dot @v.ToneClass" aria-hidden="true"></span>
-                                <span class="mpw-act-main">
-                                    <span class="mpw-act-text" title="@v.Text">@v.Text</span>
-                                    <span class="mpw-attn-sub">@v.Meta</span>
-                                </span>
-                            </button>
-                        }
-                    </div>
+                    @* Staff who do not mentor this project. Every mentor feed
+                       on this page is ProjectMentors-scoped and answers empty
+                       for them, so say which workspace they are in and where
+                       their own one is, rather than letting an empty mentor
+                       page read as "this project has nothing happening". *@
+                    <span class="mpw-not-mentor">אינך המנחה של פרויקט זה</span>
+                    <a class="mpw-to-lecturer" href="@($"/projects/{Id}/overview")">
+                        למרחב הפרויקט שלך
+                    </a>
                 }
-            </section>
-        </div>
+            </IdentityActions>
+
+        </ProjectWorkspace>
     }
 </div>
 
@@ -744,7 +445,7 @@
     already looking at, and the select stays editable.
 
     It EDITS as well as creates now, so a personal task on this page — in
-    דורש את תשומת לבך, in the משימות tab, in the activity list — opens its
+    the משימות tab or the activity list — opens its
     editor here instead of sending the mentor to /mentor/tasks?editTask= to
     meet the very same modal on another screen. *@
 @if (_summary is not null)
@@ -760,13 +461,50 @@
 
 @code {
     [Parameter] public int Id { get; set; }
+    [CascadingParameter] private User? _user { get; set; }
 
     // ── Loaded payloads ─────────────────────────────────────────────────────
     private MentorProjectDetailDto?    _detail;
     private ProjectRoadmapProgressDto? _roadmap;
     private MentorWorkspace            _ws = MentorWorkspace.Empty;
-    private IReadOnlyList<MentorCalendarEvent> _events = Array.Empty<MentorCalendarEvent>();
     private bool _isLoading = true;
+
+    /// <summary>
+    /// Does the CURRENT USER actually mentor this project?
+    ///
+    /// <para>Not "do they hold the Mentor role" — a dual-role account holds it
+    /// on every project, including ones it only supervises as staff. This
+    /// reads the ProjectMentors-scoped list the workspace snapshot already
+    /// carries, so it answers the question the mentor surfaces actually
+    /// depend on: <see cref="_summary"/> is non-null exactly when
+    /// api/mentor/projects returned this project for this caller.</para>
+    ///
+    /// <para>It is the same condition that mounts MentorPersonalTaskModal, so
+    /// the scheduler button and the modal it opens can no longer disagree.</para>
+    /// </summary>
+    private bool IsProjectMentor => _summary is not null;
+
+    /// <summary>
+    /// What this reader may do with ONE request, as the server answered it.
+    ///
+    /// <para>Per row, not per page: the capability depends on the request as
+    /// much as on the reader — its mentor stage, its lecturer decision, whether
+    /// it is closed. The row payload carries the answer
+    /// (ExtensionWorkflow.Resolve, server-side), and this only puts it in the
+    /// shape the shared vocabulary reads. The lecturer workspace builds the
+    /// identical record from its own rows, so one request reads consistently on
+    /// both pages.</para>
+    /// </summary>
+    private PwRequestViewer ViewerOf(ProjectRequestRowDto r) => new(
+        IsStaff:             RoleService.IsAdminOrStaff(_user),
+        CanRecommend:        r.ViewerCanRecommend,
+        CanDecide:           r.ViewerCanDecide,
+        MentorStageComplete: r.MentorStageComplete);
+
+    /// <summary>Staff and Admin have a lecturer workspace for this project to
+    /// be pointed at; a plain mentor does not, so they are told nothing rather
+    /// than offered a route that would only degrade.</summary>
+    private bool CanUseLecturerWorkspace => RoleService.IsAdminOrStaff(_user);
 
     // ── Projections onto THIS project ───────────────────────────────────────
     // Every one of these is a filter over a snapshot the whole mentor
@@ -779,12 +517,20 @@
     private List<PersonalTaskDto>            _personal  = new();
 
     // ── Local UI state ──────────────────────────────────────────────────────
-    private const string TabSubs  = "subs";
-    private const string TabReqs  = "reqs";
-    private const string TabTasks = "tasks";
+    //
+    // The three keys used to name TABS; they now name the three SECTIONS, all
+    // of which are on the page at once. Nothing selects between them any more,
+    // so there is no open-tab state and no ?tab= deep link to honour — a link
+    // that used to say "land on בקשות" lands on a page where בקשות is already
+    // visible.
+    private const string SecSubs  = "subs";
+    private const string SecReqs  = "reqs";
+    private const string SecTasks = "tasks";
 
-    private string _tab = TabSubs;
-    private int?   _expandedRequestId;
+    /// <summary>The request whose detail surface is open, or null. It is also
+    /// what marks the row it came from while the surface covers the page.</summary>
+    private int? _openRequestId;
+
     private bool   _scheduleOpen;
 
     /// <summary>The personal task being edited in the shared modal, or null.
@@ -792,7 +538,13 @@
     /// meeting on this project and this one opens an existing row.</summary>
     private PersonalTaskDto? _editingTask;
 
-    // ── Review drawer state (unchanged) ─────────────────────────────────────
+    // ── Review surface state (same flow, new shell) ─────────────────────────
+
+    /// <summary>Whether the review surface is mounted. Separate from
+    /// <see cref="_reviewCtx"/> because the context arrives one round-trip
+    /// later: the old drawer rendered only when the context was already
+    /// present, so its own loading state could never be seen.</summary>
+    private bool                        _reviewOpen;
     private MentorSubmissionContextDto? _reviewCtx;
     private bool                        _reviewLoading;
     private bool                        _reviewing;
@@ -802,23 +554,25 @@
     private string                      _feedbackError  = "";
     private string                      _reviewFeedback = "";
     private string                      _pendingAction  = "";
-    private readonly HashSet<int>       _expandedRounds = new();
 
-    private void ToggleRound(int submissionId)
-    {
-        if (!_expandedRounds.Remove(submissionId))
-            _expandedRounds.Add(submissionId);
-    }
+    /// <summary>Every round EXCEPT the one being reviewed. The current
+    /// round's own notes and files are drawn as content, not as history —
+    /// they are the thing the mentor opened this surface to look at.</summary>
+    private IReadOnlyList<MentorSubmissionRoundDto> PreviousRounds =>
+        _reviewCtx is null
+            ? Array.Empty<MentorSubmissionRoundDto>()
+            : _reviewCtx.History.Where(r => r.SubmissionId != _reviewCtx.SubmissionId).ToList();
+
+    /// <summary>A URL's host, for a file row's second line — "drive.google.com"
+    /// tells a reader where a link goes; the full URL just overflows.</summary>
+    private static string HostOf(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : "";
 
     // ── Load ────────────────────────────────────────────────────────────────
 
     protected override async Task OnInitializedAsync()
     {
         await LoadAsync();
-
-        // ?tab= — the reference's own deep link, so a link can land on בקשות.
-        var tab = QueryValue("tab");
-        if (tab is TabSubs or TabReqs or TabTasks) _tab = tab;
 
         // ?submissionId= — the calendar's Review deep link.
         //
@@ -831,12 +585,13 @@
         if (_detail is not null && int.TryParse(QueryValue("submissionId"), out var deepLinkSubmissionId))
             await OpenReviewDrawer(deepLinkSubmissionId);
 
-        // ?requestId= — the same courtesy for a request notification.
+        // ?requestId= — the same courtesy for a request notification. It opens
+        // the request's own surface now rather than selecting a tab and
+        // expanding a row inside it.
         if (_detail is not null && int.TryParse(QueryValue("requestId"), out var deepLinkRequestId)
             && _requests.Any(r => r.Id == deepLinkRequestId))
         {
-            _tab = TabReqs;
-            _expandedRequestId = deepLinkRequestId;
+            _openRequestId = deepLinkRequestId;
         }
     }
 
@@ -863,41 +618,13 @@
         _personal  = _ws.PersonalTasks.Where(t => t.ProjectId == Id).ToList();
 
         _isLoading = false;
-
-        if (_detail is not null) await BuildDatesAsync();
-    }
-
-    /// <summary>
-    /// The dated view of this project — meetings, milestones, deliverables and
-    /// arrived reviews.
-    ///
-    /// <para>Built by the MENTOR CALENDAR'S OWN composer over a snapshot
-    /// narrowed to this project, rather than by a per-section rule here. That is
-    /// what makes "פגישה" mean the same thing on both screens: a mentor entry
-    /// that has both a team and an hour, and nothing else. The detail payload is
-    /// handed over so the composer does not fetch it a second time.</para>
-    /// </summary>
-    private async Task BuildDatesAsync()
-    {
-        var scoped = new MentorWorkspace(
-            new MentorAttentionDto
-            {
-                Counts        = _ws.Attention.Counts,
-                Items         = _attention,
-                AsOfLocalDate = _ws.Attention.AsOfLocalDate,
-            },
-            _summary is null ? Array.Empty<MentorProjectSummaryDto>() : new[] { _summary },
-            _requests,
-            _personal);
-
-        _events = await Workspace.BuildCalendarAsync(scoped, new[] { _detail! });
     }
 
     /// <summary>A recommendation was accepted or a meeting was saved, so counts
     /// and dates have moved — reload rather than patching rows by hand.</summary>
     private async Task ReloadAsync()
     {
-        _expandedRequestId = null;
+        _openRequestId = null;
         await LoadAsync();
         StateHasChanged();
     }
@@ -930,173 +657,305 @@
     /// renders, so the two screens name the same milestone as "the next one".</summary>
     private UpcomingMilestoneDto? NextMilestone => _roadmap?.Overdue ?? _roadmap?.Upcoming;
 
-    private string? NextTitle => NextMilestone?.Title ?? FirstOpenMilestone?.Title;
-
+    /// <summary>Still the input to <see cref="Signal"/>. The title and the next
+    /// meeting that sat beside it fed the four overview tiles, which the stage
+    /// strip and the dates card now say for themselves.</summary>
     private DateTime? NextDue =>
         NextMilestone is not null ? NextMilestone.DueDate : FirstOpenMilestone?.DueDate;
 
-    private MentorCalendarEvent? NextMeeting =>
-        _events.FirstOrDefault(e => e.Type == MentorEventType.Meeting
-                                    && e.Date >= DateTime.Now.Date);
+    // ── The view handed to ProjectWorkspace ─────────────────────────────────
+    //
+    // A PROJECTION, NOT A SECOND MODEL. Every list below is one of this page's
+    // existing computed properties — Submissions, WorkTasks, UpcomingDates,
+    // Activity, _attention, _requests — mapped onto the shared row shapes.
+    // Not one rule about what belongs in a list, how it is ordered, how it is
+    // worded or how long it has waited moved or changed; only the type it is
+    // handed over in did.
 
-    private sealed record Tile(string Label, string Value, string Meta, string MetaClass, string? Href);
-
-    private IReadOnlyList<Tile> Tiles
+    private ProjectWorkspaceView View
     {
         get
         {
-            var pct = _detail?.MilestoneProgressPct ?? 0;
+            var stages = PwStages.Build(_roadmap, MilestonesLite);
 
-            var nextMeta = NextDue is null
-                ? "לא נקבע מועד"
-                : MentorTime.IsOverdue(NextDue)
-                    ? $"המועד עבר · {NextDue:dd.MM}"
-                    : $"עד {NextDue:dd.MM}";
+            return new ProjectWorkspaceView(
+                Identity:           Identity,
+                Stages:             stages,
+                StagesSummary:      PwStages.Summary(stages),
+                StagesEmptyText:    "לא הוגדרו אבני דרך לפרויקט זה.",
+                Sections:           Sections,
+                Activity:           ActivityRows);
+        }
+    }
 
-            var meeting = NextMeeting;
+    private PwIdentity Identity => new(
+        Title:         _detail!.Title,
+        TeamName:      _detail.TeamName,
+        StageName:     StageName,
+        // Milestone completion — the headline progress on both workspaces.
+        ProgressPct:   _detail.MilestoneProgressPct,
+        StatusText:    MentorProjectSignals.HealthLabel(Signal),
+        StatusVariant: MentorProjectSignals.HealthVariant(Signal),
+        Members:       _detail.TeamMembers.Select(m => $"{m.FullName} · {m.Email}").ToList(),
+        Meta:          Array.Empty<PwMeta>(),
+        // The team's own ProjectResources, read-only — see PwMaterials.
+        Materials:     PwMaterials.From(_detail.Resources));
+
+    /// <summary>The project's milestones in the shape the shared stage builder
+    /// reads, for the cycles that configure no roadmap stages.</summary>
+    private IReadOnlyList<PwMilestoneLite> MilestonesLite =>
+        (_detail?.Milestones ?? new List<MentorMilestoneDto>())
+            .Select(m => new PwMilestoneLite(
+                m.ProjectMilestoneId, m.Title, m.OrderIndex, m.Status, m.DueDate))
+            .ToList();
+
+    // ── Work ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// THE THREE SECTIONS, in the order the questions are asked, each carrying
+    /// only what a mentor can act on plus a little orientation.
+    ///
+    /// <para>The rows and their wording are unchanged; what each row now also
+    /// declares is its <see cref="PwRowRank"/>, derived from the very predicate
+    /// that already decided its label and its tone. Nothing new is computed,
+    /// and nothing that used to be reachable stopped being reachable — the
+    /// dormant rows are behind the section's own "לכל…".</para>
+    ///
+    /// <para>The order is fixed and never moves with the data. A section that
+    /// changed places when its counts changed would make the page
+    /// unlearnable.</para>
+    /// </summary>
+    private IReadOnlyList<PwSection> Sections
+    {
+        get
+        {
+            var subs  = Submissions;
+            var tasks = WorkTasks;
+
+            int pendingReviews = subs.Count(s => s.SubmissionId is not null);
+            int missing        = subs.Count(s => s is { Submitted: false, Overdue: true });
+            int submitted      = subs.Count(s => s.Submitted);
+            int openRequests   = _requests.Count(r => MentorRequestBuckets.Of(r.Status) != MentorRequestBucket.Closed);
+            int actionable     = _requests.Count(r => PwRequestVocabulary.OwnedByViewer(r.Status, ViewerOf(r)));
+            int overdueTasks   = tasks.Count(t => t.Overdue);
 
             return new[]
             {
-                // No href: the strip that answers this tile is the next section
-                // down, and a link that scrolls one card is not a destination.
-                new Tile("שלב נוכחי", StageName, $"{pct}% מאבני הדרך הושלמו",
-                         "mpw-tile-violet", null),
+                new PwSection(SecSubs, "הגשות", "oi-inbox",
+                    Rows:      subs.Select((s, i) => new PwWorkRow(
+                                    Key:             s.SubmissionId is int id ? $"review:{id}" : $"subrow:{i}",
+                                    Title:           s.Title,
+                                    // The context line — which milestone this
+                                    // deliverable belongs to. The deadline still
+                                    // reaches the row only when it was MISSED: a
+                                    // date that was met is not news, and one that
+                                    // has not arrived is why the row is dormant.
+                                    Meta:            s.Milestone,
+                                    Trailing:        s.Overdue ? s.Due : null,
+                                    TrailingLate:    s.Overdue,
+                                    State:           s.State,
+                                    StateTone:       ToneOf(s.StateClass),
+                                    ActionLabel:     s.SubmissionId is not null ? "לבדיקה" : null,
+                                    ActionIsPrimary: s.SubmissionId is not null,
+                                    IsClickable:     s.SubmissionId is not null,
+                                    // `s.SubmissionId is int` FIRST: without it a
+                                    // row that has no pending round (null) matches
+                                    // the null _reviewCtx of a surface that is still
+                                    // loading, and every unclickable row lights up.
+                                    IsOpen:          _reviewOpen && s.SubmissionId is int openSub
+                                                     && _reviewCtx?.SubmissionId == openSub,
+                                    Rank:            SubmissionRank(s))).ToList(),
+                    EmptyText: "אין משימות הגשה בפרויקט זה",
+                    // What the card says INSTEAD of rows when nothing is
+                    // outstanding: the settled position, in one line.
+                    Summary:     pendingReviews > 0
+                                     ? PwCount.Phrase(pendingReviews,
+                                           "הגשה אחת ממתינה לבדיקתך", "{0} הגשות ממתינות לבדיקתך")
+                                     : missing > 0
+                                         ? PwCount.Phrase(missing, "הגשה אחת חסרה", "{0} הגשות חסרות")
+                                         : $"{submitted} מתוך {subs.Count} הוגשו",
+                    SummaryTone: pendingReviews > 0 ? PwTone.Violet
+                                 : missing > 0      ? PwTone.Late
+                                 :                    PwTone.Quiet,
+                    AllHref:     MentorLinks.Reviews,
+                    AllLabel:    "לתור ההגשות",
+                    MoreLabel:   "לכל ההגשות"),
 
-                new Tile("אבן דרך הבאה", NextTitle ?? "אין אבן דרך פעילה", nextMeta,
-                         MentorTime.IsOverdue(NextDue) ? "mpw-late" : "", MentorLinks.Calendar),
+                new PwSection(SecReqs, "בקשות", "oi-envelope-closed",
+                    Rows:      _requests.Select(r =>
+                               {
+                                   // ONE ANSWER, FROM THE SERVER. The button, the
+                                   // tone, the rank and the status wording all read
+                                   // the capability ExtensionWorkflow.Resolve
+                                   // computed for this caller and this request —
+                                   // the same one /extension/decision gates on.
+                                   var v   = ViewerOf(r);
+                                   var cta = PwRequestVocabulary.ActionLabel(r.Status, v);
 
-                new Tile("פגישה קרובה",
-                         meeting?.Title ?? "לא נקבעה פגישה",
-                         meeting is null
-                             ? "אפשר לקבוע פגישת הנחיה"
-                             : $"{MotivaDates.DayAndMonth(meeting.Date)}{(meeting.TimeRange is { Length: > 0 } tr ? $" · {tr}" : "")}",
-                         meeting is null ? "" : "mpw-tile-blue",
-                         MentorLinks.Calendar),
+                                   return new PwWorkRow(
+                                       Key:             $"req:{r.Id}",
+                                       Title:           r.Title,
+                                       // Who asked, on the context line; when they
+                                       // asked, at the row's end.
+                                       Meta:            r.CreatedByName,
+                                       Trailing:        r.CreatedAt.ToLocalTime().ToString("dd.MM"),
+                                       // OWNERSHIP, NOT VISIBILITY — the same
+                                       // resolver the lecturer workspace uses.
+                                       State:           PwRequestVocabulary.StatusLabel(r.Status, v),
+                                       StateTone:       PwRequestVocabulary.Tone(r.Status, v),
+                                       ActionLabel:     cta,
+                                       ActionIsPrimary: cta is not null,
+                                       IsClickable:     true,
+                                       IsOpen:          _openRequestId == r.Id,
+                                       Rank:            RequestRank(r));
+                               }).ToList(),
+                    EmptyText:   "אין בקשות בפרויקט זה",
+                    Summary:     actionable > 0
+                                     ? PwCount.Phrase(actionable, "בקשה אחת ממתינה לך", "{0} בקשות ממתינות לך")
+                                     : openRequests > 0
+                                         ? PwCount.Phrase(openRequests, "בקשה אחת פתוחה", "{0} בקשות פתוחות")
+                                         : "אין בקשות פתוחות",
+                    SummaryTone: actionable > 0 ? PwTone.Violet : PwTone.Quiet,
+                    AllHref:     MentorLinks.RequestsInbox,
+                    AllLabel:    "לכל הבקשות",
+                    MoreLabel:   "לכל בקשות הפרויקט"),
 
-                new Tile("סטטוס הפרויקט",
-                         MentorProjectSignals.Label(Signal),
-                         _attention.Count == 0
-                             ? "לא נדרשת פעולה"
-                             : _attention.Count == 1 ? "פריט אחד ממתין לך" : $"{_attention.Count} פריטים ממתינים לך",
-                         _attention.Count == 0 ? "mpw-tile-teal" : "mpw-late",
-                         MentorLinks.Tasks),
+                new PwSection(SecTasks, "משימות", "oi-task",
+                    Rows:      tasks.Select((k, i) => new PwWorkRow(
+                                    Key:          k.Task is PersonalTaskDto own ? $"ptask:{own.Id}" : $"teamtask:{i}",
+                                    Title:        k.Title,
+                                    // WHO, and nothing else. The "שלי / צוות" chip
+                                    // said the same thing this line already says —
+                                    // a mentor's own row reads "משימה שלך" — so one
+                                    // of the two ownership signals went.
+                                    Meta:         k.Assignee,
+                                    Trailing:     k.Overdue ? k.Due : null,
+                                    TrailingLate: k.Overdue,
+                                    State:        k.State,
+                                    StateTone:    ToneOf(k.StateClass),
+                                    // Only the mentor's OWN task has an editor here;
+                                    // a team task stays unclickable, as it always was.
+                                    IsClickable:  k.Task is not null,
+                                    Rank:         TaskRank(k))).ToList(),
+                    EmptyText:   "אין משימות פתוחות בפרויקט זה",
+                    Summary:     overdueTasks > 0
+                                     ? PwCount.Phrase(overdueTasks, "משימה אחת באיחור", "{0} משימות באיחור")
+                                     : PwCount.Phrase(tasks.Count, "משימה אחת פתוחה", "{0} משימות פתוחות"),
+                    SummaryTone: overdueTasks > 0 ? PwTone.Late : PwTone.Quiet,
+                    MoreLabel:   "לכל המשימות",
+                    Note:        $"{_detail!.CompletedTasks} מתוך {_detail.TotalTasks} משימות הושלמו"),
             };
         }
     }
 
-    // ── Milestone roadmap ───────────────────────────────────────────────────
+    // ── Rank: the same three predicates, read once more ─────────────────────
+    //
+    // Each of these reads the fact the row's own label already states. They add
+    // no rule about the workflow — they only answer "does a mentor need to see
+    // this today", and the answer decides prominence, not permission.
 
-    private sealed record StageCell(string Name, string Date, bool Done, bool Current, bool Late);
+    /// <summary>A deliverable is the mentor's when a round is pending review;
+    /// it is an exception when its deadline passed and nothing was handed in;
+    /// it is context once it has been handed in at all. A deliverable whose
+    /// date has not arrived and which nobody has touched is dormant — that is
+    /// the majority of every project, and drawing it was most of the noise.</summary>
+    private static PwRowRank SubmissionRank(SubRow s) =>
+        s.SubmissionId is not null   ? PwRowRank.Waiting
+        : s is { Submitted: false, Overdue: true } ? PwRowRank.Exception
+        : s.Submitted                ? PwRowRank.Context
+        :                              PwRowRank.Dormant;
 
-    /// <summary>
-    /// The strip, from whichever source the cycle actually has.
-    ///
-    /// <para>Roadmap stages when they are configured — that is what the
-    /// reference draws and what ציר התקדמות already renders. When a cycle has
-    /// none, the project's own milestone list carries the identical shape
-    /// (a name, a completion state and a date), so the strip degrades to real
-    /// milestones instead of disappearing.</para>
-    /// </summary>
-    private IReadOnlyList<StageCell> StageCells
+    /// <summary>The next move is this viewer's, or it is not — the same
+    /// ownership answer the row's own status label gives. Anything still open
+    /// sits with somebody else and is context; a closed request is history and
+    /// waits behind "לכל בקשות הפרויקט".</summary>
+    private PwRowRank RequestRank(ProjectRequestRowDto r) =>
+        PwRequestVocabulary.OwnedByViewer(r.Status, ViewerOf(r))          ? PwRowRank.Waiting
+        : MentorRequestBuckets.Of(r.Status) != MentorRequestBucket.Closed ? PwRowRank.Context
+        :                                                                   PwRowRank.Dormant;
+
+    /// <summary>Late is the exception, whoever owns it — that is what a
+    /// supervisor scans this list for. Work actually under way, and the
+    /// mentor's own open items, are context. A task nobody has started and
+    /// which is not late requires nothing from anyone.</summary>
+    private static PwRowRank TaskRank(WorkTaskRow k) =>
+        k.Overdue                                       ? PwRowRank.Exception
+        : k.IsMine                                      ? PwRowRank.Context
+        : k.StateClass is "mpw-state-blue" or "mpw-state-violet" ? PwRowRank.Context
+        :                                                 PwRowRank.Dormant;
+
+    /// <summary>The mpw- state class this page already computed, read back as
+    /// the shared tone. Kept as a translation rather than replacing the two
+    /// state-class helpers, so the rules that DECIDE a state stay exactly where
+    /// and as they were.</summary>
+    private static PwTone ToneOf(string stateClass) => stateClass switch
     {
-        get
+        "mpw-state-teal"   => PwTone.Teal,
+        "mpw-state-blue"   => PwTone.Blue,
+        "mpw-state-violet" => PwTone.Violet,
+        "mpw-late"         => PwTone.Late,
+        _                  => PwTone.Quiet,
+    };
+
+    // ── Activity ────────────────────────────────────────────────────────────
+
+    private IReadOnlyList<PwActivityRow> ActivityRows =>
+        Activity.Select((v, i) => new PwActivityRow(
+            Key:         $"act:{i}",
+            Text:        v.Text,
+            Meta:        v.Meta,
+            Tone:        ActivityTone(v.ToneClass),
+            IsClickable: true)).ToList();
+
+    private static PwTone ActivityTone(string toneClass) => toneClass switch
+    {
+        "mpw-dot-violet" => PwTone.Violet,
+        "mpw-dot-blue"   => PwTone.Blue,
+        "mpw-dot-teal"   => PwTone.Teal,
+        _                => PwTone.Quiet,
+    };
+
+    // ── Row keys → this page's own routing ──────────────────────────────────
+    //
+    // The shared component knows nothing about a review drawer, a request
+    // accordion or a task editor: it raises the key the row was built with and
+    // these four methods hand it to the handler that already existed.
+
+    /// <summary>The integer after "prefix:" in a row key, or null.</summary>
+    private static int? KeyId(string key, string prefix) =>
+        key.StartsWith(prefix + ":", StringComparison.Ordinal)
+        && int.TryParse(key.AsSpan(prefix.Length + 1), out var id)
+            ? id : null;
+
+    private async Task OnWorkKeyAsync(string key)
+    {
+        if (KeyId(key, "review") is int submissionId)
         {
-            var today = DateTime.Today;
+            await OpenReviewDrawer(submissionId);
+            return;
+        }
 
-            if (_roadmap is { Stages.Count: > 0 })
-            {
-                return _roadmap.Stages
-                    .OrderBy(s => s.DisplayOrder)
-                    .Select(s =>
-                    {
-                        bool done    = s.Status == RoadmapStageStatuses.Completed;
-                        bool current = s.Status == RoadmapStageStatuses.Current;
+        if (KeyId(key, "req") is int requestId)
+        {
+            OpenRequest(requestId);
+            return;
+        }
 
-                        // A stage's own SuggestedEndDate first; when a cycle left
-                        // it blank — which is the common case in practice — the
-                        // last due date among the milestones BOUND to that stage
-                        // is the same fact from the other side, and it is already
-                        // in this payload. Without the fallback the strip printed
-                        // an em dash beside a tile that said the deadline had
-                        // passed, which is the two halves of one screen
-                        // disagreeing.
-                        DateTime? end = s.SuggestedEndDate
-                            ?? s.Milestones.Where(m => m.DueDate is not null)
-                                           .Max(m => m.DueDate);
-
-                        bool late = current && end is DateTime d && d.Date < today;
-
-                        // "הושלם" carries no date: nothing stores the day a stage
-                        // was actually finished, and dating it with the plan would
-                        // state something untrue.
-                        var text =
-                            done                              ? "הושלם"
-                            : end is not DateTime endDate      ? "—"
-                            : late                             ? $"באיחור מ־{endDate:dd.MM}"
-                            :                                    $"עד {endDate:dd.MM}";
-
-                        return new StageCell(s.Name, text, done, current, late);
-                    })
-                    .ToList();
-            }
-
-            return (_detail?.Milestones ?? new List<MentorMilestoneDto>())
-                .OrderBy(m => m.OrderIndex)
-                .Select(m =>
-                {
-                    bool done    = m.Status is "Completed" or "Done";
-                    bool current = !done && m.ProjectMilestoneId == FirstOpenMilestone?.ProjectMilestoneId;
-                    bool late    = !done && MentorTime.IsOverdue(m.DueDate);
-
-                    var text =
-                        done                              ? "הושלם"
-                        : m.DueDate is not DateTime due    ? "—"
-                        : late                             ? $"באיחור מ־{due:dd.MM}"
-                        :                                    $"עד {due:dd.MM}";
-
-                    return new StageCell(m.Title, text, done, current, late);
-                })
-                .ToList();
+        if (KeyId(key, "ptask") is int taskId
+            && _personal.FirstOrDefault(t => t.Id == taskId) is { } own)
+        {
+            OpenTask(own);
         }
     }
 
-    private static string StageClass(StageCell c) =>
-        c.Late    ? "mpw-stage-late"
-        : c.Current ? "mpw-stage-current"
-        : c.Done    ? "mpw-stage-done"
-        :             "mpw-stage-future";
-
-    private string RoadmapSummary
+    private async Task OnActivityKeyAsync(string key)
     {
-        get
-        {
-            var cells = StageCells;
-            if (cells.Count == 0) return "";
-
-            var idx  = cells.ToList().FindIndex(c => c.Current);
-            var late = cells.Count(c => c.Late);
-
-            var position = idx >= 0 ? $"שלב {idx + 1} מתוך {cells.Count}" : $"{cells.Count} שלבים";
-            return late > 0 ? $"אבן דרך באיחור · {position}" : position;
-        }
+        var rows = Activity;
+        if (KeyId(key, "act") is int i && i >= 0 && i < rows.Count)
+            await OpenActivityAsync(rows[i]);
     }
 
     // ── Attention ───────────────────────────────────────────────────────────
-
-    /// <summary>The row's second line: where the item sits and who put it there.
-    /// Falls back to the shared waiting sentence when the item carries
-    /// neither — never to an empty line.</summary>
-    private static string AttentionSub(MentorAttentionItemDto i)
-    {
-        var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(i.MilestoneTitle)) parts.Add($"אבן דרך: {i.MilestoneTitle}");
-        if (!string.IsNullOrWhiteSpace(i.ActorName))      parts.Add(i.ActorName!);
-
-        if (parts.Count == 0 && !string.IsNullOrWhiteSpace(i.WaitingLabel))
-            parts.Add(i.WaitingLabel);
-
-        return string.Join(" · ", parts);
-    }
 
     /// <summary>The shared waiting phrase for one request, when it is currently
     /// on this mentor. Null hides the chip inside MentorRequestDetail, which is
@@ -1107,55 +966,71 @@
 
     // ── Work tabs ───────────────────────────────────────────────────────────
 
-    private IReadOnlyList<MFilterTabs.Tab> WorkTabs => new[]
-    {
-        new MFilterTabs.Tab(TabSubs,  "הגשות",  Submissions.Count(s => s.SubmissionId is not null)),
-        new MFilterTabs.Tab(TabReqs,  "בקשות",  _requests.Count(r => MentorRequestBuckets.IsActionable(r.Status))),
-        new MFilterTabs.Tab(TabTasks, "משימות", WorkTasks.Count(t => t.Overdue)),
-    };
+    // The tab pills, their badges and their "all" links moved into
+    // WorkTabViews above — one place now states a tab's label, its count and
+    // where it hands off to, instead of four members that had to agree.
 
-    private void SelectTab(string key)
+    private void OpenRequest(int requestId) =>
+        _openRequestId = _openRequestId == requestId ? null : requestId;
+
+    private void CloseRequest() => _openRequestId = null;
+
+    /// <summary>The row behind the open request id — the surface's header is
+    /// built from the SAME snapshot row the section drew, so the title, the
+    /// type and the status on the surface cannot disagree with the row that
+    /// opened it.</summary>
+    private ProjectRequestRowDto? RequestRow(int id) =>
+        _requests.FirstOrDefault(r => r.Id == id);
+
+    /// <summary>Who filed it, when, and how long it has been waiting — the
+    /// three facts the title and the status do not carry. The waiting phrase
+    /// comes from the shared attention model and is present only while the
+    /// request is genuinely on this mentor.</summary>
+    private IReadOnlyList<PwMeta> RequestMeta(ProjectRequestRowDto r)
     {
-        _tab = key;
-        _expandedRequestId = null;
+        var meta = new List<PwMeta>();
+
+        if (!string.IsNullOrWhiteSpace(r.CreatedByName))
+            meta.Add(new PwMeta(r.CreatedByName!, "oi-person"));
+
+        meta.Add(new PwMeta($"נפתחה {r.CreatedAt.ToLocalTime():dd.MM.yyyy}", "oi-clock"));
+
+        if (WaitingLabelFor(r.Id) is { Length: > 0 } waiting)
+            meta.Add(new PwMeta(waiting));
+
+        return meta;
     }
 
-    private string TabAllHref => _tab switch
-    {
-        TabReqs => MentorLinks.RequestsInbox,
-        TabSubs => MentorLinks.Reviews,
-        _       => MentorLinks.Tasks,
-    };
-
-    private string TabAllLabel => _tab switch
-    {
-        TabReqs => "לכל הבקשות",
-        TabSubs => "לכל ההגשות הממתינות",
-        _       => "לכל המשימות שלי",
-    };
-
-    private void ToggleRequest(int requestId) =>
-        _expandedRequestId = _expandedRequestId == requestId ? null : requestId;
-
-    private static string RequestStateClass(MentorRequestBucket b) => b switch
-    {
-        MentorRequestBucket.AwaitingMentor => "mpw-late",
-        MentorRequestBucket.Closed         => "mpw-state-teal",
-        _                                  => "mpw-state-quiet",
-    };
-
+    /// <summary>
+    /// One deliverable, in the four facts the section actually draws.
+    ///
+    /// <para><paramref name="Due"/> reaches the row only when
+    /// <paramref name="Overdue"/> is true — a date that was met is not news.
+    /// <paramref name="Submitted"/> is "the team has handed something in at
+    /// least once", which is both the row's rank and what the section's summary
+    /// counts when nothing is waiting on this mentor.</para>
+    ///
+    /// <para>The milestone is the row's CONTEXT LINE. It came off the row when
+    /// the row was one line and the milestone was its fourth competing fact; a
+    /// two-line row has somewhere to put it, and "which milestone is this
+    /// deliverable for" is the one thing a title alone does not say.</para>
+    /// </summary>
     private sealed record SubRow(
         string Title, string Milestone, string State, string StateClass,
-        int? SubmissionId, string Trailing);
+        int? SubmissionId, string Due, bool Overdue, bool Submitted);
 
     /// <summary>
-    /// Every deliverable on the project, newest need first.
+    /// Every deliverable on the project, in milestone order.
     ///
     /// <para>The rows are the project's own submission TASKS, and the review id
     /// is attached from <c>PendingSubmissions</c> — the only place a submission
     /// id reaches this page. A task with no pending round therefore carries no
     /// button, which is honest: its history lives one call deeper, inside the
-    /// drawer, and there is no id here to open it with.</para>
+    /// review surface, and there is no id here to open it with.</para>
+    ///
+    /// <para>Which of these the section DRAWS is decided by
+    /// <see cref="SubmissionRank"/>, not here — this list stays complete so the
+    /// "לכל ההגשות" disclosure and the summary counts have something to read.</para>
     /// </summary>
     private IReadOnlyList<SubRow> Submissions
     {
@@ -1170,7 +1045,7 @@
                 .SelectMany(m => m.Tasks.Where(t => t.IsSubmission).Select(t => (Milestone: m, Task: t)))
                 .Select(x =>
                 {
-                    var t  = x.Task;
+                    var t = x.Task;
                     int? id = pending.TryGetValue(t.Id, out var subId) ? subId : null;
 
                     var (state, cls) =
@@ -1181,10 +1056,13 @@
                         : t.IsOverdue                        ? ("טרם הוגש · באיחור", "mpw-late")
                         :                                      ("טרם הוגש", "mpw-state-quiet");
 
-                    return new SubRow(t.Title, x.Milestone.Title, state, cls, id, "—");
+                    return new SubRow(t.Title, x.Milestone.Title, state, cls, id,
+                                      PwDates.DueLabel(t.DueDate), t.IsOverdue,
+                                      t.LatestSubmissionStatus is not null);
                 })
-                // Anything waiting on the mentor first; the rest keep milestone order.
-                .OrderBy(r => r.SubmissionId is null ? 1 : 0)
+                // Milestone order, and only milestone order. What comes first on
+                // the card is decided by PwRowRank now, and OrderBy is stable, so
+                // this ordering survives inside each rank.
                 .ToList();
         }
     }
@@ -1213,9 +1091,14 @@
 
             if (_detail is not null)
             {
+                // SUBMISSION TASKS ARE EXCLUDED, as they already were on the
+                // lecturer's workspace. A deliverable is the הגשות section; listing
+                // it again here put the same row on the page twice, with two
+                // different states, under two different headings.
                 foreach (var t in _detail.Milestones
                              .SelectMany(m => m.Tasks)
-                             .Where(t => t.Status is not ("Done" or "Completed" or "ApprovedForSubmission")))
+                             .Where(t => !t.IsSubmission
+                                         && t.Status is not ("Done" or "Completed" or "ApprovedForSubmission")))
                 {
                     rows.Add(new WorkTaskRow(
                         IsMine:     false,
@@ -1245,6 +1128,9 @@
                     Task:       t));
             }
 
+            // Overdue first inside the rank the card sorts by; PwRowRank makes
+            // the same row first on the card, and this keeps the tie-break the
+            // page has always used.
             return rows
                 .OrderByDescending(r => r.Overdue)
                 .ThenBy(r => r.Due == "—" ? 1 : 0)
@@ -1275,9 +1161,6 @@
     }
 
     // ── Dates and meetings ──────────────────────────────────────────────────
-
-    private IReadOnlyList<MentorCalendarEvent> UpcomingDates =>
-        _events.Where(e => e.Date.Date >= DateTime.Today).Take(5).ToList();
 
     /// <summary>
     /// The last guidance meeting that actually happened.
@@ -1344,11 +1227,10 @@
                 await OpenReviewDrawer(item.EntityId);
                 break;
 
-            // The בקשות tab already embeds the real request flow — the same
-            // MentorRequestDetail the inbox expands, with the same one POST.
+            // The request's own surface — the same MentorRequestDetail the
+            // inbox draws, with the same one POST.
             case MentorAttentionKind.Request when _requests.Any(r => r.Id == item.EntityId):
-                _tab = TabReqs;
-                _expandedRequestId = item.EntityId;
+                OpenRequest(item.EntityId);
                 break;
 
             case MentorAttentionKind.PersonalTask
@@ -1360,29 +1242,6 @@
             default:
                 Nav.NavigateTo(item.Href);
                 break;
-        }
-    }
-
-    /// <summary>
-    /// One פגישות ומועדים row.
-    ///
-    /// <para>A meeting or a personal task opens the shared editor here, and a
-    /// review opens this page's own drawer — both used to leave the workspace
-    /// to reach the very same panel. A milestone or a dated deliverable has no
-    /// entity to open and its old link pointed at THIS page, so it stays put
-    /// rather than pretending to do something.</para></summary>
-    private async Task OpenEventAsync(MentorCalendarEvent e)
-    {
-        if (e.Type == MentorEventType.Review)
-        {
-            await OpenReviewDrawer(e.EntityId);
-            return;
-        }
-
-        if (e.Type is MentorEventType.PersonalTask or MentorEventType.Meeting
-            && _personal.FirstOrDefault(t => t.Id == e.EntityId) is { } own)
-        {
-            OpenTask(own);
         }
     }
 
@@ -1423,13 +1282,23 @@
         MentorAttentionKind? Kind = null, int EntityId = 0);
 
     /// <summary>
-    /// Only what a real column can date.
+    /// Only events this page does not already state somewhere else.
     ///
-    /// <para>Four sources, and the product has no fifth: a request's CreatedAt
-    /// and its UpdatedAt, a pending submission's SubmittedAt, and a past
-    /// guidance meeting's own date. Milestone completion, task creation and
-    /// review decisions are all invisible here — nothing stores when they
-    /// happened at project scope — so they are absent rather than guessed.</para>
+    /// <para>"בקשה נפתחה — X" IS GONE. It was the largest source of lines here
+    /// and every one of them named a request that is a row in the בקשות
+    /// section, carrying its own status and its own filing date. The feed was
+    /// re-reading the page to the reader.</para>
+    ///
+    /// <para>What is left is what nothing else says: a request that MOVED
+    /// after it was filed (the section shows where it is, never when it last
+    /// changed), a submission ARRIVING (the section shows the deliverable's
+    /// state, never who handed it in), and a guidance meeting that has already
+    /// happened — the only past event on this page at all, and one the header
+    /// summarises to a single "last meeting" line.</para>
+    ///
+    /// <para>Still no fifth source: milestone completion, task creation and
+    /// review decisions store no project-scoped timestamp anywhere, so they
+    /// are absent rather than guessed.</para>
     /// </summary>
     private IReadOnlyList<ActivityRow> Activity
     {
@@ -1437,25 +1306,15 @@
         {
             var rows = new List<ActivityRow>();
 
-            foreach (var r in _requests)
+            // Only the MOVE, never the opening — the opening is the row in בקשות.
+            foreach (var r in _requests.Where(r => r.UpdatedAt.Date != r.CreatedAt.Date
+                                                   || r.UpdatedAt > r.CreatedAt.AddMinutes(1)))
             {
-                var href = $"{MentorLinks.RequestsInbox}?requestId={r.Id}";
-
                 rows.Add(new ActivityRow(
-                    r.CreatedAt, $"בקשה נפתחה — {r.Title}",
-                    string.IsNullOrWhiteSpace(r.CreatedByName)
-                        ? r.CreatedAt.ToLocalTime().ToString("dd.MM")
-                        : $"{r.CreatedByName} · {r.CreatedAt.ToLocalTime():dd.MM}",
-                    href, "mpw-dot-violet", MentorAttentionKind.Request, r.Id));
-
-                // Only when something actually moved after it was filed.
-                if (r.UpdatedAt.Date != r.CreatedAt.Date || r.UpdatedAt > r.CreatedAt.AddMinutes(1))
-                {
-                    rows.Add(new ActivityRow(
-                        r.UpdatedAt, $"עדכון בבקשה — {r.Title}",
-                        $"{MentorRequestBuckets.RowLabel(MentorRequestBuckets.Of(r.Status))} · {r.UpdatedAt.ToLocalTime():dd.MM}",
-                        href, "mpw-dot-grey", MentorAttentionKind.Request, r.Id));
-                }
+                    r.UpdatedAt, $"עדכון בבקשה — {r.Title}",
+                    $"{PwRequestVocabulary.StatusLabel(r.Status, ViewerOf(r))} · {r.UpdatedAt.ToLocalTime():dd.MM}",
+                    $"{MentorLinks.RequestsInbox}?requestId={r.Id}", "mpw-dot-violet",
+                    MentorAttentionKind.Request, r.Id));
             }
 
             if (_detail is not null)
@@ -1487,7 +1346,7 @@
                     MentorAttentionKind.PersonalTask, t.Id));
             }
 
-            return rows.OrderByDescending(r => r.When).Take(6).ToList();
+            return rows.OrderByDescending(r => r.When).Take(5).ToList();
         }
     }
 
@@ -1513,6 +1372,7 @@
 
     private async Task OpenReviewDrawer(int submissionId)
     {
+        _reviewOpen     = true;
         _reviewCtx      = null;
         _reviewFeedback = "";
         _reviewError    = false;
@@ -1523,16 +1383,12 @@
         _reviewCtx     = await MentorService.GetSubmissionContextAsync(submissionId);
         _reviewLoading = false;
 
-        // Auto-expand the current round in history
-        _expandedRounds.Clear();
-        if (_reviewCtx is not null)
-            _expandedRounds.Add(_reviewCtx.SubmissionId);
-
         StateHasChanged();
     }
 
     private void CloseDrawer()
     {
+        _reviewOpen     = false;
         _reviewCtx      = null;
         _reviewFeedback = "";
         _reviewError    = false;
@@ -1584,13 +1440,6 @@
 
     // ── Display helpers ─────────────────────────────────────────────────────
 
-    private static string Initials(string? text)
-    {
-        var parts = (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return "?";
-        return parts.Length == 1 ? parts[0][..1] : $"{parts[0][..1]}{parts[1][..1]}";
-    }
-
     private static string TaskStatusLabel(MentorTaskDto task)
     {
         if (task.IsSubmission && task.LatestMentorStatus == "Pending"
@@ -1610,11 +1459,40 @@
         };
     }
 
-    private static string DrawerMentorStatusClass(string s) => s switch
+    /// <summary>Who and when, for the review surface's header. Empty while the
+    /// context is still loading, which is when the surface has no facts to
+    /// state yet.</summary>
+    private IReadOnlyList<PwMeta> ReviewMeta =>
+        _reviewCtx is null
+            ? Array.Empty<PwMeta>()
+            : new[]
+              {
+                  new PwMeta(_reviewCtx.SubmittedBy, "oi-person"),
+                  new PwMeta(_reviewCtx.SubmittedAt.IsraelFormat(), "oi-clock"),
+              };
+
+    /// <summary>THE DRIVE LINK COUNTS AS A FILE. Submissions have been
+    /// Drive-link only since 2026-05-19, so a count of `Files` alone reports
+    /// zero for every modern submission — while the link to the deliverable
+    /// sits in the same payload.</summary>
+    private int ReviewFileCount =>
+        (_reviewCtx?.Files.Count ?? 0)
+        + (string.IsNullOrWhiteSpace(_reviewCtx?.DriveUrl) ? 0 : 1);
+
+    /// <summary>The mentor decision in the shared five-tone scale — the same
+    /// vocabulary a request's status badge uses on the same surface.</summary>
+    private static PwTone ReviewTone(string s) => s switch
     {
-        "Approved" => "mpd-badge-approved",
-        "Returned" => "mpd-badge-returned",
-        _          => "mpd-badge-pending",
+        "Approved" => PwTone.Teal,
+        "Returned" => PwTone.Late,
+        _          => PwTone.Violet,
+    };
+
+    private static string ReviewToneClass(string s) => ReviewTone(s) switch
+    {
+        PwTone.Teal => "pwd-tone-teal",
+        PwTone.Late => "pwd-tone-rose",
+        _           => "pwd-tone-violet",
     };
 
     private static string DrawerMentorStatusLabel(string s) => s switch

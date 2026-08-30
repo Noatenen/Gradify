@@ -435,7 +435,61 @@ public class ProjectRequestsController : ControllerBase
                    ?? new List<ProjectRequestRowWithTeam>();
 
         var result = rows.Select(MapToRowDto).ToList();
+
+        // ── What this caller may do with each row ────────────────────────
+        //
+        // Asked once for the whole page, from the same resolver the detail
+        // endpoint and the /extension/decision gate use. The workspace words a
+        // row's status from these flags, so a list can no longer claim
+        // "ממתינה להחלטתך" over a request the endpoint would refuse.
+        //
+        // Two extra round-trips for the whole list, not two per row: the
+        // caller's mentored projects as a set, and the extension side-rows for
+        // the extension requests actually returned.
+        if (result.Count > 0)
+        {
+            var mentoredProjects = ((await _db.GetRecordsAsync<int>(
+                    "SELECT ProjectId FROM ProjectMentors WHERE UserId = @UserId",
+                    new { UserId = authUserId }))
+                ?? Enumerable.Empty<int>()).ToHashSet();
+
+            var extIds = result.Where(r => r.RequestType == RequestTypes.Extension)
+                               .Select(r => r.Id).ToList();
+
+            var decisions = new Dictionary<int, ExtensionDecisionStateRow>();
+            if (extIds.Count > 0)
+            {
+                var extSql = $@"
+                    SELECT RequestId, MentorDecision, LecturerDecision, FinalDecision
+                    FROM   ProjectRequestExtensions
+                    WHERE  RequestId IN ({string.Join(",", extIds)})";
+                decisions = ((await _db.GetRecordsAsync<ExtensionDecisionStateRow>(extSql))
+                             ?? Enumerable.Empty<ExtensionDecisionStateRow>())
+                            .ToDictionary(e => e.RequestId, e => e);
+            }
+
+            foreach (var row in result)
+            {
+                decisions.TryGetValue(row.Id, out var d);
+                ApplyCapabilities(row,
+                    isProjectMentor:  mentoredProjects.Contains(row.ProjectId),
+                    mentorDecision:   d?.MentorDecision,
+                    lecturerDecision: d?.LecturerDecision,
+                    finalDecision:    d?.FinalDecision);
+            }
+        }
+
         return Ok(result);
+    }
+
+    /// <summary>The three decision columns of an extension side-row — all the
+    /// capability resolver needs, without pulling the whole DTO.</summary>
+    private sealed class ExtensionDecisionStateRow
+    {
+        public int     RequestId        { get; set; }
+        public string  MentorDecision   { get; set; } = "";
+        public string  LecturerDecision { get; set; } = "";
+        public string  FinalDecision    { get; set; } = "";
     }
 
     // Splits the GROUP_CONCAT CSV columns into the public DTO's list/string
@@ -626,7 +680,65 @@ public class ProjectRequestsController : ControllerBase
                 extSql, new { RequestId = id }))?.FirstOrDefault();
         }
 
+        // ── What THIS caller may do next ─────────────────────────────────
+        //
+        // Answered here, once, so the workspace can render an action without
+        // re-deriving authority from role claims. Each flag mirrors the gate
+        // its own endpoint enforces — a button can only appear where the POST
+        // would actually succeed, and the POST re-checks regardless.
+        await AttachViewerCapabilitiesAsync(row, authUserId);
+
         return Ok(row);
+    }
+
+    /// <summary>
+    /// Fills the Viewer* flags on one request, for the authenticated caller.
+    ///
+    /// <para>THE RULE ITSELF LIVES IN <see cref="ExtensionWorkflow.Resolve"/>,
+    /// which the /extension/decision endpoint also gates on. This method's only
+    /// job is to look up the one fact the resolver cannot compute — whether the
+    /// caller is in ProjectMentors for THIS project — and hand it over. It used
+    /// to carry its own copy of the flow rules, and that copy is where the
+    /// legacy-MentorDecision bug lived: it listed the three values that count as
+    /// a completed mentor stage, and the list was missing the two the old
+    /// terminal-decision flow wrote.</para>
+    /// </summary>
+    private async Task AttachViewerCapabilitiesAsync(ProjectRequestRowDto row, int authUserId)
+    {
+        bool isProjectMentor = (await _db.GetRecordsAsync<int>(
+            "SELECT 1 FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId LIMIT 1",
+            new { ProjectId = row.ProjectId, UserId = authUserId }))?.FirstOrDefault() == 1;
+
+        var ext = (row as ProjectRequestDetailDto)?.Extension;
+
+        ApplyCapabilities(row, isProjectMentor,
+            ext?.MentorDecision, ext?.LecturerDecision, ext?.FinalDecision);
+    }
+
+    /// <summary>Writes the resolver's answer onto a row. Shared by the detail
+    /// endpoint and the list, so a row means the same thing in both.</summary>
+    private void ApplyCapabilities(
+        ProjectRequestRowDto row,
+        bool isProjectMentor,
+        string? mentorDecision,
+        string? lecturerDecision,
+        string? finalDecision)
+    {
+        var caps = ExtensionWorkflow.Resolve(
+            requestType:      row.RequestType,
+            status:           row.Status,
+            mentorDecision:   mentorDecision,
+            lecturerDecision: lecturerDecision,
+            finalDecision:    finalDecision,
+            isAdminOrStaff:   User.IsInRole(Roles.Admin) || User.IsInRole(Roles.Staff),
+            holdsMentorRole:  User.IsInRole(Roles.Mentor),
+            isProjectMentor:  isProjectMentor);
+
+        row.ViewerIsProjectMentor    = isProjectMentor;
+        row.ViewerCanRecommend       = caps.CanRecommend;
+        row.ViewerCanDecide          = caps.CanDecide;
+        row.ViewerDecisionIsCombined = caps.DecisionIsCombined;
+        row.MentorStageComplete      = caps.MentorStageComplete;
     }
 
     // ── GET /api/project-requests/{id}/debug-events ──────────────────────
@@ -1618,21 +1730,50 @@ public class ProjectRequestsController : ControllerBase
             return BadRequest("ההחלטה כבר נסגרה");
 
         // ── Lecturer-stage authorization + flow gate ─────────────────────
-        // Only Admin/Staff can finalize a request, and only after a mentor
-        // has submitted a recommendation. Legacy "Escalated" rows are still
-        // accepted so requests created before the mentor-recommendation
-        // rollout can still close.
+        //
+        // THE SAME RESOLVER THE UI ASKED. ExtensionWorkflow.Resolve decides
+        // whether this caller may decide this request, and the workspace drew
+        // its button from that identical answer — so a visible action always
+        // has a POST behind it, and an action the flow forbids is never drawn.
+        // This block used to carry its own copy of the rules, including its own
+        // list of the MentorDecision values that count as a completed mentor
+        // stage; that list omitted the legacy Approved/Rejected the old
+        // terminal-decision flow wrote, so a request whose mentor HAD advised
+        // could not be closed by anybody.
         bool isAdminOrStaff = User.IsInRole(Roles.Admin) || User.IsInRole(Roles.Staff);
         if (!isAdminOrStaff) return Forbid();
 
-        bool hasRecommendation =
-            ctx.MentorDecision == ExtensionDecisionStatuses.Recommended    ||
-            ctx.MentorDecision == ExtensionDecisionStatuses.NotRecommended ||
-            ctx.MentorDecision == ExtensionDecisionStatuses.Escalated;
-        if (!hasRecommendation)
-            return BadRequest("הבקשה ממתינה להמלצת מנחה");
-        if (ctx.LecturerDecision != ExtensionDecisionStatuses.Pending)
-            return BadRequest("המרצה כבר החליט בבקשה זו");
+        // The caller's real relationship to THIS project, never role
+        // membership: a dual-role account holds Mentor on every project.
+        bool isAssignedMentorOfProject = (await _db.GetRecordsAsync<int>(
+            "SELECT 1 FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId LIMIT 1",
+            new { ProjectId = ctx.ProjectId, UserId = authUserId }))?.FirstOrDefault() == 1;
+
+        var caps = ExtensionWorkflow.Resolve(
+            requestType:      ctx.RequestType,
+            status:           ctx.Status,
+            mentorDecision:   ctx.MentorDecision,
+            lecturerDecision: ctx.LecturerDecision,
+            finalDecision:    ctx.FinalDecision,
+            isAdminOrStaff:   true,
+            holdsMentorRole:  User.IsInRole(Roles.Mentor),
+            isProjectMentor:  isAssignedMentorOfProject);
+
+        if (!caps.CanDecide)
+        {
+            // Say WHICH gate closed, so the message is actionable rather than
+            // a generic refusal. Order matches the resolver's own precedence.
+            if (ctx.LecturerDecision == ExtensionDecisionStatuses.Approved
+                || ctx.LecturerDecision == ExtensionDecisionStatuses.Rejected)
+                return BadRequest("המרצה כבר החליט בבקשה זו");
+
+            if (!caps.MentorStageComplete)
+                return BadRequest("הבקשה ממתינה להמלצת מנחה");
+
+            return BadRequest("הבקשה אינה פתוחה להחלטה");
+        }
+
+        bool combinedDecision = caps.DecisionIsCombined;
 
         // ── Date validation when approving with a target ─────────────────
         bool hasTaskTarget      = ctx.TaskId.HasValue;
@@ -1754,7 +1895,13 @@ public class ProjectRequestsController : ControllerBase
             RequestId = id,
             UserId    = authUserId,
             EventType = RequestEventTypes.StatusChange,
-            Content   = (string?)null,
+            // A combined decision says so in the thread. MentorDecision is
+            // deliberately left Pending rather than stamped with the same
+            // value: no separate recommendation was made, and writing one
+            // would put a second opinion in the record that never existed.
+            Content   = combinedDecision
+                            ? "ההחלטה התקבלה על ידי מנחה הפרויקט, שהוא גם בעל סמכות ההחלטה האקדמית."
+                            : null,
             OldValue  = RequestStatuses.Label(ctx.Status),
             NewValue  = ExtensionDecisionStatuses.Label(decision),
         });

@@ -155,6 +155,47 @@ public class ProjectRequestRowDto
     public List<string>  StudentEmails  { get; set; } = new();
     public List<string>  MentorNames    { get; set; } = new();
     public List<string>  MentorEmails   { get; set; } = new();
+
+    // ── What THIS caller may do next ────────────────────────────────────────
+    //
+    // Computed server-side, per request, for the authenticated caller, by
+    // ExtensionWorkflow.Resolve — the same function the POST endpoints gate on,
+    // so a button can only appear where the request would actually succeed.
+    //
+    // THEY LIVE ON THE ROW, NOT ONLY ON THE DETAIL. A list row has to word its
+    // own status, and "ממתינה להחלטתך" is a claim about what the reader may do.
+    // While the flags existed only on the detail payload, every list re-derived
+    // that claim from the status plus the reader's roles — which is exactly how
+    // a row came to say "ממתינה להחלטתך" above a surface offering no decision.
+    // The list asks the server once, like the detail does.
+
+    /// <summary>The caller is in ProjectMentors for this request's project.
+    /// NOT "holds the Mentor role" — a mentor of some OTHER project is false
+    /// here, and a dual-role lecturer who genuinely mentors this project is
+    /// true.</summary>
+    public bool ViewerIsProjectMentor { get; set; }
+
+    /// <summary>The caller may post /mentor-recommendation right now.</summary>
+    public bool ViewerCanRecommend { get; set; }
+
+    /// <summary>The caller may post /extension/decision right now.</summary>
+    public bool ViewerCanDecide { get; set; }
+
+    /// <summary>
+    /// True when <see cref="ViewerCanDecide"/> is reached WITHOUT a prior
+    /// mentor recommendation, because this caller is both the assigned mentor
+    /// of the project and academic staff. The UI uses it only to explain why no
+    /// recommendation block is shown; the authority itself is
+    /// <see cref="ViewerCanDecide"/>.
+    /// </summary>
+    public bool ViewerDecisionIsCombined { get; set; }
+
+    /// <summary>
+    /// The request's MENTOR STAGE has completed — a mentor advised, escalated,
+    /// or (on legacy rows) decided. See ExtensionWorkflow.MentorStageComplete
+    /// for why this is not inferred from the status.
+    /// </summary>
+    public bool MentorStageComplete { get; set; }
 }
 
 /// <summary>
@@ -207,6 +248,148 @@ public static class ExtensionDecisionStatuses
         _              => s,
     };
 }
+
+/// <summary>
+/// THE EXTENSION FLOW, RESOLVED IN ONE PLACE.
+///
+/// <para>An extension request passes a MENTOR STAGE (advice) and then a
+/// LECTURER STAGE (the decision). Three call sites used to answer "has the
+/// mentor stage completed?" independently, by listing the values that count —
+/// and all three listed the same three: Recommended, NotRecommended,
+/// Escalated. That list is incomplete, and the omission was not cosmetic.</para>
+///
+/// <para><b>THE LEGACY VALUES ARE REAL DATA.</b> The mentor stage used to be a
+/// terminal DECISION, and it wrote <see cref="ExtensionDecisionStatuses.Approved"/>
+/// / <see cref="ExtensionDecisionStatuses.Rejected"/>. An audit of
+/// ProjectRequestExtensions found those rows are the LARGEST group still in the
+/// table — Approved 5, Recommended 4, Pending 4, NotRecommended 3 — and every
+/// non-Pending row carries both MentorDecidedAt and MentorDecidedByUserId, so
+/// there is no ambiguity about whether a mentor acted. A request holding the
+/// legacy wording had genuinely completed its mentor stage, and both the
+/// capability flag and the POST gate refused it: the workspace said
+/// "ממתינה להחלטתך" and offered nothing, and the endpoint answered
+/// "הבקשה ממתינה להמלצת מנחה". A UI patch would have produced a button that
+/// 403s, which is why the rule is normalised here and read from both.</para>
+///
+/// <para><b>THE STATUS IS NOT A SUBSTITUTE FOR THE DATA.</b> It is tempting to
+/// read <c>Status == PendingLecturerDecision</c> as "the mentor stage
+/// finished", since that is the only status the recommendation POST writes.
+/// The table says otherwise: a live row sits at PendingLecturerDecision with
+/// MentorDecision still Pending. Its mentor never advised, nobody may decide
+/// it, and it must not be labelled as waiting on anyone's decision — so the
+/// stage question is answered from the mentor column, never from the
+/// status.</para>
+/// </summary>
+public static class ExtensionWorkflow
+{
+    /// <summary>
+    /// Has a mentor finished with this request?
+    ///
+    /// <para>Stated as "anything other than undecided" rather than as a list of
+    /// the values that qualify — a list is what went stale. The column is
+    /// <c>NOT NULL DEFAULT 'Pending'</c>, so undecided has exactly one
+    /// spelling; an empty string is treated as the same thing defensively.</para>
+    ///
+    /// <para>Escalated counts: a mentor who pushed the request up without
+    /// advising has finished with it, which is precisely what the lecturer
+    /// stage needs to know.</para>
+    /// </summary>
+    public static bool MentorStageComplete(string? mentorDecision) =>
+        !string.IsNullOrWhiteSpace(mentorDecision)
+        && mentorDecision != ExtensionDecisionStatuses.Pending;
+
+    /// <summary>
+    /// The mentor's recorded advice, in the vocabulary the product speaks now.
+    ///
+    /// <para>The old stage's Approved/Rejected mean "recommends approving" /
+    /// "recommends rejecting" — they were never a final verdict, because the
+    /// lecturer's own decision is what closes a request. Displaying them raw
+    /// prints "אושר" on a request that has not been approved by anybody.</para>
+    /// </summary>
+    public static string NormalizeMentorDecision(string? mentorDecision) => mentorDecision switch
+    {
+        null or "" => ExtensionDecisionStatuses.Pending,
+        ExtensionDecisionStatuses.Approved => ExtensionDecisionStatuses.Recommended,
+        ExtensionDecisionStatuses.Rejected => ExtensionDecisionStatuses.NotRecommended,
+        _ => mentorDecision,
+    };
+
+    /// <summary>
+    /// WHAT THIS CALLER MAY DO WITH THIS REQUEST — the single resolver behind
+    /// the Viewer* flags, the POST gate on /extension/decision, and every list
+    /// row that has to word a status honestly.
+    ///
+    /// <para>Pure: it is handed the facts and returns the answer, so the
+    /// detail endpoint, the requests list and the project overview cannot
+    /// drift from the endpoint that enforces it.</para>
+    ///
+    /// <para><paramref name="isProjectMentor"/> must come from the caller's real
+    /// ProjectMentors row for THIS project, never from role membership — a
+    /// dual-role account holds the Mentor role on every project in the
+    /// system.</para>
+    /// </summary>
+    public static ExtensionCapabilities Resolve(
+        string? requestType,
+        string? status,
+        string? mentorDecision,
+        string? lecturerDecision,
+        string? finalDecision,
+        bool isAdminOrStaff,
+        bool holdsMentorRole,
+        bool isProjectMentor)
+    {
+        bool stageComplete = MentorStageComplete(mentorDecision);
+
+        // Only extensions have the two-stage flow. Everything else is answered
+        // through /handle and /reply, which have their own gates.
+        if (requestType != RequestTypes.Extension)
+            return new ExtensionCapabilities(false, false, false, stageComplete);
+
+        // The same three conditions SubmitMentorRecommendation checks: right
+        // status, a real ProjectMentors row, and the Mentor role the endpoint's
+        // own [Authorize] requires.
+        bool canRecommend =
+            holdsMentorRole
+            && isProjectMentor
+            && status == RequestStatuses.PendingMentorRecommendation;
+
+        // "Not decided yet" is NOT the same as LecturerDecision == Pending. A
+        // fresh extension row is born NotRequired and only becomes Pending once
+        // a recommendation opens the lecturer stage; both mean undecided, and
+        // only Approved/Rejected are terminal.
+        bool lecturerHasDecided =
+            lecturerDecision == ExtensionDecisionStatuses.Approved ||
+            lecturerDecision == ExtensionDecisionStatuses.Rejected;
+
+        bool stillOpen =
+            finalDecision == ExtensionDecisionStatuses.Pending
+            && !lecturerHasDecided
+            && status is not (RequestStatuses.Resolved or RequestStatuses.Closed);
+
+        // THE DUAL-ROLE SHORT-CIRCUIT. The recommendation stage exists so a
+        // decision carries a second person's judgement. When the caller IS this
+        // project's assigned mentor and also holds final authority there is no
+        // second person, so requiring them to advise themselves adds a step and
+        // no safeguard.
+        bool canDecide =
+            isAdminOrStaff
+            && stillOpen
+            && (stageComplete || isProjectMentor);
+
+        return new ExtensionCapabilities(
+            CanRecommend:        canRecommend,
+            CanDecide:           canDecide,
+            DecisionIsCombined:  canDecide && !stageComplete && isProjectMentor,
+            MentorStageComplete: stageComplete);
+    }
+}
+
+/// <summary>The answer <see cref="ExtensionWorkflow.Resolve"/> returns.</summary>
+public readonly record struct ExtensionCapabilities(
+    bool CanRecommend,
+    bool CanDecide,
+    bool DecisionIsCombined,
+    bool MentorStageComplete);
 
 /// <summary>Carried inside ProjectRequestDetailDto when the request is an Extension.</summary>
 public class ExtensionRequestInfoDto

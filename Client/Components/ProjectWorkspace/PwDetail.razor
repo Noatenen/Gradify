@@ -1,0 +1,195 @@
+@namespace AuthWithAdmin.Client.Components
+
+@*
+    ── PwDetail — ONE detail surface for everything the workspace opens ──────
+
+    WHAT IT REPLACES. A request used to expand INSIDE the work list: a block of
+    dates, reason text, attachments and a decision form growing between two
+    rows that carried on as if nothing had happened. A submission opened
+    something else entirely — a side drawer with its own header, its own
+    section rules and its own button vocabulary. Two kinds of item, two
+    unrelated surfaces, and neither of them said plainly which item you were
+    in.
+
+    Now both open here. The shell is the same for a request, a submission and
+    anything a role adds later; only the BODY differs, and it is supplied by
+    the host that owns that entity's data and actions.
+
+    THE HIERARCHY IS THE CONTRACT, and it is the review drawer's own order:
+
+        eyebrow      where this item lives     (milestone / request type)
+        title        what it is                RUNG 2, once, at the top
+        status       where it is in its flow   one badge, semantic tone
+        meta         who and when
+        ─────────────────────────────────────────────────────────────
+        sections     the reason / the content
+                     the dates
+                     the FILES — always its own labelled section, never
+                     an afterthought at the end of a paragraph
+                     the history / review trail
+        ─────────────────────────────────────────────────────────────
+        actions      what THIS viewer may do, in the footer
+
+    NO BUSINESS LOGIC LIVES HERE. Not a status, not a permission, not a date
+    rule — the shell draws what it is handed and raises OnClose. Every host
+    keeps its own endpoints, its own capability flags and its own POST.
+
+    IT IS AN MModal, NOT A NEW OVERLAY. Scroll lock, Escape, the backdrop, the
+    focus move and the aria wiring already exist there and are already used by
+    every other dialog in the product; a second implementation of them is how
+    two dialogs start behaving differently. This file adds the STRUCTURE inside
+    that shell and nothing else.
+
+    THE BODY CLASSES ARE PUBLIC. Everything a host writes inside ChildContent
+    is styled from PwDetail.razor.css through `::deep`, so a request's
+    "קבצים מצורפים" and a submission's are the same object — same label weight,
+    same row, same download affordance — without either host re-declaring it.
+    The vocabulary is listed at the top of that file.
+*@
+
+<MModal IsOpen="@IsOpen"
+        Size="MModal.ModalSize.Wide"
+        OnClose="@OnClose"
+        AriaLabelledBy="@_titleId"
+        FooterContent="@FooterFragment">
+
+    <HeaderContent>
+        <div class="pwd-head">
+            @if (!string.IsNullOrWhiteSpace(Eyebrow))
+            {
+                <p class="pwd-eyebrow">@Eyebrow</p>
+            }
+
+            <h2 class="pwd-title" id="@_titleId">@Title</h2>
+
+            @if (!string.IsNullOrWhiteSpace(StatusText) || Meta.Count > 0)
+            {
+                <div class="pwd-idline">
+                    @if (!string.IsNullOrWhiteSpace(StatusText))
+                    {
+                        <span class="pwd-badge @ToneClass(StatusTone)">@StatusText</span>
+                    }
+                    @foreach (var m in Meta)
+                    {
+                        <span class="pwd-meta">
+                            @if (!string.IsNullOrWhiteSpace(m.Icon))
+                            {
+                                <span class="oi @m.Icon" aria-hidden="true"></span>
+                            }
+                            @m.Text
+                        </span>
+                    }
+                </div>
+            }
+        </div>
+    </HeaderContent>
+
+    <ChildContent>
+        @if (Loading)
+        {
+            <div class="pwd-loading" role="status" aria-live="polite">
+                <MLoadingState Variant="MLoadingState.LoadingVariant.Inline"
+                               Label="@LoadingLabel" />
+            </div>
+        }
+        else
+        {
+            @*  TWO COLUMNS, NOT ONE LONG PAGE.
+
+                The content column scrolls; the action column does not. That
+                is the whole point of the split: the thing the reader has to
+                DO stays on screen while they read the thing they are
+                deciding about. Stacked, every review made you scroll past
+                the files and the trail to reach the buttons, then scroll
+                back up to check what you had just agreed to.
+
+                One column below the breakpoint, action first — on a narrow
+                screen the decision is what you came for and there is no
+                second column to keep it visible. *@
+            <div class="pwd-cols">
+                <div class="pwd-main">@ChildContent</div>
+
+                @if (Side is not null)
+                {
+                    <aside class="pwd-side">@Side</aside>
+                }
+            </div>
+        }
+    </ChildContent>
+</MModal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Where the item lives — the milestone for a submission, the
+    /// request type for a request. Small, quiet, above the title, because it
+    /// qualifies the name rather than competing with it.</summary>
+    [Parameter] public string? Eyebrow { get; set; }
+
+    /// <summary>The item's own name. The one RUNG 2 on the surface.</summary>
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+
+    /// <summary>Where the item is in its workflow, in the words its own
+    /// vocabulary uses. The tone is the shared PwTone scale, so a submission
+    /// waiting on the viewer and a request waiting on them are the same
+    /// colour.</summary>
+    [Parameter] public string? StatusText { get; set; }
+    [Parameter] public PwTone StatusTone { get; set; } = PwTone.Quiet;
+
+    /// <summary>Who and when — the two facts every item has and neither the
+    /// title nor the status carries.</summary>
+    [Parameter] public IReadOnlyList<PwMeta> Meta { get; set; } = Array.Empty<PwMeta>();
+
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public string LoadingLabel { get; set; } = "טוענת…";
+
+    /// <summary>The content column — what the reader is deciding ABOUT:
+    /// the description, the dates, the files, the current round.</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>
+    /// The action column — where the item stands and what this viewer may do
+    /// about it.
+    ///
+    /// <para>A separate slot rather than a convention about ordering, because
+    /// the two columns scroll differently and a host cannot express that from
+    /// inside a single list of sections. Null renders one full-width column,
+    /// which is what a surface with nothing to act on should be.</para>
+    /// </summary>
+    [Parameter] public RenderFragment? Side { get; set; }
+
+    /// <summary>The viewer's available action, in the footer. Null when there
+    /// is none — and then no footer is drawn at all, rather than an empty bar
+    /// implying an action that was withheld.</summary>
+    [Parameter] public RenderFragment? Actions { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly string _titleId = $"pwd-title-{Guid.NewGuid():N}";
+
+    /// <summary>The footer, wrapped in an element THIS component renders.
+    ///
+    /// <para>Not a cosmetic wrapper. CSS isolation only stamps the scope id on
+    /// elements a component draws itself, so the buttons a HOST writes into
+    /// <see cref="Actions"/> can only be reached from this file's stylesheet
+    /// through a `::deep` anchored on something local — `.pwd-foot` is that
+    /// anchor. Without it every host would have to re-declare the button
+    /// vocabulary, which is how a mentor's "אשר הגשה" and a lecturer's
+    /// "אישור ההגשה" would end up two different objects.</para>
+    ///
+    /// <para>Null when there is no action, so MModal draws no footer bar at
+    /// all rather than an empty rule implying an action that was withheld.</para>
+    /// </summary>
+    private RenderFragment? FooterFragment => Actions is null ? null : Footer;
+
+    private RenderFragment Footer =>@<div class="pwd-foot">@Actions</div>;
+
+    private static string ToneClass(PwTone t) => t switch
+    {
+        PwTone.Blue   => "pwd-tone-blue",
+        PwTone.Violet => "pwd-tone-violet",
+        PwTone.Teal   => "pwd-tone-teal",
+        PwTone.Late   => "pwd-tone-rose",
+        _             => "pwd-tone-quiet",
+    };
+}
