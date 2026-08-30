@@ -622,7 +622,10 @@
                                      : missing > 0
                                          ? PwCount.Phrase(missing, "הגשה אחת חסרה", "{0} הגשות חסרות")
                                          : $"{handedIn} מתוך {subs.Count} הוגשו",
-                    SummaryTone: stuck > 0 ? PwTone.Late
+                    // "ממתינות לאישורך" is this reader's queue, not a
+                    // failure — Attention. A MISSING submission is a genuine
+                    // negative and keeps rose.
+                    SummaryTone: stuck > 0 ? PwTone.Attention
                                  : missing > 0 ? PwTone.Late
                                  : PwTone.Quiet,
                     AllHref:     CanManageMentors ? "/lecturer/submissions" : null,
@@ -637,7 +640,7 @@
                                      : openReqs > 0
                                          ? PwCount.Phrase(openReqs, "בקשה אחת פתוחה", "{0} בקשות פתוחות")
                                          : "אין בקשות פתוחות",
-                    SummaryTone: mine > 0 ? PwTone.Violet : PwTone.Quiet,
+                    SummaryTone: mine > 0 ? PwTone.Attention : PwTone.Quiet,
                     AllHref:     "/management/requests",
                     AllLabel:    "לכל הבקשות",
                     MoreLabel:   "לכל בקשות הפרויקט"),
@@ -698,11 +701,21 @@
                     int? submissionId = isStuck ? approval!.SubmissionId : sub?.SubmissionId;
                     bool canOpen = CanManageMentors && submissionId is not null;
 
+                    // THE SEMANTIC VOCABULARY, and the same one בקשות and
+                    // משימות use below. Every word is unchanged; only which
+                    // role each state claims has moved:
+                    //   ממתין לאישורך   Late -> Attention  it is not late, it
+                    //                                      is waiting on YOU
+                    //   נבדק ואושר      Teal -> Done
+                    //   הוחזר לתיקון    Violet -> Waiting  it is with the team
+                    //   הוגש            Blue -> Waiting    it is with the mentor
+                    //   ...באיחור       Late               unchanged: really late
+                    //   טרם הוגש        Quiet              unchanged
                     var (state, tone) =
-                        isStuck                                 ? ("ממתין לאישורך", PwTone.Late)
-                        : sub?.LatestMentorStatus == "Approved" ? ("נבדק ואושר", PwTone.Teal)
-                        : sub?.LatestMentorStatus == "Returned" ? ("הוחזר לתיקון", PwTone.Violet)
-                        : t.HasSubmission                       ? ("הוגש", PwTone.Blue)
+                        isStuck                                 ? ("ממתין לאישורך", PwTone.Attention)
+                        : sub?.LatestMentorStatus == "Approved" ? ("נבדק ואושר", PwTone.Done)
+                        : sub?.LatestMentorStatus == "Returned" ? ("הוחזר לתיקון", PwTone.Waiting)
+                        : t.HasSubmission                       ? ("הוגש", PwTone.Waiting)
                         : t.IsOverdue                           ? ("טרם הוגש · באיחור", PwTone.Late)
                         :                                         ("טרם הוגש", PwTone.Quiet);
 
@@ -786,8 +799,19 @@
                 Trailing:     t.IsOverdue ? PwDates.DueLabel(t.DueDate) : null,
                 TrailingLate: t.IsOverdue,
                 State:        TaskStatusLabel(t),
-                StateTone:    t.IsOverdue ? PwTone.Late
-                              : t.Status == "InProgress" ? PwTone.Blue
+                // In-progress is the team working — with somebody else, and
+                // not a state this reader acts on. Waiting, the same rung
+                // "הוגש" takes under הגשות.
+                //
+                // LATENESS IS NOT ON THE PILL HERE, and deliberately: this
+                // label reads "בעבודה" / "פתוח" and never mentions being late,
+                // so a rose pill on it was a colour contradicting its own word.
+                // The row states it where it is true — Trailing renders the due
+                // date rose (TrailingLate) and the section summary counts
+                // "N משימות באיחור" in rose. Under הגשות the pill DOES read
+                // "טרם הוגש · באיחור", and there it stays rose. Ordering is
+                // untouched: Rank still reads t.IsOverdue.
+                StateTone:    t.Status == "InProgress" ? PwTone.Waiting
                               : PwTone.Quiet,
                 Rank:         t.IsOverdue                ? PwRowRank.Exception
                               : t.Status == "InProgress" ? PwRowRank.Context
@@ -824,7 +848,11 @@
                 Meta: string.IsNullOrWhiteSpace(s.LatestFeedback)
                           ? $"{s.SubmittedByName} · {s.SubmittedAt.ToLocalTime():dd.MM}"
                           : $"{s.SubmittedByName} · {Truncate(s.LatestFeedback!, 60)}",
-                Tone: PwTone.Blue,
+                // An activity log reports what happened; it does not ask the
+                // reader for anything, so it is quiet. It was Blue, which in
+                // the Motiva scope resolves to violet — brand colour spent on
+                // "an event exists".
+                Tone: PwTone.Quiet,
                 IsClickable: CanManageMentors))
             .ToList();
 
@@ -951,11 +979,13 @@
         : OpenApproval is not null    ? "ממתין לאישורך"
         :                               MentorStatusLabel(_subDetail.MentorStatus);
 
+    /// <summary>The panel's badge takes the same five roles as the row it was
+    /// opened from, so a submission does not change colour on the way in.</summary>
     private PwTone SubStatusTone =>
-        OpenApproval is not null                  ? PwTone.Late
-        : _subDetail?.MentorStatus == "Approved"  ? PwTone.Teal
-        : _subDetail?.MentorStatus == "Returned"  ? PwTone.Violet
-        :                                           PwTone.Blue;
+        OpenApproval is not null                  ? PwTone.Attention
+        : _subDetail?.MentorStatus == "Approved"  ? PwTone.Done
+        : _subDetail?.MentorStatus == "Returned"  ? PwTone.Waiting
+        :                                           PwTone.Waiting;
 
     private IReadOnlyList<PwMeta> SubMeta
     {

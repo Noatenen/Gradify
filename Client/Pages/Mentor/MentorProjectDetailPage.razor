@@ -774,7 +774,10 @@
                                      : missing > 0
                                          ? PwCount.Phrase(missing, "הגשה אחת חסרה", "{0} הגשות חסרות")
                                          : $"{submitted} מתוך {subs.Count} הוגשו",
-                    SummaryTone: pendingReviews > 0 ? PwTone.Violet
+                    // Matches the lecturer's הגשות summary exactly: the
+                    // reader's own queue is Attention, a missing deliverable is
+                    // the genuine negative.
+                    SummaryTone: pendingReviews > 0 ? PwTone.Attention
                                  : missing > 0      ? PwTone.Late
                                  :                    PwTone.Quiet,
                     AllHref:     MentorLinks.Reviews,
@@ -815,7 +818,7 @@
                                      : openRequests > 0
                                          ? PwCount.Phrase(openRequests, "בקשה אחת פתוחה", "{0} בקשות פתוחות")
                                          : "אין בקשות פתוחות",
-                    SummaryTone: actionable > 0 ? PwTone.Violet : PwTone.Quiet,
+                    SummaryTone: actionable > 0 ? PwTone.Attention : PwTone.Quiet,
                     AllHref:     MentorLinks.RequestsInbox,
                     AllLabel:    "לכל הבקשות",
                     MoreLabel:   "לכל בקשות הפרויקט"),
@@ -888,13 +891,24 @@
     /// the shared tone. Kept as a translation rather than replacing the two
     /// state-class helpers, so the rules that DECIDE a state stay exactly where
     /// and as they were.</summary>
+    /// <summary>
+    /// The legacy state keys, mapped onto the shared semantic vocabulary.
+    ///
+    /// <para>The keys are colour names from the page this component replaced
+    /// and are kept only as identifiers; what each one MEANS is decided here,
+    /// once, and it now agrees with the lecturer's copy of the same rows:
+    /// blue and violet were both "in flight with somebody else" (הוגש,
+    /// הוחזר לתיקון) and both resolve to Waiting; `mpw-state-attention` is the
+    /// reader's own queue.</para>
+    /// </summary>
     private static PwTone ToneOf(string stateClass) => stateClass switch
     {
-        "mpw-state-teal"   => PwTone.Teal,
-        "mpw-state-blue"   => PwTone.Blue,
-        "mpw-state-violet" => PwTone.Violet,
-        "mpw-late"         => PwTone.Late,
-        _                  => PwTone.Quiet,
+        "mpw-state-attention" => PwTone.Attention,
+        "mpw-state-teal"      => PwTone.Done,
+        "mpw-state-blue"      => PwTone.Waiting,
+        "mpw-state-violet"    => PwTone.Waiting,
+        "mpw-late"            => PwTone.Late,
+        _                     => PwTone.Quiet,
     };
 
     // ── Activity ────────────────────────────────────────────────────────────
@@ -907,12 +921,20 @@
             Tone:        ActivityTone(v.ToneClass),
             IsClickable: true)).ToList();
 
+    /// <summary>
+    /// Activity dots, in the shared vocabulary.
+    ///
+    /// <para>An activity feed reports what already happened; it asks the reader
+    /// for nothing, so violet and blue — two brand hues in the Motiva scope,
+    /// spent on "an event exists" — both resolve to Quiet. The lecturer's copy
+    /// of this feed made the same change. Teal survives because a completion IS
+    /// a state worth marking, and it is the same teal every other Lecturer and
+    /// Mentor screen uses for one.</para>
+    /// </summary>
     private static PwTone ActivityTone(string toneClass) => toneClass switch
     {
-        "mpw-dot-violet" => PwTone.Violet,
-        "mpw-dot-blue"   => PwTone.Blue,
-        "mpw-dot-teal"   => PwTone.Teal,
-        _                => PwTone.Quiet,
+        "mpw-dot-teal" => PwTone.Done,
+        _              => PwTone.Quiet,
     };
 
     // ── Row keys → this page's own routing ──────────────────────────────────
@@ -1049,7 +1071,11 @@
                     int? id = pending.TryGetValue(t.Id, out var subId) ? subId : null;
 
                     var (state, cls) =
-                        id is not null                    ? ("ממתין לבדיקה שלך", "mpw-late")
+                        // The mentor's own review queue. It was keyed "mpw-late"
+                        // and therefore drew rose — the same mis-assignment the
+                        // lecturer's "ממתין לאישורך" carried. Nothing here is
+                        // past a deadline; it is waiting on the reader.
+                        id is not null                    ? ("ממתין לבדיקה שלך", "mpw-state-attention")
                         : t.LatestMentorStatus == "Approved" ? ("נבדק ואושר", "mpw-state-teal")
                         : t.LatestMentorStatus == "Returned" ? ("הוחזר לתיקון", "mpw-state-violet")
                         : t.LatestSubmissionStatus is not null ? ("הוגש", "mpw-state-blue")
@@ -1147,9 +1173,26 @@
         return d.ToString("dd.MM");
     }
 
+    /// <summary>
+    /// The state key for a TEAM task's pill.
+    ///
+    /// <para><b>Lateness no longer overrides the state word.</b> This opened
+    /// with <c>if (t.IsOverdue) return "mpw-late"</c>, which painted a rose
+    /// pill over a label reading "בביצוע" — a colour saying "problem" on a
+    /// word saying "in progress". The row already states the lateness twice
+    /// and truthfully: its due date renders rose (Overdue), and the section
+    /// summary counts "N משימות באיחור" in rose. The pill states the workflow
+    /// state, which is what a pill is for.</para>
+    ///
+    /// <para>Nothing about ordering moves: TaskRank reads <c>k.Overdue</c>
+    /// directly, so an overdue task is still the card's first row.</para>
+    ///
+    /// <para>The mentor's OWN tasks keep their rose pill, and that is not an
+    /// inconsistency — their label literally reads "באיחור", so there the
+    /// colour and the word agree.</para>
+    /// </summary>
     private static string TaskStateClass(MentorTaskDto t)
     {
-        if (t.IsOverdue) return "mpw-late";
 
         return t.Status switch
         {
@@ -1481,18 +1524,22 @@
 
     /// <summary>The mentor decision in the shared five-tone scale — the same
     /// vocabulary a request's status badge uses on the same surface.</summary>
+    /// <summary>The review drawer's own status, in the shared vocabulary.
+    /// "Returned" was rose: sending work back to a team is a normal step of the
+    /// review, not a failure, so it takes the Waiting rung the row it came from
+    /// takes. Pending is the reader's queue — Attention.</summary>
     private static PwTone ReviewTone(string s) => s switch
     {
-        "Approved" => PwTone.Teal,
-        "Returned" => PwTone.Late,
-        _          => PwTone.Violet,
+        "Approved" => PwTone.Done,
+        "Returned" => PwTone.Waiting,
+        _          => PwTone.Attention,
     };
 
     private static string ReviewToneClass(string s) => ReviewTone(s) switch
     {
-        PwTone.Teal => "pwd-tone-teal",
-        PwTone.Late => "pwd-tone-rose",
-        _           => "pwd-tone-violet",
+        PwTone.Done    => "pwd-tone-done",
+        PwTone.Waiting => "pwd-tone-waiting",
+        _              => "pwd-tone-attention",
     };
 
     private static string DrawerMentorStatusLabel(string s) => s switch

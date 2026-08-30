@@ -187,31 +187,63 @@ public static class PwRequestVocabulary
         // own flow, and the wording they have always had is kept.
         :                                "להחלטה";
 
-    /// <summary>Row tone from the same predicate. Violet is "waiting on you" —
-    /// a normal state of a healthy project, not an alarm; teal is done; quiet
-    /// is everything sitting with somebody else.</summary>
+    /// <summary>Row tone from the same predicate, in the shared vocabulary:
+    /// Done when the thread is closed, Attention when the next move is THIS
+    /// viewer's, and Waiting for everything sitting with somebody else —
+    /// ממתינה להמלצת מנחה, ממתינה להחלטת מרצה, ממתינה לצוות. Those are workflow
+    /// state, not an alert for the person reading them.</summary>
     public static PwTone Tone(string status, PwRequestViewer viewer) =>
-        status is RequestStatuses.Resolved or RequestStatuses.Closed ? PwTone.Teal
-        : OwnedByViewer(status, viewer)                              ? PwTone.Violet
-        :                                                              PwTone.Quiet;
+        status is RequestStatuses.Resolved or RequestStatuses.Closed ? PwTone.Done
+        : OwnedByViewer(status, viewer)                              ? PwTone.Attention
+        :                                                              PwTone.Waiting;
 }
 
 /// <summary>
-/// The four semantic roles the Motiva system already gives everything else,
-/// plus the quiet default. Mapped to CSS in exactly one place
-/// (ProjectWorkspace.razor.css) so a row cannot invent a sixth colour.
+/// The workspace's semantic colour vocabulary — FIVE ROLES, NAMED BY MEANING.
+///
+/// <para><b>They used to be named by colour</b> (Blue / Violet / Teal), and
+/// that is most of why the three work types drifted apart: nothing stopped
+/// "submitted, now with the mentor" being Blue under הגשות while the same
+/// idea was Quiet under בקשות, or "waiting for MY review" being Late here and
+/// Violet on the mentor's copy of this very page. A role you can only name by
+/// its colour is a role you can assign by taste.</para>
+///
+/// <para><b>Each one resolves to a treatment the shared system already
+/// owns</b> — MStatusBadge's own rungs, which the mentor and lecturer screens
+/// render. Mapped to CSS in exactly one place per surface
+/// (ProjectWorkspace.razor.css, PwDetail.razor.css) so a row cannot invent a
+/// sixth colour, and no new token or hex is introduced anywhere.</para>
+///
+/// <para><b>Blue is gone as a status role.</b> Inside the Motiva scope
+/// <c>--motiva-color-info</c> is aliased to <c>--motiva-color-violet</c>
+/// (motiva-tokens.css), so an "info" chip and a "brand" chip were two violets
+/// standing for two different meanings on the same row.</para>
 /// </summary>
 public enum PwTone
 {
-    /// <summary>Ordinary workflow state — no colour, no claim.</summary>
+    /// <summary>Ordinary information — a title, a date, a state nobody is
+    /// blocked on. Neutral surface, secondary ink. (m-badge-neutral)</summary>
     Quiet,
-    /// <summary>Waiting on someone. Blue.</summary>
-    Blue,
-    /// <summary>In hand / returned for work. Violet.</summary>
-    Violet,
-    /// <summary>Done. Teal.</summary>
-    Teal,
-    /// <summary>A genuine exception — late, and nothing else. Rose.</summary>
+
+    /// <summary>In flight with SOMEBODY ELSE — submitted and with the mentor,
+    /// returned to the team, awaiting another role's decision. Real workflow
+    /// state, and none of the reader's business to act on, so it is the quiet
+    /// rung with a hairline rather than a colour. (m-badge-approaching)</summary>
+    Waiting,
+
+    /// <summary>The CURRENT viewer owns the next action — ממתין לאישורך,
+    /// ממתין לבדיקה שלך, a request awaiting their decision. The system's own
+    /// attention rung: a brand wash under dark ink, documented in
+    /// MStatusBadge as "deliberately BELOW Rose in meaning" precisely because
+    /// none of these has a deadline to be past. (m-badge-attention)</summary>
+    Attention,
+
+    /// <summary>Completed or closed. The quiet success treatment every other
+    /// Lecturer/Mentor screen uses. (m-badge-teal)</summary>
+    Done,
+
+    /// <summary>A genuine negative state — overdue, missing, blocked. Rose,
+    /// and nothing else in this vocabulary is. (m-badge-rose)</summary>
     Late,
 }
 

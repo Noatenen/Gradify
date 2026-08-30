@@ -20,6 +20,35 @@ public static class ApprovalSources
     public const string LecturerOverride = "LecturerOverride";
 }
 
+/// <summary>
+/// WHEN A STUCK SUBMISSION BECOMES THE LECTURER'S.
+///
+/// <para>Every row the pending-mentor-approvals endpoint returns has
+/// <c>MentorStatus = 'Pending'</c> — by definition it is waiting on a MENTOR,
+/// so for its first days it is the mentor's item and nobody else's. What makes
+/// it the lecturer's is age: at this threshold the two supervision actions
+/// unlock — "תזכורת למנחה" (POST remind-mentor) and the override-approve —
+/// and the wait itself becomes the thing only a lecturer can resolve.</para>
+///
+/// <para>This is not a new rule. It is the split the lecturer's own submissions
+/// screen already draws its groups on: <c>DaysWaiting &gt;= 3</c> is
+/// "ממתינות לאישורך", below it is "בבדיקת מנחה" (LecturerSubmissionsPage), and
+/// it is the same single threshold the mentor attention model uses. Named here
+/// so a dashboard filtering on it and a screen grouping on it cannot drift.</para>
+/// </summary>
+public static class PendingMentorApprovals
+{
+    /// <summary>Calendar days a submission must have waited on its mentor
+    /// before the lecturer's supervision actions unlock and it belongs on the
+    /// lecturer's own queue.</summary>
+    public const int LecturerActionThresholdDays = 3;
+
+    /// <summary>True when the next move on this stuck submission is the
+    /// lecturer's — remind, or override-approve.</summary>
+    public static bool AwaitsLecturer(int daysWaiting) =>
+        daysWaiting >= LecturerActionThresholdDays;
+}
+
 /// <summary>One row in the lecturer "pending mentor approvals" table.</summary>
 public class PendingMentorApprovalRowDto
 {

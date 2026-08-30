@@ -11,12 +11,18 @@
    hairline dividers, and a single centred "לכל המשימות" link at the
    bottom. That is the whole card.
 
-   The SELECTION rule is unchanged from before the rebuild: incomplete
-   submissions with a due date, sorted soonest first, minus the one the
-   focus card already shows in full, minus anything the attention band
-   already flags — so the same task is never stated twice on one screen.
-   It still falls back to the server-derived NextDeadline when the
-   milestone data contains no IsSubmission task at all.
+   SELECTION: incomplete submissions DATED TODAY OR LATER, sorted soonest
+   first, minus the one the focus card already shows in full, minus
+   anything the attention band already flags — so the same task is never
+   stated twice on one screen. It still falls back to the server-derived
+   NextDeadline when the milestone data contains no IsSubmission task at
+   all, and that fallback takes the same floor.
+
+   THE FLOOR IS THE ONLY CHANGE TO THE RULE, and it follows from the
+   heading: "מועדים קרובים" is an upcoming section, so a date that has
+   already passed does not belong in it whatever the item's submission
+   state. See BuildRows for which past rows used to slip through and
+   where they are still readable.
 
    DECISION M.4: V4's prototype opens a small popup whose category and
    status chips are sample-only fields that do not exist in the domain.
@@ -32,8 +38,8 @@
            calendar glyph is the same mark בקרוב carries on the mentor
            dashboard, because this card answers the same question. *@
         <div class="sd-head usc-head">
-            <span class="sd-head-icon" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            <span class="sd-head-icon motiva-ico-gradient" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="4" width="18" height="18" rx="3"></rect>
                     <path d="M16 2v4M8 2v4M3 10h18"></path>
@@ -118,54 +124,81 @@
 
     private List<Row> BuildRows()
     {
+        // TODAY IS THE FLOOR, and it is applied to BOTH sources below.
+        //
+        // "מועדים קרובים" is an upcoming section, so a date that has already
+        // passed does not belong in it whatever its submission state. The
+        // attention filter was doing part of this job by accident and only
+        // part: StudentDashboardModel.IsOverdue is gated on Status being
+        // Open / InProgress / ReturnedForRevision, so a task that WAS handed
+        // in — SubmittedToMentor, ApprovedForSubmission — is not an attention
+        // item, and a past-due one of those reached this list. The card even
+        // had wording for it (the "date alone, no relative phrase" branch in
+        // ToRow), which is how a section headed "קרובים" came to have a
+        // documented way of printing history.
+        //
+        // NOTHING BECOMES UNREACHABLE. A submitted deliverable past its date
+        // is still on /tasks under its milestone, still in the task detail
+        // modal with its full submission history, and — if the student still
+        // owes something on it — still on the attention surfaces, which is
+        // where a late item is supposed to be read.
+        var today = DateTime.Today;
+
         var rows = Milestones
             .SelectMany(ms => ms.Tasks
                 .Where(t => t.IsSubmission
                             && t.DueDate.HasValue
+                            && t.DueDate!.Value.Date >= today
                             && !StudentDashboardModel.IsComplete(t)
                             && t.Id != ExcludeTaskId
                             && !StudentDashboardModel.IsAttentionItem(t))
                 .Select(t => (Task: t, MilestoneTitle: ms.Title)))
             .OrderBy(x => x.Task.DueDate!.Value)
             .Take(MaxRows)
-            .Select(x => ToRow(x.Task.Title, x.MilestoneTitle, x.Task.DueDate!.Value, x.Task.Id,
-                               submitted: x.Task.LatestSubmissionStatus is not null))
+            .Select(x => ToRow(x.Task.Title, x.MilestoneTitle, x.Task.DueDate!.Value, x.Task.Id))
             .ToList();
 
         // Fallback: the server's own nearest deadline, for a project whose
-        // milestone data carries no IsSubmission task yet. UpcomingDeadlineDto
-        // carries no submission status, so it is treated as not-yet-submitted.
-        if (rows.Count == 0 && NextDeadline is not null)
+        // milestone data carries no IsSubmission task yet.
+        //
+        // IT TAKES THE SAME FLOOR, and it is the likelier of the two to have
+        // broken the rule: my-dashboard picks NextDeadline as the nearest
+        // incomplete submission task by due date with no lower bound at all,
+        // so on a project whose deadlines have all passed it hands back the
+        // oldest missed one — which this card would then have printed as the
+        // single thing "coming up". The server query is untouched; the
+        // fallback simply declines a date it cannot honestly call upcoming,
+        // and the card falls through to its own empty state.
+        if (rows.Count == 0
+            && NextDeadline is not null
+            && NextDeadline.DueDate.Date >= today)
         {
-            rows.Add(ToRow(NextDeadline.Title, "מועד קרוב", NextDeadline.DueDate, NextDeadline.TaskId,
-                           submitted: false));
+            rows.Add(ToRow(NextDeadline.Title, "מועד קרוב", NextDeadline.DueDate, NextDeadline.TaskId));
         }
 
         return rows;
     }
 
-    // A task only reaches this list after the attention rules have ruled out
-    // every "the student still owes something" case, so a passed due date here
-    // means the work is already submitted and sitting with the mentor or with
-    // Moodle — never a lateness the student caused. Saying "23 ימים באיחור"
-    // about it would be wrong, so a submitted-but-past-due row shows the date
-    // alone and rose is reserved for a deadline that is genuinely pressing.
-    private static Row ToRow(string title, string subtitle, DateTime due, int? taskId, bool submitted)
+    // Every row that reaches here is dated today or later — BuildRows applies
+    // the floor to both of its sources — so the two past-date branches this
+    // method used to carry are gone with the rows they described: the
+    // `submitted` parameter that selected between them, the "date alone, no
+    // relative phrase" silence for a submitted-but-late deliverable, and the
+    // `studentLate` arm of the urgency test. Keeping them would say this
+    // section can still show history, which is the thing being fixed.
+    //
+    // Urgency is now exactly what it always meant for a future date: the
+    // deadline is within three days.
+    private static Row ToRow(string title, string subtitle, DateTime due, int? taskId)
     {
-        var days       = StudentDashboardModel.DaysUntil(due) ?? 0;
-        var studentLate = days < 0 && !submitted;
+        var days = StudentDashboardModel.DaysUntil(due) ?? 0;
 
-        // The date is the tile now, so this carries the RELATIVE half of what
-        // the meta string used to say. A submitted-but-past-due row still
-        // carries no relative phrasing at all — the same silence the "date
-        // alone" branch expressed before, for the same reason above.
-        var when = days < 0 && submitted
-            ? null
-            : StudentDashboardModel.DaysText(days);
+        // The date is the tile; this carries the RELATIVE half — "היום",
+        // "מחר", "נותרו N ימים" — from the shared phrasing helper, so this
+        // card and every other student list word a deadline identically.
+        var when = StudentDashboardModel.DaysText(days);
 
-        // Unchanged predicate — only its name and type moved from a row tone
-        // to a boolean the tile and the end label both read.
-        var urgent = studentLate || (days >= 0 && days <= 3);
+        var urgent = days <= 3;
 
         return new Row(title, subtitle, due, when, urgent, taskId);
     }

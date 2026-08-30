@@ -1310,23 +1310,63 @@ public class ProjectsController : ControllerBase
     [HttpGet("tasks/{taskId:int}/detail")]
     public async Task<IActionResult> GetTaskDetail(int taskId, int authUserId)
     {
-        // ── 1. Resolve user → project + team (team needed for per-team
-        //     override JOINs in the task fetch below). ────────────────────
-        const string projectSql = @"
-            SELECT p.Id, t.Id AS TeamId
-            FROM   Projects    p
-            JOIN   Teams       t  ON p.TeamId = t.Id
-            JOIN   TeamMembers tm ON t.Id     = tm.TeamId
-            WHERE  tm.UserId   = @UserId AND tm.IsActive = 1
+        // ── 1. Resolve THE TASK'S project + team, gated on membership ─────
+        //
+        // WHY THIS IS KEYED ON THE TASK AND NOT ON THE USER. It used to ask
+        // "which project is this user on?" with its own query — `FROM Projects
+        // JOIN Teams JOIN TeamMembers WHERE UserId = @UserId LIMIT 1` — and
+        // then require the task to belong to whatever that returned. Three
+        // things were wrong with it, all of them producing the same symptom:
+        // a task the dashboard had just rendered answering 404 here, which the
+        // client can only surface as "אירעה שגיאה בטעינת פרטי המשימה".
+        //
+        //   * LIMIT 1 with no ORDER BY over a set that can hold more than one
+        //     row. A student on two active teams (the seeded cohort has two)
+        //     got an arbitrary pick, and my-dashboard's own resolution — a
+        //     DIFFERENT query, with an extra JOIN — was free to pick the other
+        //     one. Two endpoints, two answers, and the task guard below then
+        //     rejected a perfectly legitimate task.
+        //   * It did not filter draft assignments, which my-dashboard does
+        //     (`COALESCE(p.AssignmentIsDraft,0) = 0`). So this endpoint could
+        //     resolve to a project the student is not yet supposed to see, and
+        //     serve task detail out of it.
+        //   * It answered a question nobody asked. The access rule is "is this
+        //     task's project one the caller is on?" — asking "which single
+        //     project is the caller on?" first is a lossy way to get there.
+        //
+        // Resolving from the TASK removes the ambiguity entirely: one task has
+        // one project, which has one team, and the JOIN onto TeamMembers is
+        // what enforces the scoping — a task outside every team the caller
+        // belongs to simply returns no row. A student on two teams can now open
+        // tasks from either, which is what the dashboards already show them.
+        // The team is still needed for the per-team override JOINs below, and
+        // it is now provably the team that owns this task rather than whichever
+        // team the old LIMIT 1 happened to surface.
+        const string scopeSql = @"
+            SELECT  p.Id     AS Id,
+                    tm.TeamId AS TeamId
+            FROM    Tasks       tk
+            JOIN    Projects    p  ON p.Id      = tk.ProjectId
+            JOIN    TeamMembers tm ON tm.TeamId = p.TeamId
+            WHERE   tk.Id      = @TaskId
+              AND   tm.UserId  = @UserId
+              AND   tm.IsActive = 1
+              AND   COALESCE(p.AssignmentIsDraft, 0) = 0
             LIMIT 1";
 
-        var projectRow = (await _db.GetRecordsAsync<TaskDetailProjectRow>(
-                projectSql, new { UserId = authUserId }))
+        // GetRecordsAsync swallows a failed query and answers null, so every
+        // result here is null-coalesced before LINQ touches it — the same guard
+        // GetMyDashboard documents. Without it a transient failure became a
+        // NullReferenceException, i.e. a 500, i.e. this modal's generic error
+        // with nothing in it to say what went wrong.
+        var scopeRow = (await _db.GetRecordsAsync<TaskDetailProjectRow>(
+                scopeSql, new { TaskId = taskId, UserId = authUserId })
+            ?? Enumerable.Empty<TaskDetailProjectRow>())
             .FirstOrDefault();
 
-        if (projectRow is null) return NotFound("פרויקט לא נמצא");
-        int projectId = projectRow.Id;
-        int teamId    = projectRow.TeamId;
+        if (scopeRow is null) return NotFound("המשימה לא נמצאה");
+        int projectId = scopeRow.Id;
+        int teamId    = scopeRow.TeamId;
 
         // ── 2. Fetch task (must belong to the student's project) ─────────────
         // DueDate uses the per-team override priority chain so the team sees
@@ -1371,7 +1411,8 @@ public class ProjectsController : ControllerBase
               AND   t.ProjectId = @ProjectId";
 
         var task = (await _db.GetRecordsAsync<TaskDetailDto>(
-                taskSql, new { TaskId = taskId, ProjectId = projectId, TeamId = teamId }))
+                taskSql, new { TaskId = taskId, ProjectId = projectId, TeamId = teamId })
+            ?? Enumerable.Empty<TaskDetailDto>())
             .FirstOrDefault();
 
         if (task is null) return NotFound("המשימה לא נמצאה");
@@ -1402,7 +1443,8 @@ public class ProjectsController : ControllerBase
                 ORDER   BY s.Id ASC";
 
             var subs = (await _db.GetRecordsAsync<SubmissionHistoryItemDto>(
-                    subsSql, new { TaskId = taskId }))
+                    subsSql, new { TaskId = taskId })
+                ?? Enumerable.Empty<SubmissionHistoryItemDto>())
                 .ToList();
 
             if (subs.Count > 0)
@@ -1423,7 +1465,8 @@ public class ProjectsController : ControllerBase
                     WHERE   TaskId = @TaskId AND MoodleSubmittedAt IS NOT NULL";
 
                 var moodleById = (await _db.GetRecordsAsync<MoodleStampRow>(
-                        moodleSql, new { TaskId = taskId }))
+                        moodleSql, new { TaskId = taskId })
+                    ?? Enumerable.Empty<MoodleStampRow>())
                     .ToDictionary(r => r.Id, r => r.MoodleSubmittedAt);
 
                 foreach (var sub in subs)
@@ -1452,7 +1495,8 @@ public class ProjectsController : ControllerBase
                     ORDER   BY f.TaskSubmissionId DESC, f.Id";
 
                 var allFiles = (await _db.GetRecordsAsync<TaskSubmissionFileDto>(
-                        filesSql, new { TaskId = taskId }))
+                        filesSql, new { TaskId = taskId })
+                    ?? Enumerable.Empty<TaskSubmissionFileDto>())
                     .ToList();
 
                 var filesBySubmission = allFiles

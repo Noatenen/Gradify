@@ -83,6 +83,78 @@ public static class RequestStatuses
     };
 }
 
+/// <summary>
+/// WHOSE COURT A REQUEST IS IN — the single answer every "requires your
+/// attention" surface asks of a request.
+///
+/// <para><b>Why this exists.</b> A dashboard's attention section is a work
+/// queue, and a work queue may only contain items the viewer can actually move
+/// forward. Before this, each dashboard answered "is this mine?" with its own
+/// hand-written status list: the student card showed every non-terminal
+/// request on the project — including ones it had filed and was merely waiting
+/// on — and the lecturer card carried its own three-status literal. Two lists,
+/// no shared definition, and nothing tying either to the workflow.</para>
+///
+/// <para><b>This is a restatement, not a new rule.</b> The owner of each
+/// status is already fixed by the API surface, and this mapping only names it:
+/// <c>POST /api/project-requests/{id}/mentor-recommendation</c> is
+/// Mentor-only and gated on <see cref="RequestStatuses.PendingMentorRecommendation"/>;
+/// <c>/handle</c> is Admin+Staff; <c>/reply</c> requires a team member, which
+/// is the only move available while a request sits at
+/// <see cref="RequestStatuses.NeedsInfo"/> ("returned to student — awaiting
+/// more info"). The client-side buckets that already encode this —
+/// <c>RequestBuckets.Of</c> for the student workspace and
+/// <c>MentorRequestBuckets.Of</c> for the mentor's — agree with it status for
+/// status; they stay where they are, because they also carry per-role labels,
+/// tones and filter ids that have no business in Shared.</para>
+///
+/// <para><b>The default arm is Staff, deliberately.</b> NeedsInfo is the only
+/// status that hands a request back to the team, PendingMentorRecommendation
+/// the only one that hands it to a mentor, and Resolved/Closed the only
+/// terminal ones; everything else is in flight on the academic side. Falling
+/// through rather than enumerating means a status added to
+/// <see cref="RequestStatuses"/> later surfaces on the staff queue by default
+/// instead of silently belonging to nobody — a request that wrongly appears is
+/// noticed, one that never appears is not. It is the same safety property both
+/// existing client mappings were written with.</para>
+/// </summary>
+public static class RequestOwnership
+{
+    /// <summary>The party expected to take the next action on a request.</summary>
+    public enum Owner
+    {
+        /// <summary>The student / team must respond before anyone else can act.</summary>
+        Student,
+        /// <summary>Blocked on a mentor's recommendation.</summary>
+        Mentor,
+        /// <summary>With the academic side — lecturer / staff / admin.</summary>
+        Staff,
+        /// <summary>Terminal. Nobody owes anything.</summary>
+        None,
+    }
+
+    public static Owner NextActionOwner(string status) => status switch
+    {
+        RequestStatuses.NeedsInfo                   => Owner.Student,
+        RequestStatuses.PendingMentorRecommendation => Owner.Mentor,
+        RequestStatuses.Resolved or
+        RequestStatuses.Closed                      => Owner.None,
+        _                                           => Owner.Staff,
+    };
+
+    /// <summary>True when the student/team is the one holding this request up.</summary>
+    public static bool AwaitsStudent(string status) =>
+        NextActionOwner(status) == Owner.Student;
+
+    /// <summary>True when a mentor recommendation is what the request is waiting for.</summary>
+    public static bool AwaitsMentor(string status) =>
+        NextActionOwner(status) == Owner.Mentor;
+
+    /// <summary>True when the academic side owes the next move.</summary>
+    public static bool AwaitsStaff(string status) =>
+        NextActionOwner(status) == Owner.Staff;
+}
+
 /// <summary>Controlled set of event type identifiers for the request thread.</summary>
 public static class RequestEventTypes
 {

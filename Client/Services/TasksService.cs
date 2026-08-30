@@ -63,15 +63,46 @@ public class TasksService : ITasksService
         }
     }
 
+    /// <summary>
+    /// Task detail, or null when it could not be fetched.
+    ///
+    /// <para><b>Null still means "show the error state" — but it is no longer
+    /// silent.</b> This used to be a bare <c>catch { return null; }</c>: a 401,
+    /// a 404, a 500 and a malformed body all collapsed into the same null with
+    /// nothing written down, so the modal's "אירעה שגיאה בטעינת פרטי המשימה"
+    /// was the only trace any failure ever left and there was no way to tell
+    /// which of the four had happened. The request is now sent explicitly so a
+    /// non-success status can be reported with its code and URL before the null
+    /// is returned.</para>
+    ///
+    /// <para>The CONTRACT is unchanged — every caller still reads null as "no
+    /// task", and the four pages that host TaskDetailModal render exactly what
+    /// they rendered before. Nothing is swallowed that was not already the
+    /// documented return value; what changed is that the failure now says what
+    /// it was.</para>
+    /// </summary>
     public async Task<TaskDetailDto?> GetTaskDetailAsync(int taskId)
     {
+        var url = $"api/projects/tasks/{taskId}/detail";
         try
         {
-            return await _http.GetFromJsonAsync<TaskDetailDto>(
-                $"api/projects/tasks/{taskId}/detail");
+            var response = await _http.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                Console.Error.WriteLine(
+                    $"[TasksService] GET {url} failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+                return null;
+            }
+
+            return await response.Content.ReadFromJsonAsync<TaskDetailDto>();
         }
-        catch
+        catch (Exception ex)
         {
+            // Transport failure or a body that would not deserialise. Reported
+            // rather than discarded, for the same reason as above.
+            Console.Error.WriteLine($"[TasksService] GET {url} threw: {ex.Message}");
             return null;
         }
     }
