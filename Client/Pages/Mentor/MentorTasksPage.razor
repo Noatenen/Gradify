@@ -7,133 +7,181 @@
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IMentorWorkspaceService Workspace
+@inject IMentorProjectsService MentorService
 @inject IPersonalTasksService PersonalTasks
-@inject IRoadmapStagesService Roadmap
 @inject NavigationManager Nav
 @implements IDisposable
 
 @*
     ── המשימות שלי — the mentor's unified work queue ────────────────────────
-    Visual source:   Motiva Mentor Tasks.dc.html, in the Claude Design project
-                     "Motiva visual language exploration".
-    Component source: the finalized Student experience — every surface below is
-                     a shared M* primitive under `.motiva-final`, not a mentor
-                     copy of one.
-    Data source:     IMentorWorkspaceService.
+    Visual source:   משימות 1/2/3.png in design/design-system/MotivaLecturerDesign.
 
-    THE POINT OF THE PAGE
-    A student's "המשימות שלי" is a list of assigned project tasks. A mentor's
-    is three different feeds that happen to share one question — what needs me
-    — so the page is a queue, not a list:
+    TWO-SURFACE LAYOUT
+    RIGHT (wider, 1.85fr in RTL): work queue — flat scrollable list of all
+    submissions and requests waiting on this mentor, with a segmented filter
+    tab group (הכל / הגשות לבדיקה / בקשות) at the top of the panel.
+    LEFT (narrower, 1fr in RTL): personal tasks — always visible, never
+    filtered by the queue tabs.
 
-        הגשות לבדיקה           GET api/mentor/attention  (Kind = Submission)
-        בקשות הדורשות פעולה     GET api/mentor/attention  (Kind = Request)
-        משימות אישיות           GET api/projects/personal-tasks
+    THREE STATES
+    1. Default: flat queue list (type badge · timing · title · team context)
+       plus personal tasks rail.
+    2. Inline expansion: clicking a submission row expands it to show the
+       student notes, the drive link, and two CTAs.
+    3. Review modal: "לבדיקת ההגשה" from an expanded row opens a centred modal
+       over a dimmed backdrop — the same approve/return flow as MentorSubmissionsPage.
 
-    WHERE THE URGENCY COMES FROM
-    The first two feeds arrive already filtered, aged and ordered worst-first
-    (NEEDS ATTENTION → WAITING → NEW, oldest first inside each band). This page
-    holds no status filter, no day arithmetic and no threshold: it used to carry
-    two different magic numbers for one idea — a review escalated at 4 days, a
-    request at 3 — and both are now the single server-side
-    MentorAttention.AttentionThresholdDays, which the daily digest reads too.
+    Request rows open MentorRequestModal directly on click (no inline expansion).
 
-    NEEDS ATTENTION IS THE ONLY STATE THAT ESCALATES VISUALLY. An item that
-    arrived today reads calmly on purpose: there is no deadline in this product,
-    so nothing is late and "new" is not an alarm.
-
-    "משימות באיחור" MEANS PERSONAL TASKS, AND ONLY PERSONAL TASKS. They are the
-    one kind here that carries a real DueDate the mentor set, so they are the one
-    kind that may legitimately read as באיחור.
-
-    ── THE FILTER IS THE DESIGN'S PILL GROUP, NOT A KPI ROW ─────────────────
-    The reference puts four tabs in one segmented pill group at the reading end
-    of the TITLE ROW — הכל · ממתינות לבדיקתך② · … — and has no KPI cards on
-    this screen at all. This page used four MKpiCards for the same job, so the
-    switch is a change of shape, not of behaviour:
-
-      * the three filters are unchanged (Reviews / Requests / Personal) and so
-        is the ?focus= vocabulary that deep-links into them from בית;
-      * every count the KPI row carried survives — three of them ride their own
-        tab as a badge, and משימות אישיות באיחור moves to the rose annotation on
-        the משימות אישיות heading, beside the section it was always about;
-      * the removable "מציג: …" chip is gone. With a real "הכל" tab, the active
-        pill IS the indicator, and the chip restated it a second time.
-
-    Clicking a tab selects; clicking "הכל" clears. (The KPI cards toggled off on
-    a second click — a tab group must not, or the page would end up with no tab
-    lit and no way to tell why the list is complete.)
-
-    ── THE ROW CARRIES FOUR THINGS, AND NOTHING ELSE ─────────────────────────
-    The reference's collapsed row is a dot, a title, one short line naming the
-    team, and one short state phrase. That is the whole row, in all three
-    sections, which is what lets three different feeds be scanned as one queue.
-
-    This page had grown a row that stated far more than a scan needs — the
-    project AND the team AND the milestone AND who submitted it, over a full
-    sentence of waiting age. Every one of those facts is real and every one of
-    them still exists; what changed is where they are read. The list answers
-    "what is here and how long has it waited"; the submission drawer, the
-    request modal and the task editor answer everything else, and each row is
-    already a deep link to exactly the one that owns it.
-
-    So the collapsed row now shows:
-      * the title, unchanged;
-      * ONE short label for the team — TeamName, falling back to the project
-        only when a team name is missing. Project titles in this product are
-        long ("Motiva — Final Project Management Platform") and the team name
-        is the thing a mentor recognises;
-      * MentorAging.ShortLabel — "ממתינה 5 ימים", not "ממתינה לבדיקה כבר 5
-        ימים". The long phrase is still what the detail surfaces and the daily
-        digest print, because it is still the same WaitingLabel;
-      * the status dot, unchanged.
-
-    Dropped from the row, not from the model: the milestone, the submitter, the
-    request type (the title already names it) and the trailing chevron — a
-    decoration on a row that is already a link.
-
-    The escalation still reaches a screen reader in words: MentorAging's
-    "דורש תשומת לב" is folded into each escalated row's accessible name, so the
-    meaning is never carried by the rose alone.
-
-    ── SECTION HEADINGS ARE THE REFERENCE'S COLOURED GROUP LABELS ────────────
-    15px/700 with .03em tracking in the section's own semantic role — blue for
-    what is waiting on a review, violet for what is waiting on a decision, quiet
-    ink for the mentor's own list. Still the shared MSectionHeading, so the row
-    layout, the "לכל הבקשות" link and the trailing slot are the component's; only
-    the label's size and colour are re-based, in this page's stylesheet.
-
-    The count that rode each heading is gone: the same three numbers are on the
-    filter tabs one row above, and stating them twice is exactly the density
-    this pass removes.
-
-    WHAT IS NOT HERE, AND WHY
-      * The reference's expand-in-place card, with אישור והעברה למרצה /
-        החזרה לתיקון on the row. A mentor has no approve-or-return endpoint for
-        a submission — their only decision endpoint is the extension
-        recommendation — so those two buttons would be controls that cannot
-        work. Rows keep their INSPECTION contract instead: a submission opens
-        MentorProjectQuickView and a request opens MentorRequestModal, both
-        over this queue, and each popup carries the CTA that navigates.
-      * Generic אישור / דחייה on any request row; see MentorRequestModal.
+    DATA SOURCES (unchanged)
+    הגשות לבדיקה  → _reviews    (IMentorWorkspaceService, Kind = Submission)
+    בקשות          → _awaitingMe (IMentorWorkspaceService, Kind = Request)
+    משימות אישיות  → _openPersonal / _donePersonal (IPersonalTasksService)
+    Review context → IMentorProjectsService.GetSubmissionContextAsync (lazy, on expand)
 *@
+
+@* ── Review modal (State 3) ──────────────────────────────────────────────── *@
+@if (_reviewModalCtx is not null)
+{
+    <div class="mt-modal-backdrop" @onclick="CloseReviewModal" aria-hidden="true"></div>
+    <div class="mt-modal" role="dialog" aria-modal="true" aria-labelledby="mt-modal-title" dir="rtl">
+
+        <div class="mt-modal-header">
+            <span class="mt-modal-badge">הגשה לבדיקה</span>
+            <button type="button" class="mt-modal-close"
+                    @onclick="CloseReviewModal" aria-label="סגירה">×</button>
+        </div>
+
+        <h2 class="mt-modal-title" id="mt-modal-title">
+            @_reviewModalCtx.TaskTitle
+            @if (_reviewModalCtx.History.Count > 0)
+            {
+                <span class="mt-modal-version"> – גרסה @_reviewModalCtx.History[0].RoundNumber</span>
+            }
+        </h2>
+
+        <p class="mt-modal-ctx">
+            @if (!string.IsNullOrWhiteSpace(_reviewModalCtx.SubmittedBy))
+            {
+                <span>@_reviewModalCtx.SubmittedBy</span>
+                <span class="mt-modal-ctx-sep"> · </span>
+            }
+            @if (!string.IsNullOrWhiteSpace(_expandedItem?.TeamName))
+            {
+                <span>@_expandedItem!.TeamName</span>
+                <span class="mt-modal-ctx-sep"> · </span>
+            }
+            @if (!string.IsNullOrWhiteSpace(_expandedItem?.ProjectTitle))
+            {
+                <span>@_expandedItem!.ProjectTitle</span>
+                <span class="mt-modal-ctx-sep"> · </span>
+            }
+            <span>@(_expandedItem?.WaitingLabel ?? "")</span>
+        </p>
+
+        @* Metadata row: version · submit date · previous round date *@
+        <div class="mt-modal-meta">
+            @if (_reviewModalCtx.History.Count > 0)
+            {
+                <span class="mt-modal-meta-item">גרסה @_reviewModalCtx.History[0].RoundNumber</span>
+                <span class="mt-modal-meta-sep"> · </span>
+                <span class="mt-modal-meta-item">
+                    מועד הגשה
+                    @_reviewModalCtx.SubmittedAt.ToLocalTime().ToString("HH:mm") ·
+                    @_reviewModalCtx.SubmittedAt.ToLocalTime().ToString("dd.MM")
+                </span>
+            }
+            @if (_reviewModalCtx.History.Count > 1)
+            {
+                <span class="mt-modal-meta-sep"> · </span>
+                <span class="mt-modal-meta-item">
+                    גרסה קודמת: גרסה @_reviewModalCtx.History[1].RoundNumber ·
+                    @_reviewModalCtx.History[1].SubmittedAt.ToLocalTime().ToString("dd.MM")
+                </span>
+            }
+        </div>
+
+        @* Drive / resource link *@
+        @if (!string.IsNullOrWhiteSpace(_reviewModalCtx.DriveUrl))
+        {
+            <div class="mt-modal-resource">
+                <svg class="mt-modal-resource-icon" width="14" height="14" viewBox="0 0 24 24"
+                     fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                    <polyline points="13 2 13 9 20 9"/>
+                </svg>
+                <span class="mt-modal-resource-label">@_reviewModalCtx.TaskTitle</span>
+                <a class="mt-modal-resource-open"
+                   href="@_reviewModalCtx.DriveUrl"
+                   target="_blank" rel="noopener noreferrer">פתיחה</a>
+            </div>
+        }
+
+        @* Student notes *@
+        @if (!string.IsNullOrWhiteSpace(_reviewModalCtx.Notes))
+        {
+            <div class="mt-modal-section">
+                <p class="mt-modal-section-title">הערת המגיש</p>
+                <p class="mt-modal-section-body">@_reviewModalCtx.Notes</p>
+            </div>
+        }
+
+        @* Previous round mentor feedback *@
+        @if (_reviewModalCtx.History.Count > 1 &&
+             !string.IsNullOrWhiteSpace(_reviewModalCtx.History[1].MentorFeedback))
+        {
+            <div class="mt-modal-section mt-modal-prev-feedback">
+                <p class="mt-modal-section-title">הערה מהסבב הקודם</p>
+                <p class="mt-modal-section-body">@_reviewModalCtx.History[1].MentorFeedback</p>
+            </div>
+        }
+
+        @* Mentor review *@
+        <div class="mt-modal-section">
+            <p class="mt-modal-section-title">הבדיקה שלך</p>
+            <textarea class="mt-modal-textarea"
+                      placeholder="כתבו משוב לצוות..."
+                      @bind="_reviewModalFeedback"
+                      @bind:event="oninput"
+                      rows="4">
+            </textarea>
+            @if (!string.IsNullOrEmpty(_reviewModalFeedbackError))
+            {
+                <p class="mt-modal-field-error">@_reviewModalFeedbackError</p>
+            }
+        </div>
+
+        @if (_reviewModalError)
+        {
+            <p class="mt-modal-error">אירעה שגיאה. נסה שנית.</p>
+        }
+
+        <div class="mt-modal-footer">
+            <button type="button" class="motiva-cta mt-modal-approve"
+                    @onclick='() => SubmitReviewAsync("Approved")'
+                    disabled="@_reviewModalBusy">
+                @if (_reviewModalBusy && _reviewModalPendingAction == "Approved")
+                { <span>מאשר…</span> }
+                else
+                { <span>✓ אישור ההגשה</span> }
+            </button>
+            <button type="button" class="mt-modal-return"
+                    @onclick='() => SubmitReviewAsync("Returned")'
+                    disabled="@_reviewModalBusy">
+                @if (_reviewModalBusy && _reviewModalPendingAction == "Returned")
+                { <span>מחזיר…</span> }
+                else
+                { <span>החזרה לתיקון</span> }
+            </button>
+        </div>
+    </div>
+}
 
 <div class="mt-header-bleed">
     <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
                  Title="המשימות שלי"
-                 Subtitle="הגשות, בקשות ותזכורות אישיות שממתינות לפעולה שלך.">
-        @* The reference puts the switcher on the title row, pushed to the
-           reading end — not on a full-width row of its own. *@
-        <Actions>
-            @if (!_loading)
-            {
-                <MFilterTabs Tabs="@FilterTabs"
-                             ActiveKey="@ActiveTabKey"
-                             OnSelect="SelectFocus"
-                             AriaLabel="סינון תור העבודה" />
-            }
-        </Actions>
-    </MPageHeader>
+                 Subtitle="הגשות, בקשות ותזכורות אישיות שממתינות לפעולה שלך." />
 </div>
 
 <div class="mt-body">
@@ -145,281 +193,271 @@
     else
     {
         @*
-            ── THE WORKSPACE, BUILT ON THE STUDENT TASKS TEMPLATE ───────────
-            StudentTasksPage's #task-sections, reproduced: one row filling
-            what is left of the viewport, a wide primary column and a rail,
-            both stretching so the workspace has one top edge and one bottom
-            edge, and every panel scrolling inside itself.
-
-            WHAT CHANGED, AND WHY. The wide column used to hold TWO stacked
-            cards — one per incoming queue — while the student's holds ONE
-            panel whose rows are grouped inside it. Two cards is a different
-            page architecture, not different content: it doubles the card
-            chrome, splits the column between two headers, and makes the
-            workspace read as three surfaces where the student's reads as two.
-            The two queues are now GROUPS inside one panel, which is exactly
-            what a milestone is on the student's screen — a collapsible head
-            over its own rows.
-
-            Nothing about the feeds moved: same endpoints, same ProjectMentors
-            scoping, same order, same links, same modals on click, same
-            counts. Only where they are drawn.
+            ── THE WORKSPACE ────────────────────────────────────────────────
+            Two columns, always both visible. In RTL the first column (1.85fr)
+            is the WIDER one on the visual RIGHT — the work queue. The second
+            (1fr) is the narrower rail on the LEFT — personal tasks.
         *@
-        <div id="task-sections" class="mt-workspace @WorkspaceClass">
+        <div id="task-sections" class="mt-workspace">
 
-            @if (ShowsPrimary)
-            {
-                <div class="mt-primary">
-                    <MCard Padding="MCard.CardPadding.None" Fill="true">
-                        <div class="mt-panel">
+            @* ── RIGHT / WIDER: Work queue with segmented filter ─── *@
+            <div class="mt-primary">
+                <MCard Padding="MCard.CardPadding.None" Fill="true">
+                    <div class="mt-panel">
 
-                            @* .pts-header: title, a muted "· N", a hairline under. *@
-                            <div class="mt-panel-head">
-                                <p class="mt-panel-title">תור העבודה</p>
-                                <span class="mt-panel-count">· @IncomingCount</span>
-                            </div>
-
-                            <MScrollArea Tabbable="false">
-
-                                @* ── 1. הגשות לבדיקה ──
-                                     The "current" group, in the student's own
-                                     grammar for the block a reader is standing
-                                     in: this page's order has always put a
-                                     review the mentor alone can perform first. *@
-                                @if (Shows(Section.Reviews))
-                                {
-                                    <div id="reviews" class="mt-group mt-group-current">
-                                        <button type="button" class="mt-group-head"
-                                                aria-expanded="@(IsOpen(Section.Reviews) ? "true" : "false")"
-                                                @onclick="@(() => ToggleGroup(Section.Reviews))">
-                                            <span class="mt-group-lead">
-                                                <span class="mt-chevron @(IsOpen(Section.Reviews) ? "mt-chevron-open" : "")" aria-hidden="true">
-                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="m6 9 6 6 6-6"></path>
-                                                    </svg>
-                                                </span>
-                                                <span class="mt-dot mt-dot-current" aria-hidden="true"></span>
-                                                <strong class="mt-group-title">הגשות לבדיקה</strong>
-                                            </span>
-                                            <span class="mt-group-trail">
-                                                <span class="mt-group-count">@_reviews.Count</span>
-                                            </span>
-                                        </button>
-
-                                        @if (IsOpen(Section.Reviews))
-                                        {
-                                            <div class="mt-group-body">
-                                                @if (_reviews.Count == 0)
-                                                {
-                                                    <p class="mt-group-empty">אין הגשות לבדיקה כרגע.</p>
-                                                }
-                                                else
-                                                {
-                                                    @foreach (var r in _reviews)
-                                                    {
-                                                        var sub = r;
-                                                        <button type="button" class="mt-task"
-                                                                @onclick="@(() => OpenSubmission(sub))"
-                                                                aria-label="@RowAriaLabel(r, $"פתיחת ההגשה {r.Title}")">
-                                                            <strong class="mt-task-title">@r.Title</strong>
-                                                            <span class="mt-task-meta">
-                                                                <span class="mt-task-due">@TeamLabel(r)</span>
-                                                            </span>
-                                                            <span class="mt-task-status @AgeClass(r)">@StateLabel(r)</span>
-                                                            <span class="mt-task-go" aria-hidden="true">
-                                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                                    <path d="m15 6-6 6 6 6"></path>
-                                                                </svg>
-                                                            </span>
-                                                        </button>
-                                                    }
-                                                }
-                                            </div>
-                                        }
-                                    </div>
-                                }
-
-                                @* ── 2. בקשות הדורשות פעולה ── *@
-                                @if (Shows(Section.Requests))
-                                {
-                                    <div id="requests" class="mt-group">
-                                        <button type="button" class="mt-group-head"
-                                                aria-expanded="@(IsOpen(Section.Requests) ? "true" : "false")"
-                                                @onclick="@(() => ToggleGroup(Section.Requests))">
-                                            <span class="mt-group-lead">
-                                                <span class="mt-chevron @(IsOpen(Section.Requests) ? "mt-chevron-open" : "")" aria-hidden="true">
-                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="m6 9 6 6 6-6"></path>
-                                                    </svg>
-                                                </span>
-                                                <span class="mt-dot mt-dot-plain" aria-hidden="true"></span>
-                                                <strong class="mt-group-title">בקשות הדורשות פעולה</strong>
-                                            </span>
-                                            <span class="mt-group-trail">
-                                                <span class="mt-group-count">@_awaitingMe.Count</span>
-                                                <a class="mt-group-link" href="/mentor-requests"
-                                                   @onclick:stopPropagation="true">לכל הבקשות</a>
-                                            </span>
-                                        </button>
-
-                                        @if (IsOpen(Section.Requests))
-                                        {
-                                            <div class="mt-group-body">
-                                                @if (_awaitingMe.Count == 0)
-                                                {
-                                                    <p class="mt-group-empty">אין בקשות שדורשות את תגובתך.</p>
-                                                }
-                                                else
-                                                {
-                                                    @foreach (var q in _awaitingMe)
-                                                    {
-                                                        var id = q.EntityId;
-                                                        <button type="button" class="mt-task"
-                                                                @onclick="@(() => _openRequestId = id)"
-                                                                aria-label="@RowAriaLabel(q, $"פתיחת הבקשה {q.Title}")">
-                                                            <strong class="mt-task-title">@q.Title</strong>
-                                                            <span class="mt-task-meta">
-                                                                <span class="mt-task-due">@TeamLabel(q)</span>
-                                                            </span>
-                                                            <span class="mt-task-status @AgeClass(q)">@StateLabel(q)</span>
-                                                            <span class="mt-task-go" aria-hidden="true">
-                                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                                    <path d="m15 6-6 6 6 6"></path>
-                                                                </svg>
-                                                            </span>
-                                                        </button>
-                                                    }
-                                                }
-                                            </div>
-                                        }
-                                    </div>
-                                }
-                            </MScrollArea>
-                        </div>
-                    </MCard>
-                </div>
-            }
-
-            @if (Shows(Section.Personal))
-            {
-                @* ── The rail — TeamTasksSection's panel with this role's own
-                     list in it: a header carrying a labelled create action, a
-                     scrolling list of checkable rows, and a dashed add-row
-                     closing the list. *@
-                <div class="mt-rail">
-                    <MCard Padding="MCard.CardPadding.None" Fill="true">
-                        <div id="personal" class="mt-panel">
-
-                            <div class="mt-panel-head">
-                                <p class="mt-panel-title">משימות אישיות</p>
-                                <span class="mt-panel-count">· @_openPersonal.Count</span>
-                                @* PERSONAL tasks only. These carry a real DueDate,
-                                   so באיחור is a true statement about them; it
-                                   would not be about a submission or a request. *@
-                                @if (Counts.PersonalTasksOverdue > 0)
-                                {
-                                    <span class="mt-overdue">@Counts.PersonalTasksOverdue באיחור</span>
-                                }
-                                <button type="button" class="mt-add motiva-cta" @onclick="OpenNewTask">
-                                    <span class="mt-add-glyph" aria-hidden="true">+</span>
-                                    <span>משימה אישית</span>
-                                </button>
-                            </div>
-
-                            <MScrollArea Tabbable="false">
-                                @if (_visiblePersonal.Count == 0)
-                                {
-                                    <MEmptyState Title="אין משימות אישיות כרגע."
-                                                 Description="תזכורות שתוסיף/י לעצמך יופיעו כאן."
-                                                 Live="true" />
-                                }
-                                else
-                                {
-                                    @foreach (var t in _visiblePersonal)
+                        @* Segmented filter tabs — inside the panel, not in
+                           the page header. The header carries only the title. *@
+                        <div class="mt-panel-head">
+                            <div class="mt-queue-tabs" role="tablist" aria-label="סינון תור העבודה">
+                                <button type="button"
+                                        class="mt-qtab @(_queueTab == "" ? "mt-qtab-active" : "")"
+                                        role="tab"
+                                        aria-selected="@(_queueTab == "" ? "true" : "false")"
+                                        @onclick='() => _queueTab = ""'>
+                                    הכל
+                                    @if (IncomingCount > 0)
                                     {
-                                        var id = t.Id;
-                                        var captured = t;
-                                        <div class="mt-row @(t.IsDone ? "mt-row-done" : "")"
-                                             role="button" tabindex="0"
-                                             @onclick="@(() => OpenEditTask(captured))"
-                                             aria-label="@($"עריכת \"{t.Title}\"")">
+                                        <span class="mt-qtab-count motiva-count">@IncomingCount</span>
+                                    }
+                                </button>
+                                <button type="button"
+                                        class="mt-qtab @(_queueTab == "reviews" ? "mt-qtab-active" : "")"
+                                        role="tab"
+                                        aria-selected="@(_queueTab == "reviews" ? "true" : "false")"
+                                        @onclick='() => _queueTab = "reviews"'>
+                                    הגשות לבדיקה
+                                    @if (_reviews.Count > 0)
+                                    {
+                                        <span class="mt-qtab-count motiva-count">@_reviews.Count</span>
+                                    }
+                                </button>
+                                <button type="button"
+                                        class="mt-qtab @(_queueTab == "requests" ? "mt-qtab-active" : "")"
+                                        role="tab"
+                                        aria-selected="@(_queueTab == "requests" ? "true" : "false")"
+                                        @onclick='() => _queueTab = "requests"'>
+                                    בקשות
+                                    @if (_awaitingMe.Count > 0)
+                                    {
+                                        <span class="mt-qtab-count motiva-count">@_awaitingMe.Count</span>
+                                    }
+                                </button>
+                            </div>
+                        </div>
 
-                                            <span class="mt-check @(t.IsDone ? "mt-check-on" : "")"
-                                                  role="checkbox" tabindex="0"
-                                                  aria-checked="@(t.IsDone ? "true" : "false")"
-                                                  aria-label="@($"סימון \"{t.Title}\" כהושלמה")"
-                                                  @onclick="@(() => ToggleTaskAsync(id))"
-                                                  @onclick:stopPropagation="true">
-                                                @if (t.IsDone)
+                        <MScrollArea Tabbable="false">
+                            @if (FilteredQueue.Count == 0)
+                            {
+                                <MEmptyState Title="אין פריטים כרגע."
+                                             Description="הגשות ובקשות שממתינות לפעולתך יופיעו כאן."
+                                             Live="true" />
+                            }
+                            else
+                            {
+                                @foreach (var item in FilteredQueue)
+                                {
+                                    var isSubmission = item.Kind == MentorAttentionKind.Submission;
+                                    var isExpanded   = _expandedItemId == item.EntityId;
+
+                                    <div class="mt-qitem @(isExpanded ? "mt-qitem-open" : "")">
+
+                                        @* Collapsed row — always visible *@
+                                        <button type="button"
+                                                class="mt-qitem-row"
+                                                @onclick="() => ToggleQueueItem(item)"
+                                                aria-expanded="@(isExpanded && isSubmission ? "true" : "false")"
+                                                aria-label="@RowAriaLabel(item, item.Title)">
+
+                                            <span class="mt-qitem-top">
+                                                <span class="mt-qbadge @(isSubmission ? "mt-qbadge-sub" : "mt-qbadge-req")">
+                                                    @(isSubmission ? "הגשה לבדיקה" : "בקשה")
+                                                </span>
+                                                <span class="mt-qitem-timing @AgeClass(item)">@StateLabel(item)</span>
+                                            </span>
+
+                                            <strong class="mt-qitem-title">@item.Title</strong>
+
+                                            <span class="mt-qitem-ctx">
+                                                @if (!string.IsNullOrWhiteSpace(item.TeamName))
                                                 {
-                                                    <span class="mt-check-mark" aria-hidden="true">✓</span>
+                                                    <span>@item.TeamName</span>
+                                                    @if (!string.IsNullOrWhiteSpace(item.ProjectTitle))
+                                                    {
+                                                        <span class="mt-qitem-ctx-sep"> · </span>
+                                                        <span>@item.ProjectTitle</span>
+                                                    }
+                                                }
+                                                else if (!string.IsNullOrWhiteSpace(item.ProjectTitle))
+                                                {
+                                                    <span>@item.ProjectTitle</span>
                                                 }
                                             </span>
 
-                                            <span class="mt-row-title">@t.Title</span>
-
-                                            @if (!string.IsNullOrWhiteSpace(PersonalTeamLabel(t)))
+                                            @* Chevron — only for submission rows that expand inline.
+                                               Request rows carry no chevron: they open a modal directly. *@
+                                            @if (isSubmission)
                                             {
-                                                <span class="mt-row-meta">@PersonalTeamLabel(t)</span>
+                                                <span class="mt-qitem-chevron @(isExpanded ? "mt-qitem-chevron-open" : "")"
+                                                      aria-hidden="true">
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="m6 9 6 6 6-6"></path>
+                                                    </svg>
+                                                </span>
                                             }
+                                        </button>
 
-                                            @if (MentorTime.DeadlineLabel(t.DueDate) is { Length: > 0 } due)
-                                            {
-                                                <span class="mt-row-due @(!t.IsDone && MentorTime.IsOverdue(t.DueDate) ? "mt-row-due-late" : "")">@due</span>
-                                            }
-                                        </div>
-                                    }
+                                        @* Inline expansion (State 2) — submissions only *@
+                                        @if (isExpanded && isSubmission)
+                                        {
+                                            <div class="mt-qitem-body">
+                                                @if (_loadingExpansion)
+                                                {
+                                                    <span class="mt-qitem-loading">טוען פרטי הגשה…</span>
+                                                }
+                                                else if (_expandedCtx is not null)
+                                                {
+                                                    @if (!string.IsNullOrWhiteSpace(_expandedCtx.Notes))
+                                                    {
+                                                        <p class="mt-qitem-notes">@_expandedCtx.Notes</p>
+                                                    }
+
+                                                    @if (!string.IsNullOrWhiteSpace(_expandedCtx.DriveUrl))
+                                                    {
+                                                        <a class="mt-qitem-resource"
+                                                           href="@_expandedCtx.DriveUrl"
+                                                           target="_blank"
+                                                           rel="noopener noreferrer">
+                                                            <svg class="mt-qitem-resource-icon" width="14" height="14"
+                                                                 viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                 stroke-width="1.8" stroke-linecap="round"
+                                                                 stroke-linejoin="round" aria-hidden="true">
+                                                                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                                                                <polyline points="13 2 13 9 20 9"/>
+                                                            </svg>
+                                                            <span class="mt-qitem-resource-label">
+                                                                קישור ל'@_expandedCtx.TaskTitle'
+                                                            </span>
+                                                        </a>
+                                                    }
+
+                                                    <div class="mt-qitem-actions">
+                                                        <button type="button"
+                                                                class="motiva-cta mt-qitem-review"
+                                                                @onclick="OpenReviewModal">
+                                                            לבדיקת ההגשה
+                                                        </button>
+                                                        @if (item.ProjectId.HasValue)
+                                                        {
+                                                            <a class="mt-qitem-project"
+                                                               href="/mentor/projects/@item.ProjectId">
+                                                                למרחב הפרויקט
+                                                            </a>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
                                 }
-
-                                @* The list's closing add-row — the student rail's
-                                   own second entry point to the same action. *@
-                                <button type="button" class="mt-addrow" @onclick="OpenNewTask">
-                                    <span class="mt-addrow-glyph" aria-hidden="true">+</span>
-                                    <span>הוספת משימה אישית</span>
-                                </button>
-                            </MScrollArea>
-
-                            @if (_openPersonal.Count > PersonalCollapsedCount || _donePersonal.Count > 0)
-                            {
-                                <div class="mt-expand">
-                                    <button type="button" class="mt-expand-btn" @onclick="TogglePersonalExpanded">
-                                        @(_personalExpanded ? "הצג פחות" : "הצג הכל")
-                                    </button>
-                                </div>
                             }
+                        </MScrollArea>
+                    </div>
+                </MCard>
+            </div>
+
+            @* ── LEFT / NARROWER: Personal tasks rail ─────────── *@
+            <div class="mt-rail">
+                <MCard Padding="MCard.CardPadding.None" Fill="true">
+                    <div id="personal" class="mt-panel">
+
+                        <div class="mt-panel-head">
+                            <p class="mt-panel-title">משימות אישיות</p>
+                            <span class="mt-panel-count">· @_openPersonal.Count</span>
+                            @if (Counts.PersonalTasksOverdue > 0)
+                            {
+                                <span class="mt-overdue">@Counts.PersonalTasksOverdue באיחור</span>
+                            }
+                            <button type="button" class="mt-add motiva-cta" @onclick="OpenNewTask">
+                                <span class="mt-add-glyph" aria-hidden="true">+</span>
+                                <span>משימה אישית</span>
+                            </button>
                         </div>
-                    </MCard>
-                </div>
-            }
+
+                        <MScrollArea Tabbable="false">
+                            @if (_visiblePersonal.Count == 0)
+                            {
+                                <MEmptyState Title="אין משימות אישיות כרגע."
+                                             Description="תזכורות שתוסיף/י לעצמך יופיעו כאן."
+                                             Live="true" />
+                            }
+                            else
+                            {
+                                @foreach (var t in _visiblePersonal)
+                                {
+                                    var id       = t.Id;
+                                    var captured = t;
+                                    <div class="mt-row @(t.IsDone ? "mt-row-done" : "")"
+                                         role="button" tabindex="0"
+                                         @onclick="@(() => OpenEditTask(captured))"
+                                         aria-label="@($"עריכת \"{t.Title}\"")">
+
+                                        <span class="mt-check @(t.IsDone ? "mt-check-on" : "")"
+                                              role="checkbox" tabindex="0"
+                                              aria-checked="@(t.IsDone ? "true" : "false")"
+                                              aria-label="@($"סימון \"{t.Title}\" כהושלמה")"
+                                              @onclick="@(() => ToggleTaskAsync(id))"
+                                              @onclick:stopPropagation="true">
+                                            @if (t.IsDone)
+                                            {
+                                                <span class="mt-check-mark" aria-hidden="true">✓</span>
+                                            }
+                                        </span>
+
+                                        <span class="mt-row-title">@t.Title</span>
+
+                                        @if (!string.IsNullOrWhiteSpace(PersonalTeamLabel(t)))
+                                        {
+                                            <span class="mt-row-meta">@PersonalTeamLabel(t)</span>
+                                        }
+
+                                        @if (MentorTime.DeadlineLabel(t.DueDate) is { Length: > 0 } due)
+                                        {
+                                            <span class="mt-row-due @(!t.IsDone && MentorTime.IsOverdue(t.DueDate) ? "mt-row-due-late" : "")">@due</span>
+                                        }
+                                    </div>
+                                }
+                            }
+
+                            <button type="button" class="mt-addrow" @onclick="OpenNewTask">
+                                <span class="mt-addrow-glyph" aria-hidden="true">+</span>
+                                <span>הוספת משימה אישית</span>
+                            </button>
+                        </MScrollArea>
+
+                        @if (_openPersonal.Count > PersonalCollapsedCount || _donePersonal.Count > 0)
+                        {
+                            <div class="mt-expand">
+                                <button type="button" class="mt-expand-btn" @onclick="TogglePersonalExpanded">
+                                    @(_personalExpanded ? "הצג פחות" : "הצג הכל")
+                                </button>
+                            </div>
+                        }
+                    </div>
+                </MCard>
+            </div>
 
         </div>
     }
 </div>
 
-@* ── Project Quick View — a submission, inspected in place ──
-     The same panel פרויקטים בהנחייתי and בית open, focused on the submission
-     the mentor clicked. Its CTA opens the review drawer at
-     /mentor/projects/{id}?submissionId={n} — the route this row used to
-     navigate to on click. *@
-<MentorProjectQuickView Card="@_openProject"
-                        Focus="@_openProjectFocus"
-                        OnClose="CloseProject" />
-
-@* ── Request details, opened in place ── *@
+@* ── Request details modal ── *@
 <MentorRequestModal RequestId="@_openRequestId"
                     WaitingLabel="@OpenRequestWaitingLabel"
                     OnClose="@(() => _openRequestId = null)"
                     OnChanged="ReloadAsync" />
 
-@* ── New / edit personal task ──
-     The shared component, not an inline copy: /mentor/calendar opens the SAME
-     editor, so create, update, delete, validation and the delete confirmation
-     exist once. Mirrors how TeamTaskEditModal already serves both the student
-     tasks page and the student planner. *@
+@* ── New / edit personal task ── *@
 <MentorPersonalTaskModal IsOpen="@_taskModalOpen"
                          EditingTask="@_editingTask"
                          Projects="@_ws.Projects"
@@ -428,83 +466,88 @@
                          OnDeleted="OnTaskDeleted" />
 
 @code {
-    /// <summary>The three feeds. Also the filter vocabulary — one enum, so a
-    /// tab, a section and the ?focus= parameter cannot disagree.</summary>
-    private enum Section { Reviews, Requests, Personal }
-
     private const int PersonalCollapsedCount = 6;
 
+    // ── Data ────────────────────────────────────────────────────────────────
     private MentorWorkspace _ws = MentorWorkspace.Empty;
     private bool _loading = true;
 
     private IReadOnlyList<MentorAttentionItemDto> _reviews    = Array.Empty<MentorAttentionItemDto>();
     private IReadOnlyList<MentorAttentionItemDto> _awaitingMe = Array.Empty<MentorAttentionItemDto>();
-    private List<PersonalTaskDto>            _openPersonal = new();
-    private List<PersonalTaskDto>            _donePersonal = new();
+    private List<PersonalTaskDto>            _openPersonal    = new();
+    private List<PersonalTaskDto>            _donePersonal    = new();
     private List<PersonalTaskDto>            _visiblePersonal = new();
 
-    /// <summary>Server-computed counts, so the tab badges and the section
-    /// headings cannot drift apart or disagree with the daily digest.</summary>
     private MentorAttentionCountsDto Counts => _ws.Attention.Counts;
 
-    /// <summary>Waiting phrase for the request currently open in the modal,
-    /// taken from the same attention item the row rendered.</summary>
+    // ── Queue filter ────────────────────────────────────────────────────────
+    /// <summary>"" = הכל | "reviews" = הגשות לבדיקה | "requests" = בקשות</summary>
+    private string _queueTab = "";
+
+    private int IncomingCount => _reviews.Count + _awaitingMe.Count;
+
+    private IReadOnlyList<MentorAttentionItemDto> FilteredQueue =>
+        _queueTab switch
+        {
+            "reviews"  => _reviews,
+            "requests" => _awaitingMe,
+            _          => (IReadOnlyList<MentorAttentionItemDto>)
+                          _reviews.Concat(_awaitingMe).ToList(),
+        };
+
+    // ── Inline expansion (State 2) ──────────────────────────────────────────
+    private int?                        _expandedItemId;
+    private MentorAttentionItemDto?     _expandedItem;
+    private bool                        _loadingExpansion;
+    private MentorSubmissionContextDto? _expandedCtx;
+
+    // ── Review modal (State 3) ──────────────────────────────────────────────
+    private MentorSubmissionContextDto? _reviewModalCtx;
+    private bool                        _reviewModalBusy;
+    private string                      _reviewModalPendingAction = "";
+    private string                      _reviewModalFeedback      = "";
+    private bool                        _reviewModalError;
+    private string                      _reviewModalFeedbackError = "";
+
+    // ── Request modal ───────────────────────────────────────────────────────
+    private int? _openRequestId;
+
     private string? OpenRequestWaitingLabel =>
         _openRequestId is int id
             ? _awaitingMe.FirstOrDefault(r => r.EntityId == id)?.WaitingLabel
             : null;
 
-    private Section? _focus;
-    private bool     _personalExpanded;
-    private int?     _openRequestId;
-    private int?     _togglingId;
-
-    /// <summary>The project whose Quick View is open, and the submission the
-    /// mentor clicked to open it. See OpenSubmission.</summary>
-    private MentorProjectCard?      _openProject;
-    private MentorAttentionItemDto? _openProjectFocus;
-
-    /// <summary>Roadmap progress per project, for the Quick View's stage line.
-    /// Loaded off the critical path — this queue must not wait on it, and the
-    /// card falls back to the project summary's own milestone without it.</summary>
-    private IReadOnlyDictionary<int, ProjectRoadmapProgressDto> _roadmap =
-        new Dictionary<int, ProjectRoadmapProgressDto>();
-
-    private bool    _taskModalOpen;
-
-    /// <summary>Null while creating, the task instance while editing. Handed
-    /// straight to the shared modal, which owns all form state.</summary>
+    // ── Personal tasks ──────────────────────────────────────────────────────
+    private bool           _personalExpanded;
+    private int?           _togglingId;
+    private bool           _taskModalOpen;
     private PersonalTaskDto? _editingTask;
+
+    // ── Lifecycle ───────────────────────────────────────────────────────────
 
     protected override async Task OnInitializedAsync()
     {
         Nav.LocationChanged += OnLocationChanged;
         ApplyFocusFromQuery();
         await ReloadAsync();
-
-        // AFTER the load: the calendar links here with ?editTask={id}, and the
-        // editor can only be seeded once that task's data actually exists.
         OpenTaskFromQuery();
     }
 
     public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
 
-    /// <summary>Home's two action tiles are ordinary links carrying ?focus=.
-    /// Blazor reuses this component across such a navigation, so the query has
-    /// to be re-read on LocationChanged as well as on init.</summary>
-    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    /// <summary>בית deep-links here with ?focus= to pre-select a queue tab.
+    /// Blazor reuses this component across navigations, so we re-read on
+    /// LocationChanged as well as on init.</summary>
+    private void OnLocationChanged(object? sender,
+        Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
         ApplyFocusFromQuery();
         InvokeAsync(StateHasChanged);
     }
 
-    /// <summary>One query value by name, or null. Hand-rolled because this
-    /// project does not reference Microsoft.AspNetCore.WebUtilities — one
-    /// shape, no parser dependency.</summary>
     private string? QueryValue(string key)
     {
         var query = new Uri(Nav.Uri).Query.TrimStart('?');
-
         foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             var eq = pair.IndexOf('=');
@@ -512,99 +555,129 @@
             if (!pair.AsSpan(0, eq).Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
             return Uri.UnescapeDataString(pair[(eq + 1)..]);
         }
-
         return null;
     }
 
-    /// <summary>
-    /// Opens the editor for ?editTask={id}, the calendar's personal-task link.
-    ///
-    /// <para>Looks the id up in the list this mentor just loaded, so it can only
-    /// ever open one of their OWN tasks — an id belonging to someone else simply
-    /// is not found and nothing opens. No extra fetch and no second modal.</para>
-    /// </summary>
+    private void ApplyFocusFromQuery() =>
+        _queueTab = (QueryValue("focus") ?? "").ToLowerInvariant() switch
+        {
+            "reviews"  => "reviews",
+            "requests" => "requests",
+            _          => "",
+        };
+
+    /// <summary>Calendar links here with ?editTask={id}.</summary>
     private void OpenTaskFromQuery()
     {
         if (!int.TryParse(QueryValue("editTask"), out var wantedId)) return;
-
         var task = _openPersonal.Concat(_donePersonal).FirstOrDefault(t => t.Id == wantedId);
         if (task is null) return;
-
         OpenEditTask(task);
     }
-
-    private void ApplyFocusFromQuery() => _focus = FromSlug(QueryValue("focus"));
 
     private async Task ReloadAsync()
     {
         _loading = true;
         _ws = await Workspace.LoadAsync();
 
-        // Both queues arrive filtered, aged and ordered worst-first. The three
-        // things this method used to do — pick the awaiting-mentor status, sort
-        // by timestamp, and let each row decide its own urgency — are all the
-        // server's job now.
         _reviews    = _ws.Reviews;
         _awaitingMe = _ws.AwaitingMe;
 
         SplitPersonal(_ws.PersonalTasks);
         _loading = false;
-
-        // Not awaited: it fills one line of a panel that is not open yet, and
-        // holding the queue behind a second round-trip to get it would be paying
-        // for it on every visit.
-        _ = LoadRoadmapAsync();
     }
 
-    private async Task LoadRoadmapAsync()
-    {
-        try
-        {
-            var entries = await Roadmap.GetMentorProjectsProgressAsync()
-                          ?? new List<MentorRoadmapEntryDto>();
-
-            _roadmap = entries.GroupBy(e => e.ProjectId)
-                              .ToDictionary(g => g.Key, g => g.First().Progress);
-        }
-        catch
-        {
-            _roadmap = new Dictionary<int, ProjectRoadmapProgressDto>();
-        }
-    }
+    // ── Queue interaction ────────────────────────────────────────────────────
 
     /// <summary>
-    /// A waiting submission, inspected without leaving the queue.
-    ///
-    /// <para>The row used to be a link to <c>item.Href</c> — the project route
-    /// with <c>?submissionId=</c> on it — so one click both moved the mentor to
-    /// another screen AND opened a drawer once they got there. It opens the
-    /// shared Quick View here instead, focused on this submission, and the
-    /// panel's primary CTA is that same href. Nothing about the review flow or
-    /// its URL changed; only the moment the mentor commits to it.</para>
-    ///
-    /// <para>A submission whose project is not in this snapshot cannot be
-    /// summarised, so it falls back to the link it always had.</para></summary>
-    private void OpenSubmission(MentorAttentionItemDto item)
+    /// Submission rows toggle inline expansion; request rows open the modal.
+    /// </summary>
+    private async Task ToggleQueueItem(MentorAttentionItemDto item)
     {
-        var project = item.ProjectId is int pid
-            ? _ws.Projects.FirstOrDefault(p => p.Id == pid)
-            : null;
-
-        if (project is null)
+        if (item.Kind != MentorAttentionKind.Submission)
         {
-            Nav.NavigateTo(item.Href);
+            _openRequestId = item.EntityId;
             return;
         }
 
-        _openProjectFocus = item;
-        _openProject      = MentorProjectCard.Build(_ws, project, _roadmap.GetValueOrDefault(project.Id));
+        // Collapse if already expanded.
+        if (_expandedItemId == item.EntityId)
+        {
+            _expandedItemId = null;
+            _expandedItem   = null;
+            _expandedCtx    = null;
+            return;
+        }
+
+        // Expand and lazily load submission context.
+        _expandedItemId   = item.EntityId;
+        _expandedItem     = item;
+        _expandedCtx      = null;
+        _loadingExpansion = true;
+        StateHasChanged();
+
+        _expandedCtx      = await MentorService.GetSubmissionContextAsync(item.EntityId);
+        _loadingExpansion = false;
     }
 
-    private void CloseProject()
+    // ── Review modal ─────────────────────────────────────────────────────────
+
+    private void OpenReviewModal()
     {
-        _openProject      = null;
-        _openProjectFocus = null;
+        if (_expandedCtx is null) return;
+        _reviewModalCtx          = _expandedCtx;
+        _reviewModalFeedback     = "";
+        _reviewModalError        = false;
+        _reviewModalFeedbackError = "";
+        _reviewModalPendingAction = "";
     }
+
+    private void CloseReviewModal()
+    {
+        _reviewModalCtx          = null;
+        _reviewModalFeedback     = "";
+        _reviewModalError        = false;
+        _reviewModalFeedbackError = "";
+        _reviewModalBusy         = false;
+        _reviewModalPendingAction = "";
+    }
+
+    private async Task SubmitReviewAsync(string action)
+    {
+        if (_reviewModalCtx is null || _reviewModalBusy) return;
+
+        if (action == "Returned" && string.IsNullOrWhiteSpace(_reviewModalFeedback))
+        {
+            _reviewModalFeedbackError = "יש להזין הערת מנחה לפני החזרת ההגשה לתיקון";
+            return;
+        }
+
+        _reviewModalBusy         = true;
+        _reviewModalPendingAction = action;
+        _reviewModalError        = false;
+        _reviewModalFeedbackError = "";
+        StateHasChanged();
+
+        var sid = _reviewModalCtx.SubmissionId;
+        bool ok = await MentorService.ReviewSubmissionAsync(sid, action, _reviewModalFeedback);
+        _reviewModalBusy = false;
+
+        if (ok)
+        {
+            // Remove the reviewed item from the queue.
+            _reviews = _reviews.Where(r => r.EntityId != sid).ToList();
+            CloseReviewModal();
+            _expandedItemId = null;
+            _expandedItem   = null;
+            _expandedCtx    = null;
+        }
+        else
+        {
+            _reviewModalError = true;
+        }
+    }
+
+    // ── Personal tasks ────────────────────────────────────────────────────────
 
     private void SplitPersonal(IEnumerable<PersonalTaskDto> all)
     {
@@ -617,9 +690,6 @@
         RebuildVisiblePersonal();
     }
 
-    /// <summary>Collapsed shows open tasks only, capped. Expanded appends the
-    /// completed ones — the design keeps them reachable but never lets them
-    /// push live work below the fold.</summary>
     private void TogglePersonalExpanded()
     {
         _personalExpanded = !_personalExpanded;
@@ -631,165 +701,6 @@
             ? _openPersonal.Concat(_donePersonal).ToList()
             : _openPersonal.Take(PersonalCollapsedCount).ToList();
 
-    // ── Filtering ───────────────────────────────────────────────────────
-
-    private bool Shows(Section s) => _focus is null || _focus == s;
-
-    /// <summary>Which groups are expanded inside the primary panel. Both open
-    /// on arrival, the student panel's own default for the milestone it is
-    /// standing in. Purely presentational — collapsing a group hides no data
-    /// the page did not already show.</summary>
-    private readonly HashSet<Section> _collapsed = new();
-
-    private bool IsOpen(Section s) => !_collapsed.Contains(s);
-
-    private void ToggleGroup(Section s)
-    {
-        if (!_collapsed.Remove(s)) _collapsed.Add(s);
-    }
-
-    /// <summary>The panel's own "· N" — the two incoming queues together,
-    /// which is what the one panel now holds. The per-group counts are
-    /// unchanged and still ride their own heads.</summary>
-    private int IncomingCount => _reviews.Count + _awaitingMe.Count;
-
-    /// <summary>
-    /// The status pill's tone, in the student row's three-class vocabulary
-    /// (.pts-status-open / -done / -attention).
-    ///
-    /// <para>The THRESHOLD is untouched: MentorAttentionAge, the server-computed
-    /// escalation this page and the mentor dashboard already share. Only the
-    /// treatment it resolves to is the student's.</para>
-    ///
-    /// <para><b>ROSE IS NOT ON THIS LADDER, and that is the point.</b> Every
-    /// row in these two feeds is past the three-day threshold on real data, so
-    /// mapping NeedsAttention to rose painted the entire panel red — the exact
-    /// opposite of the student page's hierarchy, where rose marks the one
-    /// overdue row among many. Neither a submission awaiting review nor a
-    /// request awaiting a recommendation has a deadline to be past; they are
-    /// waiting, not late. So the escalated rung takes the BRAND tint — the
-    /// student's `.pts-status-open` — and the quiet rung takes neutral. This
-    /// is the same ladder /lecturer/tasks resolves through
-    /// MentorAttentionRows.AgeVariant, which never returns Rose either.</para>
-    ///
-    /// <para>Rose survives on this page exactly where it is true: the rail's
-    /// personal tasks, which carry a real DueDate and can genuinely be
-    /// overdue (`.mt-row-due-late`), and the "N באיחור" counter on their
-    /// heading.</para>
-    /// </summary>
-    private static string AgeClass(MentorAttentionItemDto i) =>
-        i.Age == MentorAttentionAge.NeedsAttention
-            ? "mt-status-open"
-            : "mt-status-quiet";
-
-    /// <summary>True while the wide column has anything to draw. False only
-    /// under the משימות אישיות filter, which is also the one case where the
-    /// workspace collapses to a single track — see <see cref="WorkspaceClass"/>.</summary>
-    private bool ShowsPrimary => Shows(Section.Reviews) || Shows(Section.Requests);
-
-    /// <summary>
-    /// The two-column row is the "הכל" composition. Every filter leaves exactly
-    /// one column standing, and a two-track grid with one empty track is a
-    /// half-width panel beside bare canvas — so the row goes single-track
-    /// instead and the surviving panel takes the full width.
-    /// </summary>
-    private string WorkspaceClass => _focus is null ? "" : "mt-workspace-solo";
-
-
-
-    /// <summary>The pill group's four tabs. Each badge is the count its KPI
-    /// card used to carry, and a zero renders no badge at all.</summary>
-    private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
-    {
-        new MFilterTabs.Tab("",         "הכל"),
-        new MFilterTabs.Tab("reviews",  "הגשות לבדיקה",   Counts.PendingSubmissions),
-        new MFilterTabs.Tab("requests", "בקשות",          Counts.AwaitingRequests),
-        new MFilterTabs.Tab("personal", "משימות אישיות",  _openPersonal.Count),
-    };
-
-    private string ActiveTabKey => _focus is null ? "" : Slug(_focus.Value);
-
-    /// <summary>Selecting is not toggling: "הכל" is what clears.</summary>
-    private void SelectFocus(string key) => _focus = FromSlug(key);
-
-    private static string Slug(Section s) => s switch
-    {
-        Section.Reviews  => "reviews",
-        Section.Requests => "requests",
-        _                => "personal",
-    };
-
-    /// <summary>The inverse of <see cref="Slug"/>, and the single reader of the
-    /// ?focus= vocabulary. An unrecognised value means "no filter" rather than
-    /// an empty page.</summary>
-    private static Section? FromSlug(string? value) => (value ?? "").ToLowerInvariant() switch
-    {
-        "reviews"  => Section.Reviews,
-        "requests" => Section.Requests,
-        "personal" => Section.Personal,
-        _          => null,
-    };
-
-    // ── Rows ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// The row's whole second line: one short label for the team.
-    ///
-    /// <para>TeamName first, and the project only as a fallback. Project titles
-    /// here are the long formal ones ("Motiva — Final Project Management
-    /// Platform") while a team name is what a mentor actually recognises, so
-    /// naming both put the long string on every row to add the short one. The
-    /// milestone, the submitter and the request type left this line entirely —
-    /// they are still on the item, and the detail surface each row opens is
-    /// where they are read.</para>
-    /// </summary>
-    private static string TeamLabel(MentorAttentionItemDto i) =>
-        !string.IsNullOrWhiteSpace(i.TeamName)     ? i.TeamName!
-        : !string.IsNullOrWhiteSpace(i.ProjectTitle) ? i.ProjectTitle!
-        : "";
-
-    /// <summary>The same short line for a personal task, whose DTO carries the
-    /// pair under different names. Empty when the task has no project — an
-    /// unassigned reminder just has no second line.</summary>
-    private static string PersonalTeamLabel(PersonalTaskDto t) =>
-        !string.IsNullOrWhiteSpace(t.TeamName)     ? t.TeamName!
-        : !string.IsNullOrWhiteSpace(t.ProjectTitle) ? t.ProjectTitle!
-        : "";
-
-    /// <summary>The row's state, in two words. The full WaitingLabel sentence
-    /// is untouched on the DTO and is still what the request modal and the
-    /// daily digest print — this is only what the scannable list shows.</summary>
-    private static string StateLabel(MentorAttentionItemDto i) =>
-        MentorAging.ShortLabel(i.WaitingDays);
-
-    // TimeChip / DueChip / BarToneFor are gone with the MRow composition they
-    // fed. The row is now the student's `.pts-task` grid: its state is a plain
-    // pill in the row's own fixed status track (AgeClass above), and its
-    // deadline is the rail row's `.mt-row-due`. Neither the escalation
-    // threshold nor the wording moved — StateLabel and MentorTime.DeadlineLabel
-    // are the same two calls, printed by the row instead of by a badge.
-    //
-    // THE LEADING MStatusBar WENT WITH THEM. It carried MentorAttentionAge,
-    // which is the very thing the status pill carries — the same fact, twice,
-    // in a slot the student row does not have. Nothing is lost: the pill
-    // escalates on the same threshold and the row's aria-label still states
-    // the escalation in words.
-
-    /// <summary>The row's accessible name, with the escalation stated in words.
-    ///
-    /// <para>The reference's collapsed row carries its state as a coloured time
-    /// phrase and a coloured dot, and both are visual. MentorAging's shared
-    /// "דורש תשומת לב" is prepended here so an escalated row announces WHY it is
-    /// escalated — colour is never the only carrier of that meaning.</para>
-    /// </summary>
-    private static string RowAriaLabel(MentorAttentionItemDto i, string action)
-    {
-        var state = MentorAging.StateLabel(i.Age);
-        return state is null ? action : $"{state} — {action}";
-    }
-
-    // ── Personal task actions ───────────────────────────────────────────
-
     private async Task ToggleTaskAsync(int id)
     {
         _togglingId = id;
@@ -798,9 +709,6 @@
 
         if (!ok) return;
 
-        // Flip locally rather than refetching the whole workspace: the toggle
-        // endpoint answers a bool, and re-running four GETs to learn one bit
-        // would make a checkbox feel like a page load.
         var all = _openPersonal.Concat(_donePersonal).ToList();
         var hit = all.FirstOrDefault(t => t.Id == id);
         if (hit is not null) hit.IsDone = !hit.IsDone;
@@ -825,15 +733,10 @@
         _editingTask   = null;
     }
 
-    /// <summary>Create or update finished. The modal already mirrored an edit
-    /// onto the instance it was given, so an update just needs re-splitting;
-    /// a create is appended.</summary>
     private void OnTaskSaved(PersonalTaskDto saved)
     {
         var all = _openPersonal.Concat(_donePersonal).ToList();
-
         if (!all.Any(t => t.Id == saved.Id)) all.Add(saved);
-
         SplitPersonal(all);
         _taskModalOpen = false;
         _editingTask   = null;
@@ -844,5 +747,31 @@
         SplitPersonal(_openPersonal.Concat(_donePersonal).Where(t => t.Id != deletedId));
         _taskModalOpen = false;
         _editingTask   = null;
+    }
+
+    // ── Row helpers ───────────────────────────────────────────────────────────
+
+    private static string AgeClass(MentorAttentionItemDto i) =>
+        i.Age == MentorAttentionAge.NeedsAttention
+            ? "mt-status-open"
+            : "mt-status-quiet";
+
+    private static string TeamLabel(MentorAttentionItemDto i) =>
+        !string.IsNullOrWhiteSpace(i.TeamName)      ? i.TeamName!
+        : !string.IsNullOrWhiteSpace(i.ProjectTitle) ? i.ProjectTitle!
+        : "";
+
+    private static string PersonalTeamLabel(PersonalTaskDto t) =>
+        !string.IsNullOrWhiteSpace(t.TeamName)      ? t.TeamName!
+        : !string.IsNullOrWhiteSpace(t.ProjectTitle) ? t.ProjectTitle!
+        : "";
+
+    private static string StateLabel(MentorAttentionItemDto i) =>
+        MentorAging.ShortLabel(i.WaitingDays);
+
+    private static string RowAriaLabel(MentorAttentionItemDto i, string action)
+    {
+        var state = MentorAging.StateLabel(i.Age);
+        return state is null ? action : $"{state} — {action}";
     }
 }
