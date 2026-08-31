@@ -117,6 +117,7 @@
                                placeholder="https://drive.google.com/..."
                                value="@_driveUrl"
                                @oninput="OnDriveUrlInput"
+                               @onchange="OnDriveUrlCommitted"
                                disabled="@(_phase == Phase.Submitting)" />
 
                         @* Live validation status badge — gates the submit button. *@
@@ -133,7 +134,7 @@
                                     break;
                                 case LinkState.Accessible:
                                     <span class="oi oi-circle-check" aria-hidden="true"></span>
-                                    <span>הקישור נגיש — ניתן לשלוח את ההגשה.</span>
+                                    <span>הקישור נפתח לצפייה ללא בקשת הרשאה — ניתן לשלוח את ההגשה.</span>
                                     break;
                                 case LinkState.Inaccessible:
                                     <span class="oi oi-warning" aria-hidden="true"></span>
@@ -141,6 +142,24 @@
                                     break;
                             }
                         </div>
+
+                        @* The probe reads the page Google serves an ANONYMOUS
+                           visitor, which is the same thing the reviewer will
+                           see — but the student can only be sure the link
+                           points at the right file by looking at it. Shown as
+                           soon as the link is a well-formed URL, so it is
+                           available precisely when a red state needs
+                           explaining. *@
+                        @if (CanPreviewLink)
+                        {
+                            <a class="smo-drive-preview"
+                               href="@_driveUrl.Trim()"
+                               target="_blank"
+                               rel="noopener noreferrer">
+                                <span class="oi oi-external-link" aria-hidden="true"></span>
+                                <span>פתיחת הקישור לבדיקה</span>
+                            </a>
+                        }
 
                         <div class="smo-drive-help">
                             <span class="oi oi-info smo-drive-help-icon" aria-hidden="true"></span>
@@ -229,6 +248,12 @@
     [Parameter] public int             TaskId   { get; set; }
     [Parameter] public EventCallback   OnClose  { get; set; }
 
+    /// <summary>Raised once, when a submission is actually accepted by the
+    /// server — as opposed to <see cref="OnClose"/>, which also fires when the
+    /// student cancels. Additive: hosts that reload unconditionally on close
+    /// (SubmissionsPage, StudentTasksPage) are unaffected by ignoring it.</summary>
+    [Parameter] public EventCallback   OnSubmitted { get; set; }
+
     /// <summary>When > 0 the modal is in *edit-existing* mode: it pre-fills
     /// the fields and submits a PATCH instead of a POST. The student can
     /// only edit their own latest submission while MentorStatus='Pending' —
@@ -264,6 +289,15 @@
         _phase != Phase.Submitting
         && !string.IsNullOrWhiteSpace(_driveUrl)
         && _linkState == LinkState.Accessible;
+
+    /// <summary>True once the typed text is a well-formed absolute http(s)
+    /// URL — the bar for OFFERING to open it, which is deliberately lower than
+    /// the bar for submitting it. A student whose link came back red needs to
+    /// open it to find out why.</summary>
+    private bool CanPreviewLink =>
+        !string.IsNullOrWhiteSpace(_driveUrl)
+        && Uri.TryCreate(_driveUrl.Trim(), UriKind.Absolute, out var u)
+        && (u.Scheme == Uri.UriSchemeHttps || u.Scheme == Uri.UriSchemeHttp);
 
     private string LinkStateClass => _linkState switch
     {
@@ -305,6 +339,18 @@
     private async Task OnDriveUrlInput(ChangeEventArgs e)
     {
         _driveUrl = (e.Value as string) ?? "";
+        await ScheduleLinkCheck();
+    }
+
+    /// <summary>On blur, normalise the field to the exact string that will be
+    /// posted. Submit() has always trimmed, but the input kept showing the
+    /// untrimmed text — so a link pasted with a trailing space looked
+    /// different from the one being validated and sent.</summary>
+    private async Task OnDriveUrlCommitted(ChangeEventArgs e)
+    {
+        var trimmed = ((e.Value as string) ?? "").Trim();
+        if (trimmed == _driveUrl) return;
+        _driveUrl = trimmed;
         await ScheduleLinkCheck();
     }
 
@@ -354,6 +400,12 @@
 
     private async Task Submit()
     {
+        // Guard against a second click landing while the first is still in
+        // flight. CanSubmit already disables the button during Phase.Submitting,
+        // but a double-click can dispatch twice before Blazor re-renders, and
+        // that would create two submissions for one intent.
+        if (_phase == Phase.Submitting) return;
+
         _submitError = "";
 
         // The submit button is disabled unless the live probe already
@@ -403,7 +455,16 @@
         }
         else
         {
-            _phase = Phase.Success;
+            // Drop the payload as soon as it is accepted: nothing below the
+            // success panel reads it, and leaving it populated is how a
+            // re-shown modal could re-arm a link that was already sent.
+            _phase     = Phase.Success;
+            _driveUrl  = "";
+            _notes     = "";
+            _linkState = LinkState.Idle;
+            _linkError = null;
+            _linkToken++;   // orphan any probe still in flight
+            await OnSubmitted.InvokeAsync();
         }
     }
 

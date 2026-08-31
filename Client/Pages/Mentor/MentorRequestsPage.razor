@@ -11,127 +11,111 @@
 
 @*
     ── בקשות — the mentor's request queue ──────────────────────────────────
-    VISUAL SOURCE OF TRUTH:  design/design-system/Motiva Mentor Requests.dc.html
-                             (Claude Design). Every proportion below is that
-                             file's, not this app's previous screen.
-    Data source:             GET api/project-requests — already scoped
-                             server-side to the caller's own projects for a
-                             mentor-only user, plus the shared attention
-                             snapshot for the waiting phrases.
 
-    WHAT THE REFERENCE DRAWS, AND WHAT THIS PAGE THEREFORE IS
-      * A bare 38px title with the controls on its own baseline — no ambient
-        band, no subtitle, no KPI strip.
-      * Status is a SEGMENTED PILL TRACK (MFilterTabs), with the count riding
-        the "להמלצתך" tab. It replaced the four MKpiCards that used to be both
-        the statistics and the filter: the reference states each count once,
-        on the control that selects it.
-      * Type is a MENU, not a row of pills — one control on the title row
-        instead of a second full-width filter row under it.
-      * Each status is a translucent section card holding a coloured group
-        label and its rows. The label's colour is the section's semantics:
-        violet = waiting on you, muted = in flight elsewhere, subtle = history.
-      * A row EXPANDS IN PLACE, replacing itself with a white card. The
-        reference does not keep the collapsed row above the open one.
+    SPLIT WORKSPACE, on the shared `rqw-*` skeleton
+    (Client/wwwroot/css/motiva-request-workspace.css): page header with the
+    title at the reading end and a compact KPI summary opposite it, the queue
+    on the RIGHT scrolling inside itself, the selected request's record filling
+    the LEFT. Nothing scrolls at page level. That skeleton is shared with the
+    lecturer queue and is STRUCTURE ONLY — every question of which requests
+    this page shows, what its buckets are called and what may be done to them
+    is answered here and only here.
 
-    MAPPING FOUR LIVE BUCKETS ONTO A THREE-BUCKET REFERENCE
-    The reference's mock data only ever holds waiting / lecturer / done. The
-    product has a fourth real state — NeedsInfo, "ממתינות לתגובת הצוות" — so it
-    gets its own tab and its own section, drawn with the reference's own
-    in-flight treatment. Nothing was invented for it: same card, same label
-    rhythm, the muted label colour the "אצל המרצה" section already uses.
+    THIS SUPERSEDES THE EXPAND-IN-PLACE LAYOUT drawn by
+    design/design-system/Motiva Mentor Requests.dc.html, along with that file's
+    "no KPI strip" rule, on an explicit product decision to run one request
+    workspace across roles. What the reference still governs is this screen's
+    own vocabulary — the four buckets, their names, the leading dot's four
+    roles, the type menu — all of which are kept below.
 
-    CARRIED OVER, because they are functionality and not decoration:
-      * the ?requestId= deep link a request notification arrives on, which
-        expands that row and reveals its section;
-      * MarkRead on open (inside MentorRequestDetail).
+    DATA. GET api/project-requests is already mentor-scoped server-side:
+    ProjectRequestsController.GetAll appends
+    `WHERE r.ProjectId IN (SELECT ProjectId FROM ProjectMentors WHERE UserId=@UserId)`
+    for a Mentor-only caller. No client-side filter stands in for that, and no
+    new endpoint was added for this screen.
 
-    NOT CARRIED OVER: the page-level search field. The reference draws no
-    search on this screen — the only search it has is the global one in the
-    top nav — and the brief makes the design file the strict source of truth
-    for the control set.
+    WHAT A MENTOR MAY ACTUALLY DO — and therefore what this page offers.
+    The server gives a mentor exactly one decision:
+    POST /api/project-requests/{id}/mentor-recommendation, [Authorize(Mentor)],
+    gated on PendingMentorRecommendation. /handle and PATCH are Admin+Staff
+    only, /reply requires team membership, and /extension/decision explicitly
+    rejects Stage="Mentor". So the workspace hosts MentorRequestDetail
+    unchanged — it already draws the recommendation form and nothing else —
+    and the lecturer's אישור / דחייה / החזרה להשלמה never appear here.
 
-    "טופלו" IS NOT SHOWN under הכל — the reference's own behaviour
-    (`statusFilter === 'all'` filters out `done`). It is history, and it is one
-    click away on its own tab and on the link under the list.
+    BUCKETS are MentorRequestBuckets.Of(), the mentor's four-way split, used
+    verbatim. The three KPI chips are folded from those same four so a chip can
+    never disagree with the list: ממתינות להמלצתך = AwaitingMentor, טופלו =
+    Closed, and בטיפול = WithLecturer + AwaitingTeam, the two "in flight
+    somewhere else" buckets the mentor cannot move. The tabs keep all four,
+    because filtering to one of them is still useful.
+
+    ORDERING puts the requests the mentor actually owns first — bucket order is
+    descending urgency for a mentor — then newest activity within each.
+
+    CARRIED OVER: the ?requestId= deep link a notification arrives on, and
+    MarkRead on open (inside MentorRequestDetail).
+    NOT CARRIED OVER: the reference's ↑/↓ stepper and its expand-in-place card,
+    both of which only existed to move between rows that replaced themselves.
 *@
 
-<div class="mrq-header-bleed">
-    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
-                 Title="בקשות"
-                 Class="mrq-header">
-        @* The reference puts both controls on the title's baseline, pushed to
-           the reading end, at a 10px gap. *@
-        <Actions>
-            @if (!_loading && !_loadError && _all.Count > 0)
-            {
-                <MFilterTabs Tabs="@FilterTabs"
-                             ActiveKey="@ActiveTabKey"
-                             OnSelect="SelectBucket"
-                             AriaLabel="סינון בקשות לפי מצב" />
+<div class="rqw-page" dir="rtl">
 
-                <div class="mrq-type" @onkeydown="OnTypeKeyDown">
-                    <button type="button"
-                            class="@TypeButtonClass"
-                            aria-haspopup="listbox"
-                            aria-expanded="@(_typeOpen ? "true" : "false")"
-                            @onclick="ToggleTypeMenu"
-                            @onclick:stopPropagation="true">
-                        @TypeButtonLabel
-                        <span class="mrq-type-chev @(_typeOpen ? "mrq-type-chev-open" : "")"
-                              aria-hidden="true">▾</span>
-                    </button>
+    <!-- ── PAGE HEADER — title at the reading end, KPI summary opposite ── -->
+    <div class="rqw-header">
 
-                    @if (_typeOpen)
-                    {
-                        @* The reference closes the menu on any document click.
-                           A transparent scrim is the same behaviour without a
-                           JS listener, and it is invisible either way. *@
-                        <div class="mrq-type-scrim" @onclick="CloseTypeMenu"></div>
+        <h1 class="rqw-title">בקשות</h1>
 
-                        <div class="mrq-type-menu" role="listbox" aria-label="סוג בקשה">
-                            <button type="button"
-                                    class="@TypeOptionClass(null)"
-                                    role="option"
-                                    aria-selected="@(_typeFilter is null ? "true" : "false")"
-                                    @onclick="@(() => PickType(null))">
-                                <span>הכל</span>
-                                @if (_typeFilter is null)
-                                {
-                                    <svg class="mrq-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                         stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <path d="m5 12.5 4.5 4.5L19 7"></path>
-                                    </svg>
-                                }
-                            </button>
+        @if (!_loading && !_loadError && _all.Count > 0)
+        {
+            @*  Folded from MentorRequestBuckets, never from a second status
+                mapping. Presentational only — not clickable; the tabs in the
+                queue are the filter.  *@
+            <div class="rqw-kpis">
 
-                            @foreach (var t in AvailableTypes)
-                            {
-                                var type = t;
-                                <button type="button"
-                                        class="@TypeOptionClass(type)"
-                                        role="option"
-                                        aria-selected="@(_typeFilter == type ? "true" : "false")"
-                                        @onclick="@(() => PickType(type))">
-                                    <span>@RequestTypes.Label(type)</span>
-                                    @if (_typeFilter == type)
-                                    {
-                                        <svg class="mrq-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                         stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <path d="m5 12.5 4.5 4.5L19 7"></path>
-                                    </svg>
-                                    }
-                                </button>
-                            }
-                        </div>
-                    }
+                <div class="rqw-kpi">
+                    <span class="rqw-kpi-ico motiva-ico-gradient" aria-hidden="true">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                             stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
+                            <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+                        </svg>
+                    </span>
+                    <span class="rqw-kpi-num">@AwaitingMentorCount</span>
+                    <span class="rqw-kpi-label">ממתינות להמלצתך</span>
                 </div>
-            }
-        </Actions>
-    </MPageHeader>
-</div>
 
-<div class="mrq-body">
+                <div class="rqw-kpi">
+                    <span class="rqw-kpi-ico motiva-ico-gradient" aria-hidden="true">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                             stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="9"/>
+                            <polyline points="12 7 12 12 15.5 14"/>
+                        </svg>
+                    </span>
+                    <span class="rqw-kpi-num">@InFlightCount</span>
+                    <span class="rqw-kpi-label">בטיפול</span>
+                </div>
+
+                <div class="rqw-kpi">
+                    <span class="rqw-kpi-ico motiva-ico-gradient" aria-hidden="true">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                             stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                            <polyline points="22 4 12 14.01 9 11.01"/>
+                        </svg>
+                    </span>
+                    <span class="rqw-kpi-num">@ClosedCount</span>
+                    <span class="rqw-kpi-label">טופלו</span>
+                </div>
+
+            </div>
+        }
+
+    </div>
 
     @if (_loading)
     {
@@ -154,122 +138,206 @@
     }
     else
     {
-        @foreach (var group in VisibleGroups)
-        {
-            var g = group;
+        <div class="rqw-split">
 
-            <section class="mrq-section">
-                <MCard Padding="MCard.CardPadding.None" Class="@CardClass(g.Bucket)">
-                    <div class="mrq-card">
-                        <div class="mrq-card-head">
-                            @* Still MSectionHeading — only the label's size and
-                               colour are re-based, in this page's stylesheet.
-                               No count: the reference states each number once,
-                               on the tab that selects it. *@
-                            <MSectionHeading Class="@($"mrq-head {HeadClass(g.Bucket)}")"
-                                             Text="@GroupLabel(g.Bucket)" />
-                        </div>
+            <!-- ══ QUEUE — right column ══════════════════════════════════ -->
+            <aside class="rqw-sidebar">
 
-                        @if (g.Items.Count == 0)
+                @* The reference's own two controls, moved off the title row and
+                   onto the queue they filter. The tab counts came off with
+                   them: the KPI row above now states each number once. *@
+                <div class="mrq-filters">
+
+                    <MFilterTabs Tabs="@FilterTabs"
+                                 ActiveKey="@ActiveTabKey"
+                                 OnSelect="SelectLane"
+                                 AriaLabel="סינון בקשות לפי מצב" />
+
+                    @*  The shared type dropdown — same markup, same classes
+                        and the same open / pick / close shape the lecturer
+                        queue uses. Only the option list is this page's, and it
+                        is read off the mentor's own scoped rows.  *@
+                    <div class="rqw-type-wrap" @onkeydown="OnTypeKeyDown">
+                        <button type="button"
+                                class="@TypeButtonClass"
+                                aria-haspopup="listbox"
+                                aria-expanded="@(_typeOpen ? "true" : "false")"
+                                aria-label="סינון לפי סוג בקשה"
+                                @onclick="ToggleTypeMenu"
+                                @onclick:stopPropagation="true">
+                            <span class="rqw-type-label-text">סוג בקשה</span>
+                            <span class="rqw-type-val-text">@TypeButtonValue</span>
+                            <span class="rqw-type-caret @(_typeOpen ? "rqw-type-caret-open" : "")"
+                                  aria-hidden="true">
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" stroke-width="2.5"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m6 9 6 6 6-6"/>
+                                </svg>
+                            </span>
+                        </button>
+
+                        @if (_typeOpen)
                         {
-                            <p class="mrq-empty">אין בקשות תואמות לסינון הנוכחי</p>
-                        }
-                        else
-                        {
-                            <MRowList AriaLabel="@GroupLabel(g.Bucket)" Class="mrq-rows">
-                                @foreach (var r in g.Items)
+                            <div class="rqw-type-backdrop" @onclick="CloseTypeMenu"></div>
+
+                            <div class="rqw-type-panel" role="listbox" aria-label="סוג בקשה">
+                                <button type="button"
+                                        class="@TypeOptionClass(null)"
+                                        role="option"
+                                        aria-selected="@(_typeFilter is null ? "true" : "false")"
+                                        @onclick="@(() => PickType(null))">
+                                    <span class="rqw-type-opt-label">הכל</span>
+                                    @if (_typeFilter is null)
+                                    {
+                                        <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                             stroke="currentColor" stroke-width="2.6"
+                                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="m5 12.5 4.5 4.5L19 7"/>
+                                        </svg>
+                                    }
+                                </button>
+
+                                @foreach (var t in AvailableTypes)
                                 {
-                                    var req = r;
-
-                                    if (_expandedId == req.Id)
-                                    {
-                                        @* The reference REPLACES the row with the
-                                           open card rather than stacking one under
-                                           the other. *@
-                                        <div class="mrq-open">
-                                            <div class="mrq-open-head">
-                                                <div class="mrq-open-id">
-                                                    <p class="mrq-open-title">@req.Title</p>
-                                                    <p class="mrq-open-sub">@RowSub(req)</p>
-                                                </div>
-
-                                                <button type="button" class="mrq-icon"
-                                                        title="הבקשה הקודמת" aria-label="הבקשה הקודמת"
-                                                        @onclick="@(() => Step(-1))">
-                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="M12 19V5m-6 6 6-6 6 6"></path>
-                                                    </svg>
-                                                </button>
-                                                <button type="button" class="mrq-icon"
-                                                        title="הבקשה הבאה" aria-label="הבקשה הבאה"
-                                                        @onclick="@(() => Step(1))">
-                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="M12 5v14m6-6-6 6-6-6"></path>
-                                                    </svg>
-                                                </button>
-                                                <button type="button" class="mrq-icon"
-                                                        title="צמצום" aria-label="@($"צמצום הבקשה {req.Title}")"
-                                                        @onclick="@(() => Toggle(req.Id))">
-                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="m6 15 6-6 6 6"></path>
-                                                    </svg>
-                                                </button>
-                                            </div>
-
-                                            <MentorRequestDetail RequestId="@req.Id"
-                                                                 Layout="MentorRequestDetail.DetailLayout.Inline"
-                                                                 WaitingLabel="@AttentionFor(req)?.WaitingLabel"
-                                                                 OnChanged="OnRequestChangedAsync" />
-                                        </div>
-                                    }
-                                    else
-                                    {
-                                        <MRow OnClick="@(() => Toggle(req.Id))"
-                                              Class="mrq-row"
-                                              Primary="@req.Title"
-                                              Secondary="@RowSub(req)"
-                                              Meta="@TimeLabel(req)"
-                                              MetaTone="@TimeTone(req)"
-                                              AriaLabel="@($"פתיחת הבקשה {req.Title}")">
-                                            <Leading>
-                                                <span class="mrq-dot @DotClass(req)" aria-hidden="true"></span>
-                                            </Leading>
-                                            <Trailing>
-                                                <span class="mrq-chevron" aria-hidden="true">
-                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="m6 9 6 6 6-6"></path>
-                                                    </svg>
-                                                </span>
-                                            </Trailing>
-                                        </MRow>
-                                    }
+                                    var type = t;
+                                    <button type="button"
+                                            class="@TypeOptionClass(type)"
+                                            role="option"
+                                            aria-selected="@(_typeFilter == type ? "true" : "false")"
+                                            @onclick="@(() => PickType(type))">
+                                        <span class="rqw-type-opt-label">@RequestTypes.Label(type)</span>
+                                        @if (_typeFilter == type)
+                                        {
+                                            <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                 stroke="currentColor" stroke-width="2.6"
+                                                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                <path d="m5 12.5 4.5 4.5L19 7"/>
+                                            </svg>
+                                        }
+                                    </button>
                                 }
-                            </MRowList>
+                            </div>
                         }
                     </div>
-                </MCard>
-            </section>
-        }
 
-        @if (_bucketFilter != MentorRequestBucket.Closed)
-        {
-            <div class="mrq-done-link">
-                <button type="button" class="mrq-done-btn"
-                        @onclick="@(() => SelectBucket(MentorRequestBucket.Closed.ToString()))">
-                    כל הבקשות שטופלו
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M15 6l-6 6 6 6"></path>
-                    </svg>
-                </button>
-            </div>
-        }
+                    @*  הכל — the reset, deliberately not a fourth pill: it is
+                        not one of the three states, and a pill carrying it
+                        pushed the track onto a second row.  *@
+                    @if (_laneFilter is not null)
+                    {
+                        <button type="button" class="mrq-reset"
+                                @onclick="@(() => SelectLane(""))">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.4"
+                                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M18 6 6 18M6 6l12 12"/>
+                            </svg>
+                            הצג את כל הבקשות
+                        </button>
+                    }
+                </div>
+
+                <div class="rqw-list">
+                  <div class="rqw-list-inner" role="listbox" aria-label="רשימת בקשות">
+                    @{
+                        var visibleItems = VisibleItems;
+                    }
+                    @if (visibleItems.Count == 0)
+                    {
+                        <p class="mrq-list-empty">אין בקשות תואמות לסינון הנוכחי</p>
+                    }
+                    else
+                    {
+                        @foreach (var r in visibleItems)
+                        {
+                            var req = r;
+                            var isSelected = _expandedId == req.Id;
+                            <button type="button"
+                                    class="rqw-row @(isSelected ? "rqw-row-selected" : "")"
+                                    role="option"
+                                    aria-selected="@isSelected"
+                                    aria-label="@($"פתיחת הבקשה {req.Title}")"
+                                    @onclick="@(() => SelectRequest(req.Id))">
+
+                                <div class="mrq-row-top">
+                                    <span class="mrq-row-type">@RequestTypes.Label(req.RequestType)</span>
+                                    <span class="mrq-row-time @TimeClass(req)">@TimeLabel(req)</span>
+                                </div>
+                                <div class="mrq-row-title-row">
+                                    <span class="mrq-dot @DotClass(req)" aria-hidden="true"></span>
+                                    <span class="mrq-row-title">@req.Title</span>
+                                </div>
+                                <div class="mrq-row-meta">
+                                    @if (HoldingLabel(req) is { } holding)
+                                    {
+                                        <span class="mrq-row-where">@holding</span>
+                                        <span class="mrq-row-sep" aria-hidden="true">·</span>
+                                    }
+                                    <span class="mrq-row-sub">@RowSub(req)</span>
+                                </div>
+
+                            </button>
+                        }
+                    }
+                  </div>@* rqw-list-inner *@
+                </div>@* rqw-list *@
+
+            </aside>
+
+            <!-- ══ WORKSPACE — left column ═══════════════════════════════ -->
+            <main class="rqw-main">
+
+                @if (_expandedId is null)
+                {
+                    <div class="rqw-empty">
+                        <div class="rqw-empty-icon" aria-hidden="true">
+                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="1.3"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/>
+                                <line x1="16" y1="13" x2="8" y2="13"/>
+                                <line x1="16" y1="17" x2="8" y2="17"/>
+                                <polyline points="10 9 9 9 8 9"/>
+                            </svg>
+                        </div>
+                        <p class="rqw-empty-title">בחרו בקשה כדי לצפות בפרטים</p>
+                        <p class="rqw-empty-sub">פרטי הבקשה יוצגו כאן לאחר הבחירה</p>
+                    </div>
+                }
+                else
+                {
+                    var selectedRow = _all.FirstOrDefault(x => x.Id == _expandedId);
+
+                    @if (selectedRow is null)
+                    {
+                        <div class="rqw-empty">
+                            <p class="rqw-empty-title">הבקשה לא נמצאה</p>
+                        </div>
+                    }
+                    else
+                    {
+                        @*  The record view, unchanged. It is the same component
+                            המשימות שלי opens in a modal, and it draws the
+                            mentor's recommendation form and nothing else — which
+                            is what keeps the lecturer's decision actions off
+                            this page without a second permission check here.  *@
+                        <div class="rqw-card mrq-record" id="request-@selectedRow.Id">
+                            <MentorRequestDetail RequestId="@selectedRow.Id"
+                                                 Layout="MentorRequestDetail.DetailLayout.Record"
+                                                 WaitingLabel="@AttentionFor(selectedRow)?.WaitingLabel"
+                                                 OnChanged="OnRequestChangedAsync" />
+                        </div>
+                    }
+                }
+
+            </main>
+
+        </div>@* rqw-split *@
     }
-</div>
+
+</div>@* rqw-page *@
 
 @code {
     /// <summary>Deep link a request notification arrives on — it expands that
@@ -286,12 +354,10 @@
     private bool _loading = true;
     private bool _loadError;
 
-    private MentorRequestBucket? _bucketFilter;   // null = the reference's "הכל"
+    private MentorLane? _laneFilter;   // null = הכל
     private string?              _typeFilter;
     private int?                 _expandedId;
     private bool                 _typeOpen;
-
-    private sealed record Group(MentorRequestBucket Bucket, List<ProjectRequestRowDto> Items);
 
     protected override async Task OnInitializedAsync()
     {
@@ -309,9 +375,10 @@
         _expandedId = id;
 
         // הכל hides "טופלו", so a closed request reached from a notification
-        // has to bring its own tab with it or the deep link opens nothing.
-        if (MentorRequestBuckets.Of(row.Status) == MentorRequestBucket.Closed)
-            _bucketFilter = MentorRequestBucket.Closed;
+        // has to bring its own tab with it or the deep link selects a row the
+        // queue is not showing.
+        if (LaneOf(row.Status) == MentorLane.Closed)
+            _laneFilter = MentorLane.Closed;
     }
 
     private async Task LoadAsync()
@@ -341,25 +408,20 @@
         await LoadAsync();
     }
 
-    private void Toggle(int id) => _expandedId = _expandedId == id ? null : id;
-
-    /// <summary>The reference's ↑/↓ pair: move to the previous/next request in
-    /// the flat list the filters currently show, and no-op at either end.</summary>
-    private void Step(int direction)
-    {
-        var flat = VisibleGroups.SelectMany(g => g.Items).ToList();
-        var i = flat.FindIndex(r => r.Id == _expandedId);
-        if (i < 0) return;
-
-        var next = i + direction;
-        if (next >= 0 && next < flat.Count) _expandedId = flat[next].Id;
-    }
+    /// <summary>Clicking a row selects it; clicking the selected row clears the
+    /// workspace back to its empty state. MentorRequestDetail loads the record
+    /// and clears the unread marker itself, so there is nothing to fetch
+    /// here.</summary>
+    private void SelectRequest(int id) => _expandedId = _expandedId == id ? null : id;
 
     // ── Filters ─────────────────────────────────────────────────────────
 
-    private void SelectBucket(string key)
+    /// <summary>Changing a filter drops the selection — never auto-selects the
+    /// first row. The queue always opens with nothing chosen. An unparseable
+    /// key (the reset button passes "") clears the lane filter.</summary>
+    private void SelectLane(string key)
     {
-        _bucketFilter = Enum.TryParse<MentorRequestBucket>(key, out var b) ? b : null;
+        _laneFilter = Enum.TryParse<MentorLane>(key, out var l) ? l : null;
         _expandedId = null;
     }
 
@@ -379,32 +441,88 @@
         _expandedId = null;
     }
 
-    private string ActiveTabKey => _bucketFilter?.ToString() ?? "";
+    /// <summary>No lane selected leaves every pill inactive, which is the הכל
+    /// state — there is no "הכל" pill to light up.</summary>
+    private string ActiveTabKey => _laneFilter?.ToString() ?? "";
 
-    /// <summary>הכל · להמלצתך② · אצל המרצה · אצל הצוות · טופלו.
+    /// <summary>
+    /// ממתינות להמלצתך · בטיפול · טופלו — the three lanes, in the same words
+    /// and the same grouping as the KPI chips above, so the header reads as one
+    /// statement rather than two filters.
     ///
-    /// <para>The badge counts every request waiting on this mentor, not the
-    /// filtered subset — the reference reads it off its whole data set, and a
-    /// count that moved with the type menu would stop being "how much is on
-    /// me" and start being a second copy of the list length.</para></summary>
+    /// <para>הכל is NOT a fourth pill. Measured at the track's real 13px face,
+    /// four pills carrying these labels come to 335px inside 303px of track and
+    /// wrap to a second row; the three fit at 278px. It is a subdued reset link
+    /// under the type control instead, which is also where it belongs — it is
+    /// not one of the three states.</para>
+    ///
+    /// <para>No badge on any of them: the KPI row states each number once, and
+    /// a count repeated on the control that selects it is the duplication the
+    /// design reference was avoiding when it put the count here.</para>
+    /// </summary>
     private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
     {
-        new MFilterTabs.Tab("", "הכל"),
-        new MFilterTabs.Tab(MentorRequestBucket.AwaitingMentor.ToString(), "להמלצתך",
-                            _all.Count(r => MentorRequestBuckets.Of(r.Status) == MentorRequestBucket.AwaitingMentor)),
-        new MFilterTabs.Tab(MentorRequestBucket.WithLecturer.ToString(), "אצל המרצה"),
-        new MFilterTabs.Tab(MentorRequestBucket.AwaitingTeam.ToString(), "אצל הצוות"),
-        new MFilterTabs.Tab(MentorRequestBucket.Closed.ToString(), "טופלו"),
+        new MFilterTabs.Tab(MentorLane.AwaitingMentor.ToString(), LaneLabel(MentorLane.AwaitingMentor)),
+        new MFilterTabs.Tab(MentorLane.InFlight.ToString(),       LaneLabel(MentorLane.InFlight)),
+        new MFilterTabs.Tab(MentorLane.Closed.ToString(),         LaneLabel(MentorLane.Closed)),
     };
 
-    private string TypeButtonLabel =>
-        _typeFilter is null ? "סוג בקשה" : RequestTypes.Label(_typeFilter);
+    // ── The lane: the page's ONE fold of MentorRequestBuckets ───────────
+    //
+    // A mentor has four buckets but only three things they can do about a
+    // request: act on it, wait for someone else, or file it. WithLecturer and
+    // AwaitingTeam differ in WHO is holding it, not in what the mentor does —
+    // both are "בטיפול" — and giving each its own primary tab made a five-pill
+    // track that wrapped to two rows in a 340px queue (measured: 335px of pills
+    // in 303px of track). So the primary filter is the lane, and the bucket
+    // survives as metadata on the row that needs it.
+    //
+    // THIS IS A FOLD, NOT A SECOND STATUS MAPPING. LaneOf calls
+    // MentorRequestBuckets.Of and groups its result; nothing here reads a raw
+    // status. Because the KPI chips, the filter tabs and the list all go
+    // through this one method, a chip cannot disagree with the tab that
+    // selects it or with the rows it shows.
+
+    private enum MentorLane { AwaitingMentor, InFlight, Closed }
+
+    private static MentorLane LaneOf(string status) => MentorRequestBuckets.Of(status) switch
+    {
+        MentorRequestBucket.AwaitingMentor => MentorLane.AwaitingMentor,
+        MentorRequestBucket.Closed         => MentorLane.Closed,
+        // WithLecturer + AwaitingTeam — in flight with someone who is not you.
+        _                                  => MentorLane.InFlight,
+    };
+
+    private static string LaneLabel(MentorLane l) => l switch
+    {
+        MentorLane.AwaitingMentor => "ממתינות להמלצתך",
+        MentorLane.InFlight       => "בטיפול",
+        _                         => "טופלו",
+    };
+
+    // ── KPI summary ─────────────────────────────────────────────────────
+    //
+    // Counted over _all rather than the filtered view: a number that moved with
+    // the type menu would stop answering "how much is on me" and start being a
+    // copy of the list length.
+
+    private int CountIn(MentorLane lane) => _all.Count(r => LaneOf(r.Status) == lane);
+
+    private int AwaitingMentorCount => CountIn(MentorLane.AwaitingMentor);
+    private int InFlightCount       => CountIn(MentorLane.InFlight);
+    private int ClosedCount         => CountIn(MentorLane.Closed);
+
+    /// <summary>The control shows a muted "סוג בקשה" caption beside the current
+    /// VALUE, so it still says what it filters once a type is picked — and "הכל"
+    /// is a real value rather than a blank.</summary>
+    private string TypeButtonValue =>
+        _typeFilter is null ? "הכל" : RequestTypes.Label(_typeFilter);
 
     private string TypeButtonClass =>
-        _typeFilter is null ? "mrq-type-btn" : "mrq-type-btn mrq-type-btn-on";
+        _typeFilter is null ? "rqw-type-btn" : "rqw-type-btn rqw-type-btn-active";
 
     private string TypeOptionClass(string? type) =>
-        _typeFilter == type ? "mrq-type-opt mrq-type-opt-on" : "mrq-type-opt";
+        _typeFilter == type ? "rqw-type-opt rqw-type-opt-on" : "rqw-type-opt";
 
     /// <summary>
     /// Only the types that actually occur in this mentor's requests — a menu
@@ -431,50 +549,71 @@
 
     // ── Derived ─────────────────────────────────────────────────────────
 
+    /// <summary>The SECONDARY filter. VisibleItems applies the lane on top of
+    /// this, so a type always narrows *within* whichever lane is showing rather
+    /// than replacing it — the two controls are independent.</summary>
     private IEnumerable<ProjectRequestRowDto> Narrowed =>
         _all.Where(r => _typeFilter is null || r.RequestType == _typeFilter);
 
-    /// <summary>The reference's own rule: הכל shows everything except history,
-    /// and any other tab shows exactly its one section. Sections render even
-    /// when empty — the empty line is part of the design.</summary>
-    private List<Group> VisibleGroups =>
-        MentorRequestBuckets.Ordered
-            .Where(b => _bucketFilter is null ? b != MentorRequestBucket.Closed : _bucketFilter == b)
-            .Select(b => new Group(b, Narrowed.Where(r => MentorRequestBuckets.Of(r.Status) == b).ToList()))
+    /// <summary>
+    /// The queue, flat. The reference's own rule survives the change of layout:
+    /// הכל shows everything EXCEPT history, and any other tab shows exactly its
+    /// one bucket.
+    ///
+    /// <para>Ordered by bucket first, because MentorRequestBuckets.Ordered is
+    /// descending urgency for a mentor — so the requests the mentor actually
+    /// owns (מחכות לתגובתך) sit at the top of the list and the ones merely in
+    /// flight elsewhere sit below. Newest activity breaks ties within a bucket,
+    /// which is the ordering _all already arrives in.</para>
+    /// </summary>
+    private List<ProjectRequestRowDto> VisibleItems =>
+        Narrowed
+            .Where(r => _laneFilter is null
+                        ? LaneOf(r.Status) != MentorLane.Closed
+                        : LaneOf(r.Status) == _laneFilter)
+            .OrderBy(r => BucketRank(MentorRequestBuckets.Of(r.Status)))
+            .ThenByDescending(r => r.UpdatedAt)
             .ToList();
+
+    /// <summary>
+    /// The bucket, as metadata on the row, for the one lane where it is not
+    /// obvious: "בטיפול" folds two buckets together, so the row says whether it
+    /// is the lecturer or the team who is holding it. Null everywhere else —
+    /// ממתינות להמלצתך and טופלו are already one bucket each, and repeating the
+    /// lane's own name on every row would be noise.
+    ///
+    /// <para>The words are MentorRequestBuckets.RowLabel's, not new ones: the
+    /// product already says "בבדיקת מרצה" and "ממתין לצוות" for these two
+    /// states elsewhere, and a third vocabulary for the same fact is exactly
+    /// what the shared labels exist to prevent.</para>
+    /// </summary>
+    private static string? HoldingLabel(ProjectRequestRowDto r) =>
+        LaneOf(r.Status) == MentorLane.InFlight
+            ? MentorRequestBuckets.RowLabel(MentorRequestBuckets.Of(r.Status))
+            : null;
+
+    /// <summary>Position in MentorRequestBuckets.Ordered — descending urgency
+    /// for a mentor. A lookup rather than a second switch, so the sort follows
+    /// the shared order automatically if a bucket is ever added or reordered.
+    /// (IReadOnlyList has no IndexOf.)</summary>
+    private static int BucketRank(MentorRequestBucket b)
+    {
+        for (var i = 0; i < MentorRequestBuckets.Ordered.Count; i++)
+            if (MentorRequestBuckets.Ordered[i] == b) return i;
+        return int.MaxValue;
+    }
 
     // ── Presentation ────────────────────────────────────────────────────
 
-    /// <summary>The reference's section names. Deliberately local rather than
-    /// pushed into MentorRequestBuckets.GroupLabel: these words are this
-    /// screen's ("ממתינות להמלצתך" sits under a tab that already says
-    /// להמלצתך), and the shared labels still serve the queue elsewhere.</summary>
-    private static string GroupLabel(MentorRequestBucket b) => b switch
-    {
-        MentorRequestBucket.AwaitingMentor => "ממתינות להמלצתך",
-        MentorRequestBucket.WithLecturer   => "אצל המרצה",
-        MentorRequestBucket.AwaitingTeam   => "אצל הצוות",
-        _                                  => "טופלו",
-    };
-
-    /// <summary>Violet = waiting on you. Muted = in flight somewhere else.
-    /// Subtle = history — which also gets the quieter card fill.</summary>
-    private static string HeadClass(MentorRequestBucket b) => b switch
-    {
-        MentorRequestBucket.AwaitingMentor => "mrq-head-violet",
-        MentorRequestBucket.Closed         => "mrq-head-subtle",
-        _                                  => "mrq-head-muted",
-    };
-
-    private static string? CardClass(MentorRequestBucket b) =>
-        b == MentorRequestBucket.Closed ? "mrq-card-quiet" : null;
-
-    /// <summary>"סוג · מגיש · צוות · פרויקט" — the reference's second line,
-    /// with the project kept because a mentor's queue spans several.</summary>
+    /// <summary>"מגיש · צוות · פרויקט" — the reference's second line, with the
+    /// project kept because a mentor's queue spans several.
+    ///
+    /// <para>The type left this line when it gained its own chip at the top of
+    /// the row: printing it in both places is the same fact twice in 24px.
+    /// </para></summary>
     private static string RowSub(ProjectRequestRowDto r) =>
         string.Join(" · ", new[]
         {
-            RequestTypes.Label(r.RequestType),
             r.CreatedByName,
             r.TeamName,
             r.ProjectTitle,
@@ -497,11 +636,13 @@
             : $"עדכון אחרון · {r.UpdatedAt.IsraelFormat("dd.MM")}";
 
     /// <summary>Rose only at NEEDS ATTENTION, and only for requests the mentor
-    /// is actually holding.</summary>
-    private MRow.RowMetaTone TimeTone(ProjectRequestRowDto r) =>
+    /// is actually holding. Same condition MRow's Rose tone carried before the
+    /// row stopped being an MRow — the threshold still lives in the shared
+    /// attention snapshot, not here.</summary>
+    private string TimeClass(ProjectRequestRowDto r) =>
         AttentionFor(r)?.Age == MentorAttentionAge.NeedsAttention
-            ? MRow.RowMetaTone.Rose
-            : MRow.RowMetaTone.Default;
+            ? "mrq-row-time-rose"
+            : "";
 
     /// <summary>
     /// The reference's leading dot, in its four roles: rose for a request that

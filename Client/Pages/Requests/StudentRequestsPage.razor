@@ -1,55 +1,273 @@
 @page "/requests"
 @layout AppLayout
-@using Microsoft.AspNetCore.Authorization
-@using AuthWithAdmin.Shared.AuthSharedModels
-@using AuthWithAdmin.Client.Services
 @using Microsoft.AspNetCore.Components.Forms
 @attribute [Authorize]
 @inject IProjectRequestsService RequestsService
 @inject IRequestTypesService    RequestTypesService
 
+@*
+    ── בקשות — the student's own request queue ─────────────────────────────
+
+    ON THE SHARED REQUEST WORKSPACE (`rqw-*`,
+    Client/wwwroot/css/motiva-request-workspace.css): page header with the
+    title at the reading end, the queue on the RIGHT scrolling inside itself
+    with its scrollbar on the physical right edge, the selected request filling
+    the LEFT, nothing scrolling at page level. That skeleton is shared with the
+    lecturer and mentor queues and is STRUCTURE ONLY — which requests a role
+    sees, what its buckets are called and what may be done to them is answered
+    per page, and for the student it is answered here.
+
+    THIS SUPERSEDES the grouped accordion (RequestsStatusTabs +
+    RequestGroupSection + RequestThreadRow), where every request was a
+    collapsible row inside a status section. The three components went with it.
+
+    ── THE ONE THING A STUDENT HAS THAT NO OTHER ROLE DOES ─────────────────
+    A student CREATES requests, so this screen has two states rather than one:
+
+      A. ZERO REQUESTS — no split, no empty queue beside an empty workspace
+         and no 0/0/0 KPI strip. One full-width invitation with the create
+         action on it.
+      B. ONE OR MORE — the split workspace above.
+
+    Both states' create buttons open the SAME <NewRequestModal>, which is
+    unchanged: it owns the type list, the extension target picker, the
+    validation and the POST. On success OnRequestCreated reloads the
+    collection, and state A turns into state B on that render with no
+    navigation and no manual refresh.
+
+    ── BUCKETS ─────────────────────────────────────────────────────────────
+    RequestBuckets.Of(), which is itself a fold of the Shared
+    RequestOwnership.NextActionOwner — the product's single answer to "whose
+    court is this in". דורשות את פעולתך = the student owns the next move
+    (NeedsInfo), בטיפול = a mentor or the academic side does, טופלו = nobody.
+    The KPI chips, the filter pills and the list all read that same method, so
+    a count cannot disagree with the tab that selects it.
+
+    ── WHAT A STUDENT MAY ACTUALLY DO — and therefore what the workspace shows.
+    POST /api/project-requests/{id}/reply is the student's only move on an
+    existing request, and the server rejects it once the request is terminal.
+    So the workspace is a record plus a reply composer. The lecturer's
+    אישור / דחייה / החזרה and the mentor's recommendation form have no student
+    equivalent and do not appear.
+*@
+
 <NewRequestModal IsOpen="@_showModal"
                  OnClose="CloseModal"
                  OnSuccess="OnRequestCreated" />
 
-<MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="בקשות">
-    <Actions>
-        <div class="sreq-tabbar">
-            @if (!_isLoading && !_loadError)
-            {
-                <RequestsStatusTabs WaitingCount="@BucketCount(RequestBucket.Waiting)"
-                                    LecturerCount="@BucketCount(RequestBucket.Lecturer)"
-                                    DoneCount="@BucketCount(RequestBucket.Done)"
-                                    TotalCount="@_requests.Count"
-                                    ActiveStatusFilters="@_statusFilters"
-                                    OnSelectStatus="ToggleStatusFilter"
-                                    OnClearStatusFilters="ClearStatusFilters" />
+<div class="sreq-page rqw-page" dir="rtl">
 
-                @if (TypeOptions.Any(o => o.Value != ""))
+    <!-- ══ PAGE HEADER — title at the reading end, summary + create opposite ══ -->
+    <div class="rqw-header">
+
+        <h1 class="rqw-title">בקשות</h1>
+
+        @if (!_isLoading && !_loadError)
+        {
+            <div class="sreq-header-end">
+
+                @*  No KPI strip until there is something to count: three zeros
+                    beside an invitation to open a first request is noise that
+                    says nothing.  *@
+                @if (_requests.Count > 0)
                 {
-                    <span class="sreq-tabbar-sep" aria-hidden="true"></span>
+                    <div class="rqw-kpis">
 
-                    <div class="sreq-type-wrap">
+                        <div class="rqw-kpi">
+                            <span class="rqw-kpi-ico motiva-ico-gradient" aria-hidden="true">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                                     stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
+                                    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+                                </svg>
+                            </span>
+                            <span class="rqw-kpi-num">@CountIn(RequestBucket.Waiting)</span>
+                            <span class="rqw-kpi-label">@RequestBuckets.GroupLabel(RequestBucket.Waiting)</span>
+                        </div>
+
+                        <div class="rqw-kpi">
+                            <span class="rqw-kpi-ico motiva-ico-gradient" aria-hidden="true">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                                     stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="9"/>
+                                    <polyline points="12 7 12 12 15.5 14"/>
+                                </svg>
+                            </span>
+                            <span class="rqw-kpi-num">@CountIn(RequestBucket.Lecturer)</span>
+                            <span class="rqw-kpi-label">@RequestBuckets.GroupLabel(RequestBucket.Lecturer)</span>
+                        </div>
+
+                        <div class="rqw-kpi">
+                            <span class="rqw-kpi-ico motiva-ico-gradient" aria-hidden="true">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                                     stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                    <polyline points="22 4 12 14.01 9 11.01"/>
+                                </svg>
+                            </span>
+                            <span class="rqw-kpi-num">@CountIn(RequestBucket.Done)</span>
+                            <span class="rqw-kpi-label">@RequestBuckets.GroupLabel(RequestBucket.Done)</span>
+                        </div>
+
+                    </div>
+                }
+
+                @*  The student's own action, and the reason this screen differs
+                    from the other two request queues at all. On the header row
+                    so it is reachable from both states and from any scroll
+                    position — the queue scrolls, this does not. It is the
+                    shared `.motiva-cta` gradient at the header's own compact
+                    height, so it reads as primary without competing with the
+                    38px title beside it.  *@
+                <button type="button"
+                        class="sreq-new motiva-cta"
+                        @onclick="OpenModal">
+                    <svg class="sreq-new-plus" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2.6"
+                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    <span class="sreq-new-label">@(_requests.Count == 0 ? "פתיחת בקשה חדשה" : "בקשה חדשה")</span>
+                </button>
+
+            </div>
+        }
+
+    </div>
+
+    @if (_isLoading)
+    {
+        <MLoadingState Label="טוענת בקשות…" />
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Live="true"
+                     Title="אירעה שגיאה בטעינת הבקשות"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="LoadAsync">נסו שוב</MButton>
+            </Action>
+        </MEmptyState>
+    }
+    else if (_requests.Count == 0)
+    {
+        @*  ══ STATE A — no requests yet ═══════════════════════════════════
+            Deliberately NOT the split: an empty queue beside an empty
+            workspace is two empty states arguing about which one the reader
+            should believe. One full-width invitation instead, still inside
+            .rqw-page's height chain so the page does not scroll.
+
+            Hand-rolled rather than MEmptyState because that component's API
+            forbids an illustration on purpose, and this state is the whole
+            screen — it carries the mark the Motiva empty queue uses.  *@
+        <div class="sreq-zero">
+            <div class="sreq-zero-icon" aria-hidden="true">
+                <svg width="34" height="34" viewBox="0 0 24 24" fill="none"
+                     stroke="url(#motivaIconGradient)" stroke-width="1.4"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <polyline points="10 9 9 9 8 9"/>
+                </svg>
+            </div>
+            <p class="sreq-zero-title">עדיין לא פתחתם בקשות</p>
+            <p class="sreq-zero-sub">כאן תוכלו לפתוח ולעקוב אחר בקשות הקשורות לפרויקט</p>
+            <button type="button" class="sreq-zero-cta motiva-cta" @onclick="OpenModal">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.6"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14"/>
+                </svg>
+                פתיחת בקשה חדשה
+            </button>
+        </div>
+    }
+    else
+    {
+        @*  ══ STATE B — the split workspace ═══════════════════════════════
+            RTL flex-row: the queue is written first and lands on the RIGHT,
+            the workspace second and fills the LEFT.  *@
+        <div class="rqw-split">
+
+            <!-- ══ QUEUE — right column ═══════════════════════════════════ -->
+            <aside class="rqw-sidebar">
+
+                <div class="sreq-filters">
+
+                    @*  PRIMARY filter: the three buckets, in the same words the
+                        KPI chips above use. הכל is not a fourth pill — three
+                        labels this long already fill a 340px queue — it is the
+                        subdued reset below, and it is also the default.  *@
+                    <MFilterTabs Tabs="@FilterTabs"
+                                 ActiveKey="@ActiveTabKey"
+                                 OnSelect="SelectBucket"
+                                 AriaLabel="סינון בקשות לפי מצב" />
+
+                    @*  SECONDARY filter: the shared `rqw-type-*` dropdown —
+                        same markup, same classes and the same open / pick /
+                        close shape as the lecturer and mentor queues. Only the
+                        option list is this page's, read off the student's own
+                        scoped requests.  *@
+                    <div class="rqw-type-wrap" @onkeydown="OnTypeKeyDown">
                         <button type="button"
-                                class="sreq-type-btn @(!string.IsNullOrEmpty(_selectedType) ? "sreq-type-btn-active" : "")"
-                                @onclick="ToggleTypeMenu">
-                            @(!string.IsNullOrEmpty(_selectedType) ? TypeLabel(_selectedType) : "סוג בקשה")
-                            <span class="sreq-type-caret @(_typeMenuOpen ? "sreq-type-caret-open" : "")">▾</span>
+                                class="@TypeButtonClass"
+                                aria-haspopup="listbox"
+                                aria-expanded="@(_typeOpen ? "true" : "false")"
+                                aria-label="סינון לפי סוג בקשה"
+                                @onclick="ToggleTypeMenu"
+                                @onclick:stopPropagation="true">
+                            <span class="rqw-type-label-text">סוג בקשה</span>
+                            <span class="rqw-type-val-text">@TypeButtonValue</span>
+                            <span class="rqw-type-caret @(_typeOpen ? "rqw-type-caret-open" : "")"
+                                  aria-hidden="true">
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" stroke-width="2.5"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m6 9 6 6 6-6"/>
+                                </svg>
+                            </span>
                         </button>
 
-                        @if (_typeMenuOpen)
+                        @if (_typeOpen)
                         {
-                            <div class="sreq-type-backdrop" @onclick="CloseTypeMenu"></div>
-                            <div class="sreq-type-panel">
-                                @foreach (var opt in TypeOptions)
+                            <div class="rqw-type-backdrop" @onclick="CloseTypeMenu"></div>
+
+                            <div class="rqw-type-panel" role="listbox" aria-label="סוג בקשה">
+                                <button type="button"
+                                        class="@TypeOptionClass(null)"
+                                        role="option"
+                                        aria-selected="@(_typeFilter is null ? "true" : "false")"
+                                        @onclick="@(() => PickType(null))">
+                                    <span class="rqw-type-opt-label">הכל</span>
+                                    @if (_typeFilter is null)
+                                    {
+                                        <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                             stroke="currentColor" stroke-width="2.6"
+                                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="m5 12.5 4.5 4.5L19 7"/>
+                                        </svg>
+                                    }
+                                </button>
+
+                                @foreach (var t in AvailableTypes)
                                 {
-                                    var capturedOpt = opt;
-                                    var on = _selectedType == capturedOpt.Value;
-                                    <button type="button" class="sreq-type-opt @(on ? "sreq-type-opt-on" : "")" @onclick="@(() => PickType(capturedOpt.Value))">
-                                        <span class="sreq-type-opt-label">@capturedOpt.Label</span>
-                                        @if (on)
+                                    var type = t;
+                                    <button type="button"
+                                            class="@TypeOptionClass(type)"
+                                            role="option"
+                                            aria-selected="@(_typeFilter == type ? "true" : "false")"
+                                            @onclick="@(() => PickType(type))">
+                                        <span class="rqw-type-opt-label">@TypeLabel(type)</span>
+                                        @if (_typeFilter == type)
                                         {
-                                            <svg class="sreq-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6D28F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                            <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                 stroke="currentColor" stroke-width="2.6"
+                                                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                                 <path d="m5 12.5 4.5 4.5L19 7"/>
                                             </svg>
                                         }
@@ -58,135 +276,375 @@
                             </div>
                         }
                     </div>
-                }
-            }
 
-            <MButton Variant="MButton.ButtonVariant.Primary"
-                     OnClick="OpenModal">
-                <span class="sreq-new-plus" aria-hidden="true">+</span>
-                <span class="sreq-new-label">בקשה חדשה</span>
-            </MButton>
-        </div>
-    </Actions>
-</MPageHeader>
+                    @if (_bucketFilter is not null)
+                    {
+                        <button type="button" class="sreq-reset"
+                                @onclick="@(() => SelectBucket(""))">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.4"
+                                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M18 6 6 18M6 6l12 12"/>
+                            </svg>
+                            הצג את כל הבקשות
+                        </button>
+                    }
+                </div>
 
-@if (_isLoading)
-{
-    <div class="sreq-loading" role="status">
-        <span class="sreq-spinner" aria-hidden="true"></span>
-        <span>טוענת בקשות…</span>
-    </div>
-}
-else if (_loadError)
-{
-    <div class="sreq-page">
-        <MEmptyState Title="אירעה שגיאה בטעינת הבקשות"
-                     Description="נסי לרענן את הדף." />
-    </div>
-}
-else
-{
-    <div class="sreq-page">
+                <div class="rqw-list">
+                  <div class="rqw-list-inner" role="listbox" aria-label="רשימת הבקשות שלך">
+                    @{
+                        var visibleItems = VisibleItems;
+                    }
+                    @if (visibleItems.Count == 0)
+                    {
+                        <p class="sreq-list-empty">אין בקשות תואמות לסינון הנוכחי</p>
+                    }
+                    else
+                    {
+                        @foreach (var r in visibleItems)
+                        {
+                            var req        = r;
+                            var isSelected = _selectedId == req.Id;
+                            <button type="button"
+                                    class="rqw-row @(isSelected ? "rqw-row-selected" : "")"
+                                    role="option"
+                                    aria-selected="@isSelected"
+                                    aria-label="@($"פתיחת הבקשה {req.Title}")"
+                                    @onclick="@(() => SelectRequestAsync(req.Id))">
 
-        @if (_requests.Count == 0)
-        {
-            <MEmptyState Title="עדיין לא פתחת בקשות"
-                         Description="כשתפתחי בקשה לצוות האקדמי היא תופיע כאן, יחד עם כל השיחה סביבה.">
-                <Action>
-                    <MButton Variant="MButton.ButtonVariant.Primary"
-                             OnClick="OpenModal">
-                        פתיחת בקשה ראשונה
-                    </MButton>
-                </Action>
-            </MEmptyState>
-        }
-        else if (!VisibleBuckets.Any())
-        {
-            <MEmptyState Title="אין בקשות שתואמות לסינון הנוכחי"
-                         Description="אפשר לשנות את הסינון או להציג את כל הבקשות."
-                         Live="true">
-                <Action>
-                    <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ClearAllFilters">
-                        הצגת כל הבקשות
-                    </MButton>
-                </Action>
-            </MEmptyState>
-        }
-        else
-        {
-            <div class="sreq-groups">
-                @foreach (var bucket in VisibleBuckets)
+                                <div class="sreq-row-top">
+                                    <span class="sreq-row-type">@TypeLabel(req.RequestType)</span>
+                                    <span class="sreq-row-time @TimeClass(req)">@TimeLabel(req)</span>
+                                </div>
+                                <div class="sreq-row-title-row">
+                                    @if (req.HasUnread)
+                                    {
+                                        <span class="sreq-row-unread" aria-label="עדכון שלא נקרא" role="img"></span>
+                                    }
+                                    <span class="sreq-row-title">@req.Title</span>
+                                </div>
+                                <div class="sreq-row-meta">
+                                    @if (HoldingLabel(req) is { } holding)
+                                    {
+                                        <span class="sreq-row-where">@holding</span>
+                                        <span class="sreq-row-sep" aria-hidden="true">·</span>
+                                    }
+                                    <span class="sreq-row-sub">נפתחה @req.CreatedAt.IsraelFormat("dd.MM.yyyy")</span>
+                                </div>
+
+                            </button>
+                        }
+                    }
+                  </div>@* rqw-list-inner *@
+                </div>@* rqw-list *@
+
+            </aside>
+
+            <!-- ══ WORKSPACE — left column ════════════════════════════════ -->
+            <main class="rqw-main">
+
+                @if (Selected is not { } sel)
                 {
-                    var captured  = bucket;
-                    var rows      = RowsIn(captured);
-                    var isDone    = captured == RequestBucket.Done;
-
-                    <RequestGroupSection Label="@RequestBuckets.GroupLabel(captured)"
-                                         BucketClass="@RequestBuckets.CssSuffix(captured)"
-                                         Count="@rows.Count"
-                                         Emphasis="@(captured == RequestBucket.Waiting)"
-                                         Collapsible="@(isDone && rows.Count > 0)"
-                                         Open="@(!isDone || DoneGroupOpen)"
-                                         OnToggle="ToggleDoneGroup">
-                        @if (rows.Count == 0)
-                        {
-                            <MEmptyState Title="@EmptyLineFor(captured)" />
-                        }
-                        else
-                        {
-                            @foreach (var r in rows)
-                            {
-                                var req = r;
-                                <RequestThreadRow @key="req.Id"
-                                                  Request="@req"
-                                                  Bucket="@captured"
-                                                  TypeLabel="@TypeLabel(req.RequestType)"
-                                                  RecipientLabel="@RecipientLabel(req.RequestType)"
-                                                  Expanded="@_expanded.Contains(req.Id)"
-                                                  OnToggle="@(() => ToggleThread(req.Id))"
-                                                  CanReply="@CanReply(req)"
-                                                  ReplyText="@GetReplyText(req.Id)"
-                                                  ReplyTextChanged="@(v => SetReplyText(req.Id, v))"
-                                                  Attachments="@GetReplyAttachments(req.Id)"
-                                                  OnFilesSelected="@(e => OnReplyFilesSelected(req.Id, e))"
-                                                  OnRemoveAttachment="@(a => RemoveReplyAttachment(req.Id, a))"
-                                                  MaxAttachments="@MaxReplyAttachments"
-                                                  IsSending="@IsReplying(req.Id)"
-                                                  ReplyError="@GetReplyError(req.Id)"
-                                                  FileError="@GetReplyFileError(req.Id)"
-                                                  OnSend="@(() => SubmitReply(req.Id))" />
-                            }
-                        }
-                    </RequestGroupSection>
+                    @*  Nothing is selected on arrival — never an auto-selected
+                        first row. The reader chooses.  *@
+                    <div class="rqw-empty">
+                        <div class="rqw-empty-icon" aria-hidden="true">
+                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="1.3"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/>
+                                <line x1="16" y1="13" x2="8" y2="13"/>
+                                <line x1="16" y1="17" x2="8" y2="17"/>
+                                <polyline points="10 9 9 9 8 9"/>
+                            </svg>
+                        </div>
+                        <p class="rqw-empty-title">בחרו בקשה כדי לצפות בפרטים</p>
+                        <p class="rqw-empty-sub">פרטי הבקשה יוצגו כאן לאחר הבחירה</p>
+                    </div>
                 }
-            </div>
-        }
-    </div>
-}
+                else
+                {
+                    var bucket  = RequestBuckets.Of(sel.Status);
+                    var suffix  = RequestBuckets.CssSuffix(bucket);
+                    var canSend = CanReply(sel);
+
+                    <div class="rqw-card sreq-ws-card" id="request-@sel.Id">
+
+                        <!-- ── RECORD HEADER ── -->
+                        <div class="sreq-ws-head">
+                            <div class="sreq-ws-badges">
+                                <span class="sreq-type-pill">@TypeLabel(sel.RequestType)</span>
+                                <span class="sreq-ws-state sreq-ws-state-@suffix">@RequestBuckets.WhereLabel(sel.Status)</span>
+                            </div>
+                            <h2 class="sreq-ws-title">@sel.Title</h2>
+                            <p class="sreq-ws-submeta">
+                                <span class="sreq-meta-strong">@RecipientLabel(sel.RequestType)</span>
+                                <span class="sreq-meta-sep" aria-hidden="true">·</span>
+                                <span>נפתחה @sel.CreatedAt.IsraelFormat("dd.MM.yyyy")</span>
+                                <span class="sreq-meta-sep" aria-hidden="true">·</span>
+                                <span>עודכנה @sel.UpdatedAt.IsraelFormat("dd.MM.yyyy")</span>
+                            </p>
+                        </div>
+
+                        <!-- ── RECORD BODY ── -->
+                        <div class="sreq-ws-body">
+
+                            @if (!string.IsNullOrWhiteSpace(sel.Description))
+                            {
+                                <div class="sreq-ws-section">
+                                    <p class="sreq-ws-section-label">תיאור הבקשה</p>
+                                    <p class="sreq-desc">@sel.Description</p>
+                                </div>
+                            }
+
+                            @*  Extension requests carry structured dates; the /my
+                                endpoint joins them in, so they are read straight
+                                off the DTO rather than guessed from the text.  *@
+                            @if (sel.RequestType == RequestTypes.Extension && sel.Extension is { } ext)
+                            {
+                                <div class="sreq-ws-section">
+                                    <p class="sreq-ws-section-label">מועדי הגשה</p>
+                                    <div class="sreq-dates-wrap">
+                                        <div class="sreq-dates" aria-label="מועדי הגשה">
+                                            <div class="sreq-date-col">
+                                                <span class="sreq-date-val">@ExtDate(ext.CurrentDueDate)</span>
+                                                <span class="sreq-date-lbl">מועד נוכחי</span>
+                                            </div>
+                                            <span class="sreq-date-arrow" aria-hidden="true">←</span>
+                                            <div class="sreq-date-col">
+                                                <span class="sreq-date-val sreq-date-val-req">@ExtDate(ext.ApprovedDueDate ?? ext.RequestedDueDate)</span>
+                                                <span class="sreq-date-lbl sreq-date-lbl-req">@(ext.ApprovedDueDate is null ? "מועד מבוקש" : "מועד מאושר")</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(ext.TaskTitle) || !string.IsNullOrWhiteSpace(ext.MilestoneTitle))
+                                    {
+                                        <p class="sreq-ext-target">יעד: @(string.IsNullOrWhiteSpace(ext.TaskTitle) ? ext.MilestoneTitle : ext.TaskTitle)</p>
+                                    }
+                                </div>
+                            }
+
+                            @if (sel.AttachmentCount > 0)
+                            {
+                                <p class="sreq-attach-count">📎 @sel.AttachmentCount @(sel.AttachmentCount == 1 ? "מסמך מצורף" : "מסמכים מצורפים")</p>
+                            }
+
+                            @*  The academic side's most recent word on the
+                                request — the one thing a student opens a
+                                request to read, so it is lifted out of the
+                                history rather than buried in it.  *@
+                            @{
+                                var staffResp = LatestStaffComment(sel);
+                            }
+                            @if (staffResp is not null)
+                            {
+                                <div class="sreq-resp">
+                                    <div class="sreq-resp-header">
+                                        <span class="sreq-resp-meta">@RoleLabel(staffResp.UserRole) · @staffResp.CreatedAt.IsraelFormat("dd.MM · HH:mm")</span>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(staffResp.Content))
+                                    {
+                                        <p class="sreq-resp-text">@staffResp.Content</p>
+                                    }
+                                    @if (staffResp.Attachments.Count > 0)
+                                    {
+                                        <div class="sreq-files">
+                                            @foreach (var att in staffResp.Attachments)
+                                            {
+                                                <a class="sreq-file" href="@AttachmentUrl(att)"
+                                                   target="_blank" rel="noopener noreferrer">
+                                                    📎 @att.OriginalFileName
+                                                </a>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(sel.ResolutionNotes))
+                            {
+                                <div class="sreq-resp sreq-resp-done">
+                                    <div class="sreq-resp-header">
+                                        <span class="sreq-resp-meta">סיכום הטיפול</span>
+                                    </div>
+                                    <p class="sreq-resp-text">@sel.ResolutionNotes</p>
+                                </div>
+                            }
+
+                            @*  ── THE STUDENT'S ONE ACTION ────────────────────
+                                A reply, with optional attachments. Mirrors the
+                                server: POST /reply is all a team member may do
+                                to an existing request, and it is refused once
+                                the request is Resolved / Closed.  *@
+                            @if (canSend)
+                            {
+                                <div class="sreq-composer">
+                                    @{
+                                        var drafts    = GetReplyAttachments(sel.Id);
+                                        var sending   = IsReplying(sel.Id);
+                                        var canAttach = drafts.Count < MaxReplyAttachments && !sending;
+                                    }
+
+                                    @if (drafts.Count > 0)
+                                    {
+                                        <div class="sreq-drafts">
+                                            @foreach (var att in drafts)
+                                            {
+                                                var captured = att;
+                                                <span class="sreq-draft">
+                                                    📎 @captured.Name
+                                                    <span class="sreq-draft-size">@FormatBytes(captured.Size)</span>
+                                                    <button type="button"
+                                                            class="sreq-draft-x"
+                                                            aria-label="@($"הסרת הקובץ {captured.Name}")"
+                                                            disabled="@sending"
+                                                            @onclick="@(() => RemoveReplyAttachment(sel.Id, captured))">×</button>
+                                                </span>
+                                            }
+                                        </div>
+                                    }
+
+                                    @if (GetReplyFileError(sel.Id) is { Length: > 0 } fileErr)
+                                    {
+                                        <p class="sreq-error" role="alert">@fileErr</p>
+                                    }
+                                    @if (GetReplyError(sel.Id) is { Length: > 0 } sendErr)
+                                    {
+                                        <p class="sreq-error" role="alert">@sendErr</p>
+                                    }
+
+                                    <div class="sreq-composer-row">
+                                        <label class="sreq-attach @(canAttach ? "" : "sreq-attach-off")"
+                                               title="@($"עד {MaxReplyAttachments} קבצים, עד 5MB כל אחד")">
+                                            <svg class="sreq-attach-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                                            </svg>
+                                            <span>צירוף מסמך</span>
+                                            @if (canAttach)
+                                            {
+                                                <span class="sreq-file-hidden">
+                                                    <InputFile multiple
+                                                               accept="image/jpeg,image/png,image/webp,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,.jpg,.jpeg,.png,.webp"
+                                                               OnChange="@(e => OnReplyFilesSelected(sel.Id, e))"
+                                                               disabled="@sending" />
+                                                </span>
+                                            }
+                                        </label>
+
+                                        <textarea class="sreq-input"
+                                                  rows="1"
+                                                  placeholder="...כתיבת תגובה"
+                                                  maxlength="2000"
+                                                  disabled="@sending"
+                                                  value="@GetReplyText(sel.Id)"
+                                                  @oninput="@(e => SetReplyText(sel.Id, e.Value?.ToString() ?? ""))"></textarea>
+
+                                        <button type="button"
+                                                class="sreq-send-btn motiva-cta"
+                                                disabled="@(sending || string.IsNullOrWhiteSpace(GetReplyText(sel.Id)))"
+                                                @onclick="@(() => SubmitReply(sel.Id))">
+                                            @if (sending)
+                                            {
+                                                <span class="sreq-send-spinner" aria-hidden="true"></span>
+                                            }
+                                            <span>שליחה</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+
+                            <!-- ── FOOTER: what happens next + history ── -->
+                            @{
+                                var timeline  = VisibleEvents(sel);
+                                var histOpen  = _historyOpen.Contains(sel.Id);
+                            }
+                            <div class="sreq-ws-footer">
+                                <p class="sreq-ws-footer-note">@FooterNote(sel)</p>
+
+                                @if (timeline.Count > 0)
+                                {
+                                    <button type="button"
+                                            class="sreq-hist-btn"
+                                            aria-expanded="@(histOpen ? "true" : "false")"
+                                            @onclick="@(() => ToggleHistory(sel.Id))">
+                                        <span>היסטוריה · @timeline.Count @(timeline.Count == 1 ? "עדכון" : "עדכונים")</span>
+                                        <span class="sreq-hist-caret @(histOpen ? "sreq-hist-caret-open" : "")" aria-hidden="true">
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="m6 9 6 6 6-6"/>
+                                            </svg>
+                                        </span>
+                                    </button>
+                                }
+                            </div>
+
+                            @if (timeline.Count > 0 && histOpen)
+                            {
+                                <div class="sreq-hist-items">
+                                    @foreach (var evt in timeline)
+                                    {
+                                        <div class="sreq-hist-item">
+                                            <span class="sreq-hist-dot" aria-hidden="true"></span>
+                                            <div class="sreq-hist-content">
+                                                <p class="sreq-hist-text">@HistLine(evt)</p>
+                                                @if (evt.EventType == RequestEventTypes.Comment && evt.Attachments.Count > 0)
+                                                {
+                                                    <div class="sreq-files">
+                                                        @foreach (var att in evt.Attachments)
+                                                        {
+                                                            <a class="sreq-file" href="@AttachmentUrl(att)"
+                                                               target="_blank" rel="noopener noreferrer">
+                                                                📎 @att.OriginalFileName
+                                                            </a>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+
+                        </div>@* sreq-ws-body *@
+                    </div>@* rqw-card *@
+                }
+
+            </main>
+
+        </div>@* rqw-split *@
+    }
+
+</div>@* rqw-page *@
 
 @code {
+    /// <summary>Deep link a request notification arrives on — it selects that
+    /// row and, if it is closed, brings its bucket with it.</summary>
+    [SupplyParameterFromQuery(Name = "requestId")]
+    public int? DeepLinkRequestId { get; set; }
+
     private List<StudentOwnRequestDto> _requests = new();
     private bool _isLoading = true;
     private bool _loadError;
     private bool _showModal;
 
-    // ── Filter state ──────────────────────────────────────────────────────
-    private readonly HashSet<string> _statusFilters = new();
-    private string _selectedType = ""; // "" = all
+    /// <summary>The selected (workspace-shown) request. Null on arrival — this
+    /// queue never auto-selects its first row.</summary>
+    private int? _selectedId;
 
-    // ── Type dropdown state ───────────────────────────────────────────────
-    private bool _typeMenuOpen;
+    // ── Filters ───────────────────────────────────────────────────────────
+    private RequestBucket? _bucketFilter;   // null = הכל
+    private string?        _typeFilter;     // null = הכל
+    private bool           _typeOpen;
 
-    // ── Accordion state ───────────────────────────────────────────────────
-    private readonly HashSet<int> _expanded = new();
-
-    private bool _doneGroupOpen;
-    private bool DoneGroupOpen => _doneGroupOpen;
+    private readonly HashSet<int> _historyOpen = new();
 
     private Dictionary<string, string> _typeNames        = new();
     private Dictionary<string, string> _typeHandlerRoles = new();
 
-    // ── Per-request reply state ───────────────────────────────────────────
+    // ── Per-request reply drafts ──────────────────────────────────────────
     private readonly Dictionary<int, string> _replyTexts  = new();
     private readonly HashSet<int>            _replyingIds = new();
     private readonly Dictionary<int, string> _replyErrors = new();
@@ -196,114 +654,8 @@ else
     private const int  MaxReplyAttachments = 3;
     private const long MaxReplyAttachBytes = 5 * 1024 * 1024;
 
-    // ── Type dropdown options ─────────────────────────────────────────────
-    private IReadOnlyList<(string Value, string Label)> TypeOptions
-    {
-        get
-        {
-            var items = new List<(string, string)> { ("", "הכל") };
-            items.AddRange(
-                _requests
-                    .Select(r => r.RequestType)
-                    .Distinct()
-                    .Select(code => (code, TypeLabel(code)))
-                    .OrderBy(x => x.Item2, StringComparer.CurrentCulture));
-            return items;
-        }
-    }
-
-    private void ToggleTypeMenu() => _typeMenuOpen = !_typeMenuOpen;
-    private void CloseTypeMenu()  => _typeMenuOpen = false;
-
-    private void PickType(string value)
-    {
-        _selectedType = value;
-        _typeMenuOpen = false;
-    }
-
-    // ── Buckets, filtering, ordering ──────────────────────────────────────
-
-    private int BucketCount(RequestBucket bucket) =>
-        _requests.Count(r => RequestBuckets.Of(r.Status) == bucket);
-
-    private IEnumerable<StudentOwnRequestDto> TypeFiltered =>
-        string.IsNullOrEmpty(_selectedType)
-            ? _requests
-            : _requests.Where(r => r.RequestType == _selectedType);
-
-    private List<StudentOwnRequestDto> RowsIn(RequestBucket bucket) =>
-        TypeFiltered.Where(r => RequestBuckets.Of(r.Status) == bucket)
-                    .OrderByDescending(r => r.UpdatedAt)
-                    .ToList();
-
-    private static readonly RequestBucket[] BucketOrder =
-        { RequestBucket.Waiting, RequestBucket.Lecturer, RequestBucket.Done };
-
-    private IEnumerable<RequestBucket> VisibleBuckets =>
-        BucketOrder
-            .Where(b => _statusFilters.Count == 0 || _statusFilters.Contains(RequestBuckets.FilterId(b)))
-            .Where(b => string.IsNullOrEmpty(_selectedType) || RowsIn(b).Count > 0);
-
-    private static string EmptyLineFor(RequestBucket bucket) => bucket switch
-    {
-        RequestBucket.Waiting  => "אין בקשות שממתינות לתגובה שלך",
-        RequestBucket.Lecturer => "אין בקשות בטיפול כרגע",
-        _                      => "עדיין לא נסגרו בקשות",
-    };
-
-    private string TypeLabel(string code) =>
-        _typeNames.TryGetValue(code, out var name) && !string.IsNullOrWhiteSpace(name)
-            ? name
-            : RequestTypes.Label(code);
-
-    private string RecipientLabel(string code)
-    {
-        var handlerRole = _typeHandlerRoles.TryGetValue(code, out var r) ? r : "";
-        var roles = handlerRole
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(role => role != RequestTypeHandlerRoles.Admin)
-            .Select(RequestTypeHandlerRoles.Label)
-            .ToList();
-        return roles.Count == 0 ? "הצוות האקדמי" : string.Join(" / ", roles);
-    }
-
-    private void OnFilterToggled((string AxisKey, string Value) f)
-    {
-        if (f.AxisKey == "status")
-        {
-            if (!_statusFilters.Add(f.Value)) _statusFilters.Remove(f.Value);
-        }
-        else
-        {
-            _selectedType = _selectedType == f.Value ? "" : f.Value;
-        }
-        OpenDoneGroupIfFilteredTo();
-    }
-
-    private void OpenDoneGroupIfFilteredTo()
-    {
-        if (_statusFilters.Contains(RequestBuckets.DoneFilterId)) _doneGroupOpen = true;
-    }
-
-    private void ToggleStatusFilter(string id)
-    {
-        bool wasOnlyThis = _statusFilters.Count == 1 && _statusFilters.Contains(id);
-        _statusFilters.Clear();
-        if (!wasOnlyThis) _statusFilters.Add(id);
-        OpenDoneGroupIfFilteredTo();
-    }
-
-    private void ClearStatusFilters() => _statusFilters.Clear();
-
-    private void ClearAllFilters()
-    {
-        _statusFilters.Clear();
-        _selectedType = "";
-    }
-
-    private void ToggleDoneGroup() => _doneGroupOpen = !_doneGroupOpen;
-
     // ── Lifecycle ─────────────────────────────────────────────────────────
+
     protected override async Task OnInitializedAsync()
     {
         var requestsTask = RequestsService.GetMyRequestsAsync();
@@ -325,116 +677,359 @@ else
                    .GroupBy(t => t.Code)
                    .ToDictionary(g => g.Key, g => g.First().HandlerRole);
 
-        // Ensure "Extension" metadata is present for the test request
-        if (!_typeNames.ContainsKey(RequestTypes.Extension))
-            _typeNames[RequestTypes.Extension] = "הארכת מועד";
-        if (!_typeHandlerRoles.ContainsKey(RequestTypes.Extension))
-            _typeHandlerRoles[RequestTypes.Extension] = RequestTypeHandlerRoles.Mentor;
-
-        // TEMPORARY TEST REQUEST (for visual verification - easy to remove)
-        EnsureTemporaryTestRequest(_requests);
-
         _isLoading = false;
+
+        ApplyDeepLink();
     }
 
+    /// <summary>A notification's ?requestId= selects that row. הכל already
+    /// shows every bucket, so unlike the mentor queue there is no tab to
+    /// switch — but a request that is no longer the student's is still found.</summary>
+    private void ApplyDeepLink()
+    {
+        if (DeepLinkRequestId is not int id) return;
+        if (_requests.All(r => r.Id != id)) return;
+
+        _selectedId = id;
+        _ = MarkOpenedAsync(id);
+    }
+
+    /// <summary>Re-reads the collection in place. Deliberately does NOT raise
+    /// _isLoading: every caller but the error retry is refreshing a workspace
+    /// the student is already looking at, and swapping it for a spinner for one
+    /// round trip loses their scroll position and their place in the queue.</summary>
     private async Task LoadAsync()
     {
         var result = await RequestsService.GetMyRequestsAsync();
         _loadError = result is null;
         _requests  = result ?? new();
 
-        // TEMPORARY TEST REQUEST (for visual verification - easy to remove)
-        EnsureTemporaryTestRequest(_requests);
+        // A request that vanished from the collection cannot stay selected.
+        if (_selectedId is int id && _requests.All(r => r.Id != id))
+            _selectedId = null;
+
+        _isLoading = false;
     }
 
-    // ── TEMPORARY TEST DATA HELPER ─────────────────────────────────────────
-    // Temporary test request for visual verification of student requests UI.
-    // To remove later: delete this method and the two EnsureTemporaryTestRequest calls.
-    private static void EnsureTemporaryTestRequest(List<StudentOwnRequestDto> list)
-    {
-        const int testId = -999;
-        if (list.Any(r => r.Id == testId)) return;
+    // ── Selection ─────────────────────────────────────────────────────────
 
-        list.Insert(0, new StudentOwnRequestDto
-        {
-            Id = testId,
-            RequestType = RequestTypes.Extension, // "Extension" -> "הארכת מועד"
-            Title = "בקשה להארכת מועד הגשה",
-            Description = "בקשה להארכת מועד הגשה עקב נסיבות בריאותיות שאירעו בשבוע האחרון.",
-            Status = RequestStatuses.NeedsInfo, // Belong to RequestBucket.Waiting ("ממתין לתגובתך" / "דורש ממך פעולה")
-            Priority = RequestPriorities.Normal,
-            CreatedAt = new DateTime(2026, 8, 24, 9, 0, 0, DateTimeKind.Utc),
-            UpdatedAt = new DateTime(2026, 8, 25, 14, 0, 0, DateTimeKind.Utc),
-            AttachmentCount = 0,
-            HasUnread = true,
-            Extension = new ExtensionRequestInfoDto
-            {
-                CurrentDueDate = new DateTime(2026, 8, 24),
-                RequestedDueDate = new DateTime(2026, 8, 31),
-                Reason = "בקשה להארכת מועד הגשה עקב נסיבות בריאותיות שאירעו בשבוע האחרון."
-            },
-            Events = new List<ProjectRequestEventDto>
-            {
-                new()
-                {
-                    Id = -9991,
-                    RequestId = testId,
-                    UserId = 1,
-                    UserName = "מנחת הפרויקט",
-                    UserRole = Roles.Mentor,
-                    EventType = RequestEventTypes.Comment,
-                    Content = "כדי שנוכל לבחון את בקשתך, אנא צרפי אישור רשמי המפרט את משך ההיעדרות.",
-                    CreatedAt = new DateTime(2026, 8, 25, 14, 0, 0, DateTimeKind.Utc)
-                }
-            }
-        });
-    }
+    private StudentOwnRequestDto? Selected =>
+        _selectedId is int id ? _requests.FirstOrDefault(r => r.Id == id) : null;
 
-    private async Task ToggleThread(int id)
+    /// <summary>Clicking a row selects it; clicking the selected row clears the
+    /// workspace back to its empty state — the same toggle the lecturer and
+    /// mentor queues use.</summary>
+    private async Task SelectRequestAsync(int id)
     {
-        if (!_expanded.Add(id))
+        if (_selectedId == id)
         {
-            _expanded.Remove(id);
+            _selectedId = null;
             return;
         }
+
+        _selectedId = id;
         await MarkOpenedAsync(id);
     }
 
+    /// <summary>Clears the unread marker for a request the student has now
+    /// read. Best-effort — the row is updated locally either way.</summary>
     private async Task MarkOpenedAsync(int id)
     {
-        _expanded.Add(id);
-
         var row = _requests.FirstOrDefault(r => r.Id == id);
-        if (row is { HasUnread: true })
-        {
-            row.HasUnread = false;
-            if (id > 0)
-            {
-                await RequestsService.MarkReadAsync(id);
-            }
-            StateHasChanged();
-        }
+        if (row is not { HasUnread: true }) return;
+
+        row.HasUnread = false;
+        await RequestsService.MarkReadAsync(id);
+        StateHasChanged();
     }
+
+    private void ToggleHistory(int id)
+    {
+        if (!_historyOpen.Remove(id)) _historyOpen.Add(id);
+    }
+
+    // ── Create ────────────────────────────────────────────────────────────
 
     private void OpenModal()  => _showModal = true;
     private void CloseModal() => _showModal = false;
 
+    /// <summary>
+    /// The existing NewRequestModal reports success and this reloads the
+    /// collection — which is all the transition from the zero state to the
+    /// split workspace needs, because both are branches of the same render.
+    ///
+    /// <para>The new request is then selected, so the student lands on what
+    /// they just filed instead of on an empty workspace. That is the ONE place
+    /// this page selects a row for the reader, and it follows an explicit
+    /// action of theirs.</para>
+    /// </summary>
     private async Task OnRequestCreated()
     {
         await LoadAsync();
+
         var newest = _requests.OrderByDescending(r => r.CreatedAt).FirstOrDefault();
-        if (newest is not null) _expanded.Add(newest.Id);
+        if (newest is not null)
+        {
+            _selectedId = newest.Id;
+            // A brand-new request is in flight, so clear any bucket filter that
+            // would hide the row the student was just sent to.
+            if (_bucketFilter is { } b && RequestBuckets.Of(newest.Status) != b)
+                _bucketFilter = null;
+            if (_typeFilter is not null && newest.RequestType != _typeFilter)
+                _typeFilter = null;
+        }
     }
 
-    // ── Reply state ───────────────────────────────────────────────────────
+    // ── Filters ───────────────────────────────────────────────────────────
 
+    /// <summary>No bucket selected leaves every pill inactive, which is the
+    /// הכל state — there is no "הכל" pill to light up.</summary>
+    private string ActiveTabKey => _bucketFilter?.ToString() ?? "";
+
+    /// <summary>The three buckets, in RequestBuckets' own words. No badges: the
+    /// KPI row states each number once, and a count repeated on the control
+    /// that selects it is the same fact twice in 40px.</summary>
+    private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
+    {
+        new MFilterTabs.Tab(RequestBucket.Waiting.ToString(),  RequestBuckets.GroupLabel(RequestBucket.Waiting)),
+        new MFilterTabs.Tab(RequestBucket.Lecturer.ToString(), RequestBuckets.GroupLabel(RequestBucket.Lecturer)),
+        new MFilterTabs.Tab(RequestBucket.Done.ToString(),     RequestBuckets.GroupLabel(RequestBucket.Done)),
+    };
+
+    /// <summary>Changing a filter drops the selection — the workspace returns
+    /// to its empty state and the reader picks the next request themselves. An
+    /// unparseable key (the reset button passes "") clears the filter.</summary>
+    private void SelectBucket(string key)
+    {
+        _bucketFilter = Enum.TryParse<RequestBucket>(key, out var b) ? b : null;
+        _selectedId   = null;
+    }
+
+    private void ToggleTypeMenu() => _typeOpen = !_typeOpen;
+    private void CloseTypeMenu()  => _typeOpen = false;
+
+    private void OnTypeKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") _typeOpen = false;
+    }
+
+    private void PickType(string? type)
+    {
+        _typeFilter = type;
+        _typeOpen   = false;
+        _selectedId = null;
+    }
+
+    private string TypeButtonValue =>
+        _typeFilter is null ? "הכל" : TypeLabel(_typeFilter);
+
+    private string TypeButtonClass =>
+        _typeFilter is null ? "rqw-type-btn" : "rqw-type-btn rqw-type-btn-active";
+
+    private string TypeOptionClass(string? type) =>
+        _typeFilter == type ? "rqw-type-opt rqw-type-opt-on" : "rqw-type-opt";
+
+    /// <summary>Only the types that actually occur in THIS student's requests —
+    /// a menu entry for a type they have never filed is a dead control. Read
+    /// off the data and then ordered by the canonical list rather than filtered
+    /// by it, because live rows carry types outside RequestTypes.All and
+    /// filtering by the constant would drop them out of the menu entirely.
+    /// TypeLabel already falls back to the raw code.</summary>
+    private List<string> AvailableTypes =>
+        _requests.Select(r => r.RequestType)
+                 .Where(t => !string.IsNullOrWhiteSpace(t))
+                 .Distinct()
+                 .OrderBy(t =>
+                 {
+                     var i = RequestTypes.All.ToList().IndexOf(t);
+                     return i < 0 ? int.MaxValue : i;
+                 })
+                 .ThenBy(t => t, StringComparer.Ordinal)
+                 .ToList();
+
+    // ── Derived: counts and the visible queue ─────────────────────────────
+    //
+    // Both go through RequestBuckets.Of, which is the fold of
+    // RequestOwnership. There is exactly one status mapping on this page, so a
+    // KPI chip cannot count a request the pill beside it would not show.
+
+    /// <summary>Counted over every request, not the filtered view: a number that
+    /// moved with the type menu would stop answering "how much is on me" and
+    /// start being a copy of the list length.</summary>
+    private int CountIn(RequestBucket bucket) =>
+        _requests.Count(r => RequestBuckets.Of(r.Status) == bucket);
+
+    /// <summary>The SECONDARY filter. VisibleItems applies the bucket on top of
+    /// this, so a type always narrows *within* whichever bucket is showing.</summary>
+    private IEnumerable<StudentOwnRequestDto> Narrowed =>
+        _requests.Where(r => _typeFilter is null || r.RequestType == _typeFilter);
+
+    /// <summary>
+    /// The queue, flat. הכל shows every bucket including טופלו — a student has
+    /// few enough requests that hiding their own history behind a tab would
+    /// cost more than it saves.
+    ///
+    /// <para>Ordered by bucket first, descending urgency for a student: the
+    /// requests waiting on them sit at the top and the finished ones at the
+    /// bottom. Newest activity breaks ties, which is the order the API already
+    /// returns.</para>
+    /// </summary>
+    private List<StudentOwnRequestDto> VisibleItems =>
+        Narrowed
+            .Where(r => _bucketFilter is null || RequestBuckets.Of(r.Status) == _bucketFilter)
+            .OrderBy(r => BucketRank(RequestBuckets.Of(r.Status)))
+            .ThenByDescending(r => r.UpdatedAt)
+            .ToList();
+
+    private static readonly RequestBucket[] BucketOrder =
+        { RequestBucket.Waiting, RequestBucket.Lecturer, RequestBucket.Done };
+
+    private static int BucketRank(RequestBucket b)
+    {
+        for (var i = 0; i < BucketOrder.Length; i++)
+            if (BucketOrder[i] == b) return i;
+        return int.MaxValue;
+    }
+
+    // ── Row presentation ──────────────────────────────────────────────────
+
+    private static string TimeLabel(StudentOwnRequestDto r) => RequestBuckets.Of(r.Status) switch
+    {
+        RequestBucket.Waiting  => "דורשת את פעולתך",
+        RequestBucket.Done     => $"טופלה · {r.UpdatedAt.IsraelFormat("dd.MM")}",
+        _                      => r.HasUnread ? "עדכון חדש" : $"עודכנה · {r.UpdatedAt.IsraelFormat("dd.MM")}",
+    };
+
+    /// <summary>Rose for the one bucket the student is holding up, teal for a
+    /// finished one, muted for everything in flight. The tones are the
+    /// workspace's own semantic roles — "waiting on you" is Attention.</summary>
+    private static string TimeClass(StudentOwnRequestDto r) => RequestBuckets.Of(r.Status) switch
+    {
+        RequestBucket.Waiting => "sreq-row-time-rose",
+        RequestBucket.Done    => "sreq-row-time-teal",
+        _                     => "",
+    };
+
+    /// <summary>
+    /// WHO is holding an in-flight request, for the one bucket that folds two
+    /// owners together. Null for the other two, whose time cell already says
+    /// it — repeating the bucket's own name on every row would be noise.
+    ///
+    /// <para>The words are RequestBuckets.WhereLabel's, derived from the
+    /// existing statuses. No workflow state is invented here.</para>
+    /// </summary>
+    private static string? HoldingLabel(StudentOwnRequestDto r) =>
+        RequestBuckets.Of(r.Status) == RequestBucket.Lecturer
+            ? RequestBuckets.WhereLabel(r.Status)
+            : null;
+
+    // ── Types and recipients ──────────────────────────────────────────────
+
+    private string TypeLabel(string code) =>
+        _typeNames.TryGetValue(code, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : RequestTypes.Label(code);
+
+    /// <summary>Who this type of request goes to, from the request type's own
+    /// HandlerRole. Admin is dropped — a student does not file to an admin by
+    /// name.</summary>
+    private string RecipientLabel(string code)
+    {
+        var handlerRole = _typeHandlerRoles.TryGetValue(code, out var r) ? r : "";
+        var roles = handlerRole
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(role => role != RequestTypeHandlerRoles.Admin)
+            .Select(RequestTypeHandlerRoles.Label)
+            .ToList();
+        return roles.Count == 0 ? "הצוות האקדמי" : string.Join(" / ", roles);
+    }
+
+    // ── Record presentation ───────────────────────────────────────────────
+
+    /// <summary>What happens next, in one line under the composer. Reads the
+    /// bucket, so it can never contradict the state chip in the header.</summary>
+    private string FooterNote(StudentOwnRequestDto r)
+    {
+        var to = RecipientLabel(r.RequestType);
+        return RequestBuckets.Of(r.Status) switch
+        {
+            RequestBucket.Waiting  => $"לאחר שליחת התגובה הבקשה תחזור לבדיקת {to}.",
+            RequestBucket.Lecturer => $"הבקשה נמצאת כעת בבדיקת {to}.",
+            _                      => "הבקשה טופלה ונסגרה · השיחה נשמרת לקריאה.",
+        };
+    }
+
+    /// <summary>The academic side's most recent word on the request.</summary>
+    private static ProjectRequestEventDto? LatestStaffComment(StudentOwnRequestDto r) =>
+        r.Events
+         .Where(e => e.EventType == RequestEventTypes.Comment
+                     && e.UserRole != Roles.Student
+                     && !string.IsNullOrWhiteSpace(e.Content))
+         .OrderByDescending(e => e.CreatedAt)
+         .FirstOrDefault();
+
+    private static List<ProjectRequestEventDto> VisibleEvents(StudentOwnRequestDto r) =>
+        r.Events
+         .Where(e => e.EventType == RequestEventTypes.Comment
+                     || !string.IsNullOrWhiteSpace(EventSummary(e)))
+         .OrderBy(e => e.CreatedAt)
+         .ToList();
+
+    private static string HistLine(ProjectRequestEventDto e) => e.EventType switch
+    {
+        RequestEventTypes.Comment =>
+            !string.IsNullOrWhiteSpace(e.Content)
+                ? $"{RoleLabel(e.UserRole)} · {e.CreatedAt.IsraelFormat("dd.MM · HH:mm")} — {e.Content}"
+                : $"{RoleLabel(e.UserRole)} · {e.CreatedAt.IsraelFormat("dd.MM · HH:mm")}",
+        _ =>
+            $"{EventSummary(e)} · {e.CreatedAt.IsraelFormat("dd.MM · HH:mm")}",
+    };
+
+    private static string EventSummary(ProjectRequestEventDto e) => e.EventType switch
+    {
+        // NewValue is already RequestStatuses.Label's text — the server writes
+        // the Hebrew name into the event, not the raw constant.
+        RequestEventTypes.StatusChange   => $"סטטוס שונה ל: {e.NewValue}",
+        RequestEventTypes.PriorityChange => $"עדיפות שונתה ל: {e.NewValue}",
+        RequestEventTypes.AssigneeChange => e.NewValue is not null
+            ? $"הבקשה הועברה ל{e.NewValue}"
+            : "שיוך הוסר",
+        _ => "",
+    };
+
+    private static string RoleLabel(string? role) => role switch
+    {
+        Roles.Admin   => "צוות הקורס",
+        Roles.Staff   => "צוות הקורס",
+        Roles.Mentor  => "מנחת הפרויקט",
+        Roles.Student => "הצוות שלכם",
+        _             => "צוות הקורס",
+    };
+
+    private static string AttachmentUrl(ProjectRequestEventAttachmentDto att) =>
+        $"/request-attachments/{att.StoredFileName}";
+
+    private static string ExtDate(DateTime? dt) => dt?.IsraelFormat("dd.MM.yyyy") ?? "—";
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)        return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024):F1} MB";
+    }
+
+    // ── Reply ─────────────────────────────────────────────────────────────
+
+    /// <summary>The server's own rule: /reply is refused once a request is
+    /// terminal. Stated here so the composer is not offered for a move that
+    /// would be rejected.</summary>
     private static bool CanReply(StudentOwnRequestDto r) =>
         r.Status is not (RequestStatuses.Resolved or RequestStatuses.Closed);
 
-    private string GetReplyText(int id) => _replyTexts.TryGetValue(id, out var t) ? t : "";
-    private void SetReplyText(int id, string v) => _replyTexts[id] = v;
-    private bool IsReplying(int id) => _replyingIds.Contains(id);
-    private string GetReplyError(int id) => _replyErrors.TryGetValue(id, out var e) ? e : "";
+    private string GetReplyText(int id)      => _replyTexts.TryGetValue(id, out var t) ? t : "";
+    private void   SetReplyText(int id, string v) => _replyTexts[id] = v;
+    private bool   IsReplying(int id)        => _replyingIds.Contains(id);
+    private string GetReplyError(int id)     => _replyErrors.TryGetValue(id, out var e) ? e : "";
     private string GetReplyFileError(int id) => _replyFileErrors.TryGetValue(id, out var e) ? e : "";
 
     private List<PendingRequestAttachment> GetReplyAttachments(int id) =>
@@ -490,34 +1085,6 @@ else
         _replyingIds.Add(requestId);
         _replyErrors.Remove(requestId);
 
-        // Simulation for the temporary mock request
-        if (requestId < 0)
-        {
-            var testReq = _requests.FirstOrDefault(r => r.Id == requestId);
-            if (testReq is not null)
-            {
-                testReq.Events.Add(new ProjectRequestEventDto
-                {
-                    Id = -new Random().Next(1000, 9999),
-                    RequestId = requestId,
-                    UserId = 0,
-                    UserName = "את/ה",
-                    UserRole = Roles.Student,
-                    EventType = RequestEventTypes.Comment,
-                    Content = text,
-                    CreatedAt = DateTime.UtcNow
-                });
-                testReq.Status = RequestStatuses.WaitingForStaff;
-                testReq.UpdatedAt = DateTime.UtcNow;
-                _replyTexts.Remove(requestId);
-                _replyAttachments.Remove(requestId);
-                _replyFileErrors.Remove(requestId);
-                StateHasChanged();
-            }
-            _replyingIds.Remove(requestId);
-            return;
-        }
-
         var attachments = GetReplyAttachments(requestId)
             .Select(a => new RequestAttachmentUploadRequest
             {
@@ -541,8 +1108,9 @@ else
         _replyAttachments.Remove(requestId);
         _replyFileErrors.Remove(requestId);
 
+        // A reply moves the request out of "דורשות את פעולתך", so the row's
+        // bucket changes — reload rather than patching one status by hand.
         await LoadAsync();
-
-        _expanded.Add(requestId);
+        _selectedId = requestId;
     }
 }

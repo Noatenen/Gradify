@@ -25,7 +25,11 @@ public enum RequestBucket
     /// <summary>The ball is in the student's court.</summary>
     Waiting,
 
-    /// <summary>Filed and in flight on the academic side.</summary>
+    /// <summary>Filed and in flight on the academic side — with a mentor OR
+    /// with a lecturer / staff member. The member name predates the extension
+    /// flow's mentor stage and is kept because the student dashboard and the
+    /// top-nav badge both name it; <see cref="RequestBuckets.GroupLabel"/> and
+    /// <see cref="RequestBuckets.WhereLabel"/> carry the accurate words.</summary>
     Lecturer,
 
     /// <summary>Finished — read-only history.</summary>
@@ -43,20 +47,47 @@ public static class RequestBuckets
     /// <summary>
     /// Maps a domain status onto its bucket.
     ///
-    /// <para><b>Why the default arm is Lecturer.</b> NeedsInfo is the only status
-    /// that hands the request back to the student, and Resolved/Closed are the
-    /// only terminal ones. Everything else — New, InProgress, WaitingForStaff and
-    /// the two extension-flow statuses (PendingMentorRecommendation,
-    /// PendingLecturerDecision) — is in flight on the academic side, which is
-    /// exactly the server's own definition of "active" in the duplicate-extension
-    /// guard. Falling through rather than listing them means a status added later
-    /// is treated as in-flight instead of silently vanishing from every bucket.</para>
+    /// <para><b>This is a fold of <see cref="RequestOwnership"/>, not a second
+    /// status mapping.</b> "Whose court is this request in" is answered once,
+    /// in Shared, by <c>RequestOwnership.NextActionOwner</c> — the same answer
+    /// the student dashboard's attention card and the staff queues read. This
+    /// method only groups that answer the way the student's own workspace
+    /// needs it: the student's two "someone else is holding it" owners (Mentor
+    /// and Staff) are one bucket here, because from the student's side there is
+    /// nothing to do about either.</para>
+    ///
+    /// <para>It used to restate the mapping as its own status switch. The two
+    /// agreed status for status, which is exactly why the restatement was worth
+    /// removing: a status added to <see cref="RequestStatuses"/> later now
+    /// reaches this page through the shared default arm instead of needing the
+    /// same edit in two files.</para>
     /// </summary>
-    public static RequestBucket Of(string status) => status switch
+    public static RequestBucket Of(string status) =>
+        RequestOwnership.NextActionOwner(status) switch
+        {
+            RequestOwnership.Owner.Student => RequestBucket.Waiting,
+            RequestOwnership.Owner.None    => RequestBucket.Done,
+            // Mentor + Staff — in flight with someone who is not the student.
+            _                              => RequestBucket.Lecturer,
+        };
+
+    /// <summary>
+    /// WHO IS HOLDING an in-flight request, for the one bucket that folds two
+    /// owners together. Metadata on a queue row, never a status of its own —
+    /// every arm below is an existing <see cref="RequestStatuses"/> value.
+    ///
+    /// <para>Only <see cref="RequestBucket.Lecturer"/> rows need it: the other
+    /// two buckets are one owner each and their own row label already says so.
+    /// </para>
+    /// </summary>
+    public static string WhereLabel(string status) => status switch
     {
-        RequestStatuses.NeedsInfo => RequestBucket.Waiting,
-        RequestStatuses.Resolved or RequestStatuses.Closed => RequestBucket.Done,
-        _ => RequestBucket.Lecturer,
+        RequestStatuses.NeedsInfo                   => "ממתינה לפרטים ממך",
+        RequestStatuses.PendingMentorRecommendation => "אצל המנחה",
+        RequestStatuses.PendingLecturerDecision     => "אצל המרצה",
+        RequestStatuses.Resolved                    => "טופלה",
+        RequestStatuses.Closed                      => "נסגרה",
+        _                                           => "אצל הצוות האקדמי",
     };
 
     public static string FilterId(RequestBucket bucket) => bucket switch
@@ -66,12 +97,19 @@ public static class RequestBuckets
         _                      => DoneFilterId,
     };
 
-    /// <summary>Group heading in the workspace ("ממתין לתגובתך").</summary>
+    /// <summary>The bucket's name wherever the student chooses between them —
+    /// the queue's filter pills and the KPI chips read the same three words, so
+    /// a chip can never be labelled differently from the tab that selects it.
+    ///
+    /// <para>"בטיפול" rather than "בטיפול מרצה": this bucket also holds the
+    /// requests waiting on a MENTOR, and naming one of its two owners made the
+    /// other look misfiled. Which of them is holding a given request is said on
+    /// the row itself, by <see cref="WhereLabel"/>.</para></summary>
     public static string GroupLabel(RequestBucket bucket) => bucket switch
     {
-        RequestBucket.Waiting  => "ממתין לתגובתך",
-        RequestBucket.Lecturer => "בטיפול מרצה",
-        _                      => "הושלמו",
+        RequestBucket.Waiting  => "דורשות את פעולתך",
+        RequestBucket.Lecturer => "בטיפול",
+        _                      => "טופלו",
     };
 
     /// <summary>Per-row status chip ("תגובה חדשה"). Deliberately shorter and

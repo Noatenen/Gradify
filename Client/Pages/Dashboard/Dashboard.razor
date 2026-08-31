@@ -4,7 +4,9 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Client.Pages.Tasks
+@using AuthWithAdmin.Client.Pages.Submissions
 @inject IDashboardService DashboardService
+@inject ITaskSubmissionsService SubmissionsService
 @inject NavigationManager Nav
 @inject AuthenticationStateProvider AuthStateProvider
 @attribute [Authorize]
@@ -125,7 +127,14 @@ else
 
 <TaskDetailModal TaskId="@_detailTaskId"
                  OnClose="CloseDetail"
-                 OnOpenSubmission="OpenSubmissionFromDetail" />
+                 OnOpenSubmission="OpenSubmissionFromDetail"
+                 OnEditMySubmission="OnEditFromDetail"
+                 OnDeleteMySubmission="OnDeleteFromDetail"
+                 OnMarkMoodleSubmitted="OnMarkMoodleFromDetail" />
+
+@* The submission form and its two confirmations. Same component the tasks
+   page mounts, so the student submits without leaving the dashboard. *@
+<StudentSubmissionFlow @ref="_submissionFlow" OnChanged="ReloadDashboard" />
 
 @code {
     [CascadingParameter] private User? _user { get; set; }
@@ -289,11 +298,33 @@ else
         OpenDetail(taskId);
     }
 
+    // ── Submission flow ──────────────────────────────────────────────────────
+    // This used to close the detail modal and Nav.NavigateTo("/tasks") WITHOUT
+    // the task id, dropping the student on the generic tasks list to hunt for
+    // the task they were already looking at. The submission form is a
+    // self-contained component, so it opens here instead: the student stays on
+    // the dashboard and the task they were reading is the task they submit.
+    private StudentSubmissionFlow? _submissionFlow;
+
     private void OpenSubmissionFromDetail(int taskId)
     {
         _detailTaskId = 0;
-        Nav.NavigateTo("/tasks");
+        _submissionFlow?.OpenSubmission(taskId);
     }
+
+    // Edit / delete / "I submitted in Moodle" are raised by TaskDetailModal for
+    // every host. The dashboard used to bind none of them, so those buttons
+    // rendered inside the modal and silently did nothing when it was opened
+    // from here.
+    private void OnEditFromDetail((int TaskId, int SubmissionId, string? DriveUrl, string? Notes) e)
+    {
+        _detailTaskId = 0;
+        _submissionFlow?.OpenEdit(e);
+    }
+
+    private void OnDeleteFromDetail(int submissionId)   => _submissionFlow?.RequestDelete(submissionId);
+
+    private void OnMarkMoodleFromDetail(int submissionId) => _submissionFlow?.RequestMoodle(submissionId);
 
     private async Task ReloadDashboard()
     {

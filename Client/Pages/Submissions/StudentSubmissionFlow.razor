@@ -1,0 +1,189 @@
+@using AuthWithAdmin.Client.Services
+@inject ITaskSubmissionsService SubmissionsService
+
+@* ═══════════════════════════════════════════════════════════════════════════
+   StudentSubmissionFlow — the three dialogs that hang off TaskDetailModal.
+
+   TaskDetailModal raises four signals it deliberately does not handle itself
+   (submit / edit-own / delete-own / mark-submitted-in-Moodle). Every page that
+   shows a task to a student therefore has to mount the submission form and the
+   two confirmations and bridge those four callbacks into them — about ninety
+   lines, already written out twice (StudentTasksPage, SubmissionsPage) and
+   needed twice more (Dashboard, StudentPlanningPage).
+
+   This is that plumbing, named once. It owns NO business logic: the form is
+   still <SubmissionModal>, the confirmations are still <MConfirmDialog>, and
+   the calls are still ITaskSubmissionsService. It only holds the four ids and
+   routes them.
+
+   WHY THE HOST DRIVES IT BY METHOD RATHER THAN BY PARAMETER
+   The host already owns `_detailTaskId` for TaskDetailModal; giving this
+   component a second set of bound ids would mean every host declaring five
+   more fields, which is the duplication this exists to remove. The host holds
+   an @ref and calls OpenSubmission / OpenEdit / RequestDelete / RequestMoodle
+   straight from TaskDetailModal's callbacks.
+
+   OnChanged fires after anything that can have changed server state, so the
+   host reloads exactly the way it already does after its own mutations.
+   ═══════════════════════════════════════════════════════════════════════════ *@
+
+<SubmissionModal TaskId="@_taskId"
+                 EditSubmissionId="@_editSubmissionId"
+                 InitialDriveUrl="@_editDriveUrl"
+                 InitialNotes="@_editNotes"
+                 OnSubmitted="@(() => _submitted = true)"
+                 OnClose="CloseSubmission" />
+
+<MConfirmDialog IsOpen="@(_moodleSubId > 0)"
+                Title="אישור הגשה במודל"
+                Message="האם את/ה בטוח/ה שההגשה בוצעה במודל?"
+                Error="@_moodleError"
+                ConfirmText="כן, הוגש"
+                ConfirmIcon="oi-check"
+                BusyText="שומר…"
+                Busy="@_moodleBusy"
+                OnConfirm="ConfirmMoodleAsync"
+                OnCancel="CancelMoodle" />
+
+<MConfirmDialog IsOpen="@(_deleteSubId > 0)"
+                Tone="MConfirmDialog.ConfirmTone.Danger"
+                Title="ביטול הגשה"
+                Message="האם למחוק את ההגשה? המשימה תחזור למצב פתוח להגשה."
+                Error="@_deleteError"
+                ConfirmText="מחק"
+                ConfirmIcon="oi-trash"
+                BusyText="מוחק…"
+                Busy="@_deleteBusy"
+                OnConfirm="ConfirmDeleteAsync"
+                OnCancel="CancelDelete" />
+
+@code {
+    /// <summary>Raised after a close, a delete or a Moodle confirmation — i.e.
+    /// after anything that may have changed server state. The host reloads its
+    /// own data here; this component holds none.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    // ── Submission form ───────────────────────────────────────────────────────
+    private int     _taskId           = 0;
+    private int     _editSubmissionId = 0;
+    /// <summary>Whether the form actually posted something before it closed.
+    /// A host's reload can be expensive and visible — the dashboard's swaps the
+    /// whole page for a spinner — so a plain cancel must not trigger one.</summary>
+    private bool    _submitted        = false;
+    private string? _editDriveUrl;
+    private string? _editNotes;
+
+    // ── Moodle confirmation ───────────────────────────────────────────────────
+    private int    _moodleSubId = 0;
+    private bool   _moodleBusy  = false;
+    private string _moodleError = "";
+
+    // ── Delete confirmation ───────────────────────────────────────────────────
+    private int    _deleteSubId = 0;
+    private bool   _deleteBusy  = false;
+    private string _deleteError = "";
+
+    // ── Entry points, called by the host from TaskDetailModal's callbacks ─────
+
+    /// <summary>Open the form to create a new submission for this task. The
+    /// task id is the one the student was looking at, and SubmissionModal
+    /// re-fetches that task itself — so the form can only ever post against
+    /// the task it names.</summary>
+    public void OpenSubmission(int taskId)
+    {
+        _submitted        = false;
+        _editSubmissionId = 0;
+        _editDriveUrl     = null;
+        _editNotes        = null;
+        _taskId           = taskId;
+        StateHasChanged();
+    }
+
+    /// <summary>Open the same form in edit-existing mode, pre-filled.</summary>
+    public void OpenEdit((int TaskId, int SubmissionId, string? DriveUrl, string? Notes) e)
+    {
+        _submitted        = false;
+        _editSubmissionId = e.SubmissionId;
+        _editDriveUrl     = e.DriveUrl;
+        _editNotes        = e.Notes;
+        _taskId           = e.TaskId;
+        StateHasChanged();
+    }
+
+    public void RequestDelete(int submissionId)
+    {
+        _deleteSubId = submissionId;
+        _deleteError = "";
+        _deleteBusy  = false;
+        StateHasChanged();
+    }
+
+    public void RequestMoodle(int submissionId)
+    {
+        _moodleSubId = submissionId;
+        _moodleError = "";
+        _moodleBusy  = false;
+        StateHasChanged();
+    }
+
+    // ── Handlers ──────────────────────────────────────────────────────────────
+
+    private async Task CloseSubmission()
+    {
+        var changed       = _submitted;
+        _submitted        = false;
+        _taskId           = 0;
+        _editSubmissionId = 0;
+        _editDriveUrl     = null;
+        _editNotes        = null;
+        if (changed) await OnChanged.InvokeAsync();
+    }
+
+    private void CancelMoodle()
+    {
+        if (_moodleBusy) return;
+        _moodleSubId = 0;
+        _moodleError = "";
+    }
+
+    private async Task ConfirmMoodleAsync()
+    {
+        if (_moodleSubId <= 0) return;
+        _moodleBusy  = true;
+        _moodleError = "";
+        var (ok, _, _, err) = await SubmissionsService.MarkMoodleSubmittedAsync(_moodleSubId);
+        if (!ok)
+        {
+            _moodleError = string.IsNullOrWhiteSpace(err) ? "הסימון נכשל. נסה/י שנית." : err;
+            _moodleBusy  = false;
+            return;
+        }
+        _moodleSubId = 0;
+        _moodleBusy  = false;
+        await OnChanged.InvokeAsync();
+    }
+
+    private void CancelDelete()
+    {
+        if (_deleteBusy) return;
+        _deleteSubId = 0;
+        _deleteError = "";
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (_deleteSubId <= 0) return;
+        _deleteBusy  = true;
+        _deleteError = "";
+        var (ok, err) = await SubmissionsService.DeleteMySubmissionAsync(_deleteSubId);
+        if (!ok)
+        {
+            _deleteError = string.IsNullOrWhiteSpace(err) ? "מחיקת ההגשה נכשלה. נסה/י שנית." : err;
+            _deleteBusy  = false;
+            return;
+        }
+        _deleteSubId = 0;
+        _deleteBusy  = false;
+        await OnChanged.InvokeAsync();
+    }
+}
