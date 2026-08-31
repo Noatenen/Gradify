@@ -1,0 +1,584 @@
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject ITaskSubmissionsService SubmissionsService
+
+@* ═══════════════════════════════════════════════════════════════════════════
+   StudentSubmissionForm — THE student submission form. One implementation.
+
+   This is the whole body of what used to be SubmissionModal: loading the task,
+   the Drive-URL field, the live accessibility probe, the preview link, the
+   sharing-guide disclosure, notes, submit, and the success panel. It renders
+   no overlay and no dialog chrome, so it can sit inside any surface.
+
+   TWO HOSTS, ONE FORM
+     · SubmissionModal      — mounts it inside its own overlay (standalone).
+     · TaskDetailModal      — mounts it INLINE, replacing the task-detail body,
+                              so submitting never opens a second overlay and
+                              never leaves the page.
+
+   Nothing about validation, the API calls, duplicate-submission protection or
+   the success/error states changed in the move — this file is where they now
+   live, not a second copy of them.
+
+   WHAT THE HOST CONTROLS
+     ShowTaskContext — the header/meta/description/previous-submission block.
+                       False inside TaskDetailModal, which already shows all of
+                       it one state earlier; true when standalone, where this
+                       form is the only thing on screen.
+     CancelText      — "ביטול" standalone, "חזרה לפרטי המשימה" inline.
+     DoneText        — the success panel's button.
+   ═══════════════════════════════════════════════════════════════════════════ *@
+
+@if (_phase == Phase.Loading)
+{
+    <div class="smo-loading">
+        <MLoadingState Variant="MLoadingState.LoadingVariant.Inline"
+                       Label="טוענת פרטי משימה…" />
+    </div>
+}
+else if (_phase == Phase.LoadError)
+{
+    <div class="smo-load-error">
+        <MEmptyState Live="true"
+                     Title="אירעה שגיאה בטעינת פרטי המשימה"
+                     Description="אפשר לחזור ולנסות שוב.">
+            <Action>
+                <button class="smo-ghost-btn" @onclick="Cancel">@CancelText</button>
+            </Action>
+        </MEmptyState>
+    </div>
+}
+else
+{
+    @if (ShowTaskContext)
+    {
+        <!-- ── Header ── -->
+        <div class="smo-header">
+            <div class="smo-header-start">
+                <div class="smo-task-icon">
+                    <span class="oi @(IsEditMode ? "oi-pencil" : "oi-data-transfer-upload")" aria-hidden="true"></span>
+                </div>
+                <div>
+                    <p class="smo-milestone-label">
+                        @_task!.MilestoneTitle
+                        @if (IsEditMode)
+                        {
+                            <span class="smo-mode-tag">עריכת הגשה</span>
+                        }
+                    </p>
+                    <h2 class="smo-title">@_task.TaskTitle</h2>
+                </div>
+            </div>
+            @if (ShowClose)
+            {
+                <button class="smo-close-btn" @onclick="Cancel" title="סגירה">
+                    <span class="oi oi-x" aria-hidden="true"></span>
+                </button>
+            }
+        </div>
+
+        <!-- ── Meta row (due date + status) ── -->
+        <div class="smo-meta-row">
+            @if (_task!.DueDate.HasValue)
+            {
+                bool isOverdue = _task.DueDate.Value.Date < DateTime.Today
+                              && _task.LatestSubmissionStatus is null or "NeedsRevision";
+                <span class="smo-due @(isOverdue ? "smo-due-overdue" : "")">
+                    <span class="oi oi-calendar" aria-hidden="true"></span>
+                    מועד הגשה: <strong>@_task.DueDate.Value.ToString("dd/MM/yyyy")</strong>
+                    @if (isOverdue) { <span class="smo-overdue-label">(באיחור)</span> }
+                </span>
+            }
+            @if (_task.LatestSubmissionStatus is not null)
+            {
+                <span class="smo-submission-badge smo-badge-@_task.LatestSubmissionStatus.ToLower()">
+                    @SubmissionStatusLabel(_task.LatestSubmissionStatus)
+                </span>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(_task.Description))
+        {
+            <p class="smo-description">@_task.Description</p>
+        }
+
+        @if (_task.LatestSubmissionId.HasValue)
+        {
+            <div class="smo-prev-submission">
+                <span class="oi oi-circle-check" aria-hidden="true"></span>
+                <span>
+                    הגשה אחרונה: @_task.LatestSubmittedAt.IsraelFormat()
+                    (@_task.SubmissionCount הגשות בסה"כ)
+                </span>
+            </div>
+        }
+    }
+
+    @* Drive-link-only submission form (uploads removed 2026-05-19). *@
+    @if (_phase != Phase.Success)
+    {
+        <!-- Drive URL -->
+        <div class="smo-field">
+            <div class="smo-label-row">
+                <label class="smo-label">
+                    קישור Google Drive <span class="smo-required">*</span>
+                </label>
+
+                @if (!string.IsNullOrWhiteSpace(_task!.SubmissionInstructions))
+                {
+                    @* Hover, focus AND click all reveal this. The pop is always
+                       in the DOM (hidden by opacity/visibility, not @@if) for two
+                       reasons: a CSS :hover rule cannot reveal an element that
+                       was never rendered, and aria-describedby must point at a
+                       node that exists. *@
+                    <span class="smo-help" @onkeydown="OnHelpKeyDown">
+                        <button type="button"
+                                class="smo-help-trigger @(_instructionsPinned ? "is-pinned" : "")"
+                                aria-label="הוראות הגשה"
+                                aria-describedby="@_instructionsId"
+                                @onclick="ToggleInstructions">
+                            <span class="oi oi-info" aria-hidden="true"></span>
+                        </button>
+
+                        <span class="smo-help-pop" id="@_instructionsId" role="tooltip">
+                            <span class="smo-help-pop-title">הוראות הגשה</span>
+                            <span class="smo-help-pop-body">@_task.SubmissionInstructions</span>
+                        </span>
+                    </span>
+                }
+            </div>
+            <input class="smo-input smo-drive-input smo-drive-input--@LinkStateClass"
+                   type="url"
+                   dir="ltr"
+                   placeholder="https://drive.google.com/..."
+                   value="@_driveUrl"
+                   @oninput="OnDriveUrlInput"
+                   @onchange="OnDriveUrlCommitted"
+                   disabled="@(_phase == Phase.Submitting)" />
+
+            @* Live validation status badge — gates the submit button. *@
+            <div class="smo-drive-status smo-drive-status--@LinkStateClass">
+                @switch (_linkState)
+                {
+                    case LinkState.Idle:
+                        <span class="oi oi-link-intact" aria-hidden="true"></span>
+                        <span>הדבק/י קישור כדי לבדוק שהוא נגיש לכולם.</span>
+                        break;
+                    case LinkState.Checking:
+                        <span class="smo-spinner-sm"></span>
+                        <span>בודק נגישות לקישור…</span>
+                        break;
+                    case LinkState.Accessible:
+                        <span class="oi oi-circle-check" aria-hidden="true"></span>
+                        <span>הקישור נפתח לצפייה ללא בקשת הרשאה — ניתן לשלוח את ההגשה.</span>
+                        break;
+                    case LinkState.Inaccessible:
+                        <span class="oi oi-warning" aria-hidden="true"></span>
+                        <span>@(_linkError ?? "הקישור אינו פתוח לצפייה.")</span>
+                        break;
+                }
+            </div>
+
+            @* The probe reads the page Google serves an ANONYMOUS visitor,
+               which is the same thing the reviewer will see — but the student
+               can only be sure the link points at the right file by looking at
+               it. Shown as soon as the link is a well-formed URL, so it is
+               available precisely when a red state needs explaining. *@
+            @if (CanPreviewLink)
+            {
+                <a class="smo-drive-preview"
+                   href="@_driveUrl.Trim()"
+                   target="_blank"
+                   rel="noopener noreferrer">
+                    <span class="oi oi-external-link" aria-hidden="true"></span>
+                    <span>פתיחת הקישור לבדיקה</span>
+                </a>
+            }
+
+            @* Optional help, not a section of the form. Collapsed by default so
+               the field, its validation state and the actions are what the
+               student sees. The body stays in the DOM behind `hidden` rather
+               than an @@if, so aria-controls always resolves. *@
+            <div class="smo-help-acc @(_driveHelpOpen ? "is-open" : "")">
+                <button type="button"
+                        class="smo-help-acc-head"
+                        aria-expanded="@(_driveHelpOpen ? "true" : "false")"
+                        aria-controls="@_driveHelpId"
+                        @onclick="ToggleDriveHelp">
+                    <span class="oi oi-info smo-help-acc-icon" aria-hidden="true"></span>
+                    <span class="smo-help-acc-title">איך לשתף נכון בדרייב?</span>
+                    <span class="oi @(_driveHelpOpen ? "oi-chevron-top" : "oi-chevron-bottom") smo-help-acc-chevron"
+                          aria-hidden="true"></span>
+                </button>
+
+                <div class="smo-help-acc-body" id="@_driveHelpId" hidden="@(!_driveHelpOpen)">
+                    <ol class="smo-drive-help-list">
+                        <li>היכנס/י לקובץ או לתיקייה ב-Google Drive.</li>
+                        <li>בחר/י באפשרות <em>שיתוף</em> (Share).</li>
+                        <li>תחת <em>גישה כללית</em>, החליפ/י ל-<em>"כל מי שיש את הקישור"</em>.</li>
+                        <li>העתק/י את הקישור והדבק/י אותו כאן.</li>
+                    </ol>
+                    <p class="smo-drive-help-note">
+                        מותר רק קישור מ-<code>drive.google.com</code> או <code>docs.google.com</code>.
+                        אנחנו לא מורידים את הקובץ — המנחה יפתח אותו ישירות מהדרייב.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notes -->
+        <div class="smo-field">
+            <label class="smo-label">הערות (אופציונלי)</label>
+            <textarea class="smo-textarea" @bind="_notes" rows="2"
+                      placeholder="הוסף/י הערות להגשה…" disabled="@(_phase == Phase.Submitting)"></textarea>
+        </div>
+
+        <!-- Validation / submit error -->
+        @if (!string.IsNullOrEmpty(_submitError))
+        {
+            <div class="smo-error-msg">
+                <span class="oi oi-warning" aria-hidden="true"></span>
+                @_submitError
+            </div>
+        }
+
+        <!-- Submit / cancel actions -->
+        <div class="smo-actions">
+            <button class="smo-ghost-btn" @onclick="Cancel" disabled="@(_phase == Phase.Submitting)">
+                @CancelText
+            </button>
+            <button class="smo-submit-btn motiva-cta"
+                    @onclick="Submit"
+                    disabled="@(!CanSubmit)"
+                    title="@(CanSubmit ? "" : "יש להזין קישור נגיש לדרייב")">
+                @if (_phase == Phase.Submitting)
+                {
+                    <span class="smo-spinner-sm"></span>
+                    <span>@(IsEditMode ? "שומר…" : "שולח…")</span>
+                }
+                else if (IsEditMode)
+                {
+                    <span class="oi oi-check" aria-hidden="true"></span>
+                    <span>שמירת שינויים</span>
+                }
+                else
+                {
+                    <span class="oi oi-share-boxed" aria-hidden="true"></span>
+                    <span>שלח קישור</span>
+                }
+            </button>
+        </div>
+    }
+    else
+    {
+        <!-- Success state -->
+        <div class="smo-success">
+            <div class="smo-success-icon">
+                <span class="oi oi-circle-check" aria-hidden="true"></span>
+            </div>
+            <h3 class="smo-success-title">
+                @(IsEditMode ? "ההגשה עודכנה בהצלחה!" : "ההגשה נשלחה בהצלחה!")
+            </h3>
+            <p class="smo-success-body">
+                @(IsEditMode ? "השינויים נשמרו." : "הגשתך נקלטה במערכת.")
+            </p>
+            <button class="smo-submit-btn motiva-cta" @onclick="Done">@DoneText</button>
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public int TaskId { get; set; }
+
+    /// <summary>Raised once, when a submission is actually accepted by the
+    /// server. The host reloads whatever it shows about the task here.</summary>
+    [Parameter] public EventCallback OnSubmitted { get; set; }
+
+    /// <summary>Cancel / back / close — whatever "leave this form" means to the
+    /// host. Standalone it closes the modal; inline it returns to the task
+    /// detail. Also fires from the success panel's button.</summary>
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    /// <summary>When > 0 the form is in *edit-existing* mode: it pre-fills the
+    /// fields and submits a PATCH instead of a POST. The student can only edit
+    /// their own latest submission while MentorStatus='Pending' — the server is
+    /// authoritative.</summary>
+    [Parameter] public int      EditSubmissionId { get; set; }
+    [Parameter] public string?  InitialDriveUrl  { get; set; }
+    [Parameter] public string?  InitialNotes     { get; set; }
+
+    /// <summary>Render the task's own header, dates, description and previous
+    /// submission. Off when the host already shows them (TaskDetailModal).</summary>
+    [Parameter] public bool ShowTaskContext { get; set; } = true;
+
+    /// <summary>The ✕ in the context header. Only a standalone dialog has one.</summary>
+    [Parameter] public bool ShowClose { get; set; }
+
+    /// <summary>Raised when the form enters and leaves its in-flight state, so
+    /// a host that can be dismissed by other means (a backdrop click) can
+    /// refuse while a submission is on the wire.</summary>
+    [Parameter] public EventCallback<bool> OnBusyChanged { get; set; }
+
+    [Parameter] public string CancelText { get; set; } = "ביטול";
+    [Parameter] public string DoneText   { get; set; } = "סגירה";
+
+    private bool IsEditMode => EditSubmissionId > 0;
+
+    private enum Phase     { Loading, LoadError, View, Submitting, Success }
+    private enum LinkState { Idle, Checking, Accessible, Inaccessible }
+
+    private Phase                      _phase       = Phase.Loading;
+    private StudentSubmissionTaskDto?  _task;
+    private string                     _notes       = "";
+    private string                     _driveUrl    = "";
+    private string                     _submitError = "";
+
+    // ── Help affordances ──────────────────────────────────────────────────
+    // Ids are per-instance so two mounted forms cannot collide on them.
+    private readonly string _instructionsId = $"smo-instr-{Guid.NewGuid():N}";
+    private readonly string _driveHelpId    = $"smo-dhelp-{Guid.NewGuid():N}";
+
+    /// <summary>Click/tap-pinned state for the instructions tooltip. Hover and
+    /// keyboard focus reveal it through CSS alone; this exists so a touch user,
+    /// who has neither, can still open it — and so it stays open while they
+    /// read.</summary>
+    private bool _instructionsPinned = false;
+
+    /// <summary>The Drive sharing guide. ALWAYS starts closed — reset on every
+    /// load, so re-entering the form never inherits the last session's
+    /// expanded state.</summary>
+    private bool _driveHelpOpen = false;
+
+    // ── Live Drive-link validation state ───────────────────────────────────
+    private LinkState _linkState = LinkState.Idle;
+    private string?   _linkError;
+    /// <summary>Monotonic token so a stale in-flight request can't overwrite
+    /// the result of a fresher one when the user keeps typing.</summary>
+    private int       _linkToken;
+
+    /// <summary>The submit button is enabled only when the live probe says the
+    /// link is accessible. The server runs the same check on submit, so gating
+    /// here is purely a UX guard against avoidable round-trips.</summary>
+    private bool CanSubmit =>
+        _phase != Phase.Submitting
+        && !string.IsNullOrWhiteSpace(_driveUrl)
+        && _linkState == LinkState.Accessible;
+
+    /// <summary>True once the typed text is a well-formed absolute http(s)
+    /// URL — the bar for OFFERING to open it, which is deliberately lower than
+    /// the bar for submitting it. A student whose link came back red needs to
+    /// open it to find out why.</summary>
+    private bool CanPreviewLink =>
+        !string.IsNullOrWhiteSpace(_driveUrl)
+        && Uri.TryCreate(_driveUrl.Trim(), UriKind.Absolute, out var u)
+        && (u.Scheme == Uri.UriSchemeHttps || u.Scheme == Uri.UriSchemeHttp);
+
+    private string LinkStateClass => _linkState switch
+    {
+        LinkState.Checking     => "checking",
+        LinkState.Accessible   => "ok",
+        LinkState.Inaccessible => "bad",
+        _                      => "idle",
+    };
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+    // The form is mounted only while it is in use (the host renders it behind
+    // its own condition), so a parameter set is a fresh start.
+
+    private int _loadedTaskId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (TaskId <= 0) return;
+
+        // Guard against re-loading on every re-render: only a genuinely new
+        // task (or a switch between create and edit) re-fetches.
+        var key = TaskId * 100000 + EditSubmissionId;
+        if (_loadedTaskId == key) return;
+        _loadedTaskId = key;
+
+        _phase       = Phase.Loading;
+        _notes       = InitialNotes    ?? "";
+        _driveUrl    = InitialDriveUrl ?? "";
+        _submitError = "";
+        _linkState   = LinkState.Idle;
+        _linkError   = null;
+
+        // Help is collapsed every time the form opens.
+        _instructionsPinned = false;
+        _driveHelpOpen      = false;
+
+        _task  = await SubmissionsService.GetSubmissionTaskAsync(TaskId);
+        _phase = _task is null ? Phase.LoadError : Phase.View;
+
+        // Edit mode pre-fills the URL — kick off the live probe so the button
+        // isn't permanently disabled for an already-valid link.
+        if (!string.IsNullOrWhiteSpace(_driveUrl))
+            _ = ScheduleLinkCheck();
+    }
+
+    // ── Help affordances ──────────────────────────────────────────────────
+
+    private void ToggleInstructions() => _instructionsPinned = !_instructionsPinned;
+
+    /// <summary>Escape closes a pinned tooltip without closing the host —
+    /// the innermost open thing is what a dismiss should act on.</summary>
+    private void OnHelpKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape" && _instructionsPinned)
+            _instructionsPinned = false;
+    }
+
+    private void ToggleDriveHelp() => _driveHelpOpen = !_driveHelpOpen;
+
+    // ── Drive URL ──────────────────────────────────────────────────────────
+
+    private async Task OnDriveUrlInput(ChangeEventArgs e)
+    {
+        _driveUrl = (e.Value as string) ?? "";
+        await ScheduleLinkCheck();
+    }
+
+    /// <summary>On blur, normalise the field to the exact string that will be
+    /// posted. Submit() has always trimmed, but the input kept showing the
+    /// untrimmed text — so a link pasted with a trailing space looked
+    /// different from the one being validated and sent.</summary>
+    private async Task OnDriveUrlCommitted(ChangeEventArgs e)
+    {
+        var trimmed = ((e.Value as string) ?? "").Trim();
+        if (trimmed == _driveUrl) return;
+        _driveUrl = trimmed;
+        await ScheduleLinkCheck();
+    }
+
+    /// <summary>Debounced live check. Each call increments a token; only the
+    /// response that still matches the latest token is applied to UI state, so
+    /// quick typing can't cause an older "bad" answer to overwrite a newer
+    /// "good" one.</summary>
+    private async Task ScheduleLinkCheck()
+    {
+        int my  = ++_linkToken;
+        var raw = _driveUrl?.Trim() ?? "";
+
+        if (string.IsNullOrEmpty(raw))
+        {
+            _linkState = LinkState.Idle;
+            _linkError = null;
+            StateHasChanged();
+            return;
+        }
+
+        _linkState = LinkState.Checking;
+        _linkError = null;
+        StateHasChanged();
+
+        await Task.Delay(600);                  // typing debounce
+        if (my != _linkToken) return;           // user kept typing
+
+        var (ok, error) = await SubmissionsService.ValidateDriveLinkAsync(raw);
+        if (my != _linkToken) return;           // a newer check superseded us
+
+        if (ok)
+        {
+            _linkState = LinkState.Accessible;
+            _linkError = null;
+        }
+        else
+        {
+            _linkState = LinkState.Inaccessible;
+            _linkError = string.IsNullOrWhiteSpace(error)
+                ? "הקישור אינו פתוח לצפייה. יש לשתף את הקובץ/התיקייה בדרייב כך שלכל מי שיש את הקישור תהיה גישה."
+                : error;
+        }
+        StateHasChanged();
+    }
+
+    // ── Submit ─────────────────────────────────────────────────────────────
+
+    private async Task Submit()
+    {
+        // Guard against a second click landing while the first is still in
+        // flight. CanSubmit already disables the button during Phase.Submitting,
+        // but a double-click can dispatch twice before Blazor re-renders, and
+        // that would create two submissions for one intent.
+        if (_phase == Phase.Submitting) return;
+
+        _submitError = "";
+
+        // The submit button is disabled unless the live probe already returned
+        // Accessible — but a defensive re-check protects against a user
+        // enabling the button via dev-tools or stale state.
+        var trimmed = (_driveUrl ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed) || _linkState != LinkState.Accessible)
+        {
+            _submitError = _linkError
+                ?? "יש להזין קישור Google Drive נגיש לפני שליחת ההגשה";
+            return;
+        }
+
+        _phase = Phase.Submitting;
+        await OnBusyChanged.InvokeAsync(true);
+
+        bool ok;
+        string? error;
+        if (IsEditMode)
+        {
+            (ok, error) = await SubmissionsService.UpdateMySubmissionAsync(
+                EditSubmissionId,
+                new UpdateMySubmissionRequest
+                {
+                    DriveUrl = trimmed,
+                    Notes    = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
+                });
+        }
+        else
+        {
+            var (newId, createErr) = await SubmissionsService.CreateSubmissionAsync(new CreateSubmissionRequest
+            {
+                TaskId   = TaskId,
+                Notes    = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim(),
+                DriveUrl = trimmed,
+            });
+            ok    = newId.HasValue;
+            error = createErr;
+        }
+
+        if (!ok)
+        {
+            // Server-supplied Hebrew message takes priority (e.g. "הקישור אינו פתוח לצפייה…")
+            _submitError = string.IsNullOrWhiteSpace(error)
+                ? (IsEditMode ? "שגיאה בשמירת השינויים. נסה/י שנית." : "שגיאה בשליחת ההגשה. נסה/י שנית.")
+                : error;
+            _phase       = Phase.View;
+            await OnBusyChanged.InvokeAsync(false);
+        }
+        else
+        {
+            // Drop the payload as soon as it is accepted: nothing below the
+            // success panel reads it, and leaving it populated is how a
+            // re-shown form could re-arm a link that was already sent.
+            _phase     = Phase.Success;
+            _driveUrl  = "";
+            _notes     = "";
+            _linkState = LinkState.Idle;
+            _linkError = null;
+            _linkToken++;   // orphan any probe still in flight
+            await OnBusyChanged.InvokeAsync(false);
+            await OnSubmitted.InvokeAsync();
+        }
+    }
+
+    // ── Leaving the form ───────────────────────────────────────────────────
+
+    private async Task Cancel() => await OnCancel.InvokeAsync();
+
+    private async Task Done()   => await OnCancel.InvokeAsync();
+
+    private static string SubmissionStatusLabel(string status) => status switch
+    {
+        "Submitted"      => "הוגש",
+        "Reviewed"       => "נבדק",
+        "NeedsRevision"  => "דורש תיקון",
+        _                => status,
+    };
+}

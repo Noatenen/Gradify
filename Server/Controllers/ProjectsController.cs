@@ -1907,7 +1907,7 @@ public class ProjectsController : ControllerBase
         if (ctx is null) return Ok(Enumerable.Empty<ProjectResourceDto>());
 
         const string sql = @"
-            SELECT  Id, Label, Url
+            SELECT  Id, Label, Url, DeliverableKey
             FROM    ProjectResources
             WHERE   ProjectId = @ProjectId
             ORDER   BY Id";
@@ -1937,23 +1937,33 @@ public class ProjectsController : ControllerBase
         if (!TryNormalizeResourceUrl(url, out var safeUrl))
             return BadRequest("הקישור אינו תקין. יש להזין כתובת שמתחילה ב-http או ב-https");
 
+        if (!TryNormalizeDeliverableKey(req.DeliverableKey, out var deliverableKey))
+            return BadRequest("מזהה התוצר אינו תקין");
+
         var ctx = await GetProjectTeamForUserAsync(authUserId);
         if (ctx is null) return NotFound("פרויקט לא נמצא");
 
         const string sql = @"
-            INSERT INTO ProjectResources (ProjectId, TeamId, Label, Url, CreatedByUserId)
-            VALUES (@ProjectId, @TeamId, @Label, @Url, @UserId)";
+            INSERT INTO ProjectResources (ProjectId, TeamId, Label, Url, DeliverableKey, CreatedByUserId)
+            VALUES (@ProjectId, @TeamId, @Label, @Url, @DeliverableKey, @UserId)";
 
         int newId = await _db.InsertReturnIdAsync(sql, new
         {
             ctx.ProjectId,
             ctx.TeamId,
-            Label  = label,
-            Url    = safeUrl,
-            UserId = authUserId,
+            Label          = label,
+            Url            = safeUrl,
+            DeliverableKey = deliverableKey,
+            UserId         = authUserId,
         });
 
-        return Ok(new ProjectResourceDto { Id = newId, Label = label, Url = safeUrl });
+        return Ok(new ProjectResourceDto
+        {
+            Id             = newId,
+            Label          = label,
+            Url            = safeUrl,
+            DeliverableKey = deliverableKey,
+        });
     }
 
     // ── PUT /api/projects/my-resources/{id} ──────────────────────────────────
@@ -1980,13 +1990,21 @@ public class ProjectsController : ControllerBase
         if (!TryNormalizeResourceUrl(url, out var safeUrl))
             return BadRequest("הקישור אינו תקין. יש להזין כתובת שמתחילה ב-http או ב-https");
 
+        if (!TryNormalizeDeliverableKey(req.DeliverableKey, out var deliverableKey))
+            return BadRequest("מזהה התוצר אינו תקין");
+
         var ctx = await GetProjectTeamForUserAsync(authUserId);
         if (ctx is null) return NotFound("פרויקט לא נמצא");
 
+        // DeliverableKey is written on every edit, including when it is being
+        // CLEARED (null): the association is part of the resource, so an edit
+        // that removes it has to persist that, and the deliverable it used to
+        // belong to has to stop counting it as evidence of work.
         const string sql = @"
             UPDATE ProjectResources
-            SET    Label = @Label,
-                   Url   = @Url
+            SET    Label          = @Label,
+                   Url            = @Url,
+                   DeliverableKey = @DeliverableKey
             WHERE  Id        = @Id
               AND  ProjectId = @ProjectId";
 
@@ -1994,13 +2012,20 @@ public class ProjectsController : ControllerBase
         {
             Id = id,
             ctx.ProjectId,
-            Label = label,
-            Url   = safeUrl,
+            Label          = label,
+            Url            = safeUrl,
+            DeliverableKey = deliverableKey,
         });
 
         if (affected == 0) return NotFound("המשאב לא נמצא");
 
-        return Ok(new ProjectResourceDto { Id = id, Label = label, Url = safeUrl });
+        return Ok(new ProjectResourceDto
+        {
+            Id             = id,
+            Label          = label,
+            Url            = safeUrl,
+            DeliverableKey = deliverableKey,
+        });
     }
 
     // ── DELETE /api/projects/my-resources/{id} ───────────────────────────────
@@ -2087,6 +2112,31 @@ public class ProjectsController : ControllerBase
 
     private const int MaxResourceLabelLength = 80;
     private const int MaxResourceUrlLength   = 2000;
+
+    /// <summary>
+    /// Normalizes the optional deliverable association: empty / whitespace
+    /// becomes NULL ("belongs to the project, not to a deliverable"), and a key
+    /// longer than the column's contract is refused rather than truncated —
+    /// a truncated key would silently associate the resource with nothing.
+    ///
+    /// <para>The key is NOT validated against a list of deliverables: the
+    /// catalog is client-side content (SubmissionDeliverablesCatalog) with no
+    /// table behind it, exactly as it already is for
+    /// my-submission-progress, and duplicating it here would create a second
+    /// place to update whenever the faculty list changes. A key that matches
+    /// nothing simply reads as unassociated on the client.</para>
+    /// </summary>
+    private static bool TryNormalizeDeliverableKey(string? raw, out string? key)
+    {
+        key = null;
+
+        var trimmed = (raw ?? "").Trim();
+        if (trimmed.Length == 0) return true;
+        if (trimmed.Length > MaxDeliverableKeyLength) return false;
+
+        key = trimmed;
+        return true;
+    }
 
     /// <summary>
     /// Accepts only an absolute http/https URL. A bare host ("figma.com/...")

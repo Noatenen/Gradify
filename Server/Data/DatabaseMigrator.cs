@@ -2714,6 +2714,7 @@ public static class DatabaseMigrator
                 TeamId          INTEGER NOT NULL,
                 Label           TEXT    NOT NULL,
                 Url             TEXT    NOT NULL,
+                DeliverableKey  TEXT,
                 CreatedByUserId INTEGER NOT NULL,
                 CreatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
@@ -2723,6 +2724,37 @@ public static class DatabaseMigrator
 
         await connection.ExecuteNonQueryAsync(
             "CREATE INDEX IF NOT EXISTS ix_projectresources_project ON ProjectResources(ProjectId)");
+
+        // ── ProjectResources.DeliverableKey — the ONE relation between a work
+        // artifact and a submission deliverable.
+        //
+        // NULLABLE and optional: a resource with no key is exactly what every
+        // resource was before this column existed, so nothing has to be
+        // backfilled and the section keeps working untouched for a team that
+        // never associates anything.
+        //
+        // WHY IT IS HERE AND NOT IN A NEW TABLE. תוצרי ההגשה needs to answer
+        // "is there evidence of work on this deliverable" from real data
+        // instead of from a status the student sets by hand. The only
+        // team-owned, team-created work artifact the product persists per
+        // project IS a ProjectResource (TaskSubmissions belong to the milestone
+        // pipeline and are keyed to a Task; ResourceFiles is the staff-published
+        // knowledge base). One nullable column on the row that already exists is
+        // the smallest thing that can carry that association — a join table
+        // would model a many-to-many that the product does not have, since a
+        // link belongs to one deliverable at a time.
+        //
+        // It stores the SAME catalog key ProjectSubmissionStatuses.DeliverableKey
+        // stores, so the artifact and the declared state are keyed identically
+        // and no second vocabulary is introduced. An orphan key (a catalog entry
+        // that is later renamed) simply stops matching and the resource reads as
+        // unassociated — the same harmless outcome documented for the status
+        // table above.
+        var projectResourceColumns = await GetColumnsAsync(connection, "ProjectResources");
+
+        if (!projectResourceColumns.Contains("DeliverableKey"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ProjectResources ADD COLUMN DeliverableKey TEXT");
 
         // ── ProjectSubmissionStatuses — team progress on תוצרי ההגשה ────────
         // Motiva's progress layer on top of the course's submission guidance.

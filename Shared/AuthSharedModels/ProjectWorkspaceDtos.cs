@@ -38,6 +38,18 @@ public class ProjectResourceDto
     public int    Id    { get; set; }
     public string Label { get; set; } = "";
     public string Url   { get; set; } = "";
+
+    /// <summary>
+    /// The submission deliverable this resource belongs to, or null for a
+    /// resource that belongs to the project as a whole.
+    ///
+    /// <para>Same vocabulary as
+    /// <see cref="SubmissionStatusDto.DeliverableKey"/> — the catalog key — so
+    /// an artifact and a declared status are keyed identically. This is the
+    /// association that lets תוצרי ההגשה derive "בעבודה" from real data
+    /// instead of from a status the team sets by hand.</para>
+    /// </summary>
+    public string? DeliverableKey { get; set; }
 }
 
 /// <summary>
@@ -86,4 +98,10 @@ public class CreateProjectResourceRequest
     /// anything else, so a stored link can never be a javascript: or data:
     /// payload rendered into an anchor.</summary>
     public string? Url { get; set; }
+
+    /// <summary>Optional. The submission deliverable this resource belongs to
+    /// (a catalog key). Empty or whitespace clears the association, which is
+    /// also the default — a resource does not have to belong to a
+    /// deliverable.</summary>
+    public string? DeliverableKey { get; set; }
 }

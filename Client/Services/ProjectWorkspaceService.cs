@@ -47,11 +47,15 @@ public interface IProjectWorkspaceService
 
     /// <summary>Adds a link. Returns the created resource, or null on failure
     /// (including a URL the server refused).</summary>
-    Task<ProjectResourceDto?> AddResourceAsync(string label, string url);
+    /// <param name="deliverableKey">Optional catalog key of the submission
+    /// deliverable this resource belongs to; null for none.</param>
+    Task<ProjectResourceDto?> AddResourceAsync(string label, string url, string? deliverableKey);
 
     /// <summary>Edits a link the caller's team owns. Returns the updated
     /// resource, or null on failure (including a URL the server refused).</summary>
-    Task<ProjectResourceDto?> UpdateResourceAsync(int id, string label, string url);
+    /// <param name="deliverableKey">The deliverable association after the edit —
+    /// null CLEARS it, so this always states the intended end state.</param>
+    Task<ProjectResourceDto?> UpdateResourceAsync(int id, string label, string url, string? deliverableKey);
 
     /// <summary>Removes a link the caller's team owns.</summary>
     Task<bool> DeleteResourceAsync(int id);
@@ -134,13 +138,18 @@ public class ProjectWorkspaceService : IProjectWorkspaceService
         }
     }
 
-    public async Task<ProjectResourceDto?> AddResourceAsync(string label, string url)
+    public async Task<ProjectResourceDto?> AddResourceAsync(string label, string url, string? deliverableKey)
     {
         try
         {
             var res = await _http.PostAsJsonAsync(
                 "api/projects/my-resources",
-                new CreateProjectResourceRequest { Label = label, Url = url });
+                new CreateProjectResourceRequest
+                {
+                    Label          = label,
+                    Url            = url,
+                    DeliverableKey = deliverableKey,
+                });
 
             if (!res.IsSuccessStatusCode) return null;
 
@@ -152,13 +161,18 @@ public class ProjectWorkspaceService : IProjectWorkspaceService
         }
     }
 
-    public async Task<ProjectResourceDto?> UpdateResourceAsync(int id, string label, string url)
+    public async Task<ProjectResourceDto?> UpdateResourceAsync(int id, string label, string url, string? deliverableKey)
     {
         try
         {
             var res = await _http.PutAsJsonAsync(
                 $"api/projects/my-resources/{id}",
-                new CreateProjectResourceRequest { Label = label, Url = url });
+                new CreateProjectResourceRequest
+                {
+                    Label          = label,
+                    Url            = url,
+                    DeliverableKey = deliverableKey,
+                });
 
             if (!res.IsSuccessStatusCode) return null;
 

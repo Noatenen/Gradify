@@ -10,15 +10,21 @@ namespace AuthWithAdmin.Client.Pages.ProjectWorkspace;
 //  SubmissionInstructions (which holds mid-course milestone deliverables, a
 //  different thing entirely). Rather than invent requirements and present them
 //  as the course's, every Intro / Requirements / Notes string below is written
-//  as an explicit placeholder, and the UI renders a visible notice above the
-//  whole section for as long as IsPlaceholderContent is true.
+//  as an explicit placeholder.
+//
+//  THE UI NO LONGER ANNOUNCES THIS. SubmissionDeliverablesSection used to draw
+//  a "תוכן זמני" banner above all eight categories while IsPlaceholderContent
+//  was true; that is a note about this file, addressed to whoever lands the
+//  faculty document, and it was removed from the student-facing page. The flag
+//  below stays as documentation of this content's state — nothing reads it.
 //
 //  ── HOW TO REPLACE THIS WITH REAL CONTENT ───────────────────────────────────
 //  1. Fill in Intro / Requirements / Notes from the real faculty document.
 //  2. Point ResourceTitles at real ResourceFiles rows (see the field's own
 //     note) where the faculty document references a document Motiva already
 //     hosts. Leave it empty where it does not — the UI omits the section.
-//  3. Set IsPlaceholderContent to false. The notice disappears on its own.
+//  3. Set IsPlaceholderContent to false, so this file stops describing itself
+//     as placeholder. Nothing in the UI changes — there is no notice to remove.
 //
 //  Nothing else changes: the accordion, the status control, the persistence
 //  layer (ProjectSubmissionStatuses) and the progress summary are all keyed on
@@ -61,9 +67,10 @@ public sealed record SubmissionDeliverable(
 public static class SubmissionDeliverablesCatalog
 {
     /// <summary>
-    /// True while the guidance text below is placeholder. Drives the visible
-    /// notice in SubmissionDeliverablesSection — flip it to false in the same
-    /// commit that lands the real faculty content, and the notice goes away.
+    /// True while the guidance text below is placeholder. Documentation only:
+    /// no UI reads it since the global "תוכן זמני" banner was removed from
+    /// SubmissionDeliverablesSection. Flip it to false in the same commit that
+    /// lands the real faculty content.
     /// </summary>
     public const bool IsPlaceholderContent = true;
 
@@ -182,13 +189,21 @@ public static class SubmissionDeliverablesCatalog
     };
 
     /// <summary>
-    /// The collapsed row's meta line — "2 דרישות · הערה אחת". Counts only the
+    /// The row's meta line — "2 דרישות · חומר עבודה אחד". Counts only the
     /// sections that actually exist, so it stays truthful when a category has
-    /// no notes or no documents.
+    /// no notes, no documents and no artifacts.
     /// </summary>
-    public static string MetaLine(SubmissionDeliverable deliverable, int documentCount)
+    /// <param name="documentCount">Knowledge Center documents this category
+    /// resolved to — course material, published by staff.</param>
+    /// <param name="artifactCount">The team's OWN work artifacts associated
+    /// with this category (ProjectResources carrying its key). Counted
+    /// separately from documents because they are different things: one is
+    /// what the faculty published, the other is what the team made — and it is
+    /// the second one that puts the deliverable in "בעבודה".</param>
+    public static string MetaLine(
+        SubmissionDeliverable deliverable, int documentCount, int artifactCount = 0)
     {
-        var parts = new List<string>(3);
+        var parts = new List<string>(4);
 
         var requirements = deliverable.Requirements.Count;
         if (requirements == 1) parts.Add("דרישה אחת");
@@ -200,6 +215,9 @@ public static class SubmissionDeliverablesCatalog
 
         if (documentCount == 1) parts.Add("מסמך אחד");
         else if (documentCount > 1) parts.Add($"{documentCount} מסמכים");
+
+        if (artifactCount == 1) parts.Add("חומר עבודה אחד");
+        else if (artifactCount > 1) parts.Add($"{artifactCount} חומרי עבודה");
 
         return string.Join(" · ", parts);
     }

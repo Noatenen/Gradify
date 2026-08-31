@@ -1,3 +1,5 @@
+using AuthWithAdmin.Shared.AuthSharedModels;
+
 namespace AuthWithAdmin.Client.Pages.ProjectWorkspace;
 
 /// <summary>
@@ -47,6 +49,37 @@ public static class ProjectWorkspaceModel
     }
 
     /// <summary>
+    /// The project's fallback mark: up to two letters derived from its own
+    /// display name, drawn when the project has no logo image.
+    ///
+    /// Separate from <see cref="Initials"/> even though both take initials,
+    /// because they answer different questions. A PERSON's initials are
+    /// first-name + last-name and are never case-folded — "Noa Ofir" is
+    /// "NO". A PROJECT's name is a title, not a name: it can be one word
+    /// ("motiva"), and a one-word title reads as a monogram only at two
+    /// letters and in caps. Latin text is upper-cased for exactly that
+    /// reason; Hebrew has no case, so ToUpperInvariant is a no-op there and
+    /// the two-word path gives it the pair of initials it expects.
+    /// </summary>
+    public static string ProjectMonogram(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return "?";
+
+        var words = title.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        if (words.Length == 0) return "?";
+
+        var mark = words.Length == 1
+            // One word: the first two of its own letters, or the single letter
+            // it has. Slicing a word this way is wrong for a person and right
+            // for a title — see the summary.
+            ? (words[0].Length >= 2 ? words[0][..2] : words[0])
+            : $"{words[0][0]}{words[^1][0]}";
+
+        return mark.ToUpperInvariant();
+    }
+
+    /// <summary>
     /// Two-letter initials for a member chip, from a "First Last" string. Same
     /// derivation AppSideNav uses for the profile avatar; a single-word name
     /// yields one letter rather than a slice of the same word.
@@ -62,4 +95,83 @@ public static class ProjectWorkspaceModel
 
         return $"{words[0][0]}{words[^1][0]}";
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  DELIVERABLE STATUS — DERIVED, NOT DECLARED
+    //
+    //  A deliverable's displayed state is computed from what the system
+    //  actually holds, in this order:
+    //
+    //    1. ProjectSubmissionStatuses.Status = 'Done'  → הושלם
+    //       The team's own completion record. This is the ONLY state a person
+    //       declares, and the only one the "X מתוך 8 הושלמו" count reads.
+    //
+    //    2. At least one ProjectResource whose DeliverableKey is this key
+    //                                                    → בעבודה
+    //       Real evidence of work: a persisted, team-created artifact that
+    //       names this deliverable. Nobody has to move a control to get here.
+    //
+    //    3. ProjectSubmissionStatuses.Status = 'InProgress' → בעבודה
+    //       Honoured for rows written before the association existed, when
+    //       'בעבודה' was still something a student set by hand. Nothing in the
+    //       UI writes this value any more; it is read-only history.
+    //
+    //    4. otherwise                                   → לא התחיל
+    //
+    //  THERE IS NO SECOND STATUS SYSTEM. The vocabulary is
+    //  SubmissionStatusValues — the same three strings the table already
+    //  stores and the same ones the API validates. What changed is that the
+    //  middle value is now INFERRED rather than typed in.
+    //
+    //  WHY 'הושלם' AND NOT 'הוגש'. Nothing in this product records a formal
+    //  submission of a graduation deliverable to the faculty: there is no
+    //  submission row, no reviewer and no returned-for-changes state for the
+    //  eight categories (TaskSubmissions is the milestone pipeline, keyed to a
+    //  Task, and is a different domain). The record that does exist is the
+    //  team's own "we finished this", which is what 'הושלם' says and what the
+    //  progress count above the list already calls it. Calling it 'הוגש' would
+    //  claim a handover the system cannot see.
+    // ═════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// The state to DISPLAY for one deliverable, from the persisted status row
+    /// (or null when the team has never touched it) and the number of work
+    /// artifacts associated with it. Returns a
+    /// <see cref="SubmissionStatusValues"/> value.
+    /// </summary>
+    public static string DeriveDeliverableStatus(string? declaredStatus, int artifactCount)
+    {
+        if (declaredStatus == SubmissionStatusValues.Done) return SubmissionStatusValues.Done;
+
+        if (artifactCount > 0) return SubmissionStatusValues.InProgress;
+
+        return declaredStatus == SubmissionStatusValues.InProgress
+            ? SubmissionStatusValues.InProgress
+            : SubmissionStatusValues.NotStarted;
+    }
+
+    /// <summary>The Hebrew label for a derived status. One definition, so the
+    /// list row, the detail panel and the resource tile can never word the same
+    /// state differently.</summary>
+    public static string DeliverableStatusLabel(string status) => status switch
+    {
+        SubmissionStatusValues.Done       => "הושלם",
+        SubmissionStatusValues.InProgress => "בעבודה",
+        _                                 => "לא התחיל"
+    };
+
+    /// <summary>
+    /// The tone suffix a component appends to its own prefix
+    /// (<c>pwd-status-@(Tone)</c>). A NAME rather than a colour, because each
+    /// component owns its own scoped CSS and only the vocabulary is shared.
+    ///
+    /// <para>Rose has no member on purpose: a deliverable category carries no
+    /// date anywhere in the model, so nothing here can be overdue.</para>
+    /// </summary>
+    public static string DeliverableStatusTone(string status) => status switch
+    {
+        SubmissionStatusValues.Done       => "done",
+        SubmissionStatusValues.InProgress => "progress",
+        _                                 => "idle"
+    };
 }

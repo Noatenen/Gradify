@@ -1,5 +1,6 @@
 ﻿@using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Submissions
 @inject ITasksService          TasksService
 @inject ITaskSubmissionsService SubmissionsService
 @implements IAsyncDisposable
@@ -55,7 +56,7 @@
                         @if (_task.IsSubmission)
                         {
                             <span class="tdm-chip tdm-chip-submission">
-                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                <span class="oi oi-arrow-top" aria-hidden="true"></span>
                                 הגשה
                             </span>
                         }
@@ -81,6 +82,40 @@
                     <MEmptyState Live="true"
                                  Title="אירעה שגיאה בטעינת פרטי המשימה"
                                  Description="אפשר לסגור ולנסות שוב." />
+                </div>
+            }
+            else if (_task is not null && _submitMode)
+            {
+                @* ── SUBMISSION STATE ──────────────────────────────────────
+                   Same modal, same TaskId, same URL. The task is still named
+                   above so the student can never be unsure what they are
+                   submitting, and ShowTaskContext is off because this shell
+                   already carries the milestone chip, title and due date. *@
+                <div class="tdm-submit-pane">
+                    @* No "הגשה" tag here: the shell's header already carries
+                       the submission chip, and naming the state twice on one
+                       screen is noise, not reassurance. *@
+                    <div class="tdm-header-title-row">
+                        <h2 class="tdm-title" id="@_titleId">@_task.Title</h2>
+                    </div>
+
+                    @if (_task.DueDate.HasValue)
+                    {
+                        <div class="tdm-meta-line">
+                            <span class="tdm-meta-item @(IsOverdue ? "tdm-meta-overdue" : "")">
+                                <span class="oi oi-calendar tdm-meta-icon" aria-hidden="true"></span>
+                                <span class="tdm-meta-key">@DueDateLabel:</span>
+                                @_task.DueDate.Value.ToString("dd.MM.yyyy")
+                            </span>
+                        </div>
+                    }
+
+                    <StudentSubmissionForm TaskId="@TaskId"
+                                           ShowTaskContext="false"
+                                           CancelText="חזרה לפרטי המשימה"
+                                           DoneText="חזרה לפרטי המשימה"
+                                           OnSubmitted="OnInlineSubmitted"
+                                           OnCancel="BackToDetails" />
                 </div>
             }
             else if (_task is not null)
@@ -133,6 +168,11 @@
                 {
                     <div class="tdm-meta-line">
                         <span class="tdm-meta-item @(IsOverdue ? "tdm-meta-overdue" : "")">
+                            @* Same calendar glyph the other student surfaces
+                               use for a date (TeamTasksCard, MilestoneDetailModal
+                               and this modal's own sub-task rows). Muted ink, so
+                               the line stays subordinate to the title. *@
+                            <span class="oi oi-calendar tdm-meta-icon" aria-hidden="true"></span>
                             <span class="tdm-meta-key">@DueDateLabel:</span>
                             @_task.DueDate.Value.ToString("dd.MM.yyyy")
                             @if (IsOverdue)
@@ -150,7 +190,7 @@
                     {
                         <div class="tdm-section">
                             <h3 class="tdm-section-title">
-                                <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                                <span class="oi oi-arrow-top" aria-hidden="true"></span>
                                 מצב הגשה
                             </h3>
 
@@ -224,14 +264,14 @@
                             <p class="tdm-desc-empty">אין תיאור למשימה זו.</p>
                         }
 
-                        @if (!string.IsNullOrWhiteSpace(_task.SubmissionInstructions))
-                        {
-                            <p class="tdm-col-label tdm-col-label-mt">הוראות הגשה</p>
-                            <div class="tdm-instructions-box">
-                                <span class="oi oi-info" aria-hidden="true"></span>
-                                <p>@_task.SubmissionInstructions</p>
-                            </div>
-                        }
+                        @* SUBMISSION INSTRUCTIONS ARE NOT SHOWN HERE. This view
+                           answers "what is this task and where does it stand".
+                           How to hand work in belongs to the act of handing it
+                           in, so the instructions now live in the submission
+                           state below — on the Drive field's own info trigger,
+                           where they are read at the moment they apply. Nothing
+                           was deleted: the same _task.SubmissionInstructions
+                           text is what that tooltip shows. *@
                     </div>
 
                     <!-- ════ Sub-tasks (Submission Tasks only) ════ -->
@@ -244,10 +284,6 @@
                                 משימות משנה
                             </h3>
                             <div class="tdm-subtask-header-end">
-                                <span class="tdm-subtask-private-note">
-                                    <span class="oi oi-eye-closed" aria-hidden="true"></span>
-                                    פנימי לצוות בלבד
-                                </span>
                                 <button class="tdm-subtask-toggle-add"
                                         @onclick="ToggleAddForm"
                                         title="@(_showAddForm ? "בטל" : "הוסף משימה")">
@@ -582,6 +618,10 @@
         is still loading, or that failed to load, as much as of a loaded one.
         The task's own action only appears once there is a task. *@
     <FooterContent>
+                    @* In submission mode the form supplies its own back/submit
+                       row — one set of actions, never two. *@
+                    @if (!_submitMode)
+                    {
                     <button class="tdm-btn-ghost" @onclick="Close">סגירה</button>
                     @if (_task is not null)
                     {
@@ -619,9 +659,10 @@
                     {
                         @* Submission Task: submit / resubmit Drive link *@
                         <button class="tdm-btn-primary motiva-cta" @onclick="OpenSubmission">
-                            <span class="oi oi-data-transfer-upload" aria-hidden="true"></span>
+                            <span class="oi oi-arrow-top" aria-hidden="true"></span>
                             @(LatestSubmission is null ? "הגשת משימה" : "הגשה מחדש")
                         </button>
+                    }
                     }
                     }
     </FooterContent>
@@ -633,9 +674,14 @@
     /// it explicitly rather than left unnamed.</summary>
     private readonly string _titleId = $"tdm-title-{Guid.NewGuid():N}";
 
-    [Parameter] public int                TaskId           { get; set; }
-    [Parameter] public EventCallback      OnClose          { get; set; }
-    [Parameter] public EventCallback<int> OnOpenSubmission { get; set; }
+    [Parameter] public int           TaskId  { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised after an inline submission is accepted, so the host page
+    /// can refresh whatever it shows about this task. Replaces the old
+    /// OnOpenSubmission, which existed only to hand the task off to a second
+    /// modal — submitting now happens here.</summary>
+    [Parameter] public EventCallback OnTaskChanged { get; set; }
 
     /// <summary>Bubbles a "the student wants to edit submission X for task T"
     /// signal up to the page that hosts SubmissionModal, so the modal opens
@@ -659,6 +705,11 @@
     private bool             _statusError       = false;
 
     private readonly HashSet<int> _expandedSubmissions = new();
+
+    /// <summary>True while this modal is showing the submission form instead of
+    /// the task detail. It is a STATE OF THIS MODAL, not a second dialog: the
+    /// shell, the TaskId and the URL are unchanged across the switch.</summary>
+    private bool _submitMode = false;
 
     // ── Sub-task state ─────────────────────────────────────────────────────────
     private List<StudentSubTaskDto> _subTasks        = new();
@@ -800,6 +851,7 @@
         _loadError    = false;
         _task         = null;
         _statusError  = false;
+        _submitMode   = false;
         _expandedSubmissions.Clear();
         _subTasks          = new();
         _showAddForm       = false;
@@ -860,10 +912,28 @@
             await OnMarkMoodleSubmitted.InvokeAsync(sub.Id);
     }
 
-    private async Task OpenSubmission()
+    /// <summary>The primary action. This used to close the modal and hand the
+    /// task to a separate SubmissionModal (and, from the dashboard, navigate to
+    /// /tasks and lose the task entirely). It now switches this modal into its
+    /// submission state — same dialog, same task, same page.</summary>
+    private void OpenSubmission() => _submitMode = true;
+
+    /// <summary>Back out of the submission state. Also the success panel's
+    /// action, which is why the detail is reloaded before it is shown again.</summary>
+    private void BackToDetails() => _submitMode = false;
+
+    /// <summary>A submission was accepted. Re-fetch the task so the pipeline,
+    /// the status pill and the history behind the success panel are the NEW
+    /// state, then let the host page refresh its own cards.</summary>
+    private async Task OnInlineSubmitted()
     {
-        await OnClose.InvokeAsync();
-        await OnOpenSubmission.InvokeAsync(TaskId);
+        _task = await TasksService.GetTaskDetailAsync(TaskId);
+        if (_task is not null && _task.Submissions.Count > 0)
+        {
+            _expandedSubmissions.Clear();
+            _expandedSubmissions.Add(_task.Submissions[^1].Id);
+        }
+        await OnTaskChanged.InvokeAsync();
     }
 
     // SubmitToCourseAsync — retired 2026-05-17. The student no longer

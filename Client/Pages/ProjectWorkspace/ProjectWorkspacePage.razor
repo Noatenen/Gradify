@@ -24,10 +24,28 @@
     sidebar (AppSideNav's .snav-workspace), per the IA decision that the
     project's own name is what opens its workspace.
 
-    Three areas, in the design file's order:
-      1. Project identity     — ProjectIdentityCard
-      2. משאבי הפרויקט         — ProjectResourcesSection
-      3. תוצרי ההגשה           — SubmissionDeliverablesSection
+    Three areas, in this order:
+      1. מסע הפרויקט            — MJourneyStepper, full width
+      2. THE WORKSPACE — one grid, three cells:
+           right column, top    — ProjectIdentityCard       (what the project IS)
+           right column, under it — ProjectResourcesSection (what it is built with)
+           left column, both rows — SubmissionDeliverablesSection
+                                                          (what the team WORKS on)
+
+    WHY THIS SHAPE. The row pairs the project's identity — read once, changed
+    rarely — with תוצרי ההגשה, the only part of the page a student actually
+    works in, so the working area sits above the fold beside it instead of
+    under it. תוצרי ההגשה is ~540px tall by construction and the project card
+    is ~230px of content, which left the bottom of the right column empty;
+    משאבי הפרויקט now fills exactly that space, and the right column reads as
+    one vertical stack: what the project is, then what it is built with.
+
+    RESOURCES ARE LOADED HERE, ONCE, AND SHARED. Both halves need them: the
+    bottom section renders and edits them, and תוצרי ההגשה reads them as the
+    evidence that derives "בעבודה". One fetch on the page, one list, passed
+    down — so adding a resource associated with a deliverable updates that
+    deliverable's state in the same frame, with no refetch and no second copy
+    that could disagree.
 
     The design file's 880px content column is deliberately NOT reproduced: the
     student shell is full-bleed with a 40px inset (motiva-tokens.css:313-317),
@@ -37,32 +55,23 @@
 *@
 
 @*
-    The reference composes the project's identity INTO the title row: the h1,
-    then the project name in gradient text, a separator dot and the tagline —
-    with the team/track chip pushed to the reading end. The editable details
-    stay in the card below, where the reference also keeps them.
+    TITLE ONLY.
+
+    The header used to carry two more things: the project's name in gradient
+    text (with its topic after a separator dot) under the h1, and a
+    "צוות 15 · 2025-2026 · Technological" chip at the reading end. Both were
+    removed as redundant — the project card immediately below states its name
+    as its own headline and the number/type/year as its meta line, so the
+    header was repeating, in smaller type, what the first card says properly.
+
+    MPageHeader renders no subtitle element and no actions element at all when
+    those slots are absent (not merely empty), so nothing is left behind: the
+    band keeps its own padding and the h1 sits in it alone. The slots are
+    therefore DELETED rather than emptied — a `<SubtitleContent>` holding a
+    false `@if` still counts as supplied, and would leave an empty div holding
+    the old spacing open.
 *@
-<MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="הפרויקט שלי">
-    <SubtitleContent>
-        @if (_project is not null)
-        {
-            <span class="pw-identity">
-                <span class="pw-project-name">@ProjectDisplayName</span>
-                @if (!string.IsNullOrWhiteSpace(_project.ProjectTopic))
-                {
-                    <span class="pw-identity-dot" aria-hidden="true"></span>
-                    <span class="pw-project-tagline">@_project.ProjectTopic</span>
-                }
-            </span>
-        }
-    </SubtitleContent>
-    <Actions>
-        @if (_project is not null)
-        {
-            <span class="pw-team-chip">@TeamChipText</span>
-        }
-    </Actions>
-</MPageHeader>
+<MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="הפרויקט שלי" />
 
 <div class="pw-body">
 
@@ -112,13 +121,70 @@
             </MCard>
         }
 
-        <ProjectIdentityCard Project="_project"
-                             Context="_context"
-                             OnProjectChanged="StateHasChanged" />
+        @* ── THE WORKSPACE — ≈57 / 43, three cells ───────────────────────
+           Reading order IS the layout: the grid inherits the shell's
+           `direction: rtl`, so COLUMN 1 IS THE RIGHT ONE. No `[dir=rtl]` rule
+           and no `order` is involved.
 
-        <ProjectResourcesSection />
+           TWO REAL COLUMNS, each a vertical stack. The right one holds the
+           project card and משאבי הפרויקט under it at the page's own 22px card
+           step; the left one holds תוצרי ההגשה.
 
-        <SubmissionDeliverablesSection />
+           THE NARROW ORDER IS FIXED IN CSS, NOT IN THE DOM. Stacked, the page
+           must read פרטי הפרויקט → תוצרי ההגשה → משאבי הפרויקט, which is not
+           this markup's order. Below the step the two column wrappers become
+           `display: contents`, so all three cells become siblings of one flex
+           column and `order` can put them in that sequence — see the
+           .pw-cell-* rules in the .razor.css.
+
+           THE CELLS ARE PAGE-OWNED <div>s, not the components themselves.
+           Blazor's scoped CSS stamps this page's attribute on the wrapper; a
+           component's own root carries ITS scope, so a rule written here for
+           `.pw-workspace > *` would match nothing — and `order` has to be set
+           on something this page can select.
+
+           The two columns are deliberately UNEQUAL. The project card holds
+           prose (a description, a team strip) and wants the wider measure;
+           תוצרי ההגשה holds a list of short rows and reads better narrow.
+
+           NOTHING RESIZES WHEN A DELIVERABLE IS SELECTED. The panel on the
+           left swaps its own content between the list and one deliverable's
+           details inside a body of fixed height that scrolls — see .pws-body
+           in SubmissionDeliverablesSection.razor.css. *@
+        <div class="pw-workspace">
+
+            @* RIGHT — what the project is, then what it is built with. *@
+            <div class="pw-col pw-col-project">
+
+                <div class="pw-cell pw-cell-identity">
+                    <ProjectIdentityCard Project="_project"
+                                         Context="_context"
+                                         OnProjectChanged="StateHasChanged" />
+                </div>
+
+                @* Under the project card, in the space its height leaves. Both
+                   sections around it refer to it: a resource can be associated
+                   with a deliverable, which is what puts that deliverable in
+                   "בעבודה". *@
+                <div class="pw-cell pw-cell-resources">
+                    <ProjectResourcesSection Resources="_resources"
+                                             Loading="_resourcesLoading"
+                                             LoadFailed="_resourcesLoadFailed"
+                                             OnAdded="HandleResourceAdded"
+                                             OnUpdated="HandleResourceUpdated"
+                                             OnRemoved="HandleResourceRemoved" />
+                </div>
+
+            </div>
+
+            @* LEFT — the working area, full height of the row. *@
+            <div class="pw-col pw-col-work">
+                <div class="pw-cell pw-cell-deliverables">
+                    <SubmissionDeliverablesSection Resources="_resources" />
+                </div>
+            </div>
+
+        </div>
     }
 
 </div>
@@ -133,27 +199,17 @@
     // new API surface was added for this.
     private List<MilestoneSummaryDto> _milestones = new();
 
+    // ── The team's own resources, owned by the PAGE ──────────────────────
+    // Read once here and handed to both משאבי הפרויקט (which renders and edits
+    // them) and תוצרי ההגשה (which reads them as the artifacts that derive
+    // "בעבודה"). Two independent fetches would have been two lists that drift
+    // apart the moment one of them is edited.
+    private List<ProjectResourceDto> _resources = new();
+    private bool _resourcesLoading = true;
+    private bool _resourcesLoadFailed;
+
     private ProjectLoadState _state = ProjectLoadState.Loaded;
     private bool             _loading = true;
-
-    /// <summary>The team-edited name when there is one, else the catalogue
-    /// title — the same precedence ProjectIdentityCard applies.</summary>
-    private string ProjectDisplayName =>
-        !string.IsNullOrWhiteSpace(_context?.ProjectTitle)
-            ? _context!.ProjectTitle
-            : (_project?.Title ?? "");
-
-    private string TeamChipText
-    {
-        get
-        {
-            var parts = new List<string>();
-            if (_project is not null) parts.Add($"צוות {_project.ProjectNumber}");
-            if (!string.IsNullOrWhiteSpace(_context?.TrackName)) parts.Add(_context!.TrackName!);
-            if (!string.IsNullOrWhiteSpace(_project?.AcademicYear)) parts.Add(_project!.AcademicYear);
-            return string.Join(" · ", parts);
-        }
-    }
 
     private int _completedMilestones => _milestones.Count(m => m.Status == "Completed");
 
@@ -231,17 +287,51 @@
         {
             var contextTask   = ProjectContext.GetAsync();
             var dashboardTask = DashboardService.GetDashboardAsync();
-            await Task.WhenAll(contextTask, dashboardTask);
+            var resourcesTask = Workspace.GetResourcesAsync();
+            await Task.WhenAll(contextTask, dashboardTask, resourcesTask);
 
             _context    = contextTask.Result;
             _milestones = dashboardTask.Result?.Milestones ?? new();
+
+            // null is a FAILED read; an empty list is a team with no resources
+            // yet. The section below draws two different things for them.
+            _resourcesLoadFailed = resourcesTask.Result is null;
+            _resources           = resourcesTask.Result ?? new();
         }
         else
         {
-            _context    = null;
-            _milestones = new();
+            _context             = null;
+            _milestones          = new();
+            _resources           = new();
+            _resourcesLoadFailed = false;
         }
 
-        _loading = false;
+        _resourcesLoading = false;
+        _loading          = false;
     }
+
+    // ── Resource writes ──────────────────────────────────────────────────
+    // The section performs the HTTP call and reports the OUTCOME; the page owns
+    // the list. A NEW list instance each time rather than a mutation in place,
+    // so the change is visible to Blazor as a changed parameter and both
+    // children re-render from one source.
+
+    private void HandleResourceAdded(ProjectResourceDto resource) =>
+        _resources = new List<ProjectResourceDto>(_resources) { resource };
+
+    private void HandleResourceUpdated(ProjectResourceDto resource)
+    {
+        var next  = new List<ProjectResourceDto>(_resources);
+        var index = next.FindIndex(r => r.Id == resource.Id);
+
+        // Replaced in place, never appended: the grid's order is the server's
+        // insertion order and an edit must not move a tile.
+        if (index >= 0) next[index] = resource;
+        else            next.Add(resource);
+
+        _resources = next;
+    }
+
+    private void HandleResourceRemoved(int id) =>
+        _resources = _resources.Where(r => r.Id != id).ToList();
 }

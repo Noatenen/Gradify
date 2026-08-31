@@ -9,34 +9,67 @@
 @*
     SubmissionDeliverablesSection — "תוצרי ההגשה"
 
-    Two independent halves, deliberately:
+    ONE PANEL, TWO INTERNAL STATES — and the panel is the same size in both.
 
+      LIST     — the eight categories as compact rows.
+      DETAIL   — one category's content, in the SAME place, reached by clicking
+                 a row and left by the back action at its top.
+
+    The swap happens inside `.pws-body`, which has a fixed height and scrolls
+    (see the .razor.css). That is what makes the promise "selecting a
+    deliverable changes nothing outside this panel" literally true: the panel's
+    intrinsic height does not depend on which state it is in, so the workspace
+    row, the card beside it and משאבי הפרויקט below it cannot move on a click.
+
+    THREE EARLIER SHAPES ARE GONE and should not come back:
+      * an accordion body INSIDE the tile — opening one made that grid item
+        span all four columns and shove the other seven down the page;
+      * a 62/38 master-detail split that re-flowed the grid on selection;
+      * a floating fixed drawer (`.pws-drawer`) over the page — which did keep
+        the grid still, but at the cost of an overlay this page never wanted,
+        a viewport-anchored surface that scrolled away from its own list, and a
+        bottom-sheet variant for narrow screens.
+    The list and the detail now occupy one region, one at a time.
+
+    ── WHERE A STATUS COMES FROM ─────────────────────────────────────────────
+    NOT from a control the student moves through three positions. See
+    ProjectWorkspaceModel.DeriveDeliverableStatus for the full rule; in short:
+
+      הושלם    ProjectSubmissionStatuses says 'Done' — the team's own
+               completion record, and the ONLY state anybody declares.
+      בעבודה   at least one ProjectResource carries this deliverable's key —
+               real, persisted evidence of work — or a legacy 'InProgress' row
+               written back when that state was set by hand.
+      לא התחיל neither.
+
+    So a team that adds "דף מידע – טיוטה" to משאבי הפרויקט and associates it
+    with דף מידע sees that deliverable move to בעבודה by itself. The count above
+    the list is unaffected: it reads 'Done' only.
+
+    Two independent halves remain, deliberately:
       CONTENT  — the course's submission guidance, from
                  SubmissionDeliverablesCatalog. Static, because the guidance has
                  no authoring UI and no table behind it anywhere in this
-                 repository. It is currently PLACEHOLDER text, and the notice
-                 below says so in the UI for as long as it is.
-
-      PROGRESS — the team's status per category, real and persisted, through
-                 ProjectSubmissionStatuses. This half is finished; it does not
-                 change when the placeholder text is replaced.
+                 repository. A category that genuinely has no guidance says so
+                 inside itself, where it is true of the thing it is attached to.
+      PROGRESS — real and persisted: ProjectSubmissionStatuses for the
+                 completion record, ProjectResources for the artifacts.
 
     Statuses that fail to load do NOT hide the guidance: the categories still
-    render, read-only-in-effect, with a line saying progress is unavailable.
-    The reverse cannot happen — the catalog is compiled in.
-
-    Only one category is open at a time (the design brief's rule and the same
-    toggle semantics the Knowledge Center and the dashboard hero already use).
+    render, with a line saying progress is unavailable.
 
     Documents come from the REAL Knowledge Center (ResourceFiles), matched by
     title, and are omitted entirely when a category has no match — the page
-    never invents a URL. No catalog entry maps to a resource today, so no
-    documents block renders; the mechanism is live and waiting for the real
-    faculty document.
+    never invents a URL.
 *@
 
+<MCard Padding="MCard.CardPadding.None" Fill="true">
 <section class="pws" aria-labelledby="pws-heading">
 
+    @* THE HEAD DOES NOT SWAP. It names the panel and states the one number
+       that is true of all eight categories, so it stays put while the body
+       below it changes between the list and one deliverable — which is also
+       what stops the top of the panel from jumping on selection. *@
     <div class="pws-head">
         <div class="pws-headtext">
             <h2 class="pws-heading" id="pws-heading">תוצרי ההגשה</h2>
@@ -51,6 +84,8 @@
 
     @if (!_statusLoadFailed)
     {
+        @* DONE ONLY, never בעבודה — see requirement 6. The bar reads exactly
+           what the count beside the heading reads. *@
         <MProgressBar Value="DoneCount"
                       Max="TotalCount"
                       Size="MProgressBar.ProgressSize.Small"
@@ -64,34 +99,42 @@
         </p>
     }
 
-    @if (SubmissionDeliverablesCatalog.IsPlaceholderContent)
-    {
-        @*
-            Not decoration and not a "coming soon" placeholder UI: the
-            categories, the statuses and the progress are all real and working.
-            This says only that the GUIDANCE TEXT inside them is development
-            content, so nobody reads it as the faculty's. It disappears on its
-            own when SubmissionDeliverablesCatalog.IsPlaceholderContent flips.
-        *@
-        <aside class="pws-placeholder" role="note">
-            <span class="pws-placeholder-label">תוכן זמני</span>
-            <span class="pws-placeholder-text">
-                הדרישות המוצגות בתוצרים הן תוכן פיתוח זמני ואינן הנחיות הסגל. מעקב ההתקדמות עצמו נשמר כרגיל.
-            </span>
-        </aside>
-    }
+    @*
+        THE SWAPPING REGION.
 
-    <div class="pws-list">
-        @foreach (var deliverable in SubmissionDeliverablesCatalog.All)
+        Fixed height, scrolls inside itself, and holds exactly one of the two
+        states. Keyed on the selection so Blazor REPLACES the subtree rather
+        than re-parameterising it — without the key, switching from one
+        deliverable to another reuses the same component instance, the
+        entrance animation does not replay, and the change reads as nothing
+        having happened.
+    *@
+    <div class="pws-body">
+        @if (SelectedDeliverable is { } selected)
         {
-            var captured = deliverable;
-            <SubmissionDeliverableRow Deliverable="captured"
-                                      Status="@StatusOf(captured.Key)"
-                                      IsOpen="_openKey == captured.Key"
-                                      Documents="DocumentsFor(captured)"
-                                      Saving="_savingKey == captured.Key"
-                                      OnToggle="() => Toggle(captured.Key)"
-                                      OnStatusChange="value => SetStatusAsync(captured.Key, value)" />
+            <SubmissionDeliverableDetail @key="selected.Key"
+                                         Deliverable="selected"
+                                         Status="@StatusOf(selected.Key)"
+                                         Artifacts="ArtifactsFor(selected.Key)"
+                                         Documents="DocumentsFor(selected)"
+                                         Saving="_savingKey == selected.Key"
+                                         CanWrite="!_statusLoadFailed"
+                                         OnStatusChange="value => SetStatusAsync(selected.Key, value)"
+                                         OnBack="ClearSelection" />
+        }
+        else
+        {
+            <div class="pws-list">
+                @foreach (var deliverable in SubmissionDeliverablesCatalog.All)
+                {
+                    var captured = deliverable;
+                    <SubmissionDeliverableRow Deliverable="captured"
+                                              Status="@StatusOf(captured.Key)"
+                                              ArtifactCount="ArtifactsFor(captured.Key).Count"
+                                              Documents="DocumentsFor(captured)"
+                                              OnSelect="() => Select(captured.Key)" />
+                }
+            </div>
         }
     </div>
 
@@ -101,8 +144,21 @@
     }
 
 </section>
+</MCard>
 
 @code {
+    /// <summary>
+    /// The team's own resources, owned and loaded by ProjectWorkspacePage.
+    ///
+    /// <para>Read-only here, and read for ONE reason: a resource that carries a
+    /// deliverable's key is the evidence that derives "בעבודה". The section
+    /// never writes them — משאבי הפרויקט at the foot of the page does — which
+    /// is why an add or an edit down there is reflected up here immediately,
+    /// through the page's single list.</para>
+    /// </summary>
+    [Parameter] public IReadOnlyList<ProjectResourceDto> Resources { get; set; }
+        = Array.Empty<ProjectResourceDto>();
+
     /// <summary>Status per catalog key. A key with no entry is "not started" —
     /// the server stores a row only once a team touches a category.</summary>
     private Dictionary<string, string> _statuses = new(StringComparer.Ordinal);
@@ -113,13 +169,23 @@
     private Dictionary<string, KnowledgeResource> _resourcesByTitle =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private string? _openKey;
+    /// <summary>The deliverable the body is showing, or null for the list.
+    /// Exactly one, which is what guarantees the two states can never both be
+    /// on screen.</summary>
+    private string? _selectedKey;
+
     private string? _savingKey;
     private string? _statusError;
     private bool    _statusLoadFailed;
 
     private int TotalCount => SubmissionDeliverablesCatalog.All.Count;
 
+    /// <summary>
+    /// COMPLETED ONLY. A deliverable in בעבודה is not counted, whether that
+    /// state was inferred from an artifact or read from a legacy row — the
+    /// count answers "how many are finished", and the progress bar under the
+    /// head reads the same number.
+    /// </summary>
     private int DoneCount =>
         SubmissionDeliverablesCatalog.All
             .Count(d => StatusOf(d.Key) == SubmissionStatusValues.Done);
@@ -152,10 +218,31 @@
         }
     }
 
-    private string StatusOf(string key) =>
+    /// <summary>What the team has actually recorded for this category, or null
+    /// when it has never touched it. The raw value — the DISPLAYED state is
+    /// <see cref="StatusOf"/>.</summary>
+    private string? DeclaredStatusOf(string key) =>
         _statuses.TryGetValue(key, out var value) && SubmissionStatusValues.IsValid(value)
             ? value
-            : SubmissionStatusValues.NotStarted;
+            : null;
+
+    /// <summary>The state to show: the declared record and the real artifacts,
+    /// resolved by one shared rule so the row and the detail panel can never
+    /// disagree.</summary>
+    private string StatusOf(string key) =>
+        ProjectWorkspaceModel.DeriveDeliverableStatus(
+            DeclaredStatusOf(key), ArtifactsFor(key).Count);
+
+    /// <summary>
+    /// The team's work artifacts for one category, matched on the STORED KEY —
+    /// never on the resource's label or its URL. A filename that happens to
+    /// contain "פוסטר" is not an association; ProjectResources.DeliverableKey
+    /// is.
+    /// </summary>
+    private IReadOnlyList<ProjectResourceDto> ArtifactsFor(string key) =>
+        Resources
+            .Where(r => string.Equals(r.DeliverableKey, key, StringComparison.Ordinal))
+            .ToList();
 
     /// <summary>Resolves a category's declared resource titles against what the
     /// Knowledge Center actually holds. An unmatched title is dropped silently:
@@ -174,19 +261,46 @@
         return found;
     }
 
-    // One open at a time; pressing the open one closes it.
-    private void Toggle(string key) => _openKey = _openKey == key ? null : key;
+    private SubmissionDeliverable? SelectedDeliverable =>
+        _selectedKey is null
+            ? null
+            : SubmissionDeliverablesCatalog.All.FirstOrDefault(d => d.Key == _selectedKey);
 
+    // A row OPENS a deliverable and the back action CLOSES it. Not a toggle:
+    // in a master/detail panel the row you clicked is not on screen any more,
+    // so "click it again to close" is not an interaction anybody can perform.
+    private void Select(string key) => _selectedKey = key;
+
+    private void ClearSelection() => _selectedKey = null;
+
+    // NOTHING SCROLLS THE PAGE HERE, deliberately.
+    //
+    // Selecting used to call `gradify.scrollIntoView` from OnAfterRenderAsync,
+    // which was right while the details opened BELOW the whole grid and could
+    // land off-screen. The detail now replaces the list in a region that is
+    // already where the eye is, so the call had nothing left to do except move
+    // the page ~95px on every click. It, its pending flag and this component's
+    // IJSRuntime dependency are gone rather than kept for a case that no
+    // longer exists.
+
+    /// <summary>
+    /// Writes the team's completion record — 'Done', or 'NotStarted' to undo it.
+    ///
+    /// <para>'InProgress' is never written any more: that state is derived from
+    /// the artifacts associated with the deliverable, so a control that set it
+    /// by hand would be a second, competing source for the same fact. Rows that
+    /// already hold it are still read (see DeriveDeliverableStatus).</para>
+    /// </summary>
     private async Task SetStatusAsync(string key, string status)
     {
         if (!SubmissionStatusValues.IsValid(status)) return;
-        if (StatusOf(key) == status) return;
+        if (DeclaredStatusOf(key) == status) return;
 
         var previous = _statuses.TryGetValue(key, out var existing) ? existing : null;
 
-        // Optimistic, then rolled back on failure: the segmented control has to
-        // respond immediately to be usable, and the progress bar above it reads
-        // from the same dictionary, so both move together either way.
+        // Optimistic, then rolled back on failure: the control has to respond
+        // immediately to be usable, and the count and the progress bar above
+        // read from the same dictionary, so all three move together either way.
         _statuses[key] = status;
         _savingKey     = key;
         _statusError   = null;
