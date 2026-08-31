@@ -10,7 +10,8 @@
 @inject IMentorProjectsService MentorService
 @inject IPersonalTasksService PersonalTasks
 @inject NavigationManager Nav
-@implements IDisposable
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 @*
     ── המשימות שלי — the mentor's unified work queue ────────────────────────
@@ -41,10 +42,17 @@
 *@
 
 @* ── Review modal (State 3) ──────────────────────────────────────────────── *@
+@* The modal is nested INSIDE the backdrop so the backdrop (position:fixed,
+   inset:0, display:flex) can center the modal with flexbox. This eliminates
+   the top/left/transform centering approach, which is unreliable in RTL because
+   `inset-inline-start` resolves to `right` and pushes the element off-center.
+   Clicks on the modal itself are stopped from bubbling to the backdrop close
+   handler via @onclick:stopPropagation. *@
 @if (_reviewModalCtx is not null)
 {
-    <div class="mt-modal-backdrop" @onclick="CloseReviewModal" aria-hidden="true"></div>
-    <div class="mt-modal" role="dialog" aria-modal="true" aria-labelledby="mt-modal-title" dir="rtl">
+    <div class="mt-modal-backdrop" @onclick="CloseReviewModal">
+    <div class="mt-modal" role="dialog" aria-modal="true" aria-labelledby="mt-modal-title" dir="rtl"
+         @onclick:stopPropagation="true">
 
         <div class="mt-modal-header">
             <span class="mt-modal-badge">הגשה לבדיקה</span>
@@ -176,6 +184,7 @@
             </button>
         </div>
     </div>
+    </div>
 }
 
 <div class="mt-header-bleed">
@@ -205,44 +214,14 @@
                 <MCard Padding="MCard.CardPadding.None" Fill="true">
                     <div class="mt-panel">
 
-                        @* Segmented filter tabs — inside the panel, not in
-                           the page header. The header carries only the title. *@
+                        @* Segmented filter tabs — uses the shared MFilterTabs component
+                           so the gray pill-track container and white raised pill are
+                           identical to "פרויקטים שבהנחייתי". *@
                         <div class="mt-panel-head">
-                            <div class="mt-queue-tabs" role="tablist" aria-label="סינון תור העבודה">
-                                <button type="button"
-                                        class="mt-qtab @(_queueTab == "" ? "mt-qtab-active" : "")"
-                                        role="tab"
-                                        aria-selected="@(_queueTab == "" ? "true" : "false")"
-                                        @onclick='() => _queueTab = ""'>
-                                    הכל
-                                    @if (IncomingCount > 0)
-                                    {
-                                        <span class="mt-qtab-count motiva-count">@IncomingCount</span>
-                                    }
-                                </button>
-                                <button type="button"
-                                        class="mt-qtab @(_queueTab == "reviews" ? "mt-qtab-active" : "")"
-                                        role="tab"
-                                        aria-selected="@(_queueTab == "reviews" ? "true" : "false")"
-                                        @onclick='() => _queueTab = "reviews"'>
-                                    הגשות לבדיקה
-                                    @if (_reviews.Count > 0)
-                                    {
-                                        <span class="mt-qtab-count motiva-count">@_reviews.Count</span>
-                                    }
-                                </button>
-                                <button type="button"
-                                        class="mt-qtab @(_queueTab == "requests" ? "mt-qtab-active" : "")"
-                                        role="tab"
-                                        aria-selected="@(_queueTab == "requests" ? "true" : "false")"
-                                        @onclick='() => _queueTab = "requests"'>
-                                    בקשות
-                                    @if (_awaitingMe.Count > 0)
-                                    {
-                                        <span class="mt-qtab-count motiva-count">@_awaitingMe.Count</span>
-                                    }
-                                </button>
-                            </div>
+                            <MFilterTabs Tabs="@QueueFilterTabs"
+                                         ActiveKey="@_queueTab"
+                                         OnSelect="@(key => _queueTab = key)"
+                                         AriaLabel="סינון תור העבודה" />
                         </div>
 
                         <MScrollArea Tabbable="false">
@@ -257,22 +236,37 @@
                                 @foreach (var item in FilteredQueue)
                                 {
                                     var isSubmission = item.Kind == MentorAttentionKind.Submission;
+                                    var isRequest    = item.Kind == MentorAttentionKind.Request;
                                     var isExpanded   = _expandedItemId == item.EntityId;
 
                                     <div class="mt-qitem @(isExpanded ? "mt-qitem-open" : "")">
 
-                                        @* Collapsed row — always visible *@
+                                        @* Collapsed row — always visible.
+                                           Both submissions AND requests now expand inline;
+                                           the row is always an accordion trigger. *@
                                         <button type="button"
                                                 class="mt-qitem-row"
                                                 @onclick="() => ToggleQueueItem(item)"
-                                                aria-expanded="@(isExpanded && isSubmission ? "true" : "false")"
+                                                aria-expanded="@(isExpanded ? "true" : "false")"
                                                 aria-label="@RowAriaLabel(item, item.Title)">
 
                                             <span class="mt-qitem-top">
                                                 <span class="mt-qbadge @(isSubmission ? "mt-qbadge-sub" : "mt-qbadge-req")">
                                                     @(isSubmission ? "הגשה לבדיקה" : "בקשה")
                                                 </span>
-                                                <span class="mt-qitem-timing @AgeClass(item)">@StateLabel(item)</span>
+
+                                                @* Timing badge + chevron grouped so they sit on the same line.
+                                                   Both item kinds get a chevron — both expand inline. *@
+                                                <span class="mt-qitem-top-trail">
+                                                    <span class="mt-qitem-timing @AgeClass(item)">@StateLabel(item)</span>
+                                                    <span class="mt-qitem-chevron @(isExpanded ? "mt-qitem-chevron-open" : "")"
+                                                          aria-hidden="true">
+                                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <path d="m6 9 6 6 6-6"></path>
+                                                        </svg>
+                                                    </span>
+                                                </span>
                                             </span>
 
                                             <strong class="mt-qitem-title">@item.Title</strong>
@@ -280,7 +274,7 @@
                                             <span class="mt-qitem-ctx">
                                                 @if (!string.IsNullOrWhiteSpace(item.TeamName))
                                                 {
-                                                    <span>@item.TeamName</span>
+                                                    <span>צוות: @item.TeamName</span>
                                                     @if (!string.IsNullOrWhiteSpace(item.ProjectTitle))
                                                     {
                                                         <span class="mt-qitem-ctx-sep"> · </span>
@@ -292,60 +286,94 @@
                                                     <span>@item.ProjectTitle</span>
                                                 }
                                             </span>
-
-                                            @* Chevron — only for submission rows that expand inline.
-                                               Request rows carry no chevron: they open a modal directly. *@
-                                            @if (isSubmission)
-                                            {
-                                                <span class="mt-qitem-chevron @(isExpanded ? "mt-qitem-chevron-open" : "")"
-                                                      aria-hidden="true">
-                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="m6 9 6 6 6-6"></path>
-                                                    </svg>
-                                                </span>
-                                            }
                                         </button>
 
-                                        @* Inline expansion (State 2) — submissions only *@
-                                        @if (isExpanded && isSubmission)
+                                        @* Inline expansion (State 2) — submissions AND requests.
+                                           Submissions lazy-load their context; requests preview
+                                           directly from the item DTO and then open the modal. *@
+                                        @if (isExpanded)
                                         {
                                             <div class="mt-qitem-body">
-                                                @if (_loadingExpansion)
+                                                @if (isSubmission)
                                                 {
-                                                    <span class="mt-qitem-loading">טוען פרטי הגשה…</span>
-                                                }
-                                                else if (_expandedCtx is not null)
-                                                {
-                                                    @if (!string.IsNullOrWhiteSpace(_expandedCtx.Notes))
+                                                    @* ── Submission expansion ─────────────────────── *@
+                                                    @if (_loadingExpansion)
                                                     {
-                                                        <p class="mt-qitem-notes">@_expandedCtx.Notes</p>
+                                                        <span class="mt-qitem-loading">טוען פרטי הגשה…</span>
                                                     }
-
-                                                    @if (!string.IsNullOrWhiteSpace(_expandedCtx.DriveUrl))
+                                                    else if (_expandedCtx is not null)
                                                     {
-                                                        <a class="mt-qitem-resource"
-                                                           href="@_expandedCtx.DriveUrl"
-                                                           target="_blank"
-                                                           rel="noopener noreferrer">
-                                                            <svg class="mt-qitem-resource-icon" width="14" height="14"
-                                                                 viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                                 stroke-width="1.8" stroke-linecap="round"
-                                                                 stroke-linejoin="round" aria-hidden="true">
-                                                                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-                                                                <polyline points="13 2 13 9 20 9"/>
-                                                            </svg>
-                                                            <span class="mt-qitem-resource-label">
-                                                                קישור ל'@_expandedCtx.TaskTitle'
+                                                        @if (!string.IsNullOrWhiteSpace(_expandedCtx.Notes))
+                                                        {
+                                                            <p class="mt-qitem-notes">@_expandedCtx.Notes</p>
+                                                        }
+
+                                                        @if (!string.IsNullOrWhiteSpace(_expandedCtx.DriveUrl))
+                                                        {
+                                                            <a class="mt-qitem-resource"
+                                                               href="@_expandedCtx.DriveUrl"
+                                                               target="_blank"
+                                                               rel="noopener noreferrer">
+                                                                <svg class="mt-qitem-resource-icon" width="14" height="14"
+                                                                     viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                     stroke-width="1.8" stroke-linecap="round"
+                                                                     stroke-linejoin="round" aria-hidden="true">
+                                                                    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                                                                    <polyline points="13 2 13 9 20 9"/>
+                                                                </svg>
+                                                                <span class="mt-qitem-resource-label">
+                                                                    קישור ל'@_expandedCtx.TaskTitle'
+                                                                </span>
+                                                            </a>
+                                                        }
+
+                                                        <div class="mt-qitem-actions">
+                                                            <button type="button"
+                                                                    class="motiva-cta mt-qitem-review"
+                                                                    @onclick="OpenReviewModal">
+                                                                לבדיקת ההגשה
+                                                            </button>
+                                                            @if (item.ProjectId.HasValue)
+                                                            {
+                                                                <a class="mt-qitem-project"
+                                                                   href="/mentor/projects/@item.ProjectId">
+                                                                    למרחב הפרויקט
+                                                                </a>
+                                                            }
+                                                        </div>
+                                                    }
+                                                }
+                                                else if (isRequest)
+                                                {
+                                                    @* ── Request inline preview ───────────────────
+                                                       Shows the key facts from the attention item DTO
+                                                       (type, requester, waiting phrase). The full
+                                                       detail/recommendation form opens in the existing
+                                                       MentorRequestModal via "לטיפול בבקשה". *@
+
+                                                    <div class="mt-qitem-req-meta">
+                                                        @if (!string.IsNullOrWhiteSpace(item.RequestType))
+                                                        {
+                                                            <span class="mt-qitem-req-type">
+                                                                @RequestTypes.Label(item.RequestType)
                                                             </span>
-                                                        </a>
+                                                        }
+                                                        @if (!string.IsNullOrWhiteSpace(item.ActorName))
+                                                        {
+                                                            <span class="mt-qitem-req-by">@item.ActorName</span>
+                                                        }
+                                                    </div>
+
+                                                    @if (!string.IsNullOrWhiteSpace(item.WaitingLabel))
+                                                    {
+                                                        <p class="mt-qitem-notes">@item.WaitingLabel</p>
                                                     }
 
                                                     <div class="mt-qitem-actions">
                                                         <button type="button"
                                                                 class="motiva-cta mt-qitem-review"
-                                                                @onclick="OpenReviewModal">
-                                                            לבדיקת ההגשה
+                                                                @onclick="() => _openRequestId = item.EntityId">
+                                                            לטיפול בבקשה
                                                         </button>
                                                         @if (item.ProjectId.HasValue)
                                                         {
@@ -374,10 +402,6 @@
                         <div class="mt-panel-head">
                             <p class="mt-panel-title">משימות אישיות</p>
                             <span class="mt-panel-count">· @_openPersonal.Count</span>
-                            @if (Counts.PersonalTasksOverdue > 0)
-                            {
-                                <span class="mt-overdue">@Counts.PersonalTasksOverdue באיחור</span>
-                            }
                             <button type="button" class="mt-add motiva-cta" @onclick="OpenNewTask">
                                 <span class="mt-add-glyph" aria-hidden="true">+</span>
                                 <span>משימה אישית</span>
@@ -429,10 +453,6 @@
                                 }
                             }
 
-                            <button type="button" class="mt-addrow" @onclick="OpenNewTask">
-                                <span class="mt-addrow-glyph" aria-hidden="true">+</span>
-                                <span>הוספת משימה אישית</span>
-                            </button>
                         </MScrollArea>
 
                         @if (_openPersonal.Count > PersonalCollapsedCount || _donePersonal.Count > 0)
@@ -486,6 +506,15 @@
 
     private int IncomingCount => _reviews.Count + _awaitingMe.Count;
 
+    /// <summary>Tab definitions for the shared MFilterTabs component.
+    /// A badge of 0 renders no badge — matches MFilterTabs.Tab's contract.</summary>
+    private IReadOnlyList<MFilterTabs.Tab> QueueFilterTabs => new[]
+    {
+        new MFilterTabs.Tab("",         "הכל",            IncomingCount),
+        new MFilterTabs.Tab("reviews",  "הגשות לבדיקה",   _reviews.Count),
+        new MFilterTabs.Tab("requests", "בקשות",          _awaitingMe.Count),
+    };
+
     private IReadOnlyList<MentorAttentionItemDto> FilteredQueue =>
         _queueTab switch
         {
@@ -508,6 +537,7 @@
     private string                      _reviewModalFeedback      = "";
     private bool                        _reviewModalError;
     private string                      _reviewModalFeedbackError = "";
+    private bool                        _reviewModalScrollLocked;
 
     // ── Request modal ───────────────────────────────────────────────────────
     private int? _openRequestId;
@@ -533,7 +563,12 @@
         OpenTaskFromQuery();
     }
 
-    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+    public async ValueTask DisposeAsync()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+        if (_reviewModalScrollLocked)
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
+    }
 
     /// <summary>בית deep-links here with ?focus= to pre-select a queue tab.
     /// Blazor reuses this component across navigations, so we re-read on
@@ -590,56 +625,68 @@
     // ── Queue interaction ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Submission rows toggle inline expansion; request rows open the modal.
+    /// Both submissions and requests now expand inline.
+    /// Submissions lazy-load their review context; requests preview immediately
+    /// from the item DTO — no extra round-trip needed.
     /// </summary>
     private async Task ToggleQueueItem(MentorAttentionItemDto item)
     {
-        if (item.Kind != MentorAttentionKind.Submission)
-        {
-            _openRequestId = item.EntityId;
-            return;
-        }
-
-        // Collapse if already expanded.
+        // Collapse the item if it is already open.
         if (_expandedItemId == item.EntityId)
         {
-            _expandedItemId = null;
-            _expandedItem   = null;
-            _expandedCtx    = null;
+            _expandedItemId   = null;
+            _expandedItem     = null;
+            _expandedCtx      = null;
+            _loadingExpansion = false;
             return;
         }
 
-        // Expand and lazily load submission context.
+        // Expand. Clear any stale context from a previous expansion.
         _expandedItemId   = item.EntityId;
         _expandedItem     = item;
         _expandedCtx      = null;
-        _loadingExpansion = true;
-        StateHasChanged();
-
-        _expandedCtx      = await MentorService.GetSubmissionContextAsync(item.EntityId);
         _loadingExpansion = false;
+
+        // Submissions need an async context load; requests carry everything in the DTO.
+        if (item.Kind == MentorAttentionKind.Submission)
+        {
+            _loadingExpansion = true;
+            StateHasChanged();
+            _expandedCtx      = await MentorService.GetSubmissionContextAsync(item.EntityId);
+            _loadingExpansion = false;
+        }
     }
 
     // ── Review modal ─────────────────────────────────────────────────────────
 
-    private void OpenReviewModal()
+    private async Task OpenReviewModal()
     {
         if (_expandedCtx is null) return;
-        _reviewModalCtx          = _expandedCtx;
-        _reviewModalFeedback     = "";
-        _reviewModalError        = false;
+        _reviewModalCtx           = _expandedCtx;
+        _reviewModalFeedback      = "";
+        _reviewModalError         = false;
         _reviewModalFeedbackError = "";
         _reviewModalPendingAction = "";
+        if (!_reviewModalScrollLocked)
+        {
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.lock"); } catch { }
+            _reviewModalScrollLocked = true;
+        }
     }
 
-    private void CloseReviewModal()
+    private async Task CloseReviewModal()
     {
-        _reviewModalCtx          = null;
-        _reviewModalFeedback     = "";
-        _reviewModalError        = false;
+        _reviewModalCtx           = null;
+        _reviewModalFeedback      = "";
+        _reviewModalError         = false;
         _reviewModalFeedbackError = "";
-        _reviewModalBusy         = false;
+        _reviewModalBusy          = false;
         _reviewModalPendingAction = "";
+        if (_reviewModalScrollLocked)
+        {
+            try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
+            _reviewModalScrollLocked = false;
+        }
     }
 
     private async Task SubmitReviewAsync(string action)
@@ -666,7 +713,7 @@
         {
             // Remove the reviewed item from the queue.
             _reviews = _reviews.Where(r => r.EntityId != sid).ToList();
-            CloseReviewModal();
+            await CloseReviewModal();
             _expandedItemId = null;
             _expandedItem   = null;
             _expandedCtx    = null;
