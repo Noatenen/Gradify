@@ -34,7 +34,7 @@ public static class NavDefinitions
         // their own entries two and three rows down.
         new NavItem("המשימות שלי",    "lecturer/tasks",      "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
         new NavItem("הצוותים שלי",    "projects",            "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
-        new NavItem("הגשות ובקרה",    "lecturer/submissions", "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
+        new NavItem("הגשות",           "lecturer/submissions", "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
         // Badge: OpenRequests count (shown by LecturerTopNav, same as student's בקשות badge).
         new NavItem("בקשות",          "management/requests", "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
         new NavItem("יומן",           "lecturer/calendar",   "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),

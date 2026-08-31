@@ -6,6 +6,8 @@
 @inject IProjectRequestsService _Requests
 @inject IMentorAttentionService _Attention
 @inject IDashboardOverviewService _Overview
+@inject IPendingMentorApprovalsService _PendingApprovals
+@inject ITaskSubmissionsService _SubmissionsService
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -70,6 +72,12 @@
                 {
                     <span class="stn-nav-count motiva-count" aria-label="@($"{_actionRequestCount} בקשות ממתינות לתגובתך")">
                         @_actionRequestCount
+                    </span>
+                }
+                @if (item.Href == SubmissionsRoute && _submissionCount > 0)
+                {
+                    <span class="stn-nav-count motiva-count" aria-label="@($"{_submissionCount} הגשות")">
+                        @_submissionCount
                     </span>
                 }
             </NavLink>
@@ -161,6 +169,10 @@
     //            mentor number after flipping the toggle, from one component.
     private int _actionRequestCount;
 
+    // Global total of all submissions visible to the lecturer (pending + approved).
+    // Lecturer-only; always the GLOBAL total — does not change with team or tab filters.
+    private int _submissionCount;
+
     /// <summary>Which experience this bar is being drawn for. Reads the same
     /// NavDefinitions.GetShell as AppLayout, so the bar and the shell can
     /// never disagree — including for a dual-role (Staff + Mentor) user, where
@@ -187,6 +199,11 @@
         NavDefinitions.Shell.Lecturer => "management/requests",
         _                             => "requests",
     };
+
+    /// <summary>The route whose nav pill carries the הגשות count badge.
+    /// Only meaningful for Lecturer; returns empty for other roles so the
+    /// badge condition never fires.</summary>
+    private string SubmissionsRoute => IsLecturer ? "lecturer/submissions" : string.Empty;
 
     /// <summary>Three roles, three real calendars: /milestones is the
     /// student's plan, /mentor/calendar the mentor's scheduling surface and
@@ -260,6 +277,16 @@
             if (overview is null) return;
 
             count = overview.Summary.OpenRequests;
+
+            // Load global submission total for the הגשות nav badge.
+            // Runs in parallel with the overview fetch having already resolved.
+            var pendingTask  = _PendingApprovals.GetPendingAsync();
+            var approvedTask = _SubmissionsService.GetApprovedAsync();
+            await Task.WhenAll(pendingTask, approvedTask);
+
+            if (generation != _countGeneration) return;
+            _submissionCount = (pendingTask.Result?.Count ?? 0)
+                             + (approvedTask.Result?.Count ?? 0);
         }
         else
         {
@@ -327,6 +354,7 @@
         _countGeneration++;
         _countLoaded        = false;
         _actionRequestCount = 0;
+        _submissionCount    = 0;
 
         await InvokeAsync(StateHasChanged);
 
