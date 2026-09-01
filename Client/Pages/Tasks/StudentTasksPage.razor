@@ -3,6 +3,7 @@
 @using Microsoft.AspNetCore.Authorization
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
 @using AuthWithAdmin.Client.Pages.Submissions
 @inject ITasksService TasksService
 @inject ITaskSubmissionsService SubmissionsService
@@ -28,10 +29,7 @@
                  InitialNotes="@_editNotes"
                  OnClose="CloseSubmission" />
 
-<!-- ── Moodle confirmation ──
-     Shared MConfirmDialog since the migration pass: this page's own dialog
-     was the pattern the component was lifted from, so what renders is the
-     same dialog, now declared once for every student surface. -->
+<!-- ── Moodle confirmation ── -->
 <MConfirmDialog IsOpen="@(_moodleSubId > 0)"
                 Title="אישור הגשה במודל"
                 Message="האם את/ה בטוח/ה שההגשה בוצעה במודל?"
@@ -56,33 +54,8 @@
                 OnConfirm="ConfirmDeleteAsync"
                 OnCancel="CancelDelete" />
 
-@*
-    ── Hero ──
-    The finalized design's compact ambient header: page title, one line of live
-    milestone context, and the KPI row — one composition on one surface. The KPI
-    row goes in MPageHeader's own ChildContent slot, so there is no second hero
-    and no component API change.
-
-    .tsk-header-bleed cancels the student shell's 40px inline padding so the band
-    reaches the shell edge the way the Design draws it, while MPageHeader's own
-    inline padding keeps its text and the KPI row on the same boundary as the
-    content below.
-*@
 <div class="tsk-header-bleed">
     <MPageHeader Variant="MPageHeader.HeaderVariant.Compact" Title="המשימות שלי">
-        @*
-            The hero reads the CANONICAL current milestone from
-            IProjectContextService — the same value the dashboard hero, the
-            sidebar widget and the planning workspace show.
-
-            It deliberately does NOT use the local `CurrentMilestone` below.
-            That one is derived from ActiveGroups (milestones that still have an
-            unfinished task), which is the right input for ordering/highlighting
-            the task list but the wrong answer for "which milestone am I on":
-            with every task in פיתוח finished, ActiveGroups no longer contains
-            it, so this hero announced הערכה while every other student page said
-            פיתוח. `CurrentMilestone` is left untouched for the list.
-        *@
         <SubtitleContent>
             @if (!string.IsNullOrWhiteSpace(_context?.CurrentMilestoneTitle))
             {
@@ -94,144 +67,166 @@
                 }
             }
         </SubtitleContent>
-        @* The reference puts the tabs on the TITLE row, pushed to the reading
-           end — not on a full-width row of their own under the subtitle. *@
-        <Actions>
-            @if (HasData)
-            {
-                <TaskStatusTabs AttentionCount="@AttentionTasks.Count"
-                                DueThisWeekCount="@DueThisWeekCount"
-                                TeamCount="@_teamTasks.Count"
-                                CompletedCount="@CompletedTasks.Count"
-                                ActiveFilter="@_kpiFilter"
-                                OnSelectFilter="ToggleKpiFilter" />
-            }
-        </Actions>
     </MPageHeader>
 </div>
 
-@if (_isLoading)
-{
-    <MLoadingState Label="טוענת משימות…" />
-}
-else if (_loadError)
-{
-    <MEmptyState Title="אירעה שגיאה בטעינת המשימות"
-                 Description="נסי לרענן את הדף." />
-}
-else if (!HasData)
-{
-    <MEmptyState Title="לא שויכת לפרויקט עדיין"
-                 Description="פני למנחה שלך להשמת הצוות." />
-}
-else
-{
-    <div class="tsk-page">
-
-        @*
-            ── Active KPI filter ──
-            The Design surfaces the active filter as a removable chip rather than
-            a permanent toolbar; clearing it here and pressing the tab again are
-            the same action. It stays ABOVE the workspace and full width, because
-            it qualifies every panel below it, not one of them.
-        *@
-        @if (!string.IsNullOrEmpty(_kpiFilter))
-        {
-            <div class="tsk-filterbar">
-                <div class="tsk-filterbar-main">
-                    <span class="tsk-filterbar-label">מסנן פעיל:</span>
-                    <span class="tsk-filterbar-chip">@FilterChipLabel</span>
-                </div>
-                <button type="button" class="tsk-filterbar-clear" @onclick="ClearKpiFilter">
-                    ✕ נקה סינון
-                </button>
-            </div>
-        }
-
-        @*
-            ── The workspace ────────────────────────────────────────────────
-            ONE row that fills what is left of the viewport, not three sections
-            laid down the page.
-
-            Reading start (the wide column) carries the student's own thread:
-            what needs them now, then everything by milestone. דורש התייחסות is
-            a cross-cutting view over the very rows in the panel beneath it, so
-            this is where it belongs — stacked directly on top of the list it
-            draws from, sharing that column's width and inset. It is no longer a
-            capped card floating beside empty canvas.
-
-            The rail carries the team layer, full height. It is a different KIND
-            of work (student-created, shared, checkable), which is why it stays a
-            column of its own rather than a third block in the stack — and being
-            full height is what stops it reading as an afterthought.
-
-            Both columns stretch, so the workspace has one top edge and one
-            bottom edge. Every panel scrolls inside itself; the page does not.
-        *@
+<div class="tsk-page">
+    @if (_isLoading)
+    {
+        <MLoadingState Label="טוענת משימות…" />
+    }
+    else if (_loadError)
+    {
+        <MEmptyState Title="אירעה שגיאה בטעינת המשימות" Description="נסי לרענן את הדף." />
+    }
+    else if (!HasData)
+    {
+        <MEmptyState Title="לא שויכת לפרויקט עדיין" Description="פני למנחה שלך להשמת הצוות." />
+    }
+    else
+    {
         <div id="task-sections" class="tsk-workspace">
 
+            <!-- PRIMARY: flat task queue -->
             <div class="tsk-primary">
-                @*
-                    Hidden entirely when empty — the Design has no empty state
-                    for this band, and a permanently empty rose strip would read
-                    as an alert that isn't one. The column's `auto` first track
-                    then collapses and משימות הפרויקט takes the full height.
-                *@
-                @if (AttentionTasks.Count > 0)
-                {
-                    <TaskAttentionSection Tasks="@AttentionTasks" OnOpenDetail="OpenDetail" />
-                }
+                <MCard Padding="MCard.CardPadding.None" Fill="true">
+                    <div class="tsk-panel">
+                        <div class="tsk-panel-head">
+                            <MFilterTabs Tabs="@QueueFilterTabs"
+                                         ActiveKey="@_queueTab"
+                                         OnSelect="@(key => _queueTab = key)"
+                                         AriaLabel="סינון משימות" />
+                        </div>
 
-                <ProjectTasksSection Groups="@VisibleGroups"
-                                     CurrentMilestoneIds="@CurrentMilestoneIds"
-                                     EmptyMessage="@SectionEmptyMessage"
-                                     OnOpenDetail="OpenDetail" />
+                        <MScrollArea Tabbable="false">
+                            @if (FilteredTasks.Count == 0)
+                            {
+                                <MEmptyState Title="@QueueEmptyMessage" Live="true" />
+                            }
+                            else
+                            {
+                                @foreach (var task in FilteredTasks)
+                                {
+                                    var captured = task;
+                                    var isExpanded = _expandedTaskId == task.Id;
+
+                                    <div class="tsk-qitem @(isExpanded ? "tsk-qitem-open" : "")">
+
+                                        <!-- Collapsed row -->
+                                        <button type="button"
+                                                class="tsk-qitem-row"
+                                                @onclick="() => ToggleTask(captured)"
+                                                aria-expanded="@(isExpanded ? "true" : "false")"
+                                                aria-label="@($"פתיחת {task.Title}")">
+
+                                            <span class="tsk-qitem-top">
+                                                <span class="tsk-qbadge @BadgeClass(task)">@BadgeLabel(task)</span>
+                                                <span class="tsk-qitem-top-trail">
+                                                    @{ var countdown = CountdownLabel(task); }
+                                                    @if (!string.IsNullOrEmpty(countdown))
+                                                    {
+                                                        <span class="tsk-qitem-timing @CountdownClass(task)">@countdown</span>
+                                                    }
+                                                    <span class="tsk-qitem-chevron @(isExpanded ? "tsk-qitem-chevron-open" : "")"
+                                                          aria-hidden="true">
+                                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <path d="m6 9 6 6 6-6"></path>
+                                                        </svg>
+                                                    </span>
+                                                </span>
+                                            </span>
+
+                                            <strong class="tsk-qitem-title">@task.Title</strong>
+
+                                            <span class="tsk-qitem-ctx">
+                                                @{
+                                                    _taskMilestoneMap.TryGetValue(task.Id, out var milestoneTitle);
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(milestoneTitle))
+                                                {
+                                                    <span>@milestoneTitle</span>
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(_data?.ProjectTitle))
+                                                {
+                                                    @if (!string.IsNullOrWhiteSpace(milestoneTitle))
+                                                    {
+                                                        <span class="tsk-qitem-ctx-sep"> · </span>
+                                                    }
+                                                    <span>@_data!.ProjectTitle</span>
+                                                }
+                                            </span>
+                                        </button>
+
+                                        <!-- Inline expansion -->
+                                        @if (isExpanded)
+                                        {
+                                            <div class="tsk-qitem-body">
+                                                @* Type tags *@
+                                                @if (task.IsSubmission || task.IsMandatory)
+                                                {
+                                                    <div class="tsk-qitem-tags">
+                                                        @if (task.IsSubmission)
+                                                        {
+                                                            <span class="tsk-qitem-tag">הגשה</span>
+                                                        }
+                                                        @if (task.IsMandatory)
+                                                        {
+                                                            <span class="tsk-qitem-tag tsk-qitem-tag-req">חובה</span>
+                                                        }
+                                                    </div>
+                                                }
+
+                                                @* Submission context *@
+                                                @if (task.LatestSubmittedAt.HasValue)
+                                                {
+                                                    <p class="tsk-qitem-notes">
+                                                        הוגש לאחרונה: @task.LatestSubmittedAt.Value.ToLocalTime().ToString("dd.MM · HH:mm")
+                                                    </p>
+                                                }
+
+                                                <div class="tsk-qitem-actions">
+                                                    <button type="button"
+                                                            class="motiva-cta tsk-qitem-review"
+                                                            @onclick="() => OpenDetail(captured.Id)">
+                                                        פרטי המשימה
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </MScrollArea>
+                    </div>
+                </MCard>
             </div>
 
+            <!-- RAIL: team tasks -->
             <div class="tsk-rail">
                 <TeamTasksSection Tasks="@_teamTasks"
-                                  Filter="@TeamFilter"
-                                  EmptyTitle="@TeamEmptyTitle"
+                                  Filter="@null"
+                                  EmptyTitle="אין עדיין משימות צוות"
                                   OnChanged="StateHasChanged" />
             </div>
 
         </div>
+    }
+</div>
 
-    </div>
-}
 @code {
     [CascadingParameter] private User? _user { get; set; }
     [Parameter, SupplyParameterFromQuery] public int? TaskId { get; set; }
 
     private TasksPageDto?      _data;
-    /// <summary>Canonical project context for the hero's current-milestone
-    /// line. Cached per browser tab by ProjectContextService, so this is a
-    /// cache hit — the sidebar has already fetched it.</summary>
     private ProjectContextDto? _context;
     private bool               _isLoading = true;
     private bool               _loadError = false;
 
-    // ── KPI filter ────────────────────────────────────────────────────────────
-    // "" | "week" | "done". The Design's only filter axis: two of the four KPI
-    // cards are toggles, the other two are anchors. Pressing the active one
-    // clears it, matching the reference's `kpiFilter === key ? null : key`.
-    private string _kpiFilter = "";
-
-    // Team tasks — a separate, student-created work layer (TeamTaskDto), loaded
-    // from the same ITeamTasksService the dashboard card uses. Owned by the page
-    // rather than by TeamTasksSection so the KPI count and the list can never
-    // disagree about how many there are.
+    // Team tasks — separate student-created work layer
     private List<TeamTaskDto> _teamTasks = new();
 
-    // Search and sort are retained but no longer rendered: the finalized Tasks
-    // screen has no toolbar (the System Master assigns the search field to
-    // Knowledge Center). ApplySearchSort still runs, so the ordering behaviour
-    // and this code path stay live and can be re-exposed without rework.
-    private string _searchText = "";
-    // "due" | "priority" | "updated"
-    private string _sortKey = "due";
-
-    // Milestone title lookup, still used by TaskDetailModal callers.
+    // Milestone title lookup for the ctx line
     private Dictionary<int, string> _taskMilestoneMap = new();
 
     // ── Task detail modal ────────────────────────────────────────────────────
@@ -253,6 +248,95 @@ else
     private bool   _deleteBusy  = false;
     private string _deleteError = "";
 
+    // ── Queue filter ─────────────────────────────────────────────────────────
+    private string _queueTab = "";
+
+    // ── Inline expansion ──────────────────────────────────────────────────────
+    private int _expandedTaskId = 0;
+
+    // Filter tabs: כל המשימות / לא הוגש / הוגש / אושר
+    private IReadOnlyList<MFilterTabs.Tab> QueueFilterTabs => new[]
+    {
+        new MFilterTabs.Tab("",             "כל המשימות",  0),
+        new MFilterTabs.Tab("notsubmitted", "לא הוגש",    NotSubmittedCount),
+        new MFilterTabs.Tab("submitted",    "הוגש",        SubmittedCount),
+        new MFilterTabs.Tab("approved",     "אושר",        ApprovedCount),
+    };
+
+    private IReadOnlyList<TaskItemDto> FilteredTasks => _queueTab switch
+    {
+        "notsubmitted" => AllTasks.Where(IsNotSubmitted).OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
+        "submitted"    => AllTasks.Where(IsSubmittedTask).OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
+        "approved"     => AllTasks.Where(IsApproved).OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
+        _              => AllTasks.OrderBy(t => IsAttentionTask(t) ? 0 : 1).ThenBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
+    };
+
+    // "לא הוגש": Open/InProgress/ReturnedForRevision — not yet submitted or needs resubmission
+    private static bool IsNotSubmitted(TaskItemDto t) =>
+        t.Status is "Open" or "InProgress" or "ReturnedForRevision";
+
+    // "הוגש": submitted to mentor, pending review
+    private static bool IsSubmittedTask(TaskItemDto t) =>
+        t.Status is "SubmittedToMentor" or "RevisionSubmitted";
+
+    // "אושר": approved by mentor or fully done
+    private static bool IsApproved(TaskItemDto t) =>
+        t.Status is "ApprovedForSubmission" or "Done";
+
+    private int NotSubmittedCount => AllTasks.Count(IsNotSubmitted);
+    private int SubmittedCount    => AllTasks.Count(IsSubmittedTask);
+    private int ApprovedCount     => AllTasks.Count(IsApproved);
+
+    private void ToggleTask(TaskItemDto task) =>
+        _expandedTaskId = _expandedTaskId == task.Id ? 0 : task.Id;
+
+    // Status badge label for each task row
+    private static string BadgeLabel(TaskItemDto t) =>
+        TaskStatusHelpers.GetCategory(t) switch
+        {
+            TaskStatusHelpers.TaskCategory.Completed             => "הושלם",
+            TaskStatusHelpers.TaskCategory.Returned              => "נדרש תיקון",
+            TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "אושר",
+            _ when TaskStatusHelpers.IsOverdue(t)                => "באיחור",
+            _ when t.IsSubmission                                => "לא הוגש",
+            _                                                     => "פתוחה",
+        };
+
+    private static string BadgeClass(TaskItemDto t) =>
+        TaskStatusHelpers.GetCategory(t) switch
+        {
+            TaskStatusHelpers.TaskCategory.Completed             => "tsk-qbadge-done",
+            TaskStatusHelpers.TaskCategory.Returned              => "tsk-qbadge-attention",
+            TaskStatusHelpers.TaskCategory.ApprovedForSubmission => "tsk-qbadge-approved",
+            _ when TaskStatusHelpers.IsOverdue(t)                => "tsk-qbadge-attention",
+            _                                                     => "tsk-qbadge-open",
+        };
+
+    // Countdown label: "נותרו X ימים", "היום", or "" if no due date
+    private static string CountdownLabel(TaskItemDto t)
+    {
+        if (!t.DueDate.HasValue) return "";
+        var days = (t.DueDate.Value.Date - DateTime.Today).Days;
+        if (days < 0)  return $"באיחור {Math.Abs(days)} ימים";
+        if (days == 0) return "היום";
+        return $"נותרו {days} ימים";
+    }
+
+    private static string CountdownClass(TaskItemDto t)
+    {
+        if (!t.DueDate.HasValue) return "tsk-status-quiet";
+        var days = (t.DueDate.Value.Date - DateTime.Today).Days;
+        return days <= 3 ? "tsk-status-open" : "tsk-status-quiet";
+    }
+
+    private string QueueEmptyMessage => _queueTab switch
+    {
+        "notsubmitted" => "אין משימות שממתינות להגשה",
+        "submitted"    => "אין משימות שהוגשו וממתינות לבדיקה",
+        "approved"     => "אין משימות שאושרו",
+        _              => "אין משימות בפרויקט",
+    };
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
@@ -265,45 +349,15 @@ else
             _detailTaskId = TaskId.Value;
     }
 
-    // ── KPI anchor scrolling ──────────────────────────────────────────────────
-    // Two of the four KPI cards are real links to a section on this page, as the
-    // Design draws them. Blazor's router intercepts the click and updates the URL
-    // but does not scroll to the fragment, so the scroll is driven here through
-    // gradify.scrollToAnchor, added next to the existing scrollIntoView helper
-    // in wwwroot/js/gradify-interop.js (that one uses block:'nearest' and so
-    // does nothing while any part of the section is still on screen).
-    private string? _pendingFragment;
-
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
-        _pendingFragment = FragmentOf(e.Location);
-        if (_pendingFragment is not null) InvokeAsync(StateHasChanged);
-    }
-
-    private static string? FragmentOf(string uri)
-    {
-        int hash = uri.IndexOf('#');
-        if (hash < 0 || hash == uri.Length - 1) return null;
-        return uri[(hash + 1)..];
-    }
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        // On first render the fragment may already be in the URL (a shared or
-        // reloaded deep link), so it is read from the current location too.
-        var fragment = _pendingFragment ?? (firstRender ? FragmentOf(Nav.Uri) : null);
-        if (fragment is null) return;
-
-        _pendingFragment = null;
-        await JS.InvokeVoidAsync("gradify.scrollToAnchor", fragment);
+        InvokeAsync(StateHasChanged);
     }
 
     public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
 
     private async Task LoadDataAsync()
     {
-        // Both calls hit existing endpoints; team tasks were already being
-        // served to the dashboard, this page simply never asked for them.
         var tasksTask   = TasksService.GetTasksAsync();
         var teamTask    = TeamTasksService.GetAsync();
         var contextTask = ProjectContext.GetAsync();
@@ -324,24 +378,6 @@ else
             .GroupBy(x => x.Id)
             .ToDictionary(g => g.Key, g => g.First().MilestoneTitle);
     }
-
-    // ── KPI filter ────────────────────────────────────────────────────────────
-    private void ToggleKpiFilter(string key) =>
-        _kpiFilter = _kpiFilter == key ? "" : key;
-
-    private void ClearKpiFilter() => _kpiFilter = "";
-
-    private string FilterChipLabel => _kpiFilter switch
-    {
-        "done"      => "משימות שהושלמו",
-        "attention" => "דורש התייחסות",
-        _           => "הגשה בשבוע הקרוב",
-    };
-
-    // Retained (not rendered) — see the field declarations above.
-    private void OnSearchChanged(ChangeEventArgs e) => _searchText = e.Value?.ToString() ?? "";
-
-    private void OnSortChanged(ChangeEventArgs e) => _sortKey = e.Value?.ToString() ?? "due";
 
     // ── Submission modal handlers ─────────────────────────────────────────────
     private async Task CloseSubmission()
@@ -428,30 +464,14 @@ else
         _deleteBusy  = false;
         await LoadDataAsync();
     }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  DATA → DESIGN MAPPING
-    //  Every section below is a VIEW over the data the page already loads. No
-    //  business rule changed: TaskStatusHelpers still decides what a task's
-    //  status is, and the server still decides which milestone it belongs to.
     // ══════════════════════════════════════════════════════════════════════════
 
     private bool HasData => _data is not null && !string.IsNullOrEmpty(_data.ProjectTitle);
 
-    // Both group sets, so completed milestones can be shown alongside active ones.
-    //
-    // MERGED BY MILESTONE, not concatenated. The server splits one milestone
-    // across both lists whenever it has a mix of finished and unfinished work:
-    // ActiveGroups carries its non-Done tasks, CompletedGroups its Done ones.
-    // A plain Concat therefore rendered that milestone as TWO headers with the
-    // same title — הערכה appeared twice, once with its open task and once with
-    // its finished one — which read as two milestones and broke the hierarchy
-    // the panel exists to show.
-    //
-    // The group-level fields are milestone-wide and identical in both copies
-    // (DoneCount/TotalCount count the whole milestone, not the sublist), so the
-    // first copy supplies them and only Tasks are unioned. DistinctBy on Id is
-    // belt-and-braces: the two lists are disjoint by construction, so no task
-    // count anywhere on the page changes.
+    // Merged milestone groups (active + completed), deduped by milestone id
     private List<TaskMilestoneGroupDto> AllTasksGroups
     {
         get
@@ -488,12 +508,7 @@ else
     private List<TaskItemDto> AllTasks =>
         AllTasksGroups.SelectMany(g => g.Tasks).ToList();
 
-    // ── Current milestone (hero subtitle + Project section emphasis) ──────────
-    // The server already marks visibility with IsCurrentlyOpen and progress with
-    // MilestoneStatus. Prefer an open, in-progress milestone; fall back to any
-    // open one, then to the first non-completed by OrderIndex. Null when there
-    // is genuinely no current milestone — the subtitle then renders nothing
-    // rather than inventing a date.
+    // Current milestone — used for milestone map context only
     private TaskMilestoneGroupDto? CurrentMilestone
     {
         get
@@ -513,14 +528,7 @@ else
             ? new HashSet<int>()
             : new HashSet<int> { CurrentMilestone.ProjectMilestoneId };
 
-    // ── A. דורש התייחסות ──────────────────────────────────────────────────────
-    // Returned by the mentor, past due, or flagged urgent by the server. A
-    // cross-cutting view: these same tasks still appear under their milestone in
-    // משימות הפרויקט, exactly as the brief requires — nothing is moved or copied
-    // in the domain model.
-    /// <summary>"This task needs the student." Extracted from AttentionTasks so
-    /// the דורש התייחסות tab filters on exactly the predicate the attention
-    /// band is built from, rather than a second copy of it.</summary>
+    // Attention tasks — used for ordering in the "all" filter view
     private static bool IsAttentionTask(TaskItemDto t) =>
         (TaskStatusHelpers.GetCategory(t) == TaskStatusHelpers.TaskCategory.Returned
          || TaskStatusHelpers.IsOverdue(t)
@@ -532,123 +540,4 @@ else
             .Where(IsAttentionTask)
             .OrderBy(t => t.DueDate ?? DateTime.MaxValue)
             .ToList();
-
-    // ── B. משימות הפרויקט ─────────────────────────────────────────────────────
-    // Real milestone groups, with the KPI filter applied to the tasks inside
-    // each. Mirrors the reference: a milestone whose tasks all filter out is
-    // dropped, and completed milestones are hidden while the "week" filter is on
-    // (showCompletedMilestones: kpiFilter !== 'week').
-    private List<TaskMilestoneGroupDto> VisibleGroups
-    {
-        get
-        {
-            var groups = AllTasksGroups
-                .OrderByDescending(g => CurrentMilestoneIds.Contains(g.ProjectMilestoneId))
-                .ThenBy(g => g.OrderIndex)
-                .ToList();
-
-            if (_kpiFilter == "week")
-                groups = groups.Where(g => g.MilestoneStatus != "Completed").ToList();
-
-            return groups
-                .Select(g => new TaskMilestoneGroupDto
-                {
-                    ProjectMilestoneId = g.ProjectMilestoneId,
-                    MilestoneTitle     = g.MilestoneTitle,
-                    OrderIndex         = g.OrderIndex,
-                    MilestoneStatus    = g.MilestoneStatus,
-                    OpenDate           = g.OpenDate,
-                    DueDate            = g.DueDate,
-                    CloseDate          = g.CloseDate,
-                    IsCurrentlyOpen    = g.IsCurrentlyOpen,
-                    DoneCount          = g.DoneCount,
-                    TotalCount         = g.TotalCount,
-                    Tasks              = ApplySearchSort(g.Tasks.Where(PassesKpiFilter)).ToList(),
-                })
-                .Where(g => g.Tasks.Count > 0)
-                .ToList();
-        }
-    }
-
-    private bool PassesKpiFilter(TaskItemDto t) => _kpiFilter switch
-    {
-        // "attention" is new with the final design, which makes דורש התייחסות a
-        // tab like its neighbours rather than an anchor to a section. It reuses
-        // IsAttentionTask — the SAME predicate AttentionTasks is built from, so
-        // the tab and the band above it can never disagree about what needs the
-        // student.
-        "attention" => IsAttentionTask(t),
-        "week" => TaskStatusHelpers.GetCategory(t) != TaskStatusHelpers.TaskCategory.Completed && IsDueThisWeek(t.DueDate),
-        "done" => TaskStatusHelpers.GetCategory(t) == TaskStatusHelpers.TaskCategory.Completed,
-        _      => true,
-    };
-
-    // ── C. משימות צוות ────────────────────────────────────────────────────────
-    // The same filter axis reaches the team panel, as it does in the reference.
-    private Func<TeamTaskDto, bool>? TeamFilter => _kpiFilter switch
-    {
-        // Team tasks carry no attention state of their own, so the attention
-        // tab hides the panel's rows rather than inventing one for them.
-        "attention" => _ => false,
-        "week" => t => !t.IsDone && IsDueThisWeek(t.DueDate),
-        "done" => t => t.IsDone,
-        _      => null,
-    };
-
-    // ── D. הושלמו ─────────────────────────────────────────────────────────────
-    // No section of its own in the finalized design — a KPI count and a filter.
-    // The underlying completion data and logic are untouched.
-    private List<TaskItemDto> CompletedTasks =>
-        AllTasks.Where(t => TaskStatusHelpers.GetCategory(t) == TaskStatusHelpers.TaskCategory.Completed).ToList();
-
-    // ── KPI: להגשה השבוע ──────────────────────────────────────────────────────
-    // Derived client-side from DueDate, per the reference's dueThisWeek (today
-    // through today + 7 days, inclusive). Counts project tasks and team tasks
-    // together, since the filter it drives applies to both panels.
-    private int DueThisWeekCount =>
-        AllTasks.Count(t => TaskStatusHelpers.GetCategory(t) != TaskStatusHelpers.TaskCategory.Completed
-                            && IsDueThisWeek(t.DueDate))
-        + _teamTasks.Count(t => !t.IsDone && IsDueThisWeek(t.DueDate));
-
-    private static bool IsDueThisWeek(DateTime? due) =>
-        due.HasValue
-        && due.Value.Date >= DateTime.Today
-        && due.Value.Date <= DateTime.Today.AddDays(7);
-
-    // ── Empty-state copy, per active filter ───────────────────────────────────
-    private string SectionEmptyMessage => _kpiFilter switch
-    {
-        "done" => "אין משימות שהושלמו",
-        "week" => "אין משימות להגשה בשבוע הקרוב",
-        _      => "אין משימות בפרויקט זה",
-    };
-
-    private string TeamEmptyTitle => _kpiFilter switch
-    {
-        "done" => "אין משימות צוות שהושלמו",
-        "week" => "אין משימות צוות להגשה בשבוע הקרוב",
-        _      => "אין עדיין משימות צוות",
-    };
-
-    // ── Search + sort — retained, not rendered ────────────────────────────────
-    // "לפי עדכון אחרון" approximates last-updated from the closest available
-    // signal (last submission, else completion time), since TaskItemDto has no
-    // stored UpdatedAt column.
-    private List<TaskItemDto> ApplySearchSort(IEnumerable<TaskItemDto> tasks)
-    {
-        var filtered = string.IsNullOrWhiteSpace(_searchText)
-            ? tasks
-            : tasks.Where(t => t.Title.Contains(_searchText, StringComparison.OrdinalIgnoreCase));
-
-        return _sortKey switch
-        {
-            "priority" => filtered.OrderByDescending(t => t.IsMandatory)
-                                  .ThenBy(t => t.DueDate ?? DateTime.MaxValue)
-                                  .ToList(),
-            "updated"  => filtered.OrderByDescending(t => t.LatestSubmittedAt ?? t.CompletedAt ?? DateTime.MinValue)
-                                  .ThenByDescending(t => t.Id)
-                                  .ToList(),
-            _          => filtered.OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
-        };
-    }
 }
