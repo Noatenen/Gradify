@@ -40,6 +40,13 @@ public class TaskTemplatesController : ControllerBase
                     tt.Description,
                     tt.MilestoneTemplateId,
                     mt.Title AS MilestoneTitle,
+                    mt.ProjectTypeId,
+                    CASE
+                        WHEN tt.MilestoneTemplateId IS NULL THEN 'לא משויך'
+                        WHEN mt.ProjectTypeId = 1           THEN 'טכנולוגי'
+                        WHEN mt.ProjectTypeId = 2           THEN 'מתודולוגי'
+                        ELSE                                     'שניהם'
+                    END AS Applicability,
                     tt.StartDate,
                     tt.DueDate,
                     tt.IsActive,
@@ -50,7 +57,7 @@ public class TaskTemplatesController : ControllerBase
                     tt.MaxFileSizeMb,
                     tt.AllowedFileTypes
             FROM    TaskTemplates tt
-            JOIN    MilestoneTemplates mt ON mt.Id = tt.MilestoneTemplateId
+            LEFT JOIN MilestoneTemplates mt ON mt.Id = tt.MilestoneTemplateId
             ORDER   BY tt.StartDate, tt.Id";
 
         var rows = await _db.GetRecordsAsync<TaskTemplateDto>(sql);
@@ -75,6 +82,13 @@ public class TaskTemplatesController : ControllerBase
                     tt.Description,
                     tt.MilestoneTemplateId,
                     mt.Title AS MilestoneTitle,
+                    mt.ProjectTypeId,
+                    CASE
+                        WHEN tt.MilestoneTemplateId IS NULL THEN 'לא משויך'
+                        WHEN mt.ProjectTypeId = 1           THEN 'טכנולוגי'
+                        WHEN mt.ProjectTypeId = 2           THEN 'מתודולוגי'
+                        ELSE                                     'שניהם'
+                    END AS Applicability,
                     tt.StartDate,
                     tt.DueDate,
                     tt.IsActive,
@@ -85,7 +99,7 @@ public class TaskTemplatesController : ControllerBase
                     tt.MaxFileSizeMb,
                     tt.AllowedFileTypes
             FROM    TaskTemplates tt
-            JOIN    MilestoneTemplates mt ON mt.Id = tt.MilestoneTemplateId
+            LEFT JOIN MilestoneTemplates mt ON mt.Id = tt.MilestoneTemplateId
             WHERE   tt.Id = @Id";
 
         var rows = await _db.GetRecordsAsync<TaskTemplateDto>(sql, new { Id = id });
@@ -254,13 +268,55 @@ public class TaskTemplatesController : ControllerBase
         return Ok(rows ?? Enumerable.Empty<OperationalTaskAdminDto>());
     }
 
+    // ── PATCH /api/task-templates/{id}/milestone ────────────────────────────
+    //
+    // Attaches a task template to a milestone template, or detaches it
+    // (MilestoneTemplateId = null → the unassigned library pool).
+    //
+    // This is what the Admin milestone editor's task panel writes: adding a task
+    // to a milestone attaches it, and the ✕ on a row detaches it. Neither is a
+    // delete — a task template is library content somebody authored, and losing
+    // it because it was moved off one milestone would be a trap.
+    //
+    // DELIBERATELY DOES NOT TOUCH PROJECT DATA.
+    //   • Detaching leaves every already-created Tasks row exactly as it is.
+    //     Project tasks are snapshots taken at rollout and hold no FK back to
+    //     TaskTemplates, so there is nothing to cascade even if we wanted to —
+    //     and silently deleting a student's task because an admin reorganised
+    //     the library would be indefensible.
+    //   • Attaching does NOT back-fill projects either. Writing to every active
+    //     project in a cycle is what "החלה על פרויקטי המחזור" is for, and that
+    //     stays an explicit, confirmed action rather than a side effect of
+    //     dragging a task onto a milestone.
+    [HttpPatch("{id:int}/milestone")]
+    public async Task<IActionResult> SetMilestone(
+        int id, [FromBody] SetTaskTemplateMilestoneRequest req, int authUserId)
+    {
+        if (req.MilestoneTemplateId is <= 0)
+            return BadRequest("אבן דרך לא תקינה");
+
+        if (!await MilestoneTemplateExistsAsync(req.MilestoneTemplateId))
+            return BadRequest("אבן הדרך לא נמצאה");
+
+        int affected = await _db.SaveDataAsync(
+            "UPDATE TaskTemplates SET MilestoneTemplateId = @MilestoneTemplateId WHERE Id = @Id",
+            new { req.MilestoneTemplateId, Id = id });
+
+        if (affected == 0) return NotFound("המשימה לא נמצאה");
+        return Ok();
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
 
     private static string? Validate(SaveTaskTemplateRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.Title))  return "שם המשימה הוא שדה חובה";
-        if (req.MilestoneTemplateId <= 0)           return "יש לבחור אבן דרך";
         if (req.DueDate <= req.StartDate)           return "תאריך היעד חייב להיות אחרי תאריך ההתחלה";
+
+        // A milestone is OPTIONAL now: null means the template lives in the
+        // library unassigned. Zero and negatives are still rejected — they are
+        // a malformed id, not an intent to detach.
+        if (req.MilestoneTemplateId is <= 0)        return "אבן דרך לא תקינה";
 
         if (req.IsSubmission)
         {
@@ -271,10 +327,20 @@ public class TaskTemplatesController : ControllerBase
         return null;
     }
 
-    private async Task<bool> MilestoneTemplateExistsAsync(int id) =>
-        (await _db.GetRecordsAsync<int>(
-            "SELECT COUNT(1) FROM MilestoneTemplates WHERE Id = @Id", new { Id = id }))
-        .FirstOrDefault() > 0;
+    /// <summary>
+    /// True when the id refers to a real milestone template — and also when it
+    /// is null, because null is the valid "unassigned" case rather than a
+    /// missing row. Callers use this as a guard, so folding the null case in
+    /// here keeps every call site from repeating the same null check.
+    /// </summary>
+    private async Task<bool> MilestoneTemplateExistsAsync(int? id)
+    {
+        if (id is null) return true;
+
+        return (await _db.GetRecordsAsync<int>(
+            "SELECT COUNT(1) FROM MilestoneTemplates WHERE Id = @Id", new { Id = id.Value }))
+            .FirstOrDefault() > 0;
+    }
 
     // Loads linked resource files for a list of templates and attaches them in-place.
     private async Task AttachLinkedFilesAsync(List<TaskTemplateDto> templates)

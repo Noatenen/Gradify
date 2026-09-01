@@ -38,6 +38,28 @@ public class MilestoneTemplateDto
     public DateTime? OpenDate  { get; set; }
     public DateTime? DueDate   { get; set; }
     public DateTime? CloseDate { get; set; }
+
+    // ── Usage counts ─────────────────────────────────────────────────────────
+    // A milestone TEMPLATE is library content; these say what currently depends
+    // on it. They drive the list's task column and, above all, the delete guard:
+    // a template referenced by a cycle or a project cannot be removed, because
+    // the whole downstream chain reads its title and type through the FK.
+
+    /// <summary>Task templates currently attached to this milestone template.</summary>
+    public int TaskTemplateCount { get; set; }
+
+    /// <summary>Academic cycles whose program includes this template
+    /// (AcademicYearMilestones rows).</summary>
+    public int CycleUsageCount { get; set; }
+
+    /// <summary>Project milestones instantiated from this template, through
+    /// AcademicYearMilestones → ProjectMilestones. Non-zero means live student
+    /// progress depends on it.</summary>
+    public int ProjectMilestoneCount { get; set; }
+
+    /// <summary>True when nothing references the template, so a physical delete
+    /// is safe. Computed server-side so the client never re-derives the rule.</summary>
+    public bool CanDelete => CycleUsageCount == 0 && ProjectMilestoneCount == 0;
 }
 
 /// <summary>Payload for creating or updating a milestone template.</summary>
