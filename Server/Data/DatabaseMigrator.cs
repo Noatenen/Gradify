@@ -1679,6 +1679,19 @@ public static class DatabaseMigrator
         // year-specific dates are intentionally left NULL so admins fill them.
         await EnsureRoadmapStagesAsync(connection);
 
+        // ── Unassigned task templates ────────────────────────────────────────
+        // TaskTemplates.MilestoneTemplateId was NOT NULL, which made a task
+        // template unable to exist without a milestone — so the Admin milestone
+        // editor had no safe meaning for "remove this task from this milestone".
+        // It is now nullable: NULL = an unassigned library template, present in
+        // the Task Templates library but attached to no milestone and therefore
+        // never rolled out to a cycle.
+        //
+        // The FK also moves from ON DELETE CASCADE to ON DELETE SET NULL, so
+        // deleting a milestone template detaches its task templates instead of
+        // destroying library content.
+        await EnsureNullableTaskTemplateMilestoneAsync(connection);
+
         // ── Airtable bootstrap: one-time seed from appsettings.json ──────────
         // The DB is the sole runtime source of Airtable integration config.
         // For existing dev/staging machines that still have an "Airtable"
@@ -1854,6 +1867,86 @@ public static class DatabaseMigrator
                 ('ClientChallenge',           'אתגר מול לקוח',       'קושי או בעיה מול לקוח הפרויקט',               1, 'Admin,Staff',        0, 'Optional', 1),
                 ('ContentChallenge',          'אתגר תוכן',           'בעיית תוכן או נושאים אקדמיים בפרויקט',         1, 'Admin,Staff',        0, 'Optional', 1),
                 ('CharacterizationChallenge', 'אתגר אפיון',          'בעיה באפיון הפרויקט או בדרישות',               1, 'Admin,Staff',        0, 'Optional', 1)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureNullableTaskTemplateMilestoneAsync
+    //
+    //  Makes TaskTemplates.MilestoneTemplateId nullable and switches its FK from
+    //  ON DELETE CASCADE to ON DELETE SET NULL.
+    //
+    //  WHY. Two Admin behaviours depend on it:
+    //    • The milestone editor's "remove task from this milestone" — under a
+    //      NOT NULL column the only ways to express that were to delete the task
+    //      template or to retire it everywhere, neither of which is what the
+    //      action means.
+    //    • Deleting a milestone template used to CASCADE its task templates out
+    //      of existence. Detaching them keeps library content that took work to
+    //      author.
+    //
+    //  SQLite cannot ALTER a column's nullability or drop an FK, so the table is
+    //  rebuilt — the same approach the ResourceFiles migration above uses.
+    //  Guarded by a schema probe so it runs at most once, and the copy is
+    //  column-for-column: no row is filtered, no value is rewritten. A task
+    //  template that has a milestone today still has exactly that milestone
+    //  afterwards.
+    //
+    //  Nothing downstream changes: project `Tasks` are snapshots created by the
+    //  rollout and hold no FK to TaskTemplates, so instantiated project data is
+    //  untouched by this or by any later detach.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureNullableTaskTemplateMilestoneAsync(SqliteConnection connection)
+    {
+        await using var probe = connection.CreateCommand();
+        probe.CommandText =
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='TaskTemplates'";
+        var schemaSql = (await probe.ExecuteScalarAsync())?.ToString() ?? "";
+
+        // Already rebuilt (or table absent) — nothing to do.
+        if (schemaSql.Length == 0) return;
+        if (!schemaSql.Contains("MilestoneTemplateId INTEGER NOT NULL")) return;
+
+        await connection.ExecuteNonQueryAsync("PRAGMA foreign_keys = OFF");
+        try
+        {
+            await connection.ExecuteNonQueryAsync(@"
+                CREATE TABLE TaskTemplates_new (
+                    Id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Title                  TEXT    NOT NULL,
+                    Description            TEXT,
+                    MilestoneTemplateId    INTEGER,
+                    StartDate              TEXT    NOT NULL,
+                    DueDate                TEXT    NOT NULL,
+                    IsActive               INTEGER NOT NULL DEFAULT 1,
+                    CreatedAt              TEXT    NOT NULL DEFAULT (datetime('now')),
+                    IsSubmission           INTEGER NOT NULL DEFAULT 0,
+                    SubmissionInstructions TEXT,
+                    MaxFilesCount          INTEGER,
+                    MaxFileSizeMb          INTEGER,
+                    AllowedFileTypes       TEXT,
+                    FOREIGN KEY (MilestoneTemplateId)
+                        REFERENCES MilestoneTemplates(Id) ON DELETE SET NULL
+                )");
+
+            await connection.ExecuteNonQueryAsync(@"
+                INSERT INTO TaskTemplates_new
+                    (Id, Title, Description, MilestoneTemplateId, StartDate, DueDate,
+                     IsActive, CreatedAt, IsSubmission, SubmissionInstructions,
+                     MaxFilesCount, MaxFileSizeMb, AllowedFileTypes)
+                SELECT
+                    Id, Title, Description, MilestoneTemplateId, StartDate, DueDate,
+                    IsActive, CreatedAt, COALESCE(IsSubmission, 0), SubmissionInstructions,
+                    MaxFilesCount, MaxFileSizeMb, AllowedFileTypes
+                FROM TaskTemplates");
+
+            await connection.ExecuteNonQueryAsync("DROP TABLE TaskTemplates");
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskTemplates_new RENAME TO TaskTemplates");
+        }
+        finally
+        {
+            await connection.ExecuteNonQueryAsync("PRAGMA foreign_keys = ON");
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

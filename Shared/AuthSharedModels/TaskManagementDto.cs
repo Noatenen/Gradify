@@ -20,8 +20,30 @@ public class TaskTemplateDto
     public int      Id                  { get; set; }
     public string   Title               { get; set; } = "";
     public string?  Description         { get; set; }
-    public int      MilestoneTemplateId { get; set; }
-    public string   MilestoneTitle      { get; set; } = "";
+    // ── Milestone assignment ────────────────────────────────────────────────
+    // NULLABLE. Null = an UNASSIGNED library template: it exists in the Task
+    // Templates library but is attached to no milestone, so no cycle rollout
+    // will ever create it. This is what the milestone editor's "remove from
+    // this milestone" produces — the template is detached, never deleted.
+    public int?     MilestoneTemplateId { get; set; }
+
+    /// <summary>Title of the assigned milestone template, or null when unassigned.</summary>
+    public string?  MilestoneTitle      { get; set; }
+
+    // ── Applicability — INHERITED, never stored on the task ──────────────────
+    // TaskTemplates has no ProjectTypeId and deliberately does not get one: the
+    // rollout decides which projects a task reaches from its MILESTONE's
+    // ProjectTypeId (AcademicYearsController.ApplyTemplates). A second,
+    // task-level type would render a control the engine does not read.
+    // These two are projections of the parent milestone, resolved server-side,
+    // and are read-only everywhere in the UI.
+
+    /// <summary>Parent milestone's ProjectTypeId. Null = both types, or unassigned.</summary>
+    public int?     ProjectTypeId       { get; set; }
+
+    /// <summary>Resolved label: "שניהם" | "טכנולוגי" | "מתודולוגי" | "לא משויך".</summary>
+    public string   Applicability       { get; set; } = "לא משויך";
+
     public DateTime StartDate           { get; set; }
     public DateTime DueDate             { get; set; }
     public bool     IsActive            { get; set; }
@@ -55,7 +77,11 @@ public class SaveTaskTemplateRequest
 {
     public string   Title               { get; set; } = "";
     public string?  Description         { get; set; }
-    public int      MilestoneTemplateId { get; set; }
+
+    /// <summary>Milestone template to attach to, or null to leave the template
+    /// unassigned in the library. See TaskTemplateDto.MilestoneTemplateId.</summary>
+    public int?     MilestoneTemplateId { get; set; }
+
     public DateTime StartDate           { get; set; }
     public DateTime DueDate             { get; set; }
     public bool     IsActive            { get; set; } = true;
@@ -97,4 +123,19 @@ public class OperationalTaskAdminDto
     public string    ProjectTitle   { get; set; } = "";
     /// <summary>Name of the milestone this task belongs to, or empty string.</summary>
     public string    MilestoneTitle { get; set; } = "";
+}
+
+/// <summary>
+/// Attach a task template to a milestone template, or detach it.
+///
+/// A dedicated endpoint rather than a full PUT because the milestone editor
+/// changes only this one field: sending the whole template back would let an
+/// association change clobber a concurrent edit to the task's title, dates or
+/// submission policy.
+/// </summary>
+public class SetTaskTemplateMilestoneRequest
+{
+    /// <summary>Target milestone template, or null to detach into the
+    /// unassigned pool.</summary>
+    public int? MilestoneTemplateId { get; set; }
 }

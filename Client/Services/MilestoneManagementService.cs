@@ -11,6 +11,14 @@ public interface IMilestoneManagementService
     Task<string?>                      CreateTemplateAsync(SaveMilestoneTemplateRequest request);
     Task<string?>                      UpdateTemplateAsync(int id, SaveMilestoneTemplateRequest request);
     Task<bool>                         ToggleActiveAsync(int id);
+
+    /// <summary>Copies the template and its task templates as a new inactive
+    /// draft. Returns the new template's title, or an error message.</summary>
+    Task<(string? title, string? error)> DuplicateTemplateAsync(int id);
+
+    /// <summary>Physically deletes a template. Refused by the server (409) when
+    /// any cycle or project depends on it; the message names the counts.</summary>
+    Task<string?>                      DeleteTemplateAsync(int id);
 }
 
 public class MilestoneManagementService : IMilestoneManagementService
@@ -77,5 +85,48 @@ public class MilestoneManagementService : IMilestoneManagementService
             return resp.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    public async Task<(string? title, string? error)> DuplicateTemplateAsync(int id)
+    {
+        try
+        {
+            var resp = await _http.PostAsync($"api/milestone-templates/{id}/duplicate", null);
+
+            if (!resp.IsSuccessStatusCode)
+                return (null, await ReadErrorAsync(resp));
+
+            var body = await resp.Content.ReadFromJsonAsync<DuplicateResult>();
+            return (body?.Title, null);
+        }
+        catch { return (null, "שגיאת תקשורת"); }
+    }
+
+    public async Task<string?> DeleteTemplateAsync(int id)
+    {
+        try
+        {
+            var resp = await _http.DeleteAsync($"api/milestone-templates/{id}");
+            return resp.IsSuccessStatusCode ? null : await ReadErrorAsync(resp);
+        }
+        catch { return "שגיאת תקשורת"; }
+    }
+
+    /// <summary>
+    /// The server's own sentence. These endpoints refuse for reasons the admin
+    /// cannot guess — a template held by N cycles and M project milestones — so
+    /// the body IS the message. It is returned as a bare string, hence the trim.
+    /// </summary>
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage resp)
+    {
+        var body = await resp.Content.ReadAsStringAsync();
+        return string.IsNullOrWhiteSpace(body) ? "הפעולה נכשלה" : body.Trim().Trim('"');
+    }
+
+    private sealed class DuplicateResult
+    {
+        public int    Id                  { get; set; }
+        public string Title               { get; set; } = "";
+        public int    TaskTemplatesCopied { get; set; }
     }
 }

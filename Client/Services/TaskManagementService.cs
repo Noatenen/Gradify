@@ -12,6 +12,11 @@ public interface ITaskManagementService
     Task<string?>                        UpdateAsync(int id, SaveTaskTemplateRequest request);
     Task<bool>                           DeleteAsync(int id);
     Task<bool>                           ToggleActiveAsync(int id);
+
+    /// <summary>Attaches a task template to a milestone template, or detaches it
+    /// when <paramref name="milestoneTemplateId"/> is null. Never touches
+    /// already-instantiated project tasks.</summary>
+    Task<string?>                        SetMilestoneAsync(int id, int? milestoneTemplateId);
 }
 
 public class TaskManagementService : ITaskManagementService
@@ -82,5 +87,21 @@ public class TaskManagementService : ITaskManagementService
             return resp.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    public async Task<string?> SetMilestoneAsync(int id, int? milestoneTemplateId)
+    {
+        try
+        {
+            var resp = await _http.PatchAsJsonAsync(
+                $"api/task-templates/{id}/milestone",
+                new SetTaskTemplateMilestoneRequest { MilestoneTemplateId = milestoneTemplateId });
+
+            if (resp.IsSuccessStatusCode) return null;
+
+            var body = await resp.Content.ReadAsStringAsync();
+            return string.IsNullOrWhiteSpace(body) ? "הפעולה נכשלה" : body.Trim().Trim('"');
+        }
+        catch { return "שגיאת תקשורת"; }
     }
 }
