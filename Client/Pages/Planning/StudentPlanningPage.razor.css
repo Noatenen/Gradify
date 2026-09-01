@@ -130,6 +130,175 @@
     .pl-spinner { animation: none; }
 }
 
+/* ── The calendar takes the height the page is already given ───────────────
+   WHAT USED TO OWN THE HEIGHT: nothing. `.app-shell-student` is a border-box
+   flex column at min-height:100vh and `.app-shell-student .app-content` is
+   already `flex: 1`, so the height was arriving at this page — but `.pl-page`
+   and `.pl-wide` are both `flex: 0 1 auto`, so they sized to their content
+   and handed the surplus back. The month grid's rows were then sized by one
+   number, `.pl-daycell`'s min-block-size, and a 5-row month sat at 5×88px
+   with the rest of the viewport unused below the footnote.
+
+   The fix is the chain, not a height: page → wide → card → section → grid
+   each grow, and `grid-auto-rows: minmax(min-content, 1fr)` divides whatever
+   arrives EQUALLY between the rows. min-content as the floor rather than a
+   literal keeps `.pl-daycell` the single source of truth for how short a row
+   may get, including its own responsive steps — so this only ever adds
+   height, never removes it, and a cell can never be squashed below what it
+   is already allowed to be.
+
+   ALL THREE VIEWS TAKE THE HEIGHT — but they spend it differently, and that
+   difference is the one class `.pl-page-fit` carries.
+
+     • MONTH grows into the surplus and never shrinks: its rows have a floor
+       (`.pl-daycell`) and there is nothing to scroll inside a month, so on a
+       viewport too short for the grid the PAGE scrolls, exactly as before.
+       Month therefore does NOT get `.pl-page-fit`, and every rule below that
+       is keyed to `.pl-month*` is untouched from the version that shipped.
+
+     • WEEK and TIMELINE have a body that is naturally taller than any
+       viewport — 12 hour rows at a fixed 44px, or one row per item — so they
+       get `.pl-page-fit`, which lets every level of the column shrink
+       (`min-block-size: 0`, the missing piece that makes a flex child refuse
+       to go below its content) down to the viewport. The overflow then lands
+       on ONE element inside the card: `.pl-week-hours` / `.pl-tl-scroll`.
+       Nothing above it moves — not the shell, not the hero, not the toolbar,
+       not the week's day head or its כל היום band — and no hour row is
+       compressed to buy the fit.
+
+   THE GATE. Below 1024px wide the page swaps to the agenda list anyway, and
+   below 700px tall there is no surplus to hand out on any month — so the
+   whole mechanism is skipped and the layout is byte-for-byte what it was.
+   For month it is also a no-op, not a regression, at any height where the
+   content already exceeds the viewport: flex only ever distributes FREE
+   space. */
+
+@media (min-width: 1024px) and (min-height: 700px) {
+    .pl-page-fill {
+        flex: 1 1 auto;
+        /* 8px + the shell's 20px canvas padding = a 28px bottom gutter, the
+           same inset the shell uses left and right. */
+        padding-block-end: 8px;
+    }
+
+    .pl-page-fill .pl-wide {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* MCard is the section surface, so it is part of the chain: without it
+       the card sizes to its content and `.pl-month` has nothing to fill. */
+    .pl-page-fill .pl-wide ::deep .m-card {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .pl-page-fill .pl-wide ::deep .pl-month {
+        flex: 1 1 auto;
+    }
+
+    .pl-page-fill .pl-wide ::deep .pl-month-body {
+        flex: 1 1 auto;
+        grid-auto-rows: minmax(min-content, 1fr);
+    }
+
+    /* ── Week + timeline: fit the viewport, scroll inside the body ──
+       min-block-size:0 at EVERY level. A flex child's automatic minimum is
+       its content, so without this the hour grid pushes the card, the card
+       pushes the page and the page pushes the shell past 100vh — which is
+       exactly the outer scrollbar being removed here. Month deliberately does
+       not carry this class and so keeps its content-based floor. */
+    .pl-page-fit {
+        /* THE PIECE min-block-size:0 CANNOT DO.
+           `.app-shell-student` is min-height:100vh, not height:100vh — it
+           GROWS with its content, so letting the column shrink is not enough:
+           nothing was asking it to. Size containment makes this element's
+           intrinsic height 0 for its ancestors, so the shell stops measuring
+           the hour grid, settles at 100vh, and hands the leftover back down
+           through `flex: 1`. That is what removes the OUTER scrollbar; the
+           rules below then decide which single element inside gets it.
+
+           Only size is contained — not layout or paint — so absolutely
+           positioned descendants (the event blocks, the now line, the
+           timeline's sticky rail) keep the containing block they had. */
+        contain: size;
+        min-block-size: 0;
+    }
+
+    .pl-page-fit .pl-wide {
+        min-block-size: 0;
+    }
+
+    .pl-page-fit .pl-wide ::deep .m-card {
+        min-block-size: 0;
+    }
+
+    /* Week: head and כל היום hold their natural height, the hour grid takes
+       the rest and is the only thing that scrolls. Hour rows stay 44px — the
+       block positions are computed in C# against that number. */
+    .pl-page-fit .pl-wide ::deep .pl-week {
+        flex: 1 1 auto;
+        min-block-size: 0;
+    }
+
+    /* scrollbar-gutter on ALL THREE bands, not just the scroller.
+       The head, the כל היום band and the hour grid are three separate grids
+       on the same 44px + 7×1fr track definition, so they only line up while
+       they are the same width — and giving one of them a classic scrollbar
+       took 16px out of that one alone and walked the day columns off the
+       hour columns by up to 16px. `overflow: hidden` makes the two static
+       bands scroll containers too, purely so the gutter reserves on them too.
+
+       BOTH-EDGES, not plain `stable`. The scroll box below is `direction:
+       ltr` (that is what puts its bar on the physical right) while these two
+       bands stay rtl, so a one-sided reservation would land on opposite
+       physical edges and re-introduce the very drift it is here to remove.
+       Reserving on both edges is the only value that is side-agnostic.
+       Where scrollbars are overlays (macOS) it reserves nothing either way. */
+    .pl-page-fit .pl-wide ::deep .pl-week-head,
+    .pl-page-fit .pl-wide ::deep .pl-week-allday {
+        flex: 0 0 auto;
+        overflow: hidden;
+        scrollbar-gutter: stable both-edges;
+    }
+
+    /* The BOX scrolls and carries the flip; the grid inside it stays rtl so
+       the seven days keep their order. */
+    .pl-page-fit .pl-wide ::deep .pl-week-hoursbox {
+        flex: 1 1 auto;
+        min-block-size: 0;
+        overflow-y: auto;
+        direction: ltr;
+        scrollbar-gutter: stable both-edges;
+    }
+
+    .pl-page-fit .pl-wide ::deep .pl-week-hoursbox > .pl-week-hours {
+        direction: rtl;
+    }
+
+    /* Timeline: .pl-tl-scroll already owns overflow-x for the track; it takes
+       overflow-y too rather than a new wrapper. Its `overflow-y: hidden`
+       default would CLIP the rows once the height is constrained, so it is
+       explicitly auto here. The legend is a sibling of the card and keeps its
+       own height. */
+    .pl-page-fit .pl-wide ::deep .pl-clip {
+        flex: 1 1 auto;
+        min-block-size: 0;
+    }
+
+    .pl-page-fit .pl-wide ::deep .pl-tl-scroll {
+        flex: 1 1 auto;
+        min-block-size: 0;
+        overflow-y: auto;
+    }
+
+    .pl-page-fit .pl-wide ::deep .pl-tl-legend {
+        flex: 0 0 auto;
+    }
+}
+
 /* Tighten the hero gap on short viewports — the one vertical value here that
    the Master does not fix, so the one that gives when height is scarce. */
 @media (max-height: 820px) {
