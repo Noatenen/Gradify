@@ -1,0 +1,1240 @@
+@namespace AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services.UserImport
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Field = AuthWithAdmin.Client.Services.UserImport.UserImportModel.Field
+@using RowState = AuthWithAdmin.Client.Services.UserImport.UserImportModel.RowState
+@using DuplicateAction = AuthWithAdmin.Client.Services.UserImport.UserImportModel.DuplicateAction
+@inject IAuthenticationService _Auth
+
+@*
+    UserImportWizard — ייבוא משתמשים.
+
+    A five-stage wizard inside the shared MModal, opened from the Users
+    management screen. It never navigates: the admin stays on the table, and the
+    table refreshes underneath when the run finishes.
+
+    IT WRITES THROUGH THE EXISTING FLOWS, NOTHING ELSE
+    ──────────────────────────────────────────────────
+    Creates go through IAuthenticationService.AdminAddUser → POST api/Admin/AddUser
+    (which validates, refuses a duplicate email, and mails a set-password link).
+    Merges and replaces go through UpdateUserAsync → PUT api/Admin/users/{id}.
+    Those are the same two calls the single-user create and edit modals make, so
+    every server-side rule applies unchanged and no SQL is written from here.
+
+    WHAT THE BACKEND CANNOT DO, AND HOW THAT SHOWS
+    ──────────────────────────────────────────────
+    • There is no bulk endpoint, so the run is N sequential requests with a
+      visible progress count rather than one atomic call. A partial run is
+      therefore possible, which is why the result screen reports per-row
+      outcomes instead of one verdict.
+    • Every create sends the new user an email. That is stated on the review
+      step, before the button, not after.
+    • PUT api/Admin/users/{id} writes FirstName, LastName, Phone, AcademicYear
+      and Role. It cannot change Email — which is fine, since Email is the match
+      key — and no endpoint exposes IdNumber or IsActive, so neither is
+      importable. UserImportModel.Diff covers exactly the writable set.
+
+    Stages: Upload → Mapping → Preview → Duplicates (only when there are any)
+    → Review → Running → Done.
+*@
+
+<MModal IsOpen="IsOpen"
+        Size="MModal.ModalSize.Wide"
+        Title="@StageTitle"
+        Class="uiw-modal"
+        CloseOnBackdrop="false"
+        ShowCloseButton="@(_stage != Stage.Running)"
+        OnClose="RequestCloseAsync">
+
+    <ChildContent>
+        @*  The one place open popups are closed from. Same construction as the
+            Users table: every trigger stops the click from reaching here, so a
+            click anywhere ELSE dismisses whatever is open. *@
+        <div class="uiw" dir="rtl" @onclick="CloseMapMenu">
+
+            @* ══ Stage rail ═══════════════════════════════════════════════ *@
+            @if (_stage != Stage.Done)
+            {
+                <div class="uiw-rail">
+                    <MProgressStepper Steps="RailSteps" AriaLabel="שלבי הייבוא">
+                        <LabelTemplate Context="s">
+                            <span class="uiw-rail-label @(s.Step.State == MProgressStepper.StepState.Current ? "uiw-rail-label--on" : "")">
+                                @s.Step.Label
+                            </span>
+                        </LabelTemplate>
+                    </MProgressStepper>
+                </div>
+            }
+
+            @* ══ 1. UPLOAD ════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Upload)
+            {
+                <div class="uiw-stage">
+                    @if (_grid is null)
+                    {
+                        @* The InputFile is laid over the whole zone at zero
+                           opacity: a native file input is already a drop target,
+                           so drag-and-drop and click-to-browse both work with no
+                           JS interop and no custom drop handling. *@
+                        <div class="uiw-drop @(_dragOver ? "uiw-drop--over" : "")"
+                             @ondragenter="() => _dragOver = true"
+                             @ondragleave="() => _dragOver = false"
+                             @ondrop="() => _dragOver = false">
+
+                            @*  The WRAPPER does the covering, not a class on
+                                InputFile: InputFile renders its own <input>
+                                root, which carries no isolation attribute of
+                                ours, so `class` on the component never matches
+                                a scoped rule and the native file chrome stays
+                                visible. Same wrapper pattern as
+                                StudentProfileIdentityHero's avatar picker. *@
+                            <div class="uiw-drop-input">
+                                <InputFile accept="@ImportFileParser.AcceptAttribute"
+                                           OnChange="HandleFileSelectedAsync"
+                                           aria-label="בחירת קובץ לייבוא" />
+                            </div>
+
+                            <span class="uiw-drop-glyph motiva-ico-gradient" aria-hidden="true">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                     stroke="url(#motivaIconGradient)" stroke-width="1.8"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 16V4M8 8l4-4 4 4" />
+                                    <path d="M20 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3" />
+                                </svg>
+                            </span>
+
+                            <p class="uiw-drop-title">גררו לכאן קובץ, או לחצו לבחירה</p>
+                            <p class="uiw-drop-sub">
+                                CSV או XLSX
+                                <span class="uiw-tip" tabindex="0" role="note"
+                                      data-tip="נתמכים CSV (מופרד בפסיק, נקודה-פסיק או טאב) ו-XLSX. השורה הראשונה חייבת להכיל את שמות העמודות. קבצי .xls ישנים אינם נתמכים — יש לשמור אותם מחדש.">
+                                    ?
+                                </span>
+                            </p>
+                        </div>
+
+                        <MAccordionItem Primary="מה צריך להיות בקובץ?"
+                                        Open="_helpOpen"
+                                        OnToggle="() => _helpOpen = !_helpOpen"
+                                        Class="uiw-help">
+                            <div class="uiw-help-body">
+                                <p>
+                                    השורה הראשונה היא שורת הכותרות. כל שורה נוספת היא משתמש אחד.
+                                    שמות העמודות יזוהו אוטומטית בעברית או באנגלית — לדוגמה
+                                    <code>אימייל</code> / <code>email</code>,
+                                    <code>שם מלא</code> / <code>full name</code>,
+                                    <code>טלפון</code> / <code>phone</code>,
+                                    <code>תפקיד</code> / <code>role</code>,
+                                    <code>מחזור</code> / <code>cycle</code>.
+                                    עמודות שלא יזוהו יופיעו לשלב המיפוי הידני.
+                                </p>
+                                <p>
+                                    <strong>אימייל הוא שדה חובה</strong> — לפיו המערכת מזהה משתמש קיים.
+                                    בנוסף נדרש שם: או עמודת "שם מלא", או שתי עמודות נפרדות
+                                    לשם פרטי ולשם משפחה.
+                                </p>
+                                <p>
+                                    ערכי תפקיד מזוהים לפי סטודנט / מנחה / מרצה / מנהל מערכת
+                                    (או המקבילות באנגלית). שורה ללא תפקיד תיווצר כסטודנט.
+                                </p>
+                                <p class="uiw-help-muted">
+                                    לא ניתן לייבא סיסמאות, תעודות זהות או סטטוס פעיל/לא פעיל —
+                                    אין לשדות אלה נקודת קצה בממשק ניהול המשתמשים.
+                                    כל משתמש חדש מקבל במייל קישור להגדרת סיסמה.
+                                </p>
+                            </div>
+                        </MAccordionItem>
+                    }
+                    else
+                    {
+                        @* File card — what was read, and one way back out. *@
+                        <div class="uiw-file">
+                            <span class="uiw-file-glyph" aria-hidden="true">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+                                    <path d="M14 2v6h6" />
+                                </svg>
+                            </span>
+                            <div class="uiw-file-text">
+                                <p class="uiw-file-name" title="@_fileName"><bdi>@_fileName</bdi></p>
+                                <p class="uiw-file-meta">
+                                    @_grid.FormatLabel · @_grid.Rows.Count שורות ·
+                                    @_grid.Headers.Count עמודות · @FileSizeLabel
+                                </p>
+                            </div>
+                            <button type="button" class="uiw-file-clear" @onclick="ClearFile">
+                                החלפת קובץ
+                            </button>
+                        </div>
+
+                        @if (_grid.Warning is not null)
+                        {
+                            <div class="uiw-note uiw-note--warn">@_grid.Warning</div>
+                        }
+                        @if (_grid.Rows.Count == 0)
+                        {
+                            <div class="uiw-note uiw-note--warn">
+                                נמצאה שורת כותרות בלבד — אין שורות משתמשים לייבוא.
+                            </div>
+                        }
+                    }
+
+                    @if (_parsing)
+                    {
+                        <div class="uiw-busy"><span class="uiw-spinner" aria-hidden="true"></span> קורא את הקובץ…</div>
+                    }
+                    @if (_parseError is not null)
+                    {
+                        <div class="uiw-note uiw-note--error">@_parseError</div>
+                    }
+                </div>
+            }
+
+            @* ══ 2. MAPPING ═══════════════════════════════════════════════ *@
+            @if (_stage == Stage.Mapping)
+            {
+                <div class="uiw-stage">
+                    <div class="uiw-stage-head">
+                        <p class="uiw-stage-line">
+                            @_mappings.Count(m => m.AutoMapped) מתוך @_mappings.Count עמודות מופו אוטומטית
+                        </p>
+                        <span class="uiw-tip" tabindex="0" role="note"
+                              data-tip="שדה שמופה אוטומטית זוהה לפי שם העמודה. ניתן לשנות כל מיפוי, ולסמן עמודות שלא רוצים לייבא כ\"אל תייבא שדה זה\".">?</span>
+                    </div>
+
+                    @foreach (var missing in UserImportModel.MissingRequirements(_mappings))
+                    {
+                        <div class="uiw-note uiw-note--error">חסר מיפוי: @missing</div>
+                    }
+                    @foreach (var conflict in UserImportModel.ConflictingTargets(_mappings))
+                    {
+                        <div class="uiw-note uiw-note--error">
+                            יותר מעמודה אחת ממופה לשדה "@UserImportModel.FieldLabel(conflict)" — יש לבחור אחת בלבד.
+                        </div>
+                    }
+                    @if (UserImportModel.HasNameConflict(_mappings))
+                    {
+                        <div class="uiw-note uiw-note--error">
+                            לא ניתן למפות גם "שם מלא" וגם שם פרטי/משפחה — יש לבחור אחת מהדרכים.
+                        </div>
+                    }
+
+                    <div class="uiw-maplist">
+                        @for (var i = 0; i < _mappings.Count; i++)
+                        {
+                            var index = i;
+                            var m     = _mappings[i];
+                            var state = MapState(m);
+                            <div class="uiw-maprow uiw-maprow--@state">
+                                <div class="uiw-map-src">
+                                    <span class="uiw-map-header" title="@m.Header"><bdi>@m.Header</bdi></span>
+                                    @if (!string.IsNullOrWhiteSpace(m.Sample))
+                                    {
+                                        <span class="uiw-map-sample" title="@m.Sample">לדוגמה: <bdi>@m.Sample</bdi></span>
+                                    }
+                                </div>
+
+                                @*  Two elements in an inline-flex row, not one
+                                    string with a leading glyph. A leading "!"
+                                    or "✓" is a bidi-neutral character: it
+                                    inherits the paragraph direction and lands
+                                    at the START of the RTL run, i.e. to the
+                                    RIGHT of the Hebrew — "! דורש מיפוי". Flex
+                                    order removes the ambiguity entirely, so
+                                    the label reads first and its marker trails
+                                    it: "דורש מיפוי !". *@
+                                <span class="uiw-map-state uiw-map-state--@state">
+                                    <span class="uiw-map-state-text">@MapStateLabel(state)</span>
+                                    <span class="uiw-map-state-mark" aria-hidden="true">@MapStateMark(state)</span>
+                                </span>
+
+                                <div class="uiw-map-dest">
+                                    @*  A destination already claimed by another column
+                                        is ABSENT from this menu, not greyed inside it:
+                                        with eight fields and a dozen columns, a list of
+                                        mostly-unpickable rows is a list you have to
+                                        read twice. The row's OWN selection and
+                                        "אל תייבא" are never withheld — see
+                                        IsFieldAvailable, which is unchanged and still
+                                        the single rule. The conflict banner above stays
+                                        as the defensive fallback. *@
+                                    <MSelect Options="DestOptions(m)"
+                                             Value="@m.Target.ToString()"
+                                             ValueChanged="v => SetTarget(m, v)"
+                                             Open="_openMapMenu == index"
+                                             OpenChanged="open => ToggleMapMenu(index, open)"
+                                             AriaLabel="@($"שדה יעד עבור {m.Header}")"
+                                             OnDismiss="RequestCloseAsync" />
+                                    @if (m.Note is not null && m.Target == Field.Ignore)
+                                    {
+                                        <span class="uiw-tip uiw-tip--inline" tabindex="0" role="note" data-tip="@m.Note">?</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @* ══ 3. PREVIEW ═══════════════════════════════════════════════ *@
+            @if (_stage == Stage.Preview)
+            {
+                <div class="uiw-stage">
+                    <div class="uiw-stage-head">
+                        <p class="uiw-stage-line">@ValidationSummary</p>
+                    </div>
+
+                    @*  ONE ACCORDION PER IMPORTED ROW.
+
+                        The details used to be printed permanently under every
+                        row, which on a 52-error file turned the whole check
+                        into a wall of red prose you had to read to find the
+                        rows you could still use. They are now behind a
+                        chevron, and the row keeps its verdict chip — so the
+                        table is scannable without opening anything, and
+                        nobody has to open a row to learn IF it is broken,
+                        only WHY.
+
+                        Still a <table>: six of the seven collapsed columns
+                        only mean anything aligned against the rows above and
+                        below them. The accordion contract MAccordionItem
+                        states is met on the rows instead — head and body
+                        share one tinted, bounded surface (.uiw-vrow--open),
+                        with the body an inset opaque card inside it. *@
+                    <div class="uiw-tablewrap">
+                        <table class="uiw-table uiw-vtable">
+                            <thead>
+                                <tr>
+                                    <th class="uiw-col-line">#</th>
+                                    <th>שם מלא</th>
+                                    <th>אימייל</th>
+                                    <th class="uiw-col-narrow">תפקיד</th>
+                                    <th class="uiw-col-narrow">מחזור</th>
+                                    <th class="uiw-col-narrow">טלפון</th>
+                                    <th class="uiw-col-state">מצב</th>
+                                    <th class="uiw-col-chev"><span class="uiw-sr">פרטים</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in _rows)
+                                {
+                                    var r         = row;
+                                    var hasDetail = r.Errors.Count > 0 || r.Notices.Count > 0;
+                                    var open      = hasDetail && _openRows.Contains(r.LineNumber);
+
+                                    <tr class="uiw-row uiw-row--@RowClass(r) @(open ? "uiw-vrow--open" : "")">
+                                        <td class="uiw-col-line">@r.LineNumber</td>
+                                        <td class="uiw-strong">@(string.IsNullOrWhiteSpace(r.FullName) ? "—" : r.FullName)</td>
+                                        <td dir="ltr" class="uiw-ltr">@(string.IsNullOrWhiteSpace(r.Email) ? "—" : r.Email)</td>
+                                        <td>@RoleLabel(r.Role)</td>
+                                        <td>@(string.IsNullOrWhiteSpace(r.AcademicYear) ? "—" : r.AcademicYear)</td>
+                                        <td dir="ltr" class="uiw-ltr">@(string.IsNullOrWhiteSpace(r.Phone) ? "—" : r.Phone)</td>
+                                        <td>
+                                            @if (r.State == RowState.Invalid)
+                                            {
+                                                <span class="uiw-chip uiw-chip--error">דורש תיקון</span>
+                                            }
+                                            else if (r.State == RowState.Duplicate)
+                                            {
+                                                <span class="uiw-chip uiw-chip--dup">קיים במערכת</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="uiw-chip uiw-chip--ok">חדש</span>
+                                            }
+                                        </td>
+                                        <td class="uiw-col-chev">
+                                            @*  A clean row gets NO chevron. A control that
+                                                opens nothing is a promise of content that
+                                                is not there. *@
+                                            @if (hasDetail)
+                                            {
+                                                <button type="button"
+                                                        class="uiw-chev @(open ? "uiw-chev--on" : "")"
+                                                        aria-expanded="@(open ? "true" : "false")"
+                                                        aria-label="@($"פירוט הבדיקה לשורה {r.LineNumber}")"
+                                                        @onclick="() => ToggleRowDetail(r.LineNumber)">
+                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                                         stroke="currentColor" stroke-width="2.2"
+                                                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                        <path d="m6 9 6 6 6-6"></path>
+                                                    </svg>
+                                                </button>
+                                            }
+                                        </td>
+                                    </tr>
+
+                                    @if (open)
+                                    {
+                                        <tr class="uiw-vdetail">
+                                            <td colspan="8">
+                                                <div class="uiw-vdetail-box">
+                                                    @*  Errors and notices are kept apart because
+                                                        the model already keeps them apart: an entry
+                                                        in Errors is what makes the row Invalid and
+                                                        therefore unimportable, while a Notice never
+                                                        blocks anything. Same strings, unchanged. *@
+                                                    @if (r.Errors.Count > 0)
+                                                    {
+                                                        <p class="uiw-vdetail-title uiw-vdetail-title--error">בעיות בשורה</p>
+                                                        <ul class="uiw-vdetail-list uiw-vdetail-list--error">
+                                                            @foreach (var err in r.Errors)
+                                                            {
+                                                                <li>@err</li>
+                                                            }
+                                                        </ul>
+                                                    }
+                                                    @if (r.Notices.Count > 0)
+                                                    {
+                                                        <p class="uiw-vdetail-title">לתשומת לב</p>
+                                                        <ul class="uiw-vdetail-list">
+                                                            @foreach (var note in r.Notices)
+                                                            {
+                                                                <li>@note</li>
+                                                            }
+                                                        </ul>
+                                                    }
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if (_rows.Any(r => r.State == RowState.Invalid))
+                    {
+                        <p class="uiw-foot-note">
+                            שורות שדורשות תיקון לא ייובאו ולא יימחקו — יש לתקן אותן בקובץ ולהעלות אותו שוב.
+                        </p>
+                    }
+                </div>
+            }
+
+            @* ══ 4. DUPLICATES ════════════════════════════════════════════ *@
+            @if (_stage == Stage.Duplicates)
+            {
+                <div class="uiw-stage">
+                    <div class="uiw-stage-head">
+                        <p class="uiw-stage-line">@Duplicates.Count משתמשים כבר קיימים במערכת (זוהו לפי כתובת האימייל)</p>
+                        <span class="uiw-tip" tabindex="0" role="note"
+                              data-tip="מיזוג משלים רק שדות ריקים ולא דורס ערכים קיימים. החלפה כותבת את ערכי הקובץ במקום הקיימים. השארת המקורי מדלגת על השורה.">?</span>
+                    </div>
+
+                    <div class="uiw-bulk">
+                        <span class="uiw-bulk-label">החל על כל הכפילויות:</span>
+                        @foreach (var action in new[] { DuplicateAction.Merge, DuplicateAction.Replace, DuplicateAction.Skip })
+                        {
+                            var a = action;
+                            <button type="button"
+                                    class="uiw-bulk-btn @(_bulkAction == a ? "uiw-bulk-btn--on" : "")"
+                                    @onclick="() => ApplyBulk(a)">
+                                @ActionLabel(a)
+                            </button>
+                        }
+                    </div>
+
+                    @if (_rows.Any(r => r.State == RowState.Duplicate && r.Action == DuplicateAction.Replace))
+                    {
+                        <div class="uiw-note uiw-note--warn">
+                            החלפה דורסת ערכים קיימים ואינה ניתנת לביטול. השדות שישתנו מסומנים בכל שורה.
+                        </div>
+                    }
+
+                    <div class="uiw-duplist">
+                        @foreach (var duplicate in Duplicates)
+                        {
+                            var row = duplicate;
+                            var existing = row.Existing!;
+                            var fills = UserImportModel.MergeFills(existing, row);
+                            var overwrites = UserImportModel.ReplaceOverwrites(existing, row);
+
+                            <div class="uiw-dup @(row.Action == DuplicateAction.Replace ? "uiw-dup--danger" : "")">
+                                <div class="uiw-dup-head">
+                                    <div class="uiw-dup-id">
+                                        <span class="uiw-strong">@row.FullName</span>
+                                        <span class="uiw-ltr uiw-muted" dir="ltr">@row.Email</span>
+                                    </div>
+                                    <div class="uiw-dup-actions">
+                                        @foreach (var action in new[] { DuplicateAction.Merge, DuplicateAction.Replace, DuplicateAction.Skip })
+                                        {
+                                            var a = action;
+                                            var r = row;
+                                            <button type="button"
+                                                    class="uiw-dup-btn @(r.Action == a ? "uiw-dup-btn--on" : "") @(a == DuplicateAction.Replace ? "uiw-dup-btn--danger" : "")"
+                                                    @onclick="() => SetRowAction(r, a)">
+                                                @ActionLabel(a)
+                                            </button>
+                                        }
+                                    </div>
+                                </div>
+
+                                <div class="uiw-dup-body">
+                                    @if (row.Action == DuplicateAction.Skip)
+                                    {
+                                        <p class="uiw-dup-empty">הרשומה הקיימת תישאר ללא שינוי, ושורת הקובץ תדולג.</p>
+                                    }
+                                    else if (row.Action == DuplicateAction.Merge && fills.Count == 0)
+                                    {
+                                        <p class="uiw-dup-empty">אין שדות ריקים להשלמה — הרשומה הקיימת תישאר ללא שינוי.</p>
+                                    }
+                                    else if (row.Action == DuplicateAction.Replace && overwrites.Count == 0 && fills.Count == 0)
+                                    {
+                                        <p class="uiw-dup-empty">ערכי הקובץ זהים לקיימים — לא ישתנה דבר.</p>
+                                    }
+                                    else
+                                    {
+                                        <table class="uiw-difftable">
+                                            <thead>
+                                                <tr>
+                                                    <th>שדה</th>
+                                                    <th>במערכת</th>
+                                                    <th>בקובץ</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var d in UserImportModel.Diff(existing, row))
+                                                {
+                                                    var willFill    = row.Action == DuplicateAction.Merge && d.ExistingIsEmpty && d.ImportedValue.Length > 0;
+                                                    var willReplace = row.Action == DuplicateAction.Replace && d.Differs && !d.ExistingIsEmpty;
+                                                    var willAdd     = row.Action == DuplicateAction.Replace && d.ExistingIsEmpty && d.ImportedValue.Length > 0;
+
+                                                    <tr class="@(willReplace ? "uiw-diff--replace" : willFill || willAdd ? "uiw-diff--fill" : "")">
+                                                        <td class="uiw-muted">@d.Label</td>
+                                                        <td><bdi>@(d.ExistingValue.Length == 0 ? "—" : d.ExistingValue)</bdi></td>
+                                                        <td>
+                                                            <bdi>@(d.ImportedValue.Length == 0 ? "—" : d.ImportedValue)</bdi>
+                                                            @if (willReplace)   { <span class="uiw-diff-tag uiw-diff-tag--replace">יידרס</span> }
+                                                            else if (willFill || willAdd) { <span class="uiw-diff-tag uiw-diff-tag--fill">יושלם</span> }
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @* ══ 5. REVIEW ════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Review)
+            {
+                <div class="uiw-stage">
+                    <ul class="uiw-summary">
+                        <li class="uiw-sum uiw-sum--ok">
+                            <span class="uiw-sum-n">@Plan.Create</span>
+                            <span class="uiw-sum-t">משתמשים חדשים ייווצרו</span>
+                        </li>
+                        <li class="uiw-sum uiw-sum--ok">
+                            <span class="uiw-sum-n">@Plan.Merge</span>
+                            <span class="uiw-sum-t">משתמשים קיימים יושלמו (שדות ריקים בלבד)</span>
+                        </li>
+                        <li class="uiw-sum @(Plan.Replace > 0 ? "uiw-sum--danger" : "")">
+                            <span class="uiw-sum-n">@Plan.Replace</span>
+                            <span class="uiw-sum-t">משתמשים קיימים יוחלפו</span>
+                        </li>
+                        <li class="uiw-sum">
+                            <span class="uiw-sum-n">@Plan.Skip</span>
+                            <span class="uiw-sum-t">כפילויות יידלגו</span>
+                        </li>
+                        <li class="uiw-sum @(Plan.Invalid > 0 ? "uiw-sum--error" : "")">
+                            <span class="uiw-sum-n">@Plan.Invalid</span>
+                            <span class="uiw-sum-t">שורות לא תקינות לא ייובאו</span>
+                        </li>
+                    </ul>
+
+                    @if (Plan.Create > 0)
+                    {
+                        <p class="uiw-foot-note">
+                            כל משתמש חדש יקבל מייל עם קישור להגדרת סיסמה.
+                        </p>
+                    }
+                    @if (Plan.Replace > 0)
+                    {
+                        <div class="uiw-note uiw-note--warn">
+                            @Plan.Replace רשומות קיימות יוחלפו בערכי הקובץ. פעולה זו אינה ניתנת לביטול.
+                        </div>
+                    }
+                    @if (Plan.IsNoop)
+                    {
+                        <div class="uiw-note uiw-note--warn">אין פעולה לביצוע — אף שורה לא תיצור או תעדכן משתמש.</div>
+                    }
+                </div>
+            }
+
+            @* ══ RUNNING ══════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Running)
+            {
+                <div class="uiw-stage uiw-stage--center">
+                    <span class="uiw-spinner uiw-spinner--lg" aria-hidden="true"></span>
+                    <p class="uiw-run-title">מייבא משתמשים…</p>
+                    <p class="uiw-run-count" aria-live="polite">@_ranCount מתוך @_runTotal</p>
+                    <div class="uiw-progress" role="progressbar"
+                         aria-valuemin="0" aria-valuemax="@_runTotal" aria-valuenow="@_ranCount">
+                        <span class="uiw-progress-bar" style="width:@ProgressPercent%"></span>
+                    </div>
+                    <p class="uiw-foot-note">אין נקודת קצה לייבוא מרוכז, ולכן המשתמשים נשלחים אחד אחרי השני. אין לסגור את החלון.</p>
+                </div>
+            }
+
+            @* ══ DONE ═════════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Done)
+            {
+                <div class="uiw-stage">
+                    <ul class="uiw-summary">
+                        <li class="uiw-sum uiw-sum--ok">
+                            <span class="uiw-sum-n">@_results.Count(r => !r.Failed)</span>
+                            <span class="uiw-sum-t">הצליחו</span>
+                        </li>
+                        <li class="uiw-sum">
+                            <span class="uiw-sum-n">@SkippedCount</span>
+                            <span class="uiw-sum-t">דולגו</span>
+                        </li>
+                        <li class="uiw-sum @(_results.Any(r => r.Failed) ? "uiw-sum--error" : "")">
+                            <span class="uiw-sum-n">@_results.Count(r => r.Failed)</span>
+                            <span class="uiw-sum-t">נכשלו</span>
+                        </li>
+                    </ul>
+
+                    @if (_results.Any(r => r.Failed))
+                    {
+                        <p class="uiw-stage-line">שורות שנכשלו</p>
+                        <div class="uiw-tablewrap uiw-tablewrap--short">
+                            <table class="uiw-table">
+                                <thead>
+                                    <tr>
+                                        <th class="uiw-col-line">#</th>
+                                        <th>שם מלא</th>
+                                        <th>אימייל</th>
+                                        <th>סיבה</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var failure in _results.Where(r => r.Failed))
+                                    {
+                                        <tr class="uiw-row uiw-row--error">
+                                            <td class="uiw-col-line">@failure.Line</td>
+                                            <td class="uiw-strong">@failure.Name</td>
+                                            <td dir="ltr" class="uiw-ltr">@failure.Email</td>
+                                            <td class="uiw-inline uiw-inline--error">@failure.Detail</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    @if (_results.Any(r => r.MailFailed))
+                    {
+                        <div class="uiw-note uiw-note--warn">
+                            @_results.Count(r => r.MailFailed) משתמשים נוצרו אך שליחת המייל אליהם נכשלה.
+                            ניתן לשלוח להם קישור להגדרת סיסמה מתפריט השורה בטבלה.
+                        </div>
+                    }
+
+                    @if (_rows.Any(r => r.State == RowState.Invalid))
+                    {
+                        <p class="uiw-foot-note">
+                            @_rows.Count(r => r.State == RowState.Invalid) שורות לא תקינות לא נשלחו כלל.
+                        </p>
+                    }
+                </div>
+            }
+        </div>
+    </ChildContent>
+
+    <FooterContent>
+        <div class="uiw-footer">
+            @if (_stage == Stage.Done)
+            {
+                <button type="button" class="uiw-btn uiw-btn-primary motiva-cta" @onclick="CloseAsync">סיום</button>
+            }
+            else if (_stage == Stage.Running)
+            {
+                <span class="uiw-muted">הייבוא מתבצע…</span>
+            }
+            else
+            {
+                @if (CanGoBack)
+                {
+                    <button type="button" class="uiw-btn uiw-btn-ghost" @onclick="Back">חזרה</button>
+                }
+                <span class="uiw-footer-gap"></span>
+                <button type="button" class="uiw-btn uiw-btn-ghost" @onclick="CloseAsync">ביטול</button>
+
+                @if (_stage == Stage.Review)
+                {
+                    <button type="button" class="uiw-btn uiw-btn-primary motiva-cta"
+                            disabled="@Plan.IsNoop" @onclick="RunAsync">
+                        ייבוא משתמשים
+                    </button>
+                }
+                else
+                {
+                    <button type="button" class="uiw-btn uiw-btn-primary motiva-cta"
+                            disabled="@(!CanGoNext)" @onclick="Next">
+                        המשך
+                    </button>
+                }
+            }
+        </div>
+    </FooterContent>
+</MModal>
+
+@code {
+    private enum Stage { Upload, Mapping, Preview, Duplicates, Review, Running, Done }
+
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Closed by the wizard itself — the page owns IsOpen.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>The users currently on the page. Used ONLY to decide what
+    /// already exists; the wizard never mutates this list.</summary>
+    [Parameter] public IReadOnlyList<UserForAdmin> ExistingUsers { get; set; } = Array.Empty<UserForAdmin>();
+
+    /// <summary>Raised once a run finishes so the page can re-fetch. Fired even
+    /// on a partly failed run — some users may still have been created.</summary>
+    [Parameter] public EventCallback OnImported { get; set; }
+
+    private Stage _stage = Stage.Upload;
+
+    // ── Upload ──────────────────────────────────────────────────────────
+    private string  _fileName = "";
+    private long    _fileSize;
+    private bool    _dragOver;
+    private bool    _parsing;
+    private bool    _helpOpen;
+    private string? _parseError;
+    private ImportFileParser.Grid? _grid;
+
+    // A roster of a few hundred people is a few tens of KB. The cap is here so
+    // a mis-selected video cannot be pulled into WASM memory.
+    private const long MaxFileBytes = 8 * 1024 * 1024;
+
+    // ── Mapping / rows ──────────────────────────────────────────────────
+    private List<UserImportModel.ColumnMapping> _mappings = new();
+    private List<UserImportModel.Row> _rows = new();
+    private bool _mappingDirty = true;
+    private DuplicateAction? _bulkAction;
+
+    /// <summary>Which check rows have their detail open, BY LINE NUMBER.
+    ///
+    /// <para>A set, not a single value: comparing two broken rows is the whole
+    /// job on this screen, and an accordion that closes the row you were
+    /// reading to open the next one makes that impossible. Keyed on
+    /// LineNumber rather than list position because the position is not
+    /// stable — going back to the mapping step and returning rebuilds _rows.
+    /// The set is cleared there for the same reason.</para></summary>
+    private readonly HashSet<int> _openRows = new();
+
+    private void ToggleRowDetail(int line)
+    {
+        if (!_openRows.Remove(line)) _openRows.Add(line);
+    }
+
+    // ── Run ─────────────────────────────────────────────────────────────
+    private sealed record RunResult(int Line, string Name, string Email,
+                                    bool Failed, bool MailFailed, string? Detail);
+
+    private readonly List<RunResult> _results = new();
+    private int _ranCount;
+    private int _runTotal;
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Derived
+    // ─────────────────────────────────────────────────────────────────────
+
+    private List<UserImportModel.Row> Duplicates =>
+        _rows.Where(r => r.State == RowState.Duplicate).ToList();
+
+    private bool HasDuplicates => _rows.Any(r => r.State == RowState.Duplicate);
+
+    private UserImportModel.Plan Plan => UserImportModel.BuildPlan(_rows);
+
+    private int SkippedCount => Plan.Skip + Plan.Invalid;
+
+    private int ProgressPercent => _runTotal == 0 ? 0 : (int)(100.0 * _ranCount / _runTotal);
+
+    private string StageTitle => _stage switch
+    {
+        Stage.Upload     => "ייבוא משתמשים",
+        Stage.Mapping    => "ייבוא משתמשים · מיפוי עמודות",
+        Stage.Preview    => "ייבוא משתמשים · בדיקה",
+        Stage.Duplicates => "ייבוא משתמשים · כפילויות",
+        Stage.Review     => "ייבוא משתמשים · אישור",
+        Stage.Running    => "ייבוא משתמשים",
+        _                => "ייבוא הסתיים",
+    };
+
+    private string FileSizeLabel => _fileSize < 1024
+        ? $"{_fileSize} B"
+        : _fileSize < 1024 * 1024
+            ? $"{_fileSize / 1024.0:0.#} KB"
+            : $"{_fileSize / (1024.0 * 1024):0.#} MB";
+
+    private string ValidationSummary
+    {
+        get
+        {
+            var valid   = _rows.Count(r => r.State != RowState.Invalid);
+            var invalid = _rows.Count(r => r.State == RowState.Invalid);
+            var dup     = _rows.Count(r => r.State == RowState.Duplicate);
+
+            var parts = new List<string> { $"{valid} תקינים" };
+            if (dup > 0)     parts.Add($"{dup} קיימים במערכת");
+            if (invalid > 0) parts.Add($"{invalid} דורשים תיקון");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>The rail. The duplicates step is only a step when the file
+    /// actually collides with something — a permanently visible stage the admin
+    /// can never reach reads as a step that was skipped by mistake.</summary>
+    private IReadOnlyList<MProgressStepper.Step> RailSteps
+    {
+        get
+        {
+            var names = new List<(string Label, Stage Stage)>
+            {
+                ("קובץ", Stage.Upload),
+                ("מיפוי", Stage.Mapping),
+                ("בדיקה", Stage.Preview),
+            };
+            if (HasDuplicates || _stage == Stage.Duplicates) names.Add(("כפילויות", Stage.Duplicates));
+            names.Add(("אישור", Stage.Review));
+
+            var currentIndex = names.FindIndex(n => n.Stage == _stage);
+            if (currentIndex < 0) currentIndex = names.Count - 1;   // Running sits on the last step
+
+            return names.Select((n, i) => new MProgressStepper.Step(
+                n.Label,
+                i < currentIndex ? MProgressStepper.StepState.Done
+                : i == currentIndex ? MProgressStepper.StepState.Current
+                : MProgressStepper.StepState.Upcoming)).ToList();
+        }
+    }
+
+    private bool CanGoBack => _stage is Stage.Mapping or Stage.Preview or Stage.Duplicates or Stage.Review;
+
+    private bool CanGoNext => _stage switch
+    {
+        Stage.Upload  => _grid is not null && _grid.Rows.Count > 0 && !_parsing,
+        Stage.Mapping => UserImportModel.MissingRequirements(_mappings).Count == 0
+                         && UserImportModel.ConflictingTargets(_mappings).Count == 0
+                         && !UserImportModel.HasNameConflict(_mappings),
+        Stage.Preview => true,
+        Stage.Duplicates => true,
+        _             => true,
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Upload
+    // ─────────────────────────────────────────────────────────────────────
+
+    private async Task HandleFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _dragOver   = false;
+        _parseError = null;
+        _grid       = null;
+        _rows.Clear();
+        _openRows.Clear();
+        _mappings.Clear();
+
+        var file = e.File;
+        if (file is null) return;
+
+        _fileName = file.Name;
+        _fileSize = file.Size;
+
+        if (file.Size > MaxFileBytes)
+        {
+            _parseError = $"הקובץ גדול מדי ({FileSizeLabel}). הגודל המרבי הוא 8MB.";
+            _fileName = "";
+            return;
+        }
+
+        _parsing = true;
+        StateHasChanged();
+
+        try
+        {
+            using var stream = file.OpenReadStream(MaxFileBytes);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+
+            _grid = ImportFileParser.Parse(file.Name, buffer.ToArray());
+            _mappings = UserImportModel.AutoMap(_grid);
+            _mappingDirty = true;
+        }
+        catch (ImportFileParser.ParseException ex)
+        {
+            _parseError = ex.Message;
+            _fileName = "";
+        }
+        catch (Exception)
+        {
+            _parseError = "קריאת הקובץ נכשלה. יש לוודא שמדובר בקובץ CSV או XLSX תקין.";
+            _fileName = "";
+        }
+        finally
+        {
+            _parsing = false;
+        }
+    }
+
+    private void ClearFile()
+    {
+        _grid = null;
+        _fileName = "";
+        _fileSize = 0;
+        _parseError = null;
+        _mappings.Clear();
+        _rows.Clear();
+        _openRows.Clear();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Mapping
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>Which mapping row currently has its destination menu open.
+    /// -1 = none. One open surface at a time, owned by the stage rather than by
+    /// the control, so an outside click can close it — the same arrangement
+    /// UsersManagement uses for its kebab and filter menus.</summary>
+    private int _openMapMenu = -1;
+
+    private void ToggleMapMenu(int index, bool open) => _openMapMenu = open ? index : -1;
+
+    private void CloseMapMenu() => _openMapMenu = -1;
+
+    /// <summary>The destinations THIS row may still be given.
+    ///
+    /// <para>Unavailable fields are left out rather than listed as dead rows.
+    /// The rule itself is untouched — this is IsFieldAvailable, the same
+    /// predicate the previous &lt;option disabled&gt; used — so changing a
+    /// mapping releases its old field and reserves the new one on the very next
+    /// render of every other row, with no cross-row write.</para></summary>
+    private IReadOnlyList<MSelect.Option> DestOptions(UserImportModel.ColumnMapping mapping) =>
+        UserImportModel.SelectableFields
+            .Where(f => IsFieldAvailable(mapping, f))
+            .Select(f => new MSelect.Option(f.ToString(), UserImportModel.FieldLabel(f)))
+            .ToList();
+
+    private void SetTarget(UserImportModel.ColumnMapping mapping, string? value)
+    {
+        if (Enum.TryParse<Field>(value, out var field))
+        {
+            mapping.Target = field;
+            // Once the admin has touched it, the "auto" badge would be a lie.
+            mapping.AutoMapped = false;
+            mapping.UserSet    = true;
+            _mappingDirty = true;
+        }
+    }
+
+    /// <summary>auto / manual / needs / off — drives both the badge and the row
+    /// tint. "needs" is deliberately reserved for a column that was NOT
+    /// recognised and has NOT been decided on; an explicit "do not import" is a
+    /// decision, not an outstanding problem, so it is neutral.</summary>
+    private static string MapState(UserImportModel.ColumnMapping m)
+    {
+        if (m.Target != Field.Ignore) return m.AutoMapped ? "auto" : "manual";
+
+        // "needs" is reserved for a column nobody has decided about: not
+        // recognised by the alias table, not explained by a known-unsupported
+        // header, and not deliberately set aside by the admin. Choosing
+        // "אל תייבא" IS a decision, so it reads as ignored, not outstanding.
+        return (m.Note is not null || m.UserSet) ? "off" : "needs";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Navigation
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void Next()
+    {
+        // A popup belongs to the stage that owns it; leaving the stage with an
+        // index still set would re-open it on the way back.
+        CloseMapMenu();
+
+        switch (_stage)
+        {
+            case Stage.Upload:
+                _stage = Stage.Mapping;
+                break;
+
+            case Stage.Mapping:
+                if (_mappingDirty)
+                {
+                    _rows = UserImportModel.BuildRows(_grid!, _mappings, ExistingUsers);
+                    _openRows.Clear();
+                    _bulkAction = null;
+                    _mappingDirty = false;
+                }
+                _stage = Stage.Preview;
+                break;
+
+            case Stage.Preview:
+                _stage = HasDuplicates ? Stage.Duplicates : Stage.Review;
+                break;
+
+            case Stage.Duplicates:
+                _stage = Stage.Review;
+                break;
+        }
+    }
+
+    private void Back()
+    {
+        CloseMapMenu();
+
+        _stage = _stage switch
+        {
+            Stage.Mapping    => Stage.Upload,
+            Stage.Preview    => Stage.Mapping,
+            Stage.Duplicates => Stage.Preview,
+            Stage.Review     => HasDuplicates ? Stage.Duplicates : Stage.Preview,
+            _                => _stage,
+        };
+    }
+
+    private async Task RequestCloseAsync()
+    {
+        if (_stage == Stage.Running) return;   // a run in flight must not be abandoned mid-way
+        await CloseAsync();
+    }
+
+    private async Task CloseAsync()
+    {
+        Reset();
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+
+    private void Reset()
+    {
+        _stage = Stage.Upload;
+        ClearFile();
+        _results.Clear();
+        _ranCount = 0;
+        _runTotal = 0;
+        _bulkAction = null;
+        _helpOpen = false;
+        _mappingDirty = true;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Duplicate choices
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void ApplyBulk(DuplicateAction action)
+    {
+        _bulkAction = action;
+        foreach (var row in _rows.Where(r => r.State == RowState.Duplicate))
+            row.Action = action;
+    }
+
+    /// <summary>A per-row choice overrides the bulk one — and clears the bulk
+    /// highlight, because after an override the bulk choice is no longer what
+    /// every row is doing.</summary>
+    private void SetRowAction(UserImportModel.Row row, DuplicateAction action)
+    {
+        row.Action = action;
+        if (_bulkAction is not null && _rows.Any(r => r.State == RowState.Duplicate && r.Action != _bulkAction))
+            _bulkAction = null;
+    }
+
+    private static string ActionLabel(DuplicateAction a) => a switch
+    {
+        DuplicateAction.Merge   => "מיזוג / השלמת מידע",
+        DuplicateAction.Replace => "החלפה",
+        _                       => "השארת המקורי",
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Run
+    // ─────────────────────────────────────────────────────────────────────
+
+    private async Task RunAsync()
+    {
+        var work = _rows
+            .Where(r => r.State == RowState.New ||
+                        (r.State == RowState.Duplicate && r.Action != DuplicateAction.Skip))
+            .ToList();
+
+        _results.Clear();
+        _ranCount = 0;
+        _runTotal = work.Count;
+        _stage    = Stage.Running;
+        StateHasChanged();
+
+        foreach (var row in work)
+        {
+            try
+            {
+                if (row.State == RowState.New) await CreateAsync(row);
+                else                           await UpdateAsync(row);
+            }
+            catch (Exception ex)
+            {
+                _results.Add(new RunResult(row.LineNumber, row.FullName, row.Email,
+                                           Failed: true, MailFailed: false,
+                                           Detail: $"שגיאת תקשורת: {ex.Message}"));
+            }
+
+            _ranCount++;
+            StateHasChanged();
+            // Yields to the renderer so the progress count actually paints
+            // between requests instead of after the whole loop.
+            await Task.Yield();
+        }
+
+        _stage = Stage.Done;
+
+        // Fired even after failures: anything that DID succeed must show up in
+        // the table behind the modal.
+        if (OnImported.HasDelegate) await OnImported.InvokeAsync();
+    }
+
+    private async Task CreateAsync(UserImportModel.Row row)
+    {
+        var request = new UserAddedByAdmin
+        {
+            FirstName    = row.FirstName,
+            LastName     = row.LastName,
+            Email        = row.Email,
+            Phone        = row.Phone,
+            // The controller substitutes its own default for a null/blank year;
+            // sending "" would persist an empty string instead.
+            AcademicYear = string.IsNullOrWhiteSpace(row.AcademicYear) ? "2025-2026" : row.AcademicYear,
+            Role         = row.Role,
+        };
+
+        var result = await _Auth.AdminAddUser(request);
+
+        if (result is null)
+        {
+            _results.Add(new RunResult(row.LineNumber, row.FullName, row.Email, true, false, "שגיאה בלתי צפויה"));
+            return;
+        }
+
+        // EmailFailed is a PARTIAL SUCCESS: AddAdmin has already inserted the
+        // user and only the welcome mail failed. Counting it as a failure would
+        // tell the admin to re-import a user who exists.
+        if (result.Result == AuthResults.EmailFailed)
+        {
+            _results.Add(new RunResult(row.LineNumber, row.FullName, row.Email, false, true, null));
+            return;
+        }
+
+        if (result.Result != AuthResults.Success)
+        {
+            var detail = result.Result switch
+            {
+                AuthResults.Exists           => "כתובת המייל כבר קיימת במערכת",
+                AuthResults.CreateUserFailed => "יצירת המשתמש נכשלה",
+                AuthResults.ChangeRoleFailed => "הגדרת ההרשאה נכשלה",
+                _                            => result.Result,
+            };
+            _results.Add(new RunResult(row.LineNumber, row.FullName, row.Email, true, false, detail));
+            return;
+        }
+
+        _results.Add(new RunResult(row.LineNumber, row.FullName, row.Email, false, false, null));
+    }
+
+    private async Task UpdateAsync(UserImportModel.Row row)
+    {
+        var existing = row.Existing!;
+
+        // A merge with nothing to fill is a no-op. Sending it would spend a
+        // request to write the values that are already there.
+        if (row.Action == DuplicateAction.Merge &&
+            UserImportModel.MergeFills(existing, row).Count == 0)
+        {
+            _results.Add(new RunResult(row.LineNumber, row.FullName, row.Email, false, false, null));
+            return;
+        }
+
+        var request = UserImportModel.BuildUpdate(existing, row, row.Action);
+        var error   = await _Auth.UpdateUserAsync(existing.Id, request);
+
+        _results.Add(error is null
+            ? new RunResult(row.LineNumber, row.FullName, row.Email, false, false, null)
+            : new RunResult(row.LineNumber, row.FullName, row.Email, true, false, error));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Display helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>The label and its marker are returned SEPARATELY so the
+    /// markup can place the marker after the text. Splitting them here rather
+    /// than at the call site keeps the four states defined in one place.</summary>
+    private static string MapStateLabel(string state) => state switch
+    {
+        "auto"   => "מופה אוטומטית",
+        "manual" => "מופה ידנית",
+        "needs"  => "דורש מיפוי",
+        _        => "לא מיובא",
+    };
+
+    private static string MapStateMark(string state) => state switch
+    {
+        "auto" or "manual" => "✓",
+        "needs"            => "!",
+        _                  => "—",
+    };
+
+    /// <summary>Whether a destination may still be picked in THIS row's
+    /// dropdown. Prevention, not detection — the conflict banner stays as the
+    /// fallback, but the admin should not be able to reach it by choosing.
+    ///
+    /// <para>Four rules: "אל תייבא" is never exhausted; a row may always keep
+    /// what it already has; a field another column holds is out; and the
+    /// name-shape rule is enforced in both directions, because "שם מלא" writes
+    /// FirstName and LastName and therefore cannot coexist with either.</para>
+    /// </summary>
+    private bool IsFieldAvailable(UserImportModel.ColumnMapping row, Field field)
+    {
+        if (field == Field.Ignore) return true;
+        if (field == row.Target)   return true;
+
+        var claimedElsewhere = _mappings
+            .Where(m => !ReferenceEquals(m, row))
+            .Select(m => m.Target)
+            .ToHashSet();
+
+        if (claimedElsewhere.Contains(field)) return false;
+
+        if (field == Field.FullName)
+            return !claimedElsewhere.Contains(Field.FirstName)
+                && !claimedElsewhere.Contains(Field.LastName);
+
+        if (field is Field.FirstName or Field.LastName)
+            return !claimedElsewhere.Contains(Field.FullName);
+
+        return true;
+    }
+
+    private static string RowClass(UserImportModel.Row r) => r.State switch
+    {
+        RowState.Invalid   => "error",
+        RowState.Duplicate => "dup",
+        _                  => "ok",
+    };
+
+    private static string RoleLabel(string role) => role switch
+    {
+        Roles.Student => "סטודנט",
+        Roles.Mentor  => "מנחה",
+        Roles.Staff   => "מרצה",
+        Roles.Admin   => "מנהל מערכת",
+        _             => role,
+    };
+}

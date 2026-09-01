@@ -25,6 +25,10 @@
 *@
 
 @page "/management"
+@* Compatibility: /management/admin was a second, competing hub with the same
+   13 modules. It now resolves to this one Management experience so the two
+   cannot drift apart. Existing links and bookmarks keep working. *@
+@page "/management/admin"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
 @namespace AuthWithAdmin.Client.Pages.Management
@@ -32,6 +36,7 @@
 @using AuthWithAdmin.Client.Components
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
+@using Microsoft.AspNetCore.Components.Authorization
 
 @inject IDashboardOverviewService        DashboardService
 @inject IMilestoneManagementService      MilestoneService
@@ -39,6 +44,7 @@
 @inject IRoleSettingsManagementService   RoleSettingsService
 @inject IProjectMentorsService           MentorsService
 @inject NavigationManager                Nav
+@inject AuthenticationStateProvider      AuthState
 
 <div class="lmg-page" dir="rtl">
 
@@ -56,12 +62,16 @@
                 </button>
             }
             <h1 class="lmg-h1">ניהול</h1>
-            <p class="lmg-subtitle">
-                @(_activeSection is null
-                    ? "ניהול הקורס — צוותים, אבני דרך, משאבים והרשאות"
-                    : SectionSubtitle(_activeSection))
-            </p>
+            @* The overview carries NO subtitle — the six category heads below
+               already say what the page holds, and a sentence repeating them
+               only pushes the first card down. A category keeps its own line,
+               which says something the title does not. *@
+            @if (_activeSection is not null)
+            {
+                <p class="lmg-subtitle">@SectionSubtitle(_activeSection)</p>
+            }
         </div>
+
     </div>
 
     <!-- ══ Loading ════════════════════════════════════════════════════════════ -->
@@ -74,32 +84,106 @@
     }
     else
     {
-        <!-- ══ Overview — 2 × 2 card grid ════════════════════════════════════ -->
+        <!-- ══ Overview — six grouped management surfaces ═══════════════════ -->
+        @*  Each group is ONE bounded Motiva surface (MCard, the shared section
+            card: translucent .66 white, white hairline, radius-lg, shadow-md)
+            holding a head and its own module rows, so the six management areas
+            read as areas rather than as six lists of loose text.
+
+            The gradient glyph is the group head's — one per card, which is the
+            product-wide rule for the mark. Row glyphs are the same paint server
+            with no chip behind them; a filled violet block per row is the
+            treatment the finished screens do not use. *@
         @if (_activeSection is null)
         {
-            <div class="lmg-grid">
-                @foreach (var card in BuildOverviewCards())
-                {
-                    var c = card;
-                    <button type="button" class="lmg-card" @onclick="() => OpenSection(c.Key)">
-                        <div class="lmg-card-top">
-                            <span class="lmg-card-icon"
-                                  style="--icon-bg:@c.IconBg;--icon-color:@c.IconColor"
-                                  aria-hidden="true">
-                                @((MarkupString)c.IconSvg)
+            // ONE card template, rendered by both columns, so the two stacks
+            // cannot drift apart. slot.Order is the group's LOGICAL index — see
+            // the note on the narrow breakpoint in the stylesheet.
+            RenderFragment<GroupSlot> groupCard = slot =>
+        @<MCard Padding="MCard.CardPadding.None" Class="@($"lmg-group-card lmg-o{slot.Order}")">
+            <section class="lmg-group" aria-labelledby="@slot.Group.Id">
+                <div class="lmg-group-head">
+                    <span class="lmg-group-icon motiva-ico-gradient" aria-hidden="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                             stroke="url(#motivaIconGradient)" stroke-width="1.9"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            @((MarkupString)slot.Group.IconPaths)
+                        </svg>
+                    </span>
+                    <h2 class="lmg-group-title" id="@slot.Group.Id">@slot.Group.Title</h2>
+                </div>
+
+                <div class="lmg-mods">
+                    @foreach (var item in slot.Group.Items)
+                    {
+                        var it = item;
+                        <button type="button" class="lmg-mod" @onclick="() => ActivateItem(it)">
+                            <span class="lmg-mod-text">
+                                <span class="lmg-mod-title">@it.Title</span>
+                                @* One line, muted, always visible — several of these
+                                   module names do not explain themselves, and a
+                                   tooltip would make the page unreadable without a
+                                   pointer. `title` is the fallback for the narrow
+                                   widths where the line has to ellipsise, not the
+                                   way the description is meant to be read. *@
+                                <span class="lmg-mod-desc" title="@it.Description">@it.Description</span>
                             </span>
-                            <span class="lmg-card-chevron" aria-hidden="true">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="m15 6-6 6 6 6"></path>
-                                </svg>
+
+                            @if (!string.IsNullOrWhiteSpace(it.Count))
+                            {
+                                <span class="motiva-tag lmg-mod-tag">@it.Count</span>
+                            }
+
+                            <span class="lmg-mod-chevron" aria-hidden="true">
+                                @if (it.SectionKey is not null)
+                                {
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="m6 9 6 6 6-6"></path>
+                                    </svg>
+                                }
+                                else
+                                {
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="m15 6-6 6 6 6"></path>
+                                    </svg>
+                                }
                             </span>
-                        </div>
-                        <h2 class="lmg-card-title">@c.Title</h2>
-                        <p class="lmg-card-desc">@c.Description</p>
-                        <span class="lmg-card-meta">@c.Meta</span>
-                    </button>
-                }
+                        </button>
+
+                        @if (it.AssignmentLink)
+                        {
+                            @* The student assignment form belongs to THIS module,
+                               not to the page — it used to be a full-width bar at
+                               the foot of the hub, which said it was a global
+                               Management utility. Nested under its own row instead.
+                               The component owns the URL and the copy behaviour, so
+                               the assignment screen can render the same action from
+                               the same source. *@
+                            <StudentRegistrationLink Class="lmg-mod-action" />
+                        }
+                    }
+                </div>
+            </section>
+        </MCard>;
+
+            var columns = SplitColumns();
+
+            <div class="lmg-groups">
+                @*  TWO INDEPENDENT COLUMNS, not a two-track grid. A grid aligns
+                    the cards by row, so a short group leaves a hole under itself
+                    while it waits for the taller group beside it. Each column
+                    here stacks only its own groups. *@
+                <div class="lmg-cols">
+                    <div class="lmg-col">
+                        @foreach (var slot in columns.A) { @groupCard(slot) }
+                    </div>
+                    <div class="lmg-col">
+                        @foreach (var slot in columns.B) { @groupCard(slot) }
+                    </div>
+                </div>
+
             </div>
         }
 
@@ -109,7 +193,7 @@
             <section class="lmg-panel" aria-labelledby="lmg-teams-title">
                 <div class="lmg-panel-head">
                     <h2 class="lmg-panel-title" id="lmg-teams-title">צוותים ושיוכים</h2>
-                    <span class="lmg-head-chip">@_projects.Count צוותים</span>
+                    <span class="motiva-tag lmg-head-tag">@_projects.Count צוותים</span>
                     <span class="lmg-head-note">שינוי שיוך מנחה לפרויקט</span>
                 </div>
 
@@ -119,35 +203,33 @@
                 }
                 else
                 {
-                    <div class="lmg-rows" role="list">
+                    <div class="lmg-acc-list">
                         @foreach (var proj in _projects)
                         {
                             var p = proj;
                             bool isEditing = _editingProjectId == p.ProjectId;
-                            <div class="lmg-row @(isEditing ? "lmg-row-open" : "")" role="listitem">
-                                <div class="lmg-row-body">
+                            // Hoisted: an interpolated string inside a double-quoted
+                            // Razor attribute ends the attribute at its own quote.
+                            var teamName = p.TeamName ?? p.ProjectTitle;
+                            var teamSub  = $"פרויקט {p.ProjectNumber} · {p.ProjectTitle}";
+                            var teamAria = $"שיוך מנחים — {teamName}";
+                            <MAccordionItem Open="@isEditing"
+                                            OnToggle="@(() => ToggleEditTeam(p.ProjectId))"
+                                            Primary="@teamName"
+                                            Secondary="@teamSub"
+                                            AriaLabel="@teamAria">
+                                <Leading>
                                     <span class="lmg-dot" style="background:@HealthDot(p.HealthBucket)" aria-hidden="true"></span>
-                                    <div class="lmg-row-text">
-                                        <span class="lmg-row-name">@(p.TeamName ?? p.ProjectTitle)</span>
-                                        <span class="lmg-row-sub">פרויקט @p.ProjectNumber · @p.ProjectTitle</span>
-                                    </div>
-                                    <div class="lmg-mentor-info">
-                                        @if (!string.IsNullOrWhiteSpace(p.MentorNames))
-                                        {
-                                            <span class="lmg-avatar" aria-hidden="true">@TwoInitials(p.MentorNames)</span>
-                                        }
-                                        <span class="lmg-mentor-name">@(p.MentorNames ?? "ללא מנחה")</span>
-                                    </div>
-                                    <button type="button"
-                                            class="lmg-inline-btn"
-                                            @onclick="() => ToggleEditTeam(p.ProjectId)">
-                                        @(isEditing ? "ביטול" : "שינוי שיוך")
-                                    </button>
-                                </div>
-
-                                @if (isEditing)
-                                {
-                                    <div class="lmg-row-expand">
+                                </Leading>
+                                <MetaContent>
+                                    @if (!string.IsNullOrWhiteSpace(p.MentorNames))
+                                    {
+                                        <span class="lmg-avatar" aria-hidden="true">@TwoInitials(p.MentorNames)</span>
+                                    }
+                                    <span class="lmg-mentor-name">@(p.MentorNames ?? "ללא מנחה")</span>
+                                </MetaContent>
+                                <ChildContent>
+                                    <div class="lmg-expand-inner lmg-expand-teams">
                                         @if (_editLoading)
                                         {
                                             <span class="lmg-edit-loading" role="status">טוענת מנחים…</span>
@@ -209,8 +291,8 @@
                                             </div>
                                         }
                                     </div>
-                                }
-                            </div>
+                                </ChildContent>
+                            </MAccordionItem>
                         }
                     </div>
                 }
@@ -223,7 +305,7 @@
             <section class="lmg-panel" aria-labelledby="lmg-ms-title">
                 <div class="lmg-panel-head">
                     <h2 class="lmg-panel-title" id="lmg-ms-title">אבני דרך ומועדים</h2>
-                    <span class="lmg-head-chip">@_milestones.Count אבני דרך</span>
+                    <span class="motiva-tag lmg-head-tag">@_milestones.Count אבני דרך</span>
                     <span class="lmg-head-note">שינוי תאריך מעדכן את לוח השנה ואת ההתראות</span>
                 </div>
 
@@ -233,31 +315,29 @@
                 }
                 else
                 {
-                    <div class="lmg-rows" role="list">
+                    <div class="lmg-acc-list">
                         @foreach (var ms in _milestones.OrderBy(m => m.OrderIndex))
                         {
                             var m = ms;
                             bool isEditing = _editingMilestoneId == m.Id;
                             var status = MilestoneStatus(m);
-                            <div class="lmg-row @(isEditing ? "lmg-row-open" : "")" role="listitem">
-                                <div class="lmg-row-body">
+                            var msAria = $"עריכת מועדים — {m.Title}";
+                            <MAccordionItem Open="@isEditing"
+                                            OnToggle="@(() => ToggleEditMilestone(m))"
+                                            Primary="@m.Title"
+                                            Secondary="@m.Applicability"
+                                            AriaLabel="@msAria">
+                                <Leading>
                                     <span class="lmg-ms-index" aria-hidden="true">@m.OrderIndex</span>
-                                    <div class="lmg-row-text">
-                                        <span class="lmg-row-name">@m.Title</span>
-                                        <span class="lmg-row-sub">@m.Applicability</span>
-                                    </div>
-                                    <span class="lmg-status-pill lmg-s-@status.Key">@status.Label</span>
+                                </Leading>
+                                <MetaContent>
                                     <span class="lmg-date-range">@DateRange(m)</span>
-                                    <button type="button"
-                                            class="lmg-inline-btn"
-                                            @onclick="() => ToggleEditMilestone(m)">
-                                        @(isEditing ? "ביטול" : "עריכת מועד")
-                                    </button>
-                                </div>
-
-                                @if (isEditing)
-                                {
-                                    <div class="lmg-row-expand">
+                                </MetaContent>
+                                <Status>
+                                    <span class="lmg-status-pill lmg-s-@status.Key">@status.Label</span>
+                                </Status>
+                                <ChildContent>
+                                    <div class="lmg-expand-inner lmg-expand-ms">
                                         <div class="lmg-date-fields">
                                             <label class="lmg-date-field">
                                                 <span class="lmg-field-label">פתיחה</span>
@@ -280,7 +360,7 @@
                                         </div>
                                         <div class="lmg-expand-actions">
                                             <button type="button"
-                                                    class="lmg-save-btn"
+                                                    class="lmg-save-btn motiva-cta"
                                                     disabled="@_msSaving"
                                                     @onclick="() => SaveMilestoneDatesAsync(m)">
                                                 @(_msSaving ? "שומר…" : "שמירה")
@@ -291,8 +371,8 @@
                                             }
                                         </div>
                                     </div>
-                                }
-                            </div>
+                                </ChildContent>
+                            </MAccordionItem>
                         }
                     </div>
                 }
@@ -305,7 +385,7 @@
             <section class="lmg-panel" aria-labelledby="lmg-res-title">
                 <div class="lmg-panel-head">
                     <h2 class="lmg-panel-title" id="lmg-res-title">ניהול משאבים</h2>
-                    <span class="lmg-head-chip">@_resources.Count קבצים</span>
+                    <span class="motiva-tag lmg-head-tag">@_resources.Count קבצים</span>
                     <a class="lmg-add-link" href="/management/resources">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                              stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -440,6 +520,10 @@
     // Settings
     private List<RoleSettingsDto>        _roleSettings       = new();
 
+    // Module visibility (UI only — see the note above BuildGroups)
+    private List<RoleSettingsDto>        _allRoleSettings    = new();
+    private bool                         _isCourseStaff;
+
     // ── Constant flag list for the settings section ────────────────────────
     private static readonly string[] SettingFlags =
     {
@@ -467,56 +551,267 @@
         _projects     = tDash.Result?.Projects ?? new();
         _milestones   = tMs.Result             ?? new();
         _resources    = tRes.Result            ?? new();
-        _roleSettings = (tSettings.Result      ?? new())
+        // The settings SECTION still shows only Student/Mentor, exactly as before.
+        // The unfiltered rows are kept separately because module visibility reads
+        // the Admin / Staff rows — see CanSee().
+        _allRoleSettings = tSettings.Result ?? new();
+        _roleSettings = _allRoleSettings
             .Where(r => r.RoleName is "Student" or "Mentor")
             .OrderBy(r => r.RoleName == "Student" ? 0 : 1)
             .ToList();
 
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        _isCourseStaff = auth.User.IsInRole(Roles.Staff);
+
         _loading = false;
     }
 
-    // ── Overview cards ─────────────────────────────────────────────────────
-    private record OverviewCard(string Key, string Title, string Description, string Meta,
-                                string IconSvg, string IconBg, string IconColor);
+    // ── Module groups (the overview) ───────────────────────────────────────
+    //
+    // VISIBILITY IS UI / IA ONLY.
+    // Server authorization is deliberately untouched here and is BROADER than
+    // what this list shows: AuthRepository.CreateToken issues an Admin role
+    // claim to every Staff user (the Staff => Admin invariant, also enforced by
+    // triggers in DatabaseMigrator), so every module below remains reachable by
+    // URL for course staff. Hiding a row is an information-architecture
+    // decision, NOT a security boundary. Enforcing these flags server-side is a
+    // separate permissions-hardening task.
+    //
+    // The flag VALUES are not invented here — they are the seeded RoleSettings
+    // rows (Admin: CanManageUsers=1, CanManageAirtable=1; Staff: both 0). If an
+    // administrator flips Staff's flag on the "הרשאות לפי תפקיד" screen, the
+    // module appears. Nothing about Admin-vs-Staff is hardcoded.
 
-    private IEnumerable<OverviewCard> BuildOverviewCards() => new[]
+    /// <summary>A module row. <c>IconPaths</c> is gone with the row glyphs —
+    /// the gradient mark is the category head's alone now, so 21 of them on one
+    /// screen made the hub read as an icon menu.
+    ///
+    /// <para><c>AssignmentLink</c> is presentation, not permission: it says the
+    /// student assignment-form action is rendered under this row.</para></summary>
+    private record ModuleItem(string Title, string Description,
+                              string? Route          = null,
+                              string? SectionKey     = null,
+                              string? Count          = null,
+                              string? RequiresFlag   = null,
+                              bool    AssignmentLink = false);
+
+    /// <summary>IconPaths is the group head's gradient glyph — presentation
+    /// only. The Id, Title and Items of every group are unchanged.</summary>
+    private record ModuleGroup(string Id, string Title, string IconPaths, ModuleItem[] Items);
+
+    // ── Group-head glyphs ───────────────────────────────────────────────
+    // Deliberately distinct from every row glyph in the group they title, so a
+    // head reads as the AREA and not as a repeat of its first module. Lucide
+    // 24x24, path-only (no <circle>) because the head renders them as raw
+    // markup inside one <svg>, and merged on the same rule as the row glyphs
+    // above — GrpSliders is nine straight lines and would otherwise render as
+    // an empty chip.
+    private const string GrpKey    = """<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4zM16.5 7.5h.01"/>""";
+    private const string GrpFolder = """<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M8 10v4M12 10v2M16 10v6"/>""";
+    private const string GrpTree   = """<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/><path d="m6.08 14.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/>""";
+    private const string GrpTalk   = """<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 10h.01M12 10h.01M16 10h.01"/>""";
+    private const string GrpFiles  = """<path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>""";
+    private const string GrpSliders= """<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>""";
+
+    private IEnumerable<ModuleGroup> BuildGroups() => new[]
     {
-        new OverviewCard(
-            "teams", "צוותים ושיוכים",
-            "ניהול שיוך מנחים לפרויקטים וצוותים פעילים",
-            TeamsMetaLabel(),
-            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>""",
-            "rgba(109,40,245,.09)", "#6D28F5"),
+        new ModuleGroup("lmg-g-people", "משתמשים והרשאות", GrpKey, new[]
+        {
+            new ModuleItem("משתמשים", "סטודנטים, מנחים וסגל הקורס",
+                           Route: "/management/users", RequiresFlag: RoleFeatures.CanManageUsers),
+            new ModuleItem("הרשאות לפי תפקיד", "מה מותר לכל תפקיד במערכת",
+                           Route: "/management/role-settings"),
+            new ModuleItem("עריכה מהירה — סטודנט ומנחה", "הרשאות נפוצות, ללא מעבר מסך",
+                           SectionKey: "settings"),
+        }),
 
-        new OverviewCard(
-            "milestones", "אבני דרך ומועדים",
-            "עדכון תאריכים ומועדי הגשה לאבני הדרך",
-            $"{_milestones.Count} אבני דרך",
-            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>""",
-            "rgba(46,99,232,.09)", "#2E63E8"),
+        new ModuleGroup("lmg-g-projects", "פרויקטים וצוותים", GrpFolder, new[]
+        {
+            new ModuleItem("קטלוג פרויקטים", "הצעות פרויקט, זמינות ושיוך למחזור",
+                           Route: "/management/catalog"),
+            new ModuleItem("פרויקטים פעילים", "פרויקטים מוקצים, צוותים וסטטוסים",
+                           Route: "/management/projects"),
+            new ModuleItem("שיבוץ צוותים לפרויקטים", "התאמה ופרסום שיבוצים",
+                           Route: "/assignments", AssignmentLink: true),
+            new ModuleItem("שיוך מנחים לצוותים", "עדכון מנחה לכל צוות, ללא מעבר מסך",
+                           SectionKey: "teams", Count: TeamsCountLabel()),
+        }),
 
-        new OverviewCard(
-            "resources", "ניהול משאבים",
-            "ניהול חומרי לימוד ושליטה על נגישות לפי סוג פרויקט",
-            $"{_resources.Count} קבצים בספרייה",
-            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>""",
-            "rgba(15,168,194,.09)", "#0FA8C2"),
+        new ModuleGroup("lmg-g-structure", "מבנה התוכנית", GrpTree, new[]
+        {
+            new ModuleItem("מחזורים", "פתיחה, סגירה וארכוב של מחזורים אקדמיים",
+                           Route: "/management/cycles"),
+            new ModuleItem("שלבי תוכנית", "ציר ההתקדמות וקישור אבני דרך לשלבים",
+                           Route: "/management/cycles?focus=stages"),
+            new ModuleItem("תבניות אבני דרך", "יצירה, עריכה ושיוך לסוגי פרויקטים",
+                           Route: "/management/milestones"),
+            new ModuleItem("עדכון מועדי אבני דרך", "שינוי תאריכים בלבד, ללא מעבר מסך",
+                           SectionKey: "milestones", Count: MilestonesCountLabel()),
+            new ModuleItem("תבניות משימות", "משימות ברירת מחדל וקישורן לאבני דרך",
+                           Route: "/management/tasks"),
+        }),
 
-        new OverviewCard(
-            "settings", "הרשאות והגדרות",
-            "הגדרת הרשאות לפי תפקיד — מה מותר לסטודנטים ומנחים",
-            "הגדרות מערכת",
-            """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>""",
-            "rgba(109,40,245,.09)", "#6D28F5"),
+        new ModuleGroup("lmg-g-requests", "בקשות ואישורים", GrpTalk, new[]
+        {
+            new ModuleItem("ניהול סוגי בקשות", "שדות, סטטוסים וכללי הרשאה",
+                           Route: "/management/request-types"),
+            new ModuleItem("הגדרות אישורי מנחה", "ספי תזכורת, ערוצים ותדירות",
+                           Route: "/management/pending-approval-settings"),
+            new ModuleItem("תור הבקשות", "בקשות הממתינות להחלטה",
+                           Route: "/management/requests"),
+            new ModuleItem("תור אישורי מנחה", "הגשות הממתינות לאישור מנחה",
+                           Route: "/management/pending-mentor-approvals"),
+        }),
+
+        new ModuleGroup("lmg-g-forms", "טפסים ומשאבים", GrpFiles, new[]
+        {
+            new ModuleItem("טפסים", "טפסי שיבוץ, מועדים ובלוקים מותאמים",
+                           Route: "/management/forms"),
+            new ModuleItem("חומרי עזר", "העלאה וניהול של ספריית המשאבים",
+                           Route: "/management/resources"),
+            new ModuleItem("נראות משאבים", "מי רואה כל משאב, ללא מעבר מסך",
+                           SectionKey: "resources", Count: ResourcesCountLabel()),
+        }),
+
+        new ModuleGroup("lmg-g-system", "מערכת ואינטגרציות", GrpSliders, new[]
+        {
+            new ModuleItem("ניהול אינטגרציות", "Slack, טפסים חיצוניים ו-webhook החדשנות",
+                           Route: "/management/integrations"),
+            new ModuleItem("Airtable", "ייבוא הצעות פרויקט ומיפוי שדות",
+                           Route: "/management/integrations/airtable",
+                           RequiresFlag: RoleFeatures.CanManageAirtable),
+        }),
     };
 
-    private string TeamsMetaLabel()
+    /// <summary>One group placed in one of the two overview columns, carrying
+    /// the LOGICAL index it had in <see cref="BuildGroups"/> so the narrow
+    /// breakpoint can put the six cards back into declaration order with
+    /// `order` after the column wrappers stop generating boxes.</summary>
+    private record GroupSlot(ModuleGroup Group, int Order);
+
+    // Card geometry, in px, for the column split below. Measured off the
+    // rendered hub, not guessed: a card is one head plus one row per module,
+    // every row is the same height, and the assignment-link action adds one
+    // nested strip. They only have to be right RELATIVE to each other — the
+    // split compares two sums, it never positions anything.
+    private const int HeadPx    = 68;
+    private const int RowPx     = 53;
+    private const int ActionPx  = 50;
+    private const int ColumnGap = 18;
+
+    private static int GroupHeight(ModuleGroup g) =>
+        HeadPx
+        + g.Items.Length * RowPx
+        + g.Items.Count(i => i.AssignmentLink) * ActionPx;
+
+    /// <summary>Splits the visible groups across the overview's two columns so
+    /// their COLLAPSED HEIGHTS come out as close as they can.
+    ///
+    /// <para>LAYOUT ONLY. Which groups exist, what is in them and the order they
+    /// are declared in are all untouched; this chooses nothing but which of two
+    /// stacks a card renders into.</para>
+    ///
+    /// <para>EXHAUSTIVE, not greedy, and not array order. Greedy left
+    /// מערכת ואינטגרציות — the shortest card in the set — alone at the foot of
+    /// one column with a taller card beside it, which is the dead corner this
+    /// pass is removing; array order is worse again. Six groups is 64
+    /// assignments, so the best one is simply found rather than approximated,
+    /// and it stays the best if a permission flag hides a module or a whole
+    /// group. Deterministic, evaluated once per render, no measurement.</para>
+    ///
+    /// <para>Groups keep their declared order WITHIN a column: the mask is
+    /// walked in order, so a column is always a subsequence of BuildGroups.</para></summary>
+    private (List<GroupSlot> A, List<GroupSlot> B) SplitColumns()
+    {
+        var groups  = VisibleGroups().ToList();
+        var heights = groups.Select(GroupHeight).ToArray();
+
+        // Bit i set = group i goes to column B. Bit 0 is pinned clear so each
+        // split is considered once rather than twice as its own mirror, which
+        // also fixes which side the first group lands on.
+        var best      = 0;
+        var bestScore = int.MaxValue;
+
+        for (var mask = 0; mask < (1 << Math.Max(groups.Count - 1, 0)); mask++)
+        {
+            var candidate = mask << 1;
+            int hA = 0, hB = 0, nA = 0, nB = 0;
+
+            for (var i = 0; i < groups.Count; i++)
+            {
+                if ((candidate & (1 << i)) == 0) { hA += heights[i]; nA++; }
+                else                             { hB += heights[i]; nB++; }
+            }
+
+            // The gaps are part of a column's height, and a column with more
+            // cards carries more of them.
+            hA += ColumnGap * Math.Max(nA - 1, 0);
+            hB += ColumnGap * Math.Max(nB - 1, 0);
+
+            // Tie-break on the count difference, so two splits that balance
+            // equally well pick the one that does not pile cards on one side.
+            var score = Math.Abs(hA - hB) * 100 + Math.Abs(nA - nB);
+
+            if (score < bestScore) { bestScore = score; best = candidate; }
+        }
+
+        var a = new List<GroupSlot>();
+        var b = new List<GroupSlot>();
+
+        for (var i = 0; i < groups.Count; i++)
+        {
+            var slot = new GroupSlot(groups[i], i);
+            if ((best & (1 << i)) == 0) a.Add(slot); else b.Add(slot);
+        }
+
+        return (a, b);
+    }
+
+    private IEnumerable<ModuleGroup> VisibleGroups() =>
+        BuildGroups()
+            .Select(g => g with { Items = g.Items.Where(i => CanSee(i.RequiresFlag)).ToArray() })
+            .Where(g => g.Items.Length > 0);
+
+    /// <summary>UI visibility only — see the note above BuildGroups.
+    ///
+    /// <para>Reads the seeded flag of the role the viewer actually holds.
+    /// "GET api/role-settings/me" cannot be used for this: it aggregates with
+    /// MAX() over the caller's UserRoles rows, and the Staff => Admin trigger
+    /// writes an Admin row for every Staff user — so its union always reports
+    /// Admin's flags and would make this check a no-op.</para>
+    ///
+    /// <para>Fails OPEN when the rows are unavailable: the server permits the
+    /// module regardless, so hiding it on a transient fetch error would remove a
+    /// capability the user genuinely has.</para></summary>
+    private bool CanSee(string? flag)
+    {
+        if (string.IsNullOrWhiteSpace(flag)) return true;
+
+        var roleName = _isCourseStaff ? Roles.Staff : Roles.Admin;
+        var row = _allRoleSettings.FirstOrDefault(
+            r => string.Equals(r.RoleName, roleName, StringComparison.OrdinalIgnoreCase));
+
+        return row is null || GetFlag(row, flag);
+    }
+
+    private void ActivateItem(ModuleItem item)
+    {
+        if (item.SectionKey is not null) { OpenSection(item.SectionKey); return; }
+        if (!string.IsNullOrWhiteSpace(item.Route)) Nav.NavigateTo(item.Route);
+    }
+
+    /// <summary>Teams count plus how many already have a mentor — the second
+    /// half is the fact an administrator actually scans this row for.</summary>
+    private string TeamsCountLabel()
     {
         var withMentor = _projects.Count(p => !string.IsNullOrWhiteSpace(p.MentorNames));
         return $"{_projects.Count} צוותים · {withMentor} עם מנחה";
     }
+    private string MilestonesCountLabel() => $"{_milestones.Count} אבני דרך";
+    private string ResourcesCountLabel()  => $"{_resources.Count} קבצים";
 
     // ── Navigation ─────────────────────────────────────────────────────────
+
     private void OpenSection(string key)
     {
         _activeSection      = key;

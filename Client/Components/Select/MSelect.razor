@@ -1,0 +1,307 @@
+@namespace AuthWithAdmin.Client.Components
+@inject IJSRuntime JS
+
+@*
+    MSelect — a Motiva-surfaced replacement for a native <select>.
+
+    WHY IT EXISTS
+    A native <select> paints its closed control with the browser's own chrome
+    and its open list with the OPERATING SYSTEM's menu: an OS font, an OS
+    highlight colour, OS corners. Inside a Motiva modal that is the one control
+    on screen the design system does not reach. This draws both states itself.
+
+    IT IS NOT A GLOBAL REPLACEMENT. It is introduced for the user-import
+    mapping step; the app's other native selects are untouched.
+
+    THE CALLER OWNS `Open`
+    Same contract as MAccordionItem, and for the same reason: a screen with
+    many of these needs "one open at a time" and outside-click-to-close, and
+    both are decisions about the SCREEN, not about one control. The caller
+    closes them all from its own root @onclick — the pattern UsersManagement
+    already uses for its kebab and filter menus.
+
+    KEYBOARD
+    Focus never leaves the trigger; the highlighted option is announced through
+    aria-activedescendant. That is the WAI-ARIA combobox/listbox pairing, and it
+    means no JS interop is needed to move focus into the popup and back.
+
+    keydown ALWAYS STOPS PROPAGATING, and Escape-while-closed is handed back
+    to the caller through OnDismiss instead. This control is used inside
+    MModal, whose overlay closes the dialog on Escape, so an un-stopped Escape
+    would shut the whole dialog instead of the menu.
+
+    Binding stopPropagation to `Open` — the obvious version of this — DOES NOT
+    WORK. It compiles and it renders, but Blazor does not re-apply the option
+    when the expression flips on a later render, so the flag keeps whatever
+    value it had on first render (false) and Escape closes the dialog with the
+    menu still open. Verified in the browser, not assumed. Hence a constant
+    here plus an explicit OnDismiss for the case the constant swallows.
+*@
+
+<div class="@RootClass">
+    @*  A focusable DIV, not a <button> — and that is not cosmetic. A button
+        turns Enter and Space into a synthetic CLICK after the keydown, so
+        "Enter picks the highlighted option" would close the menu in keydown
+        and the trailing click would immediately reopen it. A div with
+        tabindex sees the keys and nothing else. `disabled` has no meaning on
+        a div either, hence aria-disabled + tabindex -1 + the handler guards. *@
+    <div class="m-sel-trigger"
+         role="combobox"
+         tabindex="@(Disabled ? -1 : 0)"
+         aria-haspopup="listbox"
+         aria-expanded="@(Open ? "true" : "false")"
+         aria-controls="@_listId"
+         aria-activedescendant="@ActiveDescendant"
+         aria-label="@AriaLabel"
+         aria-disabled="@(Disabled ? "true" : "false")"
+         title="@SelectedLabel"
+         @onclick="ToggleAsync"
+         @onclick:stopPropagation="true"
+         @onkeydown="HandleKeyDownAsync"
+         @onkeydown:stopPropagation="true">
+
+        <span class="m-sel-value @(HasValue ? "" : "m-sel-value--empty")">
+            @(HasValue ? SelectedLabel : Placeholder)
+        </span>
+
+        @*  One downward glyph rotated when open — it carries no direction, so
+            it needs no RTL mirroring. Same construction as MAccordionItem. *@
+        <span class="m-sel-chevron" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m6 9 6 6 6-6"></path>
+            </svg>
+        </span>
+    </div>
+
+    @if (Open)
+    {
+        @*  stopPropagation so a click on an option does not reach the caller's
+            close-everything root handler before the option's own @onclick. *@
+        <div class="m-sel-menu"
+             id="@_listId"
+             role="listbox"
+             aria-label="@AriaLabel"
+             @onclick:stopPropagation="true">
+
+            @for (var i = 0; i < Options.Count; i++)
+            {
+                var index    = i;
+                var option   = Options[i];
+                var selected = option.Value == Value;
+
+                <div class="m-sel-opt @(selected ? "m-sel-opt--on" : "") @(index == _active ? "m-sel-opt--active" : "") @(option.Disabled ? "m-sel-opt--off" : "")"
+                     id="@OptionId(index)"
+                     role="option"
+                     aria-selected="@(selected ? "true" : "false")"
+                     aria-disabled="@(option.Disabled ? "true" : "false")"
+                     title="@option.Label"
+                     @onclick="() => PickAsync(index)"
+                     @onmousemove="() => _active = index">
+
+                    <span class="m-sel-opt-label">@option.Label</span>
+
+                    @*  A check at the row end, not a filled row — the same
+                        "selected = weight + violet check" treatment the
+                        management menus use. *@
+                    <span class="m-sel-opt-check" aria-hidden="true">
+                        @if (selected)
+                        {
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m5 12.5 4.5 4.5L19 7"></path>
+                            </svg>
+                        }
+                    </span>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>One choice. <paramref name="Disabled"/> is here for callers that
+    /// must SHOW an unavailable choice; a caller that would rather withhold it
+    /// simply leaves it out of <see cref="Options"/>.</summary>
+    public sealed record Option(string Value, string Label, bool Disabled = false);
+
+    [Parameter, EditorRequired] public IReadOnlyList<Option> Options { get; set; } = Array.Empty<Option>();
+
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+
+    /// <summary>Caller-owned, so the screen can enforce one-open-at-a-time and
+    /// close on an outside click.</summary>
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public EventCallback<bool> OpenChanged { get; set; }
+
+    /// <summary>Escape pressed on the trigger while the menu is already
+    /// closed. It exists because this component swallows every keydown (see the
+    /// header), which would otherwise silently eat the Escape a surrounding
+    /// dialog needs. A caller inside a modal wires this to its own close.</summary>
+    [Parameter] public EventCallback OnDismiss { get; set; }
+
+    [Parameter] public string? AriaLabel { get; set; }
+    [Parameter] public string Placeholder { get; set; } = "בחירה";
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? Class { get; set; }
+
+    private readonly string _listId = $"m-sel-{Guid.NewGuid():N}";
+
+    /// <summary>Keyboard highlight. -1 = nothing highlighted yet.</summary>
+    private int _active = -1;
+    private bool _wasOpen;
+
+    private string RootClass =>
+        "m-sel"
+        + (Open ? " m-sel-open" : "")
+        + (Disabled ? " m-sel-disabled" : "")
+        + (string.IsNullOrWhiteSpace(Class) ? "" : $" {Class}");
+
+    private bool HasValue => Options.Any(o => o.Value == Value);
+
+    private string SelectedLabel =>
+        Options.FirstOrDefault(o => o.Value == Value)?.Label ?? Placeholder;
+
+    private string OptionId(int index) => $"{_listId}-o{index}";
+
+    private string? ActiveDescendant =>
+        Open && _active >= 0 && _active < Options.Count ? OptionId(_active) : null;
+
+    /// <summary>Set on the closed→open transition so the menu can be scrolled
+    /// into view once, after the render that created it.</summary>
+    private bool _justOpened;
+
+    protected override void OnParametersSet()
+    {
+        // Every open starts from the current selection, not from wherever the
+        // previous open left off.
+        if (Open && !_wasOpen)
+        {
+            _active = FirstEnabledFrom(SelectedIndex, +1, fallbackToSelected: true);
+            _justOpened = true;
+        }
+        if (!Open) _active = -1;
+        _wasOpen = Open;
+    }
+
+    /// <summary>Brings a freshly-opened menu fully into view.
+    ///
+    /// <para>The menu opens BELOW its trigger inside a scrolling modal body, so
+    /// a control near the bottom of a long list drops its menu under the fold —
+    /// the user sees the first option and has to go looking for the rest, which
+    /// is worse than the native control this replaces. Same one-call treatment
+    /// MDateField and MTimeField already use for their panels.</para></summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_justOpened) return;
+        _justOpened = false;
+
+        try   { await JS.InvokeVoidAsync("gradify.revealPopover", _listId); }
+        catch { /* Scrolling is a courtesy; the menu is usable without it. */ }
+    }
+
+    private int SelectedIndex
+    {
+        get
+        {
+            for (var i = 0; i < Options.Count; i++)
+                if (Options[i].Value == Value) return i;
+            return -1;
+        }
+    }
+
+    private async Task ToggleAsync()
+    {
+        if (Disabled) return;
+        await SetOpenAsync(!Open);
+    }
+
+    private async Task SetOpenAsync(bool open)
+    {
+        if (Open == open) return;
+        Open = open;                       // so a caller that ignores the event still behaves
+        if (OpenChanged.HasDelegate) await OpenChanged.InvokeAsync(open);
+    }
+
+    private async Task PickAsync(int index)
+    {
+        if (index < 0 || index >= Options.Count) return;
+        var option = Options[index];
+        if (option.Disabled) return;
+
+        if (option.Value != Value && ValueChanged.HasDelegate)
+            await ValueChanged.InvokeAsync(option.Value);
+
+        await SetOpenAsync(false);
+    }
+
+    /// <summary>First selectable index walking in <paramref name="step"/> from
+    /// <paramref name="from"/> INCLUSIVE. Stops at the ends rather than wrapping:
+    /// a list that loops makes "am I at the bottom?" unanswerable without
+    /// counting.</summary>
+    private int FirstEnabledFrom(int from, int step, bool fallbackToSelected = false)
+    {
+        for (var i = from; i >= 0 && i < Options.Count; i += step)
+            if (!Options[i].Disabled) return i;
+
+        if (fallbackToSelected)
+            for (var i = 0; i < Options.Count; i++)
+                if (!Options[i].Disabled) return i;
+
+        return from >= 0 && from < Options.Count ? from : -1;
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (Disabled) return;
+
+        if (!Open)
+        {
+            if (e.Key is "ArrowDown" or "ArrowUp" or "Down" or "Up"
+                      or "Enter" or " " or "Spacebar")
+                await SetOpenAsync(true);
+            else if (e.Key is "Escape" or "Esc" && OnDismiss.HasDelegate)
+                await OnDismiss.InvokeAsync();
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case "Escape":
+            case "Esc":
+                await SetOpenAsync(false);
+                break;
+
+            case "Tab":
+                // Not prevented — focus moves on, and the menu must not be
+                // left hanging over the control it no longer belongs to.
+                await SetOpenAsync(false);
+                break;
+
+            case "ArrowDown":
+            case "Down":
+                _active = FirstEnabledFrom(_active < 0 ? 0 : _active + 1, +1);
+                break;
+
+            case "ArrowUp":
+            case "Up":
+                _active = FirstEnabledFrom(_active <= 0 ? 0 : _active - 1, -1);
+                break;
+
+            case "Home":
+                _active = FirstEnabledFrom(0, +1);
+                break;
+
+            case "End":
+                _active = FirstEnabledFrom(Options.Count - 1, -1);
+                break;
+
+            case "Enter":
+            case " ":
+            case "Spacebar":
+                await PickAsync(_active);
+                break;
+        }
+    }
+}

@@ -1,0 +1,133 @@
+@namespace AuthWithAdmin.Client.Components
+@typeparam TItem
+
+@*
+    MDataTable — the Management area's tabular primitive.
+
+    WHY A REAL <table>
+    ──────────────────
+    The finalized design (design-reference/Motiva Admin Users.dc.html) draws its
+    rows with CSS grid, but the content is genuinely tabular: seven aligned
+    columns of the same shape per row, scanned column-wise. A real table gives
+    the row/column semantics for free (a screen reader announces "עמודה 3 מתוך
+    7"), keeps head and body aligned without restating a grid template in two
+    places, and makes the narrow-width story a single `min-width` on one element
+    instead of a media query per column.
+
+    `table-layout: fixed` is what makes the caller's <colgroup> authoritative:
+    without it a long email would widen its column and the alignment the design
+    depends on would drift row to row.
+
+    WHAT THIS IS NOT
+    ────────────────
+    Not a data grid. No sorting, no selection, no paging, no column model, no
+    virtualization — none of that exists on the screens this serves, and adding
+    it now would be inventing requirements. It owns exactly three things the
+    Management tables all need and all currently hand-roll: the surface, the
+    head/row/cell rhythm, and the loading / empty / rows switch.
+
+    STYLING CALLER MARKUP
+    ─────────────────────
+    HeaderContent and RowTemplate render in the CALLER's CSS-isolation scope,
+    so MDataTable.razor.css reaches their <th>/<tr>/<td> through `::deep` from
+    an element that lives in THIS component (.m-dt-scroll). Callers still style
+    their own cells by class as usual — the rules here are only the shared
+    rhythm every table wants.
+
+    OVERFLOW AND ROW MENUS
+    ──────────────────────
+    Row kebab menus are absolutely positioned inside a <td>, and ANY overflow
+    value other than `visible` clips them — including `overflow-x: auto` that is
+    not currently scrolling anything. So the scroller is opt-in per breakpoint:
+    at desktop widths (where the table fits) it stays `visible` and menus paint
+    freely; only below --m-dt-scroll-at does horizontal scrolling engage. See
+    the stylesheet.
+*@
+
+<div class="m-dt @Class">
+    <div class="m-dt-scroll">
+        <table class="m-dt-table" style="@MinWidthStyle">
+            @if (Columns is not null)
+            {
+                <colgroup>@Columns</colgroup>
+            }
+
+            <thead class="m-dt-head">
+                <tr>@HeaderContent</tr>
+            </thead>
+
+            <tbody class="m-dt-body">
+                @if (Loading)
+                {
+                    <tr class="m-dt-state-row">
+                        <td colspan="@ColumnCount">
+                            <div class="m-dt-state">
+                                <span class="m-dt-spinner" aria-hidden="true"></span>
+                                <span>@LoadingText</span>
+                            </div>
+                        </td>
+                    </tr>
+                }
+                else if (Items is null || !Items.Any())
+                {
+                    <tr class="m-dt-state-row">
+                        <td colspan="@ColumnCount">
+                            <div class="m-dt-state m-dt-state-empty">@EmptyContent</div>
+                        </td>
+                    </tr>
+                }
+                else
+                {
+                    foreach (var item in Items)
+                    {
+                        @RowTemplate!(item)
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    /// <summary>The rows to render. Null and empty both resolve to
+    /// <see cref="EmptyContent"/> — a table that has not loaded yet says so via
+    /// <see cref="Loading"/>, not via a null list.</summary>
+    [Parameter] public IEnumerable<TItem>? Items { get; set; }
+
+    /// <summary>The caller's &lt;th&gt; cells. Rendered inside this component's
+    /// single header &lt;tr&gt;.</summary>
+    [Parameter] public RenderFragment? HeaderContent { get; set; }
+
+    /// <summary>The caller's &lt;tr&gt; for one item, cells included. Required
+    /// whenever <see cref="Items"/> is non-empty.</summary>
+    [Parameter] public RenderFragment<TItem>? RowTemplate { get; set; }
+
+    /// <summary>The caller's &lt;col&gt; elements. Column widths are the
+    /// caller's layout decision, not this component's — it only guarantees they
+    /// are honoured exactly (table-layout: fixed).</summary>
+    [Parameter] public RenderFragment? Columns { get; set; }
+
+    /// <summary>Shown in place of the rows while data is in flight.</summary>
+    [Parameter] public bool Loading { get; set; }
+
+    [Parameter] public string LoadingText { get; set; } = "טוען…";
+
+    /// <summary>Shown in place of the rows when there are none — typically an
+    /// <c>MEmptyState</c>.</summary>
+    [Parameter] public RenderFragment? EmptyContent { get; set; }
+
+    /// <summary>How many columns the loading/empty cell must span. Kept explicit
+    /// rather than counted from HeaderContent: a RenderFragment cannot be
+    /// inspected, and a wrong colspan silently breaks the state row's layout.</summary>
+    [Parameter] public int ColumnCount { get; set; } = 1;
+
+    /// <summary>CSS length below which the table would stop being readable, e.g.
+    /// "900px". Under it the table scrolls horizontally inside its own surface
+    /// rather than pushing the page into overflow.</summary>
+    [Parameter] public string? MinWidth { get; set; }
+
+    [Parameter] public string? Class { get; set; }
+
+    private string? MinWidthStyle =>
+        string.IsNullOrWhiteSpace(MinWidth) ? null : $"min-width:{MinWidth}";
+}
