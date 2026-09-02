@@ -6,6 +6,7 @@ namespace AuthWithAdmin.Client.Services;
 public interface ITeamTasksService
 {
     Task<List<TeamTaskDto>>                          GetAsync();
+    Task<List<TeamMemberDto>>                        GetTeamMembersAsync();
     Task<(TeamTaskDto? Task, string? Error)>         CreateAsync(CreateTeamTaskRequest req);
     Task<string?>                                    UpdateAsync(int id, UpdateTeamTaskRequest req);
     Task<bool>                                       ToggleAsync(int id);
@@ -26,6 +27,16 @@ public class TeamTasksService : ITeamTasksService
                    ?? new List<TeamTaskDto>();
         }
         catch { return new List<TeamTaskDto>(); }
+    }
+
+    public async Task<List<TeamMemberDto>> GetTeamMembersAsync()
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<List<TeamMemberDto>>("api/projects/team-members")
+                   ?? new List<TeamMemberDto>();
+        }
+        catch { return new List<TeamMemberDto>(); }
     }
 
     public async Task<(TeamTaskDto? Task, string? Error)> CreateAsync(CreateTeamTaskRequest req)
