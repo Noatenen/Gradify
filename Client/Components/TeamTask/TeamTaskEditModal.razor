@@ -271,9 +271,24 @@
                 }
                 else
                 {
-                    <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseAsync" Disabled="@_isSaving">
-                        ביטול
-                    </MButton>
+                    @* Trash icon — physical RIGHT in RTL (flex-start). Only shown when editing. *@
+                    @if (EditingTask is not null)
+                    {
+                        <button type="button" class="ttm-trash-btn"
+                                @onclick="OpenDeleteConfirm"
+                                disabled="@(_isSaving || _isDeleting)"
+                                title="מחיקת משימה" aria-label="מחיקת משימה">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                 aria-hidden="true">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                                <path d="M10 11v6M14 11v6"></path>
+                                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                            </svg>
+                        </button>
+                    }
+                    @* Save — physical LEFT in RTL (flex-end via space-between). *@
                     <MButton Variant="MButton.ButtonVariant.Primary" OnClick="SaveAsync" Loading="@_isSaving" LoadingText="שומר...">
                         שמירה
                     </MButton>
@@ -283,6 +298,18 @@
         </div>
     </div>
 }
+
+<MConfirmDialog IsOpen="@_showDeleteConfirm"
+                Tone="MConfirmDialog.ConfirmTone.Danger"
+                Title="מחיקת משימה"
+                Message="מחיקת המשימה היא לצמיתות ולא ניתן לשחזר אותה. האם למחוק את המשימה?"
+                Error="@_deleteError"
+                ConfirmText="מחק לצמיתות"
+                ConfirmIcon="oi-trash"
+                BusyText="מוחק..."
+                Busy="@_isDeleting"
+                OnConfirm="ConfirmDeleteAsync"
+                OnCancel="CancelDelete" />
 
 @code {
     /// <summary>The task being edited, or null to create a new one.</summary>
@@ -330,9 +357,17 @@
     /// original no-reload behaviour.</summary>
     [Parameter] public EventCallback OnUpdated { get; set; }
 
+    /// <summary>Raised with the deleted task's id after a successful permanent delete.</summary>
+    [Parameter] public EventCallback<int> OnDeleted { get; set; }
+
     private bool    _touched;
     private bool    _isSaving;
     private string? _saveError;
+
+    // ── Delete ───────────────────────────────────────────────────────────────
+    private bool    _showDeleteConfirm;
+    private bool    _isDeleting;
+    private string? _deleteError;
 
     private string  _newTitle            = "";
     private string? _newDescription;
@@ -467,6 +502,10 @@
         _touched             = false;
         _saveError           = null;
         _isSaving            = false;
+
+        _showDeleteConfirm   = false;
+        _isDeleting          = false;
+        _deleteError         = null;
 
         _gcalStatus      = null;
         _calBusy         = false;
@@ -758,6 +797,40 @@
     /// has not reached yet is not an error yet.</summary>
     private string CalInputClass(bool isEmpty) =>
         _touched && isEmpty ? "ttm-input ttm-input-error" : "ttm-input";
+
+    // ── Delete ───────────────────────────────────────────────────────────────
+
+    private void OpenDeleteConfirm() => _showDeleteConfirm = true;
+
+    private void CancelDelete()
+    {
+        _showDeleteConfirm = false;
+        _deleteError       = null;
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        if (EditingTask is null) return;
+
+        _isDeleting  = true;
+        _deleteError = null;
+        StateHasChanged();
+
+        var ok = await TeamTasksService.DeleteAsync(EditingTask.Id);
+        _isDeleting = false;
+
+        if (!ok)
+        {
+            _deleteError = "לא ניתן למחוק את המשימה כרגע. נסה שנית.";
+            StateHasChanged();
+            return;
+        }
+
+        var deletedId = EditingTask.Id;
+        _showDeleteConfirm = false;
+        await OnDeleted.InvokeAsync(deletedId);
+        // OnClose is called by the parent via OnTaskDeleted so we don't double-fire it here.
+    }
 
     public async ValueTask DisposeAsync()
     {
