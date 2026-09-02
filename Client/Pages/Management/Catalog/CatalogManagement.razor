@@ -1,652 +1,858 @@
+@*
+    ── קטלוג פרויקטים (Admin Project Catalog) ───────────────────────────────
+    Route:  /management/catalog  — reached from the ניהול hub
+            (LecturerManagementPage / ManagementCardsGrid → "קטלוג פרויקטים").
+
+    Visual source:
+        Client/Pages/Management/Users/UsersManagement.razor — the finished
+        Admin table screen. This page is deliberately its sibling: the same
+        header shape (title + counted summary / actions), the same one-row
+        toolbar of search and "name: value" filter pills, the same MDataTable,
+        the same tag / dot-and-text / kebab cell vocabulary, the same modal
+        language. Nothing new was invented for this screen.
+
+    WHAT CHANGED, AND WHAT DID NOT
+    ──────────────────────────────
+    CHANGED: the presentation only. The topbar-with-a-back-arrow, the KPI card
+    row, the inline add panel, the sliding detail sheet and the bespoke .cat-*
+    table are gone — none of them exist on the finished Admin screen, and the
+    canvas shell already provides the nav this page's back arrow duplicated.
+
+    NOT CHANGED: every data path. The list is still ICatalogService.GetCatalogAsync
+    → GET api/catalog. Create and edit are still CreateProjectWithErrorAsync /
+    UpdateProjectWithErrorAsync, with the same four validations, the same
+    SaveCatalogProjectRequest and the same field set. Availability still flips
+    through ToggleAvailabilityAsync. The Airtable route still goes to the
+    preview→confirm surface and never straight to the import endpoint.
+
+    WHERE THE REAL MODEL DIFFERS FROM THE USERS SCREEN
+    ──────────────────────────────────────────────────
+    • STATUS. The old filter offered exactly זמין / לא זמין, but Projects.Status
+      also carries values written by the assignment flow ("Active",
+      "InProgress"), and rows holding them were unreachable through that filter.
+      The options are now DERIVED from the loaded set — the same construction
+      UsersManagement uses for its cycle filter — so every row is reachable.
+    • MENTOR. There is no mentor column on the catalog record; mentors are
+      assigned on the Active Projects screen (see the note at the foot of
+      this comment). The column is absent rather than faked.
+    • SORTING AND PAGING are client-side over the one unpaged GET, because that
+      is what the endpoint returns and no paging contract exists to change.
+      117 seeded projects is past the point where one unbroken list is
+      readable, which is why this screen has a pager and the 28-row users
+      screen does not.
+*@
+
 @page "/management/catalog"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
 @using AuthWithAdmin.Client.Services
 @inject NavigationManager Nav
 @inject ICatalogService CatalogService
-@inject IManagementService ManagementService
 
-<div class="cat-page" @onclick="CloseAllMenus">
-
-    <!-- ══════════════════════════════════════════
-         TOP BAR
-         ══════════════════════════════════════════ -->
-    <div class="cat-topbar">
-        <div class="cat-topbar-start">
-            <button class="cat-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))"
-                    @onclick:stopPropagation="true" title="חזרה לניהול">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="cat-breadcrumb">ניהול</div>
-                <h1 class="cat-title">קטלוג פרויקטים</h1>
-            </div>
-        </div>
-
-        <div class="cat-topbar-end" @onclick:stopPropagation="true">
-            @* Catalog "ייבוא פרויקטים" — must NEVER hit the import endpoint
-               directly. Per the import-confirmation rule, every UI path
-               that triggers an import has to go through preview→confirm.
-               Clicking this button navigates to the canonical preview
-               surface (/management/integrations/airtable) with a query
-               flag that auto-opens the preview modal for the active
-               integration in the current cycle. The user reviews counts,
-               confirms, and only then the DB is written. *@
-            <button class="cat-sync-btn"
-                    @onclick='() => Nav.NavigateTo("/management/integrations/airtable?triggerPreviewForActive=1")'
-                    title="ייבוא פרויקטים מ-Airtable עם תצוגה מקדימה ואישור">
-                <span class="oi oi-cloud-download" aria-hidden="true"></span>
-                ייבוא פרויקטים
-            </button>
-            <button class="cat-add-btn" @onclick="OpenAddForm">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                הוספה ידנית
-            </button>
-        </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════
-         KPI SUMMARY CARDS (entire dataset)
-         ══════════════════════════════════════════ -->
-    @if (!_loading && !_loadError)
-    {
-        <div class="cat-kpi-row">
-            <div class="cat-kpi-card">
-                <div class="cat-kpi-value">@_allProjects.Count</div>
-                <div class="cat-kpi-label">סה"כ הצעות</div>
-            </div>
-            <div class="cat-kpi-card cat-kpi-card--unassigned">
-                <div class="cat-kpi-value">@_allProjects.Count(x => !x.IsAssigned)</div>
-                <div class="cat-kpi-label">לא מוקצות</div>
-            </div>
-            <div class="cat-kpi-card cat-kpi-card--assigned">
-                <div class="cat-kpi-value">@_allProjects.Count(x => x.IsAssigned)</div>
-                <div class="cat-kpi-label">מוקצות</div>
-            </div>
-            <div class="cat-kpi-card cat-kpi-card--available">
-                <div class="cat-kpi-value">@_allProjects.Count(x => x.Status == "Available" && !x.IsAssigned)</div>
-                <div class="cat-kpi-label">זמינות לשיוך</div>
-            </div>
-        </div>
-    }
-
-    <!-- ══════════════════════════════════════════
-         ADD / EDIT FORM PANEL
-         ══════════════════════════════════════════ -->
-    @if (_showForm)
-    {
-        <div class="cat-form-panel" @onclick:stopPropagation="true">
-            <div class="cat-form-header">
-                <span class="oi @(_editingId == 0 ? "oi-plus" : "oi-pencil")" aria-hidden="true"></span>
-                @(_editingId == 0 ? "הוספת הצעת פרויקט" : $"עריכת הצעה: {_formTitle}")
+@* ══════════════════════════════════════════
+     ADD / EDIT PROPOSAL MODAL
+     One modal for both, exactly as the one form did before — _editingId is
+     still what tells them apart, and every field, placeholder, maxlength and
+     validation below is the one that was there.
+     ══════════════════════════════════════════ *@
+@if (_showForm)
+{
+    <div class="pc-modal-overlay" @onclick="CancelForm">
+        <div class="pc-modal-box pc-modal-box--wide" @onclick:stopPropagation="true">
+            <div class="pc-modal-header">
+                <div>
+                    <div class="pc-modal-title">@(_editingId == 0 ? "הוספת פרויקט" : "עריכת פרויקט")</div>
+                    <div class="pc-modal-subtitle">
+                        @(_editingId == 0 ? "הפרויקט ייווצר ללא שיוך צוות" : _formTitle)
+                    </div>
+                </div>
+                <button type="button" class="pc-modal-close" @onclick="CancelForm" title="סגירה" aria-label="סגירה">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
             </div>
 
-            <!-- Section A: Core fields -->
-            <div class="cat-form-section-header">
-                <span class="oi oi-info" aria-hidden="true"></span>
-                מידע בסיסי
+            <div class="pc-modal-body">
+
+                @* ── מידע בסיסי ──────────────────────────────── *@
+                <div class="pc-form-section">
+                    <div class="pc-form-section-title">מידע בסיסי</div>
+
+                    <div class="pc-form-row">
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">מספר פרויקט *</label>
+                            <input class="pc-form-input" type="number" @bind="_formNumber" min="1" placeholder="101" />
+                        </div>
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">סוג פרויקט *</label>
+                            <select class="pc-form-select" @bind="_formTypeId">
+                                <option value="0">— בחר סוג —</option>
+                                @foreach (var pt in _projectTypes)
+                                {
+                                    <option value="@pt.Id">@pt.Name</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="pc-form-field">
+                        <label class="pc-form-label">שם / נושא הפרויקט *</label>
+                        <input class="pc-form-input" @bind="_formTitle" maxlength="200" placeholder="הזן שם הפרויקט…" />
+                    </div>
+
+                    <div class="pc-form-row">
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">מחזור אקדמי *</label>
+                            <select class="pc-form-select" @bind="_formYearId">
+                                <option value="0">— בחר מחזור —</option>
+                                @foreach (var yr in _academicYears)
+                                {
+                                    <option value="@yr.Id">@yr.Name</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">עדיפות</label>
+                            <select class="pc-form-select" @bind="_formPriority">
+                                <option value="">— ללא עדיפות —</option>
+                                <option value="Low">נמוכה</option>
+                                <option value="Medium">בינונית</option>
+                                <option value="High">גבוהה</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="pc-form-field">
+                        <label class="pc-form-label">תיאור / צורך</label>
+                        <textarea class="pc-form-textarea" @bind="_formDescription" rows="3" maxlength="1000"
+                                  placeholder="תיאור קצר של הצורך / הבעיה שהפרויקט עונה עליה…"></textarea>
+                    </div>
+                </div>
+
+                @* ── ארגון ויצירת קשר ────────────────────────── *@
+                <div class="pc-form-section">
+                    <div class="pc-form-section-title">
+                        ארגון ויצירת קשר
+                        <span class="pc-form-section-optional">אופציונלי</span>
+                    </div>
+
+                    <div class="pc-form-row">
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">שם ארגון</label>
+                            <input class="pc-form-input" @bind="_formOrgName" maxlength="200" placeholder="לדוגמה: עיריית תל אביב" />
+                        </div>
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">קהל יעד</label>
+                            <input class="pc-form-input" @bind="_formTargetAudience" maxlength="200" placeholder="לדוגמה: תלמידי תיכון" />
+                        </div>
+                    </div>
+
+                    <div class="pc-form-row">
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">איש קשר</label>
+                            <input class="pc-form-input" @bind="_formContactPerson" maxlength="150" placeholder="שם מלא" />
+                        </div>
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">תפקיד איש קשר</label>
+                            <input class="pc-form-input" @bind="_formContactRole" maxlength="150" placeholder="לדוגמה: מנהל פרויקטים" />
+                        </div>
+                    </div>
+
+                    <div class="pc-form-field">
+                        <label class="pc-form-label">מטרות הפרויקט</label>
+                        <textarea class="pc-form-textarea" @bind="_formGoals" rows="2" maxlength="1000"
+                                  placeholder="תאר את המטרות העיקריות של הפרויקט…"></textarea>
+                    </div>
+                </div>
+
+                @* ── הגדרות פנימיות ──────────────────────────── *@
+                <div class="pc-form-section">
+                    <div class="pc-form-section-title">
+                        הגדרות פנימיות
+                        <span class="pc-form-section-optional">אופציונלי</span>
+                    </div>
+
+                    <div class="pc-form-row">
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">מקור הרשומה</label>
+                            <select class="pc-form-select" @bind="_formSourceType">
+                                <option value="Manual">ידני (הוזן בגרדיפיי)</option>
+                                <option value="Airtable">Airtable (מסונכרן)</option>
+                            </select>
+                        </div>
+                        <div class="pc-form-field">
+                            <label class="pc-form-label">זמינות לשיוך</label>
+                            <select class="pc-form-select" @bind="_formStatus">
+                                <option value="Available">זמין לשיוך</option>
+                                <option value="Unavailable">לא זמין</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="pc-form-field">
+                        <label class="pc-form-label">הערות פנימיות</label>
+                        <textarea class="pc-form-textarea" @bind="_formInternalNotes" rows="2" maxlength="2000"
+                                  placeholder="הערות שמיועדות לצוות הניהול בלבד…"></textarea>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_formError))
+                {
+                    <div class="pc-form-error">@_formError</div>
+                }
             </div>
-            <div class="cat-form-grid">
-                <div class="cat-field">
-                    <label class="cat-label">מספר פרויקט <span class="cat-required">*</span></label>
-                    <input type="number" class="cat-input" @bind="_formNumber"
-                           placeholder="לדוגמה: 101" min="1" />
-                </div>
 
-                <div class="cat-field">
-                    <label class="cat-label">סוג פרויקט <span class="cat-required">*</span></label>
-                    <select class="cat-input" @bind="_formTypeId">
-                        <option value="0">— בחר סוג —</option>
-                        @foreach (var pt in _projectTypes)
-                        {
-                            <option value="@pt.Id">@pt.Name</option>
-                        }
-                    </select>
-                </div>
-
-                <div class="cat-field cat-field-full">
-                    <label class="cat-label">שם / נושא הפרויקט <span class="cat-required">*</span></label>
-                    <input type="text" class="cat-input" @bind="_formTitle"
-                           placeholder="הזן שם הפרויקט..." maxlength="200" />
-                </div>
-
-                <div class="cat-field">
-                    <label class="cat-label">מחזור אקדמי <span class="cat-required">*</span></label>
-                    <select class="cat-input" @bind="_formYearId">
-                        <option value="0">— בחר מחזור —</option>
-                        @foreach (var yr in _academicYears)
-                        {
-                            <option value="@yr.Id">@yr.Name</option>
-                        }
-                    </select>
-                </div>
-
-                <div class="cat-field">
-                    <label class="cat-label">עדיפות <span class="cat-optional">(אופציונלי)</span></label>
-                    <select class="cat-input" @bind="_formPriority">
-                        <option value="">— ללא עדיפות —</option>
-                        <option value="Low">נמוכה</option>
-                        <option value="Medium">בינונית</option>
-                        <option value="High">גבוהה</option>
-                    </select>
-                </div>
-
-                <div class="cat-field cat-field-full">
-                    <label class="cat-label">תיאור / צורך <span class="cat-optional">(אופציונלי)</span></label>
-                    <textarea class="cat-input cat-textarea" @bind="_formDescription"
-                              placeholder="תיאור קצר של הצורך / הבעיה שהפרויקט עונה עליה..."
-                              rows="3" maxlength="1000"></textarea>
-                </div>
-            </div>
-
-            <!-- Section B: Organization / contact -->
-            <div class="cat-form-section-header">
-                <span class="oi oi-people" aria-hidden="true"></span>
-                ארגון ויצירת קשר
-                <span class="cat-section-optional">אופציונלי</span>
-            </div>
-            <div class="cat-form-grid">
-                <div class="cat-field">
-                    <label class="cat-label">שם ארגון</label>
-                    <input type="text" class="cat-input" @bind="_formOrgName"
-                           placeholder="לדוגמה: עיריית תל אביב" maxlength="200" />
-                </div>
-
-                <div class="cat-field">
-                    <label class="cat-label">קהל יעד</label>
-                    <input type="text" class="cat-input" @bind="_formTargetAudience"
-                           placeholder="לדוגמה: תלמידי תיכון" maxlength="200" />
-                </div>
-
-                <div class="cat-field">
-                    <label class="cat-label">איש קשר</label>
-                    <input type="text" class="cat-input" @bind="_formContactPerson"
-                           placeholder="שם מלא" maxlength="150" />
-                </div>
-
-                <div class="cat-field">
-                    <label class="cat-label">תפקיד איש קשר</label>
-                    <input type="text" class="cat-input" @bind="_formContactRole"
-                           placeholder="לדוגמה: מנהל פרויקטים" maxlength="150" />
-                </div>
-
-                <div class="cat-field cat-field-full">
-                    <label class="cat-label">מטרות הפרויקט</label>
-                    <textarea class="cat-input cat-textarea" @bind="_formGoals"
-                              placeholder="תאר את המטרות העיקריות של הפרויקט..."
-                              rows="2" maxlength="1000"></textarea>
-                </div>
-            </div>
-
-            <!-- Section C: Internal management -->
-            <div class="cat-form-section-header">
-                <span class="oi oi-cog" aria-hidden="true"></span>
-                הגדרות פנימיות
-                <span class="cat-section-optional">אופציונלי</span>
-            </div>
-            <div class="cat-form-grid">
-                <div class="cat-field">
-                    <label class="cat-label">מקור הצעה</label>
-                    <select class="cat-input" @bind="_formSourceType">
-                        <option value="Manual">ידני (הוזן בגרדיפיי)</option>
-                        <option value="Airtable">Airtable (מסונכרן)</option>
-                    </select>
-                </div>
-
-                <div class="cat-field">
-                    <label class="cat-label">זמינות לשיוך</label>
-                    <select class="cat-input" @bind="_formStatus">
-                        <option value="Available">זמין לשיוך</option>
-                        <option value="Unavailable">לא זמין</option>
-                    </select>
-                </div>
-
-                <div class="cat-field cat-field-full">
-                    <label class="cat-label">הערות פנימיות</label>
-                    <textarea class="cat-input cat-textarea" @bind="_formInternalNotes"
-                              placeholder="הערות שמיועדות לצוות הניהול בלבד..."
-                              rows="2" maxlength="2000"></textarea>
-                </div>
-            </div>
-
-            @if (!string.IsNullOrEmpty(_formError))
-            {
-                <div class="cat-form-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_formError
-                </div>
-            }
-
-            <div class="cat-form-actions">
-                <button class="cat-ghost-btn" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
-                <button class="cat-add-btn cat-add-btn--save" @onclick="SubmitForm" disabled="@_formSaving">
-                    @if (_formSaving) { <span class="cat-spinner-sm"></span> }
+            <div class="pc-modal-footer">
+                <button type="button" class="pc-btn-ghost" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
+                <button type="button" class="pc-btn-primary motiva-cta" @onclick="SubmitForm" disabled="@_formSaving">
+                    @if (_formSaving)
+                    {
+                        <span class="pc-spinner-sm" aria-hidden="true"></span>
+                    }
                     @(_editingId == 0 ? "הוספה" : "שמירה")
                 </button>
             </div>
         </div>
-    }
+    </div>
+}
 
-    <!-- ══════════════════════════════════════════
-         DETAIL PANEL
-         ══════════════════════════════════════════ -->
-    @if (_detailProject != null)
-    {
-        <div class="cat-detail-overlay" @onclick="CloseDetail">
-            <div class="cat-detail-panel" @onclick:stopPropagation="true">
-                <div class="cat-detail-header">
-                    <div class="cat-detail-title-row">
-                        <span class="cat-detail-number">#@_detailProject.ProjectNumber</span>
-                        <h2 class="cat-detail-title">@_detailProject.Title</h2>
-                        @if (_detailProject.IsAssigned)
-                        {
-                            <span class="cat-assigned-badge">מוקצה</span>
-                        }
-                    </div>
-                    <button class="cat-detail-close" @onclick="CloseDetail" title="סגור">
-                        <span class="oi oi-x" aria-hidden="true"></span>
-                    </button>
-                </div>
-
-                <!-- Section: Basic Info -->
-                <div class="cat-detail-section">
-                    <div class="cat-detail-section-label">פרטי הצעה</div>
-                    <div class="cat-detail-grid">
-                        <div class="cat-detail-row">
-                            <span class="cat-detail-key">סוג פרויקט</span>
-                            <span class="cat-detail-val">@_detailProject.ProjectType</span>
-                        </div>
-                        <div class="cat-detail-row">
-                            <span class="cat-detail-key">מחזור אקדמי</span>
-                            <span class="cat-detail-val">@_detailProject.AcademicYear</span>
-                        </div>
-                        <div class="cat-detail-row">
-                            <span class="cat-detail-key">זמינות</span>
-                            <span class="cat-detail-val">
-                                <span class="cat-status-badge cat-status--@_detailProject.Status.ToLower()">
-                                    @AvailabilityLabel(_detailProject.Status)
-                                </span>
+@* ══════════════════════════════════════════
+     PROPOSAL DETAIL — read-only
+     Same sections and the same conditional blocks the sliding panel had; it
+     is a modal now so the page has one overlay language, not two.
+     ══════════════════════════════════════════ *@
+@if (_detailProject is not null)
+{
+    <div class="pc-modal-overlay" @onclick="CloseDetail">
+        <div class="pc-modal-box pc-modal-box--wide" @onclick:stopPropagation="true">
+            <div class="pc-modal-header">
+                <div class="pc-modal-head-id">
+                    <div>
+                        @* No column header names it here, so it keeps its "#".
+                           Above the title, as a reference line — the same
+                           secondary treatment the table cell now uses. *@
+                        <span class="pc-num pc-num--lg" aria-label="@($"מספר פרויקט {_detailProject.ProjectNumber}")">
+                            #@_detailProject.ProjectNumber
+                        </span>
+                        <div class="pc-modal-title">@_detailProject.Title</div>
+                        <div class="pc-modal-meta">
+                            <span class="pc-tag pc-tag--type">@_detailProject.ProjectType</span>
+                            <span class="pc-status @StatusToneClass(_detailProject.Status)">
+                                <span class="pc-status-dot" aria-hidden="true"></span>
+                                @StatusLabel(_detailProject.Status)
                             </span>
+                            @if (_detailProject.IsAssigned)
+                            {
+                                <span class="pc-tag pc-tag--assigned">מוקצה</span>
+                            }
                         </div>
-                        @if (!string.IsNullOrEmpty(_detailProject.Priority))
-                        {
-                            <div class="cat-detail-row">
-                                <span class="cat-detail-key">עדיפות</span>
-                                <span class="cat-detail-val">
-                                    <span class="cat-priority-badge cat-priority--@_detailProject.Priority.ToLower()">
-                                        @PriorityLabel(_detailProject.Priority)
-                                    </span>
-                                </span>
-                            </div>
-                        }
-                        <div class="cat-detail-row">
-                            <span class="cat-detail-key">נוצר</span>
-                            <span class="cat-detail-val">@_detailProject.CreatedAt.ToString("dd/MM/yyyy")</span>
+                    </div>
+                </div>
+                <button type="button" class="pc-modal-close" @onclick="CloseDetail" title="סגירה" aria-label="סגירה">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="pc-modal-body">
+                <div class="pc-form-section">
+                    <div class="pc-form-section-title">פרטי הפרויקט</div>
+                    <dl class="pc-detail-grid">
+                        <div class="pc-detail-row">
+                            <dt class="pc-detail-key">סוג פרויקט</dt>
+                            <dd class="pc-detail-val">@_detailProject.ProjectType</dd>
+                        </div>
+                        <div class="pc-detail-row">
+                            <dt class="pc-detail-key">מחזור אקדמי</dt>
+                            <dd class="pc-detail-val">@Dash(_detailProject.AcademicYear)</dd>
+                        </div>
+                        <div class="pc-detail-row">
+                            <dt class="pc-detail-key">עדיפות</dt>
+                            <dd class="pc-detail-val">@Dash(PriorityLabel(_detailProject.Priority))</dd>
+                        </div>
+                        <div class="pc-detail-row">
+                            <dt class="pc-detail-key">מקור</dt>
+                            <dd class="pc-detail-val">
+                                <span class="pc-tag @SourceToneClass(_detailProject.SourceType)">@SourceLabel(_detailProject.SourceType)</span>
+                                @if (_detailProject.SourceType == "Airtable" && !string.IsNullOrEmpty(_detailProject.AirtableRecordId))
+                                {
+                                    <span class="pc-detail-sub" dir="ltr">@_detailProject.AirtableRecordId</span>
+                                }
+                            </dd>
+                        </div>
+                        <div class="pc-detail-row">
+                            <dt class="pc-detail-key">נוצר</dt>
+                            <dd class="pc-detail-val">@_detailProject.CreatedAt.ToString("dd/MM/yyyy")</dd>
                         </div>
                         @if (_detailProject.UpdatedAt.HasValue)
                         {
-                            <div class="cat-detail-row">
-                                <span class="cat-detail-key">עודכן</span>
-                                <span class="cat-detail-val">@_detailProject.UpdatedAt.Value.ToString("dd/MM/yyyy")</span>
+                            <div class="pc-detail-row">
+                                <dt class="pc-detail-key">עודכן</dt>
+                                <dd class="pc-detail-val">@_detailProject.UpdatedAt.Value.ToString("dd/MM/yyyy")</dd>
                             </div>
                         }
-                    </div>
+                    </dl>
                 </div>
 
-                <!-- Section: Assignment -->
-                <div class="cat-detail-section">
-                    <div class="cat-detail-section-label">שיוך לצוות</div>
+                <div class="pc-form-section">
+                    <div class="pc-form-section-title">שיוך לצוות</div>
                     @if (_detailProject.IsAssigned)
                     {
-                        <div class="cat-assignment-info cat-assignment-info--assigned">
-                            <span class="oi oi-people" aria-hidden="true"></span>
-                            <div>
-                                <div class="cat-assignment-name">
-                                    @AssignedToDisplay(_detailProject.AssignedFirstMemberName, _detailProject.AssignedTeamSize)
-                                </div>
-                                <div class="cat-assignment-sub">@_detailProject.AssignedTeamSize חברי צוות</div>
-                            </div>
-                        </div>
+                        <p class="pc-detail-text">
+                            @AssignedToDisplay(_detailProject.AssignedFirstMemberName, _detailProject.AssignedTeamSize)
+                            <span class="pc-detail-sub">· @_detailProject.AssignedTeamSize חברי צוות</span>
+                        </p>
                     }
                     else
                     {
-                        <div class="cat-assignment-info cat-assignment-info--unassigned">
-                            <span class="oi oi-circle-x" aria-hidden="true"></span>
-                            <span>הפרויקט לא שויך עדיין לצוות</span>
-                        </div>
+                        <p class="pc-detail-text pc-detail-text--quiet">הפרויקט לא שויך עדיין לצוות.</p>
                     }
                 </div>
 
-                <!-- Section: Description / Need -->
                 @if (!string.IsNullOrWhiteSpace(_detailProject.Description))
                 {
-                    <div class="cat-detail-section">
-                        <div class="cat-detail-section-label">תיאור / צורך</div>
-                        <p class="cat-detail-text">@_detailProject.Description</p>
+                    <div class="pc-form-section">
+                        <div class="pc-form-section-title">תיאור / צורך</div>
+                        <p class="pc-detail-text">@_detailProject.Description</p>
                     </div>
                 }
 
-                <!-- Section: Goals -->
                 @if (!string.IsNullOrWhiteSpace(_detailProject.Goals))
                 {
-                    <div class="cat-detail-section">
-                        <div class="cat-detail-section-label">מטרות הפרויקט</div>
-                        <p class="cat-detail-text">@_detailProject.Goals</p>
+                    <div class="pc-form-section">
+                        <div class="pc-form-section-title">מטרות הפרויקט</div>
+                        <p class="pc-detail-text">@_detailProject.Goals</p>
                     </div>
                 }
 
-                <!-- Section: Organization / Contact -->
                 @{
-                    bool hasOrgData = !string.IsNullOrEmpty(_detailProject.OrganizationName)
-                                   || !string.IsNullOrEmpty(_detailProject.ContactPerson)
-                                   || !string.IsNullOrEmpty(_detailProject.ContactRole)
-                                   || !string.IsNullOrEmpty(_detailProject.TargetAudience);
+                    var hasOrgData = !string.IsNullOrEmpty(_detailProject.OrganizationName)
+                                  || !string.IsNullOrEmpty(_detailProject.ContactPerson)
+                                  || !string.IsNullOrEmpty(_detailProject.ContactRole)
+                                  || !string.IsNullOrEmpty(_detailProject.TargetAudience);
                 }
                 @if (hasOrgData)
                 {
-                    <div class="cat-detail-section">
-                        <div class="cat-detail-section-label">ארגון ויצירת קשר</div>
-                        <div class="cat-detail-grid">
+                    <div class="pc-form-section">
+                        <div class="pc-form-section-title">ארגון ויצירת קשר</div>
+                        <dl class="pc-detail-grid">
                             @if (!string.IsNullOrEmpty(_detailProject.OrganizationName))
                             {
-                                <div class="cat-detail-row">
-                                    <span class="cat-detail-key">ארגון</span>
-                                    <span class="cat-detail-val">@_detailProject.OrganizationName</span>
+                                <div class="pc-detail-row">
+                                    <dt class="pc-detail-key">ארגון</dt>
+                                    <dd class="pc-detail-val">@_detailProject.OrganizationName</dd>
                                 </div>
                             }
                             @if (!string.IsNullOrEmpty(_detailProject.ContactPerson))
                             {
-                                <div class="cat-detail-row">
-                                    <span class="cat-detail-key">איש קשר</span>
-                                    <span class="cat-detail-val">@_detailProject.ContactPerson</span>
+                                <div class="pc-detail-row">
+                                    <dt class="pc-detail-key">איש קשר</dt>
+                                    <dd class="pc-detail-val">@_detailProject.ContactPerson</dd>
                                 </div>
                             }
                             @if (!string.IsNullOrEmpty(_detailProject.ContactRole))
                             {
-                                <div class="cat-detail-row">
-                                    <span class="cat-detail-key">תפקיד</span>
-                                    <span class="cat-detail-val">@_detailProject.ContactRole</span>
+                                <div class="pc-detail-row">
+                                    <dt class="pc-detail-key">תפקיד</dt>
+                                    <dd class="pc-detail-val">@_detailProject.ContactRole</dd>
                                 </div>
                             }
                             @if (!string.IsNullOrEmpty(_detailProject.TargetAudience))
                             {
-                                <div class="cat-detail-row">
-                                    <span class="cat-detail-key">קהל יעד</span>
-                                    <span class="cat-detail-val">@_detailProject.TargetAudience</span>
+                                <div class="pc-detail-row">
+                                    <dt class="pc-detail-key">קהל יעד</dt>
+                                    <dd class="pc-detail-val">@_detailProject.TargetAudience</dd>
+                                </div>
+                            }
+                        </dl>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_detailProject.InternalNotes))
+                {
+                    <div class="pc-form-section">
+                        <div class="pc-form-section-title">הערות פנימיות</div>
+                        <p class="pc-detail-text">@_detailProject.InternalNotes</p>
+                    </div>
+                }
+            </div>
+
+            <div class="pc-modal-footer">
+                <button type="button" class="pc-btn-ghost" @onclick="CloseDetail">סגירה</button>
+                @* Editing an ASSIGNED project stays blocked, exactly as before. *@
+                @if (!_detailProject.IsAssigned)
+                {
+                    <button type="button" class="pc-btn-primary motiva-cta" @onclick="OpenEditFromDetail">עריכת פרויקט</button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@* ══════════════════════════════════════════
+     IMPORT WIZARD
+     Rendered unconditionally; MModal itself is the IsOpen gate. Placed with
+     the other overlays rather than inside .pc-page so a click inside it never
+     reaches the page's CloseAllMenus handler.
+     ══════════════════════════════════════════ *@
+<ProjectImportWizard IsOpen="_importOpen"
+                     ExistingProjects="_allProjects"
+                     ProjectTypes="_projectTypes"
+                     AcademicYears="_academicYears"
+                     OnClose="CloseImport"
+                     OnImported="ReloadAsync" />
+
+@{
+    // Materialized ONCE per render: the toolbar count, the pager, the empty
+    // state and the rows all read the same list, and recomputing the filter
+    // per reader would let them disagree mid-render.
+    var matching = SortedProjects.ToList();
+    var page     = Paged(matching);
+
+    // ONE SORTABLE <th>, DECLARED AS MARKUP.
+    //
+    // A templated delegate rather than a RenderFragment built with
+    // RenderTreeBuilder: scoped-CSS attributes are stamped onto element markup
+    // by the Razor compiler, so a <th>/<button> emitted from builder calls in
+    // @code would carry no b-* attribute and NONE of the .pc-sort rules in this
+    // page's stylesheet would ever match it. Written here, in the markup
+    // section, it is compiled like any other element and is styled.
+    RenderFragment<SortColumn> SortHeader = col =>
+        @<th scope="col" aria-sort="@AriaSort(col.Key)">
+            <button type="button"
+                    class="pc-sort @(_sortKey == col.Key ? "pc-sort--on" : "")"
+                    title="@($"מיון לפי {col.Title ?? col.Label}")"
+                    @onclick="@(() => ToggleSort(col.Key))"
+                    @onclick:stopPropagation="true">
+                <span>@col.Label</span>
+                <span class="pc-sort-mark @(_sortKey == col.Key && _sortDesc ? "pc-sort-mark--desc" : "")"
+                      aria-hidden="true">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </span>
+            </button>
+        </th>;
+}
+
+<div class="pc-page" dir="rtl" @onclick="CloseAllMenus">
+
+    @* ══ Header — identity, then the page-level actions ═══════════════════ *@
+    <header class="pc-head">
+        <div class="pc-head-title">
+            <h1 class="pc-h1">קטלוג פרויקטים</h1>
+            @if (!_loading && !_loadError)
+            {
+                <p class="pc-summary">@SummaryLine</p>
+            }
+        </div>
+
+        <div class="pc-head-actions" @onclick:stopPropagation="true">
+            @* THE AIRTABLE ROUTE IS UNCHANGED. It must NEVER hit the import
+               endpoint directly — every UI path that triggers an Airtable
+               import goes through preview→confirm. This navigates to that
+               surface with the flag that auto-opens the preview for the
+               active integration; the admin reviews counts, confirms, and
+               only then is the DB written. *@
+            <button type="button" class="pc-btn-secondary"
+                    @onclick='() => Nav.NavigateTo("/management/integrations/airtable?triggerPreviewForActive=1")'
+                    title="ייבוא פרויקטים מ-Airtable עם תצוגה מקדימה ואישור">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3v12" />
+                    <path d="m7 10 5 5 5-5" />
+                    <path d="M20 17.6A5 5 0 0 0 17.5 8h-1.3A8 8 0 1 0 4 15.9" />
+                </svg>
+                סנכרון מ-Airtable
+            </button>
+
+            @* The file import — the second alternative, opened in place so the
+               admin never leaves the table. *@
+            <button type="button" class="pc-btn-secondary" @onclick="OpenImport">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path d="m7 10 5 5 5-5" />
+                    <path d="M12 15V3" />
+                </svg>
+                ייבוא פרויקטים
+            </button>
+
+            @* The one primary on the page — gradient, per the shared
+               .motiva-cta treatment. Geometry only lives in the stylesheet. *@
+            <button type="button" class="pc-btn-primary pc-btn-primary--lg motiva-cta" @onclick="OpenAddForm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                </svg>
+                הוספת פרויקט
+            </button>
+        </div>
+    </header>
+
+    @* ══ Toolbar — one search, five filters, a conditional clear, a count ══ *@
+    <div class="pc-toolbar" @onclick:stopPropagation="true">
+
+        @* Value MUST carry the @ — MSearchField.Value is a string parameter, so
+           an unprefixed `Value="_searchQuery"` is a literal and the field
+           renders the field NAME as its content. *@
+        <MSearchField Value="@_searchQuery"
+                      ValueChanged="OnSearchChanged"
+                      Placeholder="חיפוש לפי שם, ארגון או מספר פרויקט"
+                      AriaLabel="חיפוש בקטלוג הפרויקטים"
+                      Class="pc-search" />
+
+        @foreach (var f in BuildFilters())
+        {
+            var key  = f.Key;
+            var open = _openFilter == key;
+
+            <div class="pc-filter">
+                <button type="button"
+                        class="pc-filter-btn @(f.IsActive ? "pc-filter-btn--on" : "")"
+                        @onclick="@(() => ToggleFilter(key))"
+                        aria-haspopup="listbox" aria-expanded="@(open ? "true" : "false")">
+                    <span class="pc-filter-name">@f.Name</span>
+                    <span class="pc-filter-value">@f.CurrentLabel</span>
+                    <svg class="pc-filter-chev @(open ? "pc-filter-chev--open" : "")"
+                         width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </button>
+
+                @if (open)
+                {
+                    <div class="pc-menu pc-menu--filter" role="listbox" aria-label="@f.Name">
+                        @foreach (var o in f.Options)
+                        {
+                            var val      = o.Value;
+                            var selected = o.Value == f.CurrentValue;
+                            <button type="button"
+                                    class="pc-menu-item @(selected ? "pc-menu-item--on" : "")"
+                                    role="option" aria-selected="@(selected ? "true" : "false")"
+                                    @onclick="@(() => PickFilter(key, val))">
+                                <span class="pc-menu-item-label">@o.Label</span>
+                                @if (selected)
+                                {
+                                    <svg class="pc-menu-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                         stroke="currentColor" stroke-width="2.6" stroke-linecap="round"
+                                         stroke-linejoin="round" aria-hidden="true">
+                                        <path d="m5 12.5 4.5 4.5L19 7" />
+                                    </svg>
+                                }
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        @if (HasActiveFilters)
+        {
+            <button type="button" class="pc-clear" @onclick="ClearFilters">ניקוי סינון</button>
+        }
+
+        @if (!_loading && !_loadError)
+        {
+            <span class="pc-result">@ResultLine(matching.Count)</span>
+        }
+    </div>
+
+    @* ══ The table ═══════════════════════════════════════════════════════ *@
+    <MDataTable TItem="CatalogProjectListDto"
+                Items="page"
+                Loading="_loading"
+                LoadingText="טוען קטלוג…"
+                ColumnCount="7"
+                MinWidth="1020px"
+                Class="pc-table">
+
+        <Columns>
+            @* The title column carries no width on purpose: under
+               table-layout:fixed the six sized columns are honoured exactly
+               and the title takes whatever is left, so the table widens into
+               the Management canvas instead of capping itself.
+
+               THE KEBAB IS INSIDE THE NAME CELL, NOT A COLUMN OF ITS OWN.
+               It used to close the row, which on a canvas-wide table put it
+               the better part of a metre from the name it acts on. Giving it
+               its own column one place earlier did not fix that: the name
+               column is the flexible one, its text is start-aligned, and a
+               short name like "3 - HIT" therefore left ~700px of empty cell
+               between the title and the control that acts on it.
+
+               As the name cell's own trailing child it simply follows the
+               title — tight after a short one, after the ellipsis of a long
+               one. The table is otherwise untouched: same <table>, same fixed
+               layout, same MDataTable, same menu, same handlers. One column
+               fewer, and the 48px it held goes to the name. *@
+            <col class="pc-col-number" />
+            <col />
+            <col class="pc-col-type" />
+            <col class="pc-col-cycle" />
+            <col class="pc-col-source" />
+            <col class="pc-col-status" />
+            <col class="pc-col-team" />
+        </Columns>
+
+        <HeaderContent>
+            @SortHeader(new SortColumn(SortKey.Number, "#", "מספר פרויקט"))
+            @SortHeader(new SortColumn(SortKey.Title, "שם הפרויקט"))
+            @SortHeader(new SortColumn(SortKey.Type, "סוג"))
+            @SortHeader(new SortColumn(SortKey.Cycle, "מחזור"))
+            @* Source and the kebab are not sortable: two values and no values
+               respectively. A control that reorders nothing is noise. *@
+            <th scope="col">מקור</th>
+            @SortHeader(new SortColumn(SortKey.Status, "זמינות"))
+            @SortHeader(new SortColumn(SortKey.Assignment, "שיוך"))
+        </HeaderContent>
+
+        <EmptyContent>
+            @if (_loadError)
+            {
+                @* THE ERROR STATE. MDataTable has no error slot — it switches
+                   on loading/empty/rows — so the failure is told here, where
+                   the empty state would otherwise claim the catalog is empty.
+                   It offers the retry rather than asking for a page refresh. *@
+                <MEmptyState Title="לא ניתן לטעון את הקטלוג"
+                             Description="הבקשה לשרת נכשלה. אפשר לנסות שוב."
+                             Live="true">
+                    <Action>
+                        <button type="button" class="pc-btn-secondary" @onclick="ReloadAsync">
+                            נסו שוב
+                        </button>
+                    </Action>
+                </MEmptyState>
+            }
+            else if (_allProjects.Count == 0)
+            {
+                <MEmptyState Title="אין פרויקטים בקטלוג"
+                             Description="ניתן להוסיף פרויקט ידנית, לייבא קובץ או לסנכרן מ-Airtable"
+                             Live="true" />
+            }
+            else
+            {
+                <MEmptyState Title="לא נמצאו פרויקטים"
+                             Description="נסו לשנות את החיפוש או הסינון"
+                             Live="true" />
+            }
+        </EmptyContent>
+
+        <RowTemplate Context="proj">
+            @{
+                var menuOpen = _openRowMenuId == proj.Id;
+            }
+            <tr class="@(menuOpen ? "m-dt-row-active" : "")">
+
+                @* The number is the catalog's identity — the place the users
+                   table puts its initials disc. Tabular and LTR-isolated so a
+                   column of them aligns inside the RTL row. *@
+                <td>
+                    <span class="pc-num">@proj.ProjectNumber</span>
+                </td>
+
+                <td class="pc-cell-identity">
+                    @* The whole title is the affordance: it opens the detail,
+                       which is what a row click did before. The kebab keeps
+                       every other action. *@
+                    <button type="button" class="pc-title-btn"
+                            title="@proj.Title"
+                            @onclick="@(() => OpenDetail(proj.Id))"
+                            @onclick:stopPropagation="true">
+                        <span class="pc-title">@proj.Title</span>
+                        @if (!string.IsNullOrWhiteSpace(proj.OrganizationName))
+                        {
+                            <span class="pc-org">@proj.OrganizationName</span>
+                        }
+                    </button>
+
+                    @* Trailing child of the identity cell, so it follows the
+                       title instead of sitting a column away from it. *@
+                    <div class="pc-cell-actions" @onclick:stopPropagation="true">
+                        <div class="pc-actions">
+                            <button type="button"
+                                    class="pc-kebab @(menuOpen ? "pc-kebab--on" : "")"
+                                    @onclick="@(() => ToggleRowMenu(proj.Id))"
+                                    aria-haspopup="true" aria-expanded="@(menuOpen ? "true" : "false")"
+                                    title="פעולות" aria-label="@($"פעולות עבור {proj.Title}")">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <circle cx="12" cy="5" r="1.7" />
+                                    <circle cx="12" cy="12" r="1.7" />
+                                    <circle cx="12" cy="19" r="1.7" />
+                                </svg>
+                            </button>
+
+                            @if (menuOpen)
+                            {
+                                <div class="pc-menu pc-menu--row" role="menu">
+                                    <button type="button" class="pc-menu-item" role="menuitem"
+                                            @onclick="@(() => OpenDetail(proj.Id))">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                                            <circle cx="12" cy="12" r="3" />
+                                        </svg>
+                                        צפייה בפרטים
+                                    </button>
+
+                                    @* EDIT AND AVAILABILITY STAY GATED ON ASSIGNMENT.
+                                       An assigned project is owned by its team's
+                                       workspace, and that rule predates this
+                                       redesign — the items are absent rather than
+                                       drawn as actions that will be refused. *@
+                                    @if (!proj.IsAssigned)
+                                    {
+                                        <button type="button" class="pc-menu-item" role="menuitem"
+                                                @onclick="@(() => OpenEditFormFromList(proj))">
+                                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                                            </svg>
+                                            עריכת פרויקט
+                                        </button>
+
+                                        <button type="button" class="pc-menu-item" role="menuitem"
+                                                @onclick="@(() => ToggleAvailability(proj))">
+                                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                <circle cx="12" cy="12" r="9" />
+                                                @if (proj.Status == "Available")
+                                                {
+                                                    <path d="M5.6 5.6 18.4 18.4" />
+                                                }
+                                                else
+                                                {
+                                                    <path d="m8.5 12.2 2.4 2.4 4.6-4.9" />
+                                                }
+                                            </svg>
+                                            @(proj.Status == "Available" ? "הגדרה כלא זמין" : "הגדרה כזמין")
+                                        </button>
+                                    }
                                 </div>
                             }
                         </div>
                     </div>
-                }
+                </td>
 
-                <!-- Section: Source — only shows Airtable details if relevant -->
-                <div class="cat-detail-section">
-                    <div class="cat-detail-section-label">מקור</div>
-                    @if (_detailProject.SourceType == "Airtable")
+                <td>
+                    <span class="pc-tag pc-tag--type">@Dash(proj.ProjectType)</span>
+                </td>
+
+                <td class="pc-cell-quiet">@Dash(proj.AcademicYear)</td>
+
+                <td>
+                    <span class="pc-tag @SourceToneClass(proj.SourceType)">@SourceLabel(proj.SourceType)</span>
+                </td>
+
+                <td>
+                    @* Dot + text, not a filled pill: the same reason the users
+                       table gives — a column of filled chips would out-shout
+                       the titles. The priority rides alongside it because it
+                       qualifies the availability and has no column of its own. *@
+                    <div class="pc-status-cell">
+                        <span class="pc-status @StatusToneClass(proj.Status)">
+                            <span class="pc-status-dot" aria-hidden="true"></span>
+                            @StatusLabel(proj.Status)
+                        </span>
+                        @if (!string.IsNullOrEmpty(proj.Priority))
+                        {
+                            <span class="pc-priority pc-priority--@proj.Priority.ToLowerInvariant()">@PriorityLabel(proj.Priority)</span>
+                        }
+                    </div>
+                </td>
+
+                <td class="pc-cell-quiet">
+                    @if (proj.IsAssigned)
                     {
-                        <div class="cat-source-airtable">
-                            <span class="cat-source-badge cat-source--airtable">Airtable</span>
-                            @if (!string.IsNullOrEmpty(_detailProject.AirtableRecordId))
-                            {
-                                <span class="cat-airtable-id">מזהה: @_detailProject.AirtableRecordId</span>
-                            }
-                        </div>
+                        <span class="pc-team" title="@AssignedToDisplay(proj.AssignedFirstMemberName, proj.AssignedTeamSize)">
+                            @AssignedToDisplay(proj.AssignedFirstMemberName, proj.AssignedTeamSize)
+                        </span>
                     }
                     else
                     {
-                        <div class="cat-source-manual">
-                            <span class="cat-source-badge cat-source--manual">ידני</span>
-                            <span class="cat-source-desc">הוזן ידנית בתוך מערכת Gradify</span>
-                        </div>
+                        <span class="pc-team pc-team--none">לא מוקצה</span>
                     }
-                </div>
+                </td>
 
-                <!-- Section: Internal Notes — admin only -->
-                @if (!string.IsNullOrWhiteSpace(_detailProject.InternalNotes))
+            </tr>
+        </RowTemplate>
+    </MDataTable>
+
+    @* ══ Pager ═══════════════════════════════════════════════════════════
+         Client-side over the one unpaged GET — GET api/catalog returns the
+         whole catalog and has no paging contract to change. Hidden entirely
+         at one page, because a pager that cannot move is furniture. *@
+    @if (!_loading && !_loadError && matching.Count > PageSize)
+    {
+        var totalPages = TotalPages(matching.Count);
+        var current    = CurrentPage(matching.Count);
+        var first      = current * PageSize + 1;
+        var last       = Math.Min(first + PageSize - 1, matching.Count);
+
+        <nav class="pc-pager" aria-label="ניווט בין עמודי הקטלוג" @onclick:stopPropagation="true">
+            <span class="pc-pager-range">מציג @first–@last מתוך @matching.Count</span>
+
+            <div class="pc-pager-controls">
+                @* THE GLYPHS ARE THE RTL ONES, ON PURPOSE.
+                   The RTL flow reverses the ORDER of the controls — "previous"
+                   lands at the reading start, on the physical right — but it
+                   does not mirror the glyphs inside them. So "previous" is a
+                   chevron pointing RIGHT and "next" points LEFT, the same way
+                   round every other back control in this app is drawn. This
+                   page is hard dir="rtl", exactly as the users screen is, so
+                   there is no LTR case for these two to also serve. *@
+                <button type="button" class="pc-pager-btn"
+                        disabled="@(current == 0)"
+                        @onclick="@(() => GoToPage(current - 1))"
+                        aria-label="לעמוד הקודם">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m9 18 6-6-6-6" />
+                    </svg>
+                </button>
+
+                @foreach (var slot in PageSlots(totalPages, current))
                 {
-                    <div class="cat-detail-section cat-detail-section--internal">
-                        <div class="cat-detail-section-label">
-                            <span class="oi oi-lock-locked" aria-hidden="true"></span>
-                            הערות פנימיות
-                        </div>
-                        <p class="cat-detail-text">@_detailProject.InternalNotes</p>
-                    </div>
-                }
-
-                <div class="cat-detail-actions">
-                    <button class="cat-ghost-btn" @onclick="CloseDetail">סגור</button>
-                    @if (!_detailProject.IsAssigned)
+                    if (slot < 0)
                     {
-                        <button class="cat-edit-inline-btn"
-                                @onclick="@(() => OpenEditFromDetail(_detailProject))">
-                            <span class="oi oi-pencil" aria-hidden="true"></span>
-                            עריכה
+                        <span class="pc-pager-gap" aria-hidden="true">…</span>
+                    }
+                    else
+                    {
+                        var target = slot;
+                        <button type="button"
+                                class="pc-pager-num @(target == current ? "pc-pager-num--on" : "")"
+                                aria-current="@(target == current ? "page" : null)"
+                                @onclick="@(() => GoToPage(target))">
+                            @(target + 1)
                         </button>
                     }
-                </div>
+                }
+
+                <button type="button" class="pc-pager-btn"
+                        disabled="@(current >= totalPages - 1)"
+                        @onclick="@(() => GoToPage(current + 1))"
+                        aria-label="לעמוד הבא">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m15 18-6-6 6-6" />
+                    </svg>
+                </button>
             </div>
-        </div>
+        </nav>
     }
-
-    <!-- ══════════════════════════════════════════
-         FILTERS BAR
-         ══════════════════════════════════════════ -->
-    <div class="cat-filters-bar">
-        <div class="cat-search-wrap">
-            <span class="oi oi-magnifying-glass cat-search-icon" aria-hidden="true"></span>
-            <input class="cat-search" type="text"
-                   placeholder="חיפוש לפי שם, ארגון..."
-                   @bind="_searchQuery" @bind:event="oninput" />
-        </div>
-        <div class="cat-filters">
-            <select class="cat-filter-select" @bind="_filterYear">
-                <option value="">כל המחזורים</option>
-                @foreach (var yr in _distinctYears)
-                {
-                    <option value="@yr">@yr</option>
-                }
-            </select>
-            <select class="cat-filter-select" @bind="_filterType">
-                <option value="">כל הסוגים</option>
-                @foreach (var pt in _projectTypes)
-                {
-                    <option value="@pt.Name">@pt.Name</option>
-                }
-            </select>
-            <select class="cat-filter-select" @bind="_filterStatus">
-                <option value="">כל הסטטוסים</option>
-                <option value="Available">זמין לשיוך</option>
-                <option value="Unavailable">לא זמין</option>
-            </select>
-            <select class="cat-filter-select" @bind="_filterAssigned">
-                <option value="">שיוך: הכל</option>
-                <option value="unassigned">לא מוקצה</option>
-                <option value="assigned">מוקצה</option>
-            </select>
-            <select class="cat-filter-select" @bind="_filterSource">
-                <option value="">מקור: הכל</option>
-                <option value="Manual">ידני</option>
-                <option value="Airtable">Airtable</option>
-            </select>
-        </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════
-         TABLE
-         ══════════════════════════════════════════ -->
-    <div class="cat-table-panel">
-        <div class="cat-table-wrap">
-            <table class="cat-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>שם הפרויקט</th>
-                        <th>סוג</th>
-                        <th>מחזור</th>
-                        <th>מקור</th>
-                        <th>זמינות</th>
-                        <th>שיוך</th>
-                        <th class="cat-th-actions">פעולות</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (_loading)
-                    {
-                        <tr>
-                            <td colspan="8" class="cat-empty">
-                                <span class="cat-spinner-inline"></span>
-                                טוען קטלוג...
-                            </td>
-                        </tr>
-                    }
-                    else if (_loadError)
-                    {
-                        <tr>
-                            <td colspan="8" class="mgmt-empty cat-empty--error">
-                                <span class="oi oi-warning" aria-hidden="true"></span>
-                                שגיאה בטעינת הקטלוג. רענן את הדף.
-                            </td>
-                        </tr>
-                    }
-                    else if (!FilteredProjects.Any())
-                    {
-                        <tr>
-                            <td colspan="8" class="cat-empty">
-                                <span class="oi oi-magnifying-glass" aria-hidden="true"></span>
-                                לא נמצאו פרויקטים התואמים את הסינון
-                            </td>
-                        </tr>
-                    }
-                    else
-                    {
-                        foreach (var p in FilteredProjects)
-                        {
-                            <tr class="cat-row @(p.IsAssigned ? "cat-row--assigned" : "")">
-                                <td class="cat-cell-num">@p.ProjectNumber</td>
-                                <td class="cat-cell-name">
-                                    <div class="cat-title-wrap">
-                                        <button class="cat-title-link"
-                                                @onclick="@(() => OpenDetail(p.Id))"
-                                                @onclick:stopPropagation="true">
-                                            @p.Title
-                                        </button>
-                                        @if (!string.IsNullOrEmpty(p.OrganizationName))
-                                        {
-                                            <span class="cat-org-sub">@p.OrganizationName</span>
-                                        }
-                                    </div>
-                                </td>
-                                <td class="cat-cell-secondary">@p.ProjectType</td>
-                                <td class="cat-cell-secondary">@p.AcademicYear</td>
-                                <td>
-                                    <span class="cat-source-badge cat-source--@p.SourceType.ToLower()">
-                                        @(p.SourceType == "Airtable" ? "Airtable" : "ידני")
-                                    </span>
-                                </td>
-                                <td>
-                                    <div class="cat-status-cell">
-                                        <span class="cat-status-badge cat-status--@p.Status.ToLower()">
-                                            @AvailabilityLabel(p.Status)
-                                        </span>
-                                        @if (!string.IsNullOrEmpty(p.Priority))
-                                        {
-                                            <span class="cat-priority-badge cat-priority--@p.Priority.ToLower()">
-                                                @PriorityLabel(p.Priority)
-                                            </span>
-                                        }
-                                    </div>
-                                </td>
-                                <td class="cat-cell-assignment">
-                                    @if (p.IsAssigned)
-                                    {
-                                        <div class="cat-assignment-cell">
-                                            <span class="oi oi-people cat-assigned-icon" aria-hidden="true"></span>
-                                            <span class="cat-assigned-text">
-                                                @AssignedToDisplay(p.AssignedFirstMemberName, p.AssignedTeamSize)
-                                            </span>
-                                        </div>
-                                    }
-                                    else
-                                    {
-                                        <span class="cat-unassigned-tag">לא מוקצה</span>
-                                    }
-                                </td>
-                                <td class="cat-cell-actions" @onclick:stopPropagation="true">
-                                    <div class="cat-actions-wrap">
-                                        <button class="cat-dots-btn"
-                                                @onclick="@(() => ToggleRowMenu(p.Id))"
-                                                title="פעולות">
-                                            <span class="oi oi-ellipses" aria-hidden="true"></span>
-                                        </button>
-
-                                        @if (_openRowMenuId == p.Id)
-                                        {
-                                            <div class="cat-row-menu">
-                                                <button class="cat-row-action"
-                                                        @onclick="@(() => OpenDetail(p.Id))">
-                                                    <span class="oi oi-eye" aria-hidden="true"></span>
-                                                    צפייה בפרטים
-                                                </button>
-
-                                                @if (!p.IsAssigned)
-                                                {
-                                                    <button class="cat-row-action"
-                                                            @onclick="@(() => OpenEditFormFromList(p))">
-                                                        <span class="oi oi-pencil" aria-hidden="true"></span>
-                                                        עריכת הצעה
-                                                    </button>
-
-                                                    <div class="cat-row-menu-sep"></div>
-
-                                                    <button class="cat-row-action"
-                                                            @onclick="@(() => ToggleAvailability(p))">
-                                                        @if (p.Status == "Available")
-                                                        {
-                                                            <span class="oi oi-ban" aria-hidden="true"></span>
-                                                            <span>הגדר כלא זמין</span>
-                                                        }
-                                                        else
-                                                        {
-                                                            <span class="oi oi-circle-check" aria-hidden="true"></span>
-                                                            <span>הגדר כזמין</span>
-                                                        }
-                                                    </button>
-                                                }
-                                            </div>
-                                        }
-                                    </div>
-                                </td>
-                            </tr>
-                        }
-                    }
-                </tbody>
-            </table>
-        </div>
-
-        <div class="cat-table-footer">
-            <span class="cat-count">
-                @{ var count = FilteredProjects.Count(); }
-                מציג @count הצעות
-                @if (IsFiltered)
-                {
-                    <span class="cat-count-note">(מסוננות מתוך @_allProjects.Count)</span>
-                }
-            </span>
-        </div>
-    </div>
-
 </div>
 
 @code {
 
-    // The Airtable "ייבוא פרויקטים" button used to call SyncAirtableProjects
-    // synchronously here and update the catalog inline. That bypassed the
-    // preview→confirm guard. The button now navigates to the canonical
-    // preview surface — see the @onclick handler in the markup.
-    // State + handler removed deliberately; do not reintroduce.
-
     // ─────────────────────────────────────────────────
-    //  Data
+    //  Data — the same three loads as before
     // ─────────────────────────────────────────────────
     private List<CatalogProjectListDto> _allProjects   = new();
     private List<ProjectTypeOptionDto>  _projectTypes  = new();
@@ -662,9 +868,9 @@
 
     private async Task LoadCatalogAsync()
     {
-        var list   = await CatalogService.GetCatalogAsync();
-        _loadError = list is null;
-        _allProjects = list ?? _allProjects;
+        var list     = await CatalogService.GetCatalogAsync();
+        _loadError   = list is null;
+        _allProjects = list ?? new List<CatalogProjectListDto>();
     }
 
     private async Task LoadFormDataAsync()
@@ -673,49 +879,338 @@
         _academicYears = await CatalogService.GetAcademicYearsAsync() ?? new();
     }
 
-    private async Task Reload()
+    /// <summary>Re-reads the list. A refetch rather than a local patch: an
+    /// import can create AND update in one pass, and the server is the only
+    /// thing that knows what actually landed.</summary>
+    private async Task ReloadAsync()
     {
-        var list   = await CatalogService.GetCatalogAsync();
-        _loadError = list is null;
-        _allProjects = list ?? _allProjects;
+        _loading = true;
+        StateHasChanged();
+
+        await LoadCatalogAsync();
+        _loading = false;
     }
 
     // ─────────────────────────────────────────────────
-    //  Filters
+    //  Filter / search state
+    //  Client-side over the loaded list — unchanged semantics.
     // ─────────────────────────────────────────────────
     private string _searchQuery    = "";
-    private string _filterYear     = "";
+    private string _filterCycle    = "";
     private string _filterType     = "";
     private string _filterStatus   = "";
     private string _filterAssigned = "";
     private string _filterSource   = "";
 
-    private IEnumerable<string> _distinctYears =>
-        _allProjects.Select(p => p.AcademicYear).Distinct().OrderByDescending(y => y);
-
-    private bool IsFiltered =>
-        !string.IsNullOrEmpty(_searchQuery) || !string.IsNullOrEmpty(_filterYear)
-        || !string.IsNullOrEmpty(_filterType) || !string.IsNullOrEmpty(_filterStatus)
-        || !string.IsNullOrEmpty(_filterAssigned) || !string.IsNullOrEmpty(_filterSource);
-
     private IEnumerable<CatalogProjectListDto> FilteredProjects => _allProjects
-        .Where(p => string.IsNullOrEmpty(_searchQuery)
-                    || p.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
-                    || (p.OrganizationName ?? "").Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
-                    || p.ProjectNumber.ToString().Contains(_searchQuery))
-        .Where(p => string.IsNullOrEmpty(_filterYear)     || p.AcademicYear == _filterYear)
-        .Where(p => string.IsNullOrEmpty(_filterType)     || p.ProjectType  == _filterType)
-        .Where(p => string.IsNullOrEmpty(_filterStatus)   || p.Status       == _filterStatus)
-        .Where(p => string.IsNullOrEmpty(_filterSource)   || p.SourceType   == _filterSource)
+        .Where(p => string.IsNullOrEmpty(_filterCycle)  || p.AcademicYear == _filterCycle)
+        .Where(p => string.IsNullOrEmpty(_filterType)   || p.ProjectType  == _filterType)
+        .Where(p => string.IsNullOrEmpty(_filterStatus) || p.Status       == _filterStatus)
+        .Where(p => string.IsNullOrEmpty(_filterSource) || p.SourceType   == _filterSource)
         .Where(p => _filterAssigned switch
         {
             "assigned"   =>  p.IsAssigned,
             "unassigned" => !p.IsAssigned,
             _            => true,
+        })
+        .Where(p =>
+        {
+            if (string.IsNullOrEmpty(_searchQuery)) return true;
+            return p.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                || (p.OrganizationName ?? "").Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                || p.ProjectNumber.ToString().Contains(_searchQuery);
         });
 
+    private void OnSearchChanged(string value)
+    {
+        _searchQuery = value;
+        _pageIndex   = 0;
+        CloseAllMenus();
+    }
+
+    // ── The toolbar's five filters ───────────────────────────────────────
+    //
+    // Every option list is DERIVED from the loaded catalog rather than stated
+    // literally. That matters most for status: the old page offered exactly
+    // זמין / לא זמין, but Projects.Status also holds values the assignment
+    // flow writes ("Active", "InProgress"), and those rows were unreachable
+    // through the filter. Assignment is the one exception — IsAssigned is a
+    // bool, so its two options ARE the domain.
+    private sealed record FilterOption(string Value, string Label);
+
+    private sealed record FilterDef(string Key, string Name, string CurrentValue,
+                                    string CurrentLabel, bool IsActive,
+                                    IReadOnlyList<FilterOption> Options);
+
+    private const string AllValue = "";
+    private const string AllLabel = "הכל";
+
+    private IEnumerable<FilterDef> BuildFilters()
+    {
+        yield return MakeFilter("cycle",  "מחזור",  _filterCycle,  CycleOptions());
+        yield return MakeFilter("type",   "סוג",    _filterType,   TypeOptions());
+        yield return MakeFilter("status", "זמינות", _filterStatus, StatusOptions());
+        yield return MakeFilter("assigned", "שיוך", _filterAssigned, new[]
+        {
+            new FilterOption("unassigned", "לא מוקצה"),
+            new FilterOption("assigned",   "מוקצה"),
+        });
+        yield return MakeFilter("source", "מקור", _filterSource, SourceOptions());
+    }
+
+    private static FilterDef MakeFilter(string key, string name, string current,
+                                        IEnumerable<FilterOption> options)
+    {
+        var all  = new[] { new FilterOption(AllValue, AllLabel) }.Concat(options).ToList();
+        var here = all.FirstOrDefault(o => o.Value == current);
+
+        return new FilterDef(
+            Key:          key,
+            Name:         name,
+            // A value that is no longer represented in the data still has to
+            // render as itself rather than silently reading as "הכל".
+            CurrentValue: current,
+            CurrentLabel: here?.Label ?? current,
+            IsActive:     !string.IsNullOrEmpty(current),
+            Options:      all);
+    }
+
+    private IEnumerable<FilterOption> CycleOptions() =>
+        _allProjects
+            .Select(p => p.AcademicYear)
+            .Where(y => !string.IsNullOrWhiteSpace(y))
+            .Distinct()
+            .OrderByDescending(y => y, StringComparer.Ordinal)
+            .Select(y => new FilterOption(y, y));
+
+    private IEnumerable<FilterOption> TypeOptions() =>
+        _allProjects
+            .Select(p => p.ProjectType)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct()
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .Select(t => new FilterOption(t, t));
+
+    private IEnumerable<FilterOption> StatusOptions() =>
+        _allProjects
+            .Select(p => p.Status)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct()
+            // The catalog's own two values lead; anything the assignment flow
+            // wrote follows, so the common case stays at the top of the menu.
+            .OrderBy(s => s switch { "Available" => 0, "Unavailable" => 1, _ => 2 })
+            .ThenBy(s => s, StringComparer.Ordinal)
+            .Select(s => new FilterOption(s, StatusLabel(s)));
+
+    private IEnumerable<FilterOption> SourceOptions() =>
+        _allProjects
+            .Select(p => p.SourceType)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct()
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .Select(s => new FilterOption(s, SourceLabel(s)));
+
+    private bool HasActiveFilters =>
+        !string.IsNullOrEmpty(_searchQuery)
+        || !string.IsNullOrEmpty(_filterCycle)
+        || !string.IsNullOrEmpty(_filterType)
+        || !string.IsNullOrEmpty(_filterStatus)
+        || !string.IsNullOrEmpty(_filterAssigned)
+        || !string.IsNullOrEmpty(_filterSource);
+
+    private void ClearFilters()
+    {
+        _searchQuery    = "";
+        _filterCycle    = "";
+        _filterType     = "";
+        _filterStatus   = "";
+        _filterAssigned = "";
+        _filterSource   = "";
+        _pageIndex      = 0;
+        CloseAllMenus();
+    }
+
+    private void PickFilter(string key, string value)
+    {
+        switch (key)
+        {
+            case "cycle":    _filterCycle    = value; break;
+            case "type":     _filterType     = value; break;
+            case "status":   _filterStatus   = value; break;
+            case "assigned": _filterAssigned = value; break;
+            case "source":   _filterSource   = value; break;
+        }
+        _openFilter = null;
+        _pageIndex  = 0;
+    }
+
     // ─────────────────────────────────────────────────
-    //  Add / Edit form state
+    //  Sorting — client-side, over the same loaded list
+    // ─────────────────────────────────────────────────
+    private enum SortKey { Number, Title, Type, Cycle, Status, Assignment }
+
+    // The server's own ORDER BY is AcademicYearId DESC, ProjectNumber. With one
+    // cycle in the data that is the project number ascending, so the default
+    // here reproduces the order the page has always opened in.
+    private SortKey _sortKey = SortKey.Number;
+    private bool    _sortDesc;
+
+    private void ToggleSort(SortKey key)
+    {
+        // Same column: flip. Different column: adopt it ascending, because a
+        // sort that arrives already reversed reads as a bug.
+        if (_sortKey == key) _sortDesc = !_sortDesc;
+        else { _sortKey = key; _sortDesc = false; }
+
+        _pageIndex = 0;
+        CloseAllMenus();
+    }
+
+    private IEnumerable<CatalogProjectListDto> SortedProjects
+    {
+        get
+        {
+            var rows = FilteredProjects;
+
+            // ProjectNumber is the tiebreaker on every key: it is unique, so
+            // two renders of the same filtered set can never disagree about
+            // the order of equal rows.
+            IOrderedEnumerable<CatalogProjectListDto> ordered = _sortKey switch
+            {
+                SortKey.Title  => Direction(rows, p => p.Title),
+                SortKey.Type   => Direction(rows, p => p.ProjectType),
+                SortKey.Cycle  => Direction(rows, p => p.AcademicYear),
+                SortKey.Status => Direction(rows, p => StatusLabel(p.Status)),
+                // An unassigned project is the one that needs attention, so
+                // "ascending" puts those first and the staffed ones after.
+                SortKey.Assignment => Direction(rows, p => p.IsAssigned ? 1 : 0),
+                _ => _sortDesc
+                    ? rows.OrderByDescending(p => p.ProjectNumber)
+                    : rows.OrderBy(p => p.ProjectNumber),
+            };
+
+            return ordered.ThenBy(p => p.ProjectNumber);
+        }
+    }
+
+    private IOrderedEnumerable<CatalogProjectListDto> Direction<TKey>(
+        IEnumerable<CatalogProjectListDto> rows,
+        Func<CatalogProjectListDto, TKey> selector) =>
+        _sortDesc ? rows.OrderByDescending(selector) : rows.OrderBy(selector);
+
+    /// <summary>One column the head offers a sort control for. `Title` is the
+    /// tooltip when the visible label is not a sentence — the "#" column.</summary>
+    private sealed record SortColumn(SortKey Key, string Label, string? Title = null);
+
+    /// <summary>aria-sort is what makes the current order audible; without it
+    /// the chevron is a purely visual claim.</summary>
+    private string AriaSort(SortKey key) =>
+        _sortKey != key ? "none" : _sortDesc ? "descending" : "ascending";
+
+    // ─────────────────────────────────────────────────
+    //  Paging — client-side, over the one unpaged GET
+    // ─────────────────────────────────────────────────
+    private const int PageSize = 25;
+
+    /// <summary>The page the admin ASKED for. What is actually drawn is
+    /// <see cref="CurrentPage"/>, which clamps it against the set in hand:
+    /// every render reads the clamped value, so a set that shrinks under the
+    /// stored index (a filter, a status flip, a reload that returns fewer
+    /// rows) shows the last real page instead of an empty one — and it does so
+    /// without writing state during a render.</summary>
+    private int _pageIndex;
+
+    private static int TotalPages(int count) => Math.Max(1, (int)Math.Ceiling(count / (double)PageSize));
+
+    private int CurrentPage(int count) => Math.Clamp(_pageIndex, 0, TotalPages(count) - 1);
+
+    private List<CatalogProjectListDto> Paged(List<CatalogProjectListDto> rows) =>
+        rows.Skip(CurrentPage(rows.Count) * PageSize).Take(PageSize).ToList();
+
+    private void GoToPage(int index)
+    {
+        _pageIndex = index;
+        CloseAllMenus();
+    }
+
+    /// <summary>The page numbers to draw: always the first, the last and the
+    /// current one's neighbours, with -1 standing for an elided run. A pager
+    /// that lists all five pages of a 117-row catalog is fine; one that lists
+    /// forty is not, and this screen has to survive both.</summary>
+    private IEnumerable<int> PageSlots(int totalPages, int current)
+    {
+        const int Window = 1;
+        var last = totalPages - 1;
+        var prev = -2;
+
+        for (var i = 0; i <= last; i++)
+        {
+            var keep = i == 0 || i == last || Math.Abs(i - current) <= Window;
+            if (!keep) continue;
+
+            if (prev >= 0 && i - prev > 1) yield return -1;
+            yield return i;
+            prev = i;
+        }
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Header / toolbar copy — counted, never stated
+    // ─────────────────────────────────────────────────
+    private string SummaryLine
+    {
+        get
+        {
+            var total      = _allProjects.Count;
+            var unassigned = _allProjects.Count(p => !p.IsAssigned);
+            return $"{total} פרויקטים · {unassigned} לא מוקצים";
+        }
+    }
+
+    private string ResultLine(int shown) =>
+        shown == _allProjects.Count
+            ? $"מציג את כל {_allProjects.Count} הפרויקטים"
+            : $"מציג {shown} מתוך {_allProjects.Count}";
+
+    // ─────────────────────────────────────────────────
+    //  Menu state — one open surface at a time
+    // ─────────────────────────────────────────────────
+    private int     _openRowMenuId = -1;
+    private string? _openFilter    = null;
+
+    private void ToggleRowMenu(int id)
+    {
+        _openRowMenuId = _openRowMenuId == id ? -1 : id;
+        _openFilter    = null;
+    }
+
+    private void ToggleFilter(string key)
+    {
+        _openFilter    = _openFilter == key ? null : key;
+        _openRowMenuId = -1;
+    }
+
+    private void CloseAllMenus()
+    {
+        _openRowMenuId = -1;
+        _openFilter    = null;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Import — the wizard owns everything but IsOpen
+    // ─────────────────────────────────────────────────
+    private bool _importOpen;
+
+    private void OpenImport()
+    {
+        CloseAllMenus();
+        _importOpen = true;
+    }
+
+    private void CloseImport() => _importOpen = false;
+
+    // ─────────────────────────────────────────────────
+    //  Add / edit form state — unchanged fields and rules
     // ─────────────────────────────────────────────────
     private bool   _showForm   = false;
     private bool   _formSaving = false;
@@ -728,7 +1223,7 @@
     private string _formPriority    = "";
     private string _formDescription = "";
     // Organization
-    private string _formOrgName       = "";
+    private string _formOrgName        = "";
     private string _formTargetAudience = "";
     private string _formContactPerson  = "";
     private string _formContactRole    = "";
@@ -758,6 +1253,7 @@
         _formStatus         = "Available";
         _formInternalNotes  = "";
         _formError          = "";
+        _formSaving         = false;
         _showForm           = true;
         CloseAllMenus();
     }
@@ -780,27 +1276,33 @@
         _formStatus         = d.Status;
         _formInternalNotes  = d.InternalNotes ?? "";
         _formError          = "";
+        _formSaving         = false;
     }
 
+    /// <summary>Fetches the full record before opening the editor — the list
+    /// row does not carry description, goals, audience, contact or notes, and
+    /// a form populated from it would save them away as blank.</summary>
     private async Task OpenEditFormFromList(CatalogProjectListDto p)
     {
-        _openRowMenuId = -1;
-        // Fetch full detail so all new fields are pre-populated
+        CloseAllMenus();
         var detail = await CatalogService.GetProjectDetailAsync(p.Id);
         if (detail is null) return;
         PopulateFormFromDetail(detail);
         _showForm = true;
     }
 
-    private void OpenEditFromDetail(CatalogProjectDetailDto d)
+    private void OpenEditFromDetail()
     {
-        CloseDetail();
-        PopulateFormFromDetail(d);
+        var detail = _detailProject;
+        if (detail is null) return;
+        _detailProject = null;
+        PopulateFormFromDetail(detail);
         _showForm = true;
     }
 
     private void CancelForm()
     {
+        if (_formSaving) return;
         _showForm  = false;
         _formError = "";
     }
@@ -809,31 +1311,31 @@
     {
         _formError = "";
         if (string.IsNullOrWhiteSpace(_formTitle)) { _formError = "שם הפרויקט הוא שדה חובה"; return; }
-        if (_formNumber <= 0)                       { _formError = "מספר פרויקט חייב להיות חיובי"; return; }
-        if (_formTypeId <= 0)                       { _formError = "יש לבחור סוג פרויקט"; return; }
-        if (_formYearId <= 0)                       { _formError = "יש לבחור מחזור אקדמי"; return; }
+        if (_formNumber <= 0)                      { _formError = "מספר פרויקט חייב להיות חיובי"; return; }
+        if (_formTypeId <= 0)                      { _formError = "יש לבחור סוג פרויקט"; return; }
+        if (_formYearId <= 0)                      { _formError = "יש לבחור מחזור אקדמי"; return; }
 
         _formSaving = true;
 
         var req = new SaveCatalogProjectRequest
         {
-            ProjectNumber   = _formNumber,
-            Title           = _formTitle.Trim(),
-            ProjectTypeId   = _formTypeId,
-            AcademicYearId  = _formYearId,
-            Priority        = string.IsNullOrEmpty(_formPriority) ? null : _formPriority,
-            Description     = NullIfEmpty(_formDescription),
+            ProjectNumber    = _formNumber,
+            Title            = _formTitle.Trim(),
+            ProjectTypeId    = _formTypeId,
+            AcademicYearId   = _formYearId,
+            Priority         = string.IsNullOrEmpty(_formPriority) ? null : _formPriority,
+            Description      = NullIfEmpty(_formDescription),
             OrganizationName = NullIfEmpty(_formOrgName),
-            TargetAudience  = NullIfEmpty(_formTargetAudience),
-            ContactPerson   = NullIfEmpty(_formContactPerson),
-            ContactRole     = NullIfEmpty(_formContactRole),
-            Goals           = NullIfEmpty(_formGoals),
-            SourceType      = _formSourceType,
-            Status          = _formStatus,
-            InternalNotes   = NullIfEmpty(_formInternalNotes),
+            TargetAudience   = NullIfEmpty(_formTargetAudience),
+            ContactPerson    = NullIfEmpty(_formContactPerson),
+            ContactRole      = NullIfEmpty(_formContactRole),
+            Goals            = NullIfEmpty(_formGoals),
+            SourceType       = _formSourceType,
+            Status           = _formStatus,
+            InternalNotes    = NullIfEmpty(_formInternalNotes),
         };
 
-        string? serverError = _editingId == 0
+        var serverError = _editingId == 0
             ? await CatalogService.CreateProjectWithErrorAsync(req)
             : await CatalogService.UpdateProjectWithErrorAsync(_editingId, req);
 
@@ -842,41 +1344,29 @@
         if (serverError != null) { _formError = CleanError(serverError); return; }
 
         _showForm = false;
-        _loading  = true;
-        await Reload();
-        _loading  = false;
+        await ReloadAsync();
     }
 
     // ─────────────────────────────────────────────────
-    //  Detail panel
+    //  Detail
     // ─────────────────────────────────────────────────
     private CatalogProjectDetailDto? _detailProject = null;
 
     private async Task OpenDetail(int id)
     {
-        _openRowMenuId = -1;
+        CloseAllMenus();
         _detailProject = await CatalogService.GetProjectDetailAsync(id);
     }
 
     private void CloseDetail() => _detailProject = null;
 
     // ─────────────────────────────────────────────────
-    //  Row menu
-    // ─────────────────────────────────────────────────
-    private int _openRowMenuId = -1;
-
-    private void ToggleRowMenu(int id) =>
-        _openRowMenuId = _openRowMenuId == id ? -1 : id;
-
-    private void CloseAllMenus() => _openRowMenuId = -1;
-
-    // ─────────────────────────────────────────────────
     //  Row actions
     // ─────────────────────────────────────────────────
     private async Task ToggleAvailability(CatalogProjectListDto p)
     {
-        _openRowMenuId = -1;
-        bool ok = await CatalogService.ToggleAvailabilityAsync(p.Id);
+        CloseAllMenus();
+        var ok = await CatalogService.ToggleAvailabilityAsync(p.Id);
         if (ok)
             p.Status = p.Status == "Available" ? "Unavailable" : "Available";
     }
@@ -884,12 +1374,36 @@
     // ─────────────────────────────────────────────────
     //  Display helpers
     // ─────────────────────────────────────────────────
-    private static string AvailabilityLabel(string status) => status switch
+
+    /// <summary>Every status the catalog can actually hold, not only the two it
+    /// writes: the assignment flow puts "Active" / "InProgress" on a project,
+    /// and a row carrying one used to render its raw English value.</summary>
+    private static string StatusLabel(string? status) => status switch
     {
-        "Available"   => "זמין",
+        "Available"   => "זמין לשיוך",
         "Unavailable" => "לא זמין",
+        "Active"      => "פעיל",
+        "InProgress"  => "בתהליך",
+        "Archived"    => "בארכיון",
+        null or ""    => "—",
         _             => status,
     };
+
+    /// <summary>Teal for available, rose for withdrawn, neutral for everything
+    /// the assignment flow wrote — those describe a project already in motion,
+    /// which is a different axis from "may a team pick this up".</summary>
+    private static string StatusToneClass(string? status) => status switch
+    {
+        "Available"   => "pc-status--on",
+        "Unavailable" => "pc-status--off",
+        _             => "pc-status--other",
+    };
+
+    private static string SourceLabel(string? source) =>
+        source == "Airtable" ? "Airtable" : "ידני";
+
+    private static string SourceToneClass(string? source) =>
+        source == "Airtable" ? "pc-tag--airtable" : "pc-tag--manual";
 
     private static string PriorityLabel(string? priority) => priority switch
     {
@@ -907,9 +1421,16 @@
             _ => $"{firstName ?? "מוקצה"} +{teamSize - 1}",
         };
 
+    /// <summary>An em dash says "not recorded" where an empty cell just looks
+    /// like a rendering bug.</summary>
+    private static string Dash(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "—" : value;
+
     private static string? NullIfEmpty(string? s) =>
         string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
+    /// <summary>The catalog endpoints return their errors as a JSON string
+    /// literal, so the quotes travel with the message.</summary>
     private static string CleanError(string raw) =>
         raw.Trim('"', ' ', '\n', '\r');
 }

@@ -1,0 +1,1276 @@
+@namespace AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services.ProjectImport
+@using AuthWithAdmin.Client.Services.UserImport
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Field = AuthWithAdmin.Client.Services.ProjectImport.ProjectImportModel.Field
+@using RowState = AuthWithAdmin.Client.Services.ProjectImport.ProjectImportModel.RowState
+@using DuplicateAction = AuthWithAdmin.Client.Services.ProjectImport.ProjectImportModel.DuplicateAction
+@inject ICatalogService _Catalog
+
+@*
+    ProjectImportWizard — ייבוא פרויקטים.
+
+    The catalog's file import, built as the sibling of UserImportWizard: same
+    five stages, same modal, same rail, same drop zone, same mapping rows, same
+    duplicate diff, same result screen. Only the domain changed.
+
+    IT WRITES THROUGH THE EXISTING FLOWS, NOTHING ELSE
+    ──────────────────────────────────────────────────
+    Creates go through ICatalogService.CreateProjectWithErrorAsync → POST
+    api/catalog. Merges and replaces go through UpdateProjectWithErrorAsync →
+    PUT api/catalog/{id}. Those are the same two calls the catalog's own
+    add/edit form makes, so every server-side rule applies unchanged and no
+    endpoint was added for this feature.
+
+    WHAT THE BACKEND CANNOT DO, AND HOW THAT SHOWS
+    ──────────────────────────────────────────────
+    • There is no bulk endpoint, so a run is N sequential requests with a
+      visible progress count rather than one atomic call. A partial run is
+      therefore possible, which is why the result screen reports per-row
+      outcomes instead of one verdict.
+    • PUT api/catalog/{id} writes the WHOLE record with plain assignments —
+      only Status and SourceType are COALESCEd. An update built from the list
+      row alone would blank description, goals, audience, contact and notes on
+      every project it touched, so the duplicates stage FETCHES each colliding
+      project's full record before it will show a diff or send an update.
+    • Team assignment, mentors and the Airtable record id are not writable from
+      here, so they are not importable. ProjectImportModel's Field enum covers
+      exactly the writable set.
+
+    Stages: Upload → Mapping → Preview → Duplicates (only when there are any)
+    → Review → Running → Done.
+*@
+
+<MModal IsOpen="IsOpen"
+        Size="MModal.ModalSize.Wide"
+        Title="@StageTitle"
+        Class="piw-modal"
+        CloseOnBackdrop="false"
+        ShowCloseButton="@(_stage != Stage.Running)"
+        OnClose="RequestCloseAsync">
+
+    <ChildContent>
+        @*  The one place open popups are closed from. Same construction as the
+            catalog table: every trigger stops the click from reaching here, so
+            a click anywhere ELSE dismisses whatever is open. *@
+        <div class="piw" dir="rtl" @onclick="CloseMapMenu">
+
+            @* ══ Stage rail ═══════════════════════════════════════════════ *@
+            @if (_stage != Stage.Done)
+            {
+                <div class="piw-rail">
+                    <MProgressStepper Steps="RailSteps" AriaLabel="שלבי הייבוא">
+                        <LabelTemplate Context="s">
+                            <span class="piw-rail-label @(s.Step.State == MProgressStepper.StepState.Current ? "piw-rail-label--on" : "")">
+                                @s.Step.Label
+                            </span>
+                        </LabelTemplate>
+                    </MProgressStepper>
+                </div>
+            }
+
+            @* ══ 1. UPLOAD ════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Upload)
+            {
+                <div class="piw-stage">
+                    @if (_grid is null)
+                    {
+                        @* The InputFile is laid over the whole zone at zero
+                           opacity: a native file input is already a drop target,
+                           so drag-and-drop and click-to-browse both work with no
+                           JS interop and no custom drop handling. *@
+                        <div class="piw-drop @(_dragOver ? "piw-drop--over" : "")"
+                             @ondragenter="() => _dragOver = true"
+                             @ondragleave="() => _dragOver = false"
+                             @ondrop="() => _dragOver = false">
+
+                            @* The WRAPPER does the covering, not a class on
+                               InputFile: InputFile renders its own <input>
+                               root, which carries no isolation attribute of
+                               ours, so `class` on the component never matches
+                               a scoped rule and the native file chrome stays
+                               visible. *@
+                            <div class="piw-drop-input">
+                                <InputFile accept="@ImportFileParser.AcceptAttribute"
+                                           OnChange="HandleFileSelectedAsync"
+                                           aria-label="בחירת קובץ פרויקטים לייבוא" />
+                            </div>
+
+                            <span class="piw-drop-glyph motiva-ico-gradient" aria-hidden="true">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                                     stroke="url(#motivaIconGradient)" stroke-width="1.8"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 16V4M8 8l4-4 4 4" />
+                                    <path d="M20 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3" />
+                                </svg>
+                            </span>
+
+                            <p class="piw-drop-title">גררו לכאן קובץ, או לחצו לבחירה</p>
+                            <p class="piw-drop-sub">
+                                CSV או XLSX
+                                <span class="piw-tip" tabindex="0" role="note"
+                                      data-tip="נתמכים CSV (מופרד בפסיק, נקודה-פסיק או טאב) ו-XLSX. השורה הראשונה חייבת להכיל את שמות העמודות. קבצי .xls ישנים אינם נתמכים — יש לשמור אותם מחדש.">
+                                    ?
+                                </span>
+                            </p>
+                        </div>
+
+                        <MAccordionItem Primary="מה צריך להיות בקובץ?"
+                                        Open="_helpOpen"
+                                        OnToggle="() => _helpOpen = !_helpOpen"
+                                        Class="piw-help">
+                            <div class="piw-help-body">
+                                <p>
+                                    השורה הראשונה היא שורת הכותרות. כל שורה נוספת היא פרויקט אחד.
+                                    שמות העמודות יזוהו אוטומטית בעברית או באנגלית — לדוגמה
+                                    <code>מספר פרויקט</code> / <code>project number</code>,
+                                    <code>שם הפרויקט</code> / <code>title</code>,
+                                    <code>סוג פרויקט</code> / <code>type</code>,
+                                    <code>ארגון</code> / <code>organization</code>,
+                                    <code>קהל יעד</code> / <code>target audience</code>.
+                                    עמודות שלא יזוהו יופיעו לשלב המיפוי הידני.
+                                </p>
+                                <p>
+                                    <strong>מספר פרויקט, שם וסוג הם שדות חובה.</strong>
+                                    מספר הפרויקט הוא המפתח הייחודי — לפיו המערכת מזהה פרויקט קיים.
+                                    סוג הפרויקט חייב להתאים לאחד מהסוגים הקיימים
+                                    (@TypeNamesLine).
+                                </p>
+                                <p>
+                                    עמודת מחזור אינה חובה: שורה ללא מחזור תשויך למחזור הנוכחי@(CurrentCycleSuffix).
+                                    מחזור שאינו קיים במערכת ייחשב שגיאה — הייבוא אינו יוצר מחזורים חדשים.
+                                </p>
+                                <p class="piw-help-muted">
+                                    לא ניתן לייבא שיוך צוות, סטודנטים, מנחים או מזהי Airtable —
+                                    אין לשדות אלה נקודת קצה בממשק הקטלוג. פרויקטים חדשים נרשמים כמקור "ידני".
+                                </p>
+                            </div>
+                        </MAccordionItem>
+                    }
+                    else
+                    {
+                        @* File card — what was read, and one way back out. *@
+                        <div class="piw-file">
+                            <span class="piw-file-glyph" aria-hidden="true">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+                                    <path d="M14 2v6h6" />
+                                </svg>
+                            </span>
+                            <div class="piw-file-text">
+                                <p class="piw-file-name" title="@_fileName"><bdi>@_fileName</bdi></p>
+                                <p class="piw-file-meta">
+                                    @_grid.FormatLabel · @_grid.Rows.Count שורות ·
+                                    @_grid.Headers.Count עמודות · @FileSizeLabel
+                                </p>
+                            </div>
+                            <button type="button" class="piw-file-clear" @onclick="ClearFile">
+                                החלפת קובץ
+                            </button>
+                        </div>
+
+                        @if (_grid.Warning is not null)
+                        {
+                            <div class="piw-note piw-note--warn">@_grid.Warning</div>
+                        }
+                        @if (_grid.Rows.Count == 0)
+                        {
+                            <div class="piw-note piw-note--warn">
+                                נמצאה שורת כותרות בלבד — אין שורות פרויקטים לייבוא.
+                            </div>
+                        }
+                    }
+
+                    @if (_parsing)
+                    {
+                        <div class="piw-busy"><span class="piw-spinner" aria-hidden="true"></span> קורא את הקובץ…</div>
+                    }
+                    @if (_parseError is not null)
+                    {
+                        <div class="piw-note piw-note--error">@_parseError</div>
+                    }
+                </div>
+            }
+
+            @* ══ 2. MAPPING ═══════════════════════════════════════════════ *@
+            @if (_stage == Stage.Mapping)
+            {
+                <div class="piw-stage">
+                    <div class="piw-stage-head">
+                        <p class="piw-stage-line">
+                            @_mappings.Count(m => m.AutoMapped) מתוך @_mappings.Count עמודות מופו אוטומטית
+                        </p>
+                        <span class="piw-tip" tabindex="0" role="note"
+                              data-tip="שדה שמופה אוטומטית זוהה לפי שם העמודה. ניתן לשנות כל מיפוי, ולסמן עמודות שלא רוצים לייבא כ\"אל תייבא שדה זה\".">?</span>
+                    </div>
+
+                    @foreach (var missing in ProjectImportModel.MissingRequirements(_mappings))
+                    {
+                        <div class="piw-note piw-note--error">חסר מיפוי: @missing</div>
+                    }
+                    @foreach (var conflict in ProjectImportModel.ConflictingTargets(_mappings))
+                    {
+                        <div class="piw-note piw-note--error">
+                            יותר מעמודה אחת ממופה לשדה "@ProjectImportModel.FieldLabel(conflict)" — יש לבחור אחת בלבד.
+                        </div>
+                    }
+
+                    <div class="piw-maplist">
+                        @for (var i = 0; i < _mappings.Count; i++)
+                        {
+                            var index = i;
+                            var m     = _mappings[i];
+                            var state = MapState(m);
+                            <div class="piw-maprow piw-maprow--@state">
+                                <div class="piw-map-src">
+                                    <span class="piw-map-header" title="@m.Header"><bdi>@m.Header</bdi></span>
+                                    @if (!string.IsNullOrWhiteSpace(m.Sample))
+                                    {
+                                        <span class="piw-map-sample" title="@m.Sample">לדוגמה: <bdi>@m.Sample</bdi></span>
+                                    }
+                                </div>
+
+                                @* Two elements in an inline-flex row, not one
+                                   string with a leading glyph: a leading "!"
+                                   or "✓" is bidi-neutral and would land at the
+                                   START of the RTL run — "! דורש מיפוי". Flex
+                                   order removes the ambiguity entirely. *@
+                                <span class="piw-map-state piw-map-state--@state">
+                                    <span class="piw-map-state-text">@MapStateLabel(state)</span>
+                                    <span class="piw-map-state-mark" aria-hidden="true">@MapStateMark(state)</span>
+                                </span>
+
+                                <div class="piw-map-dest">
+                                    @* A destination already claimed by another column
+                                       is ABSENT from this menu, not greyed inside it.
+                                       The conflict banner above stays as the
+                                       defensive fallback. *@
+                                    <MSelect Options="DestOptions(m)"
+                                             Value="@m.Target.ToString()"
+                                             ValueChanged="v => SetTarget(m, v)"
+                                             Open="_openMapMenu == index"
+                                             OpenChanged="open => ToggleMapMenu(index, open)"
+                                             AriaLabel="@($"שדה יעד עבור {m.Header}")"
+                                             OnDismiss="RequestCloseAsync" />
+                                    @if (m.Note is not null && m.Target == Field.Ignore)
+                                    {
+                                        <span class="piw-tip piw-tip--inline" tabindex="0" role="note" data-tip="@m.Note">?</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @* ══ 3. PREVIEW ═══════════════════════════════════════════════ *@
+            @if (_stage == Stage.Preview)
+            {
+                <div class="piw-stage">
+                    <div class="piw-stage-head">
+                        <p class="piw-stage-line">@ValidationSummary</p>
+                    </div>
+
+                    @* ONE ACCORDION PER IMPORTED ROW. The row keeps its verdict
+                       chip, so the table is scannable without opening anything
+                       and nobody has to open a row to learn IF it is broken,
+                       only WHY. *@
+                    <div class="piw-tablewrap">
+                        <table class="piw-table piw-vtable">
+                            <thead>
+                                <tr>
+                                    <th class="piw-col-line">#</th>
+                                    <th class="piw-col-narrow">מספר</th>
+                                    <th>שם הפרויקט</th>
+                                    <th class="piw-col-narrow">סוג</th>
+                                    <th class="piw-col-narrow">מחזור</th>
+                                    <th>ארגון</th>
+                                    <th class="piw-col-state">מצב</th>
+                                    <th class="piw-col-chev"><span class="piw-sr">פרטים</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in _rows)
+                                {
+                                    var r         = row;
+                                    var hasDetail = r.Errors.Count > 0 || r.Notices.Count > 0;
+                                    var open      = hasDetail && _openRows.Contains(r.LineNumber);
+
+                                    <tr class="piw-row piw-row--@RowClass(r) @(open ? "piw-vrow--open" : "")">
+                                        <td class="piw-col-line">@r.LineNumber</td>
+                                        <td>@(r.ProjectNumber > 0 ? r.ProjectNumber.ToString() : "—")</td>
+                                        <td class="piw-strong">@(string.IsNullOrWhiteSpace(r.Title) ? "—" : r.Title)</td>
+                                        <td>@(string.IsNullOrWhiteSpace(r.ProjectTypeName) ? "—" : r.ProjectTypeName)</td>
+                                        <td>@(string.IsNullOrWhiteSpace(r.AcademicYearName) ? "—" : r.AcademicYearName)</td>
+                                        <td>@(string.IsNullOrWhiteSpace(r.OrganizationName) ? "—" : r.OrganizationName)</td>
+                                        <td>
+                                            @if (r.State == RowState.Invalid)
+                                            {
+                                                <span class="piw-chip piw-chip--error">דורש תיקון</span>
+                                            }
+                                            else if (r.State == RowState.Duplicate)
+                                            {
+                                                <span class="piw-chip piw-chip--dup">קיים בקטלוג</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="piw-chip piw-chip--ok">חדש</span>
+                                            }
+                                        </td>
+                                        <td class="piw-col-chev">
+                                            @* A clean row gets NO chevron. A control that
+                                               opens nothing is a promise of content that
+                                               is not there. *@
+                                            @if (hasDetail)
+                                            {
+                                                <button type="button"
+                                                        class="piw-chev @(open ? "piw-chev--on" : "")"
+                                                        aria-expanded="@(open ? "true" : "false")"
+                                                        aria-label="@($"פירוט הבדיקה לשורה {r.LineNumber}")"
+                                                        @onclick="() => ToggleRowDetail(r.LineNumber)">
+                                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                                         stroke="currentColor" stroke-width="2.2"
+                                                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                        <path d="m6 9 6 6 6-6"></path>
+                                                    </svg>
+                                                </button>
+                                            }
+                                        </td>
+                                    </tr>
+
+                                    @if (open)
+                                    {
+                                        <tr class="piw-vdetail">
+                                            <td colspan="8">
+                                                <div class="piw-vdetail-box">
+                                                    @* Errors and notices are kept apart because
+                                                       the model keeps them apart: an entry in
+                                                       Errors is what makes the row Invalid and
+                                                       therefore unimportable, while a Notice
+                                                       never blocks anything. *@
+                                                    @if (r.Errors.Count > 0)
+                                                    {
+                                                        <p class="piw-vdetail-title piw-vdetail-title--error">בעיות בשורה</p>
+                                                        <ul class="piw-vdetail-list piw-vdetail-list--error">
+                                                            @foreach (var err in r.Errors)
+                                                            {
+                                                                <li>@err</li>
+                                                            }
+                                                        </ul>
+                                                    }
+                                                    @if (r.Notices.Count > 0)
+                                                    {
+                                                        <p class="piw-vdetail-title">לתשומת לב</p>
+                                                        <ul class="piw-vdetail-list">
+                                                            @foreach (var note in r.Notices)
+                                                            {
+                                                                <li>@note</li>
+                                                            }
+                                                        </ul>
+                                                    }
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+
+                    @if (_rows.Any(r => r.State == RowState.Invalid))
+                    {
+                        <p class="piw-foot-note">
+                            שורות שדורשות תיקון לא ייובאו ולא יימחקו — יש לתקן אותן בקובץ ולהעלות אותו שוב.
+                        </p>
+                    }
+                </div>
+            }
+
+            @* ══ 4. DUPLICATES ════════════════════════════════════════════ *@
+            @if (_stage == Stage.Duplicates)
+            {
+                <div class="piw-stage">
+                    @if (_loadingDetails)
+                    {
+                        @* The diff cannot be drawn from the list row — see the
+                           header comment — so the full record of each colliding
+                           project is fetched first, one request each. *@
+                        <div class="piw-busy">
+                            <span class="piw-spinner" aria-hidden="true"></span>
+                            קורא את הרשומות הקיימות… @_detailsLoaded מתוך @_detailsTotal
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="piw-stage-head">
+                            <p class="piw-stage-line">@Duplicates.Count פרויקטים כבר קיימים בקטלוג (זוהו לפי מספר הפרויקט)</p>
+                            <span class="piw-tip" tabindex="0" role="note"
+                                  data-tip="מיזוג משלים רק שדות ריקים ולא דורס ערכים קיימים. החלפה כותבת את ערכי הקובץ במקום הקיימים. השארת המקורי מדלגת על השורה.">?</span>
+                        </div>
+
+                        <div class="piw-bulk">
+                            <span class="piw-bulk-label">החל על כל הכפילויות:</span>
+                            @foreach (var action in new[] { DuplicateAction.Merge, DuplicateAction.Replace, DuplicateAction.Skip })
+                            {
+                                var a = action;
+                                <button type="button"
+                                        class="piw-bulk-btn @(_bulkAction == a ? "piw-bulk-btn--on" : "")"
+                                        @onclick="() => ApplyBulk(a)">
+                                    @ActionLabel(a)
+                                </button>
+                            }
+                        </div>
+
+                        @if (_rows.Any(r => r.State == RowState.Duplicate && r.Action == DuplicateAction.Replace))
+                        {
+                            <div class="piw-note piw-note--warn">
+                                החלפה דורסת ערכים קיימים ואינה ניתנת לביטול. השדות שישתנו מסומנים בכל שורה.
+                            </div>
+                        }
+
+                        @if (_detailError is not null)
+                        {
+                            <div class="piw-note piw-note--error">@_detailError</div>
+                        }
+
+                        <div class="piw-duplist">
+                            @foreach (var duplicate in Duplicates)
+                            {
+                                var row      = duplicate;
+                                var existing = row.ExistingDetail;
+
+                                <div class="piw-dup @(row.Action == DuplicateAction.Replace ? "piw-dup--danger" : "")">
+                                    <div class="piw-dup-head">
+                                        <div class="piw-dup-id">
+                                            <span class="piw-dup-num">#@row.ProjectNumber</span>
+                                            <span class="piw-strong">@row.Title</span>
+                                        </div>
+                                        <div class="piw-dup-actions">
+                                            @foreach (var action in new[] { DuplicateAction.Merge, DuplicateAction.Replace, DuplicateAction.Skip })
+                                            {
+                                                var a = action;
+                                                var r = row;
+                                                <button type="button"
+                                                        class="piw-dup-btn @(r.Action == a ? "piw-dup-btn--on" : "") @(a == DuplicateAction.Replace ? "piw-dup-btn--danger" : "")"
+                                                        @onclick="() => SetRowAction(r, a)">
+                                                    @ActionLabel(a)
+                                                </button>
+                                            }
+                                        </div>
+                                    </div>
+
+                                    <div class="piw-dup-body">
+                                        @if (existing is null)
+                                        {
+                                            @* The fetch failed for this one row. It is
+                                               excluded from the run rather than sent with
+                                               a body built from half a record. *@
+                                            <p class="piw-dup-empty piw-dup-empty--error">
+                                                לא ניתן היה לקרוא את הרשומה הקיימת — שורה זו לא תיובא.
+                                            </p>
+                                        }
+                                        else if (row.Action == DuplicateAction.Skip)
+                                        {
+                                            <p class="piw-dup-empty">הפרויקט הקיים יישאר ללא שינוי, ושורת הקובץ תדולג.</p>
+                                        }
+                                        else
+                                        {
+                                            var fills      = ProjectImportModel.MergeFills(existing, row);
+                                            var overwrites = ProjectImportModel.ReplaceOverwrites(existing, row);
+
+                                            @if (row.Action == DuplicateAction.Merge && fills.Count == 0)
+                                            {
+                                                <p class="piw-dup-empty">אין שדות ריקים להשלמה — הפרויקט הקיים יישאר ללא שינוי.</p>
+                                            }
+                                            else if (row.Action == DuplicateAction.Replace && overwrites.Count == 0 && fills.Count == 0)
+                                            {
+                                                <p class="piw-dup-empty">ערכי הקובץ זהים לקיימים — לא ישתנה דבר.</p>
+                                            }
+                                            else
+                                            {
+                                                <table class="piw-difftable">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>שדה</th>
+                                                            <th>במערכת</th>
+                                                            <th>בקובץ</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var d in ProjectImportModel.Diff(existing, row))
+                                                        {
+                                                            var willFill    = row.Action == DuplicateAction.Merge && d.ExistingIsEmpty && d.ImportedValue.Length > 0;
+                                                            var willReplace = row.Action == DuplicateAction.Replace && d.Differs && !d.ExistingIsEmpty;
+                                                            var willAdd     = row.Action == DuplicateAction.Replace && d.ExistingIsEmpty && d.ImportedValue.Length > 0;
+
+                                                            <tr class="@(willReplace ? "piw-diff--replace" : willFill || willAdd ? "piw-diff--fill" : "")">
+                                                                <td class="piw-muted">@d.Label</td>
+                                                                <td><bdi>@(d.ExistingValue.Length == 0 ? "—" : d.ExistingValue)</bdi></td>
+                                                                <td>
+                                                                    <bdi>@(d.ImportedValue.Length == 0 ? "—" : d.ImportedValue)</bdi>
+                                                                    @if (willReplace)   { <span class="piw-diff-tag piw-diff-tag--replace">יידרס</span> }
+                                                                    else if (willFill || willAdd) { <span class="piw-diff-tag piw-diff-tag--fill">יושלם</span> }
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            }
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @* ══ 5. REVIEW ════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Review)
+            {
+                <div class="piw-stage">
+                    <ul class="piw-summary">
+                        <li class="piw-sum piw-sum--ok">
+                            <span class="piw-sum-n">@Plan.Create</span>
+                            <span class="piw-sum-t">פרויקטים חדשים ייווצרו</span>
+                        </li>
+                        <li class="piw-sum piw-sum--ok">
+                            <span class="piw-sum-n">@Plan.Merge</span>
+                            <span class="piw-sum-t">פרויקטים קיימים יושלמו (שדות ריקים בלבד)</span>
+                        </li>
+                        <li class="piw-sum @(Plan.Replace > 0 ? "piw-sum--danger" : "")">
+                            <span class="piw-sum-n">@Plan.Replace</span>
+                            <span class="piw-sum-t">פרויקטים קיימים יוחלפו</span>
+                        </li>
+                        <li class="piw-sum">
+                            <span class="piw-sum-n">@Plan.Skip</span>
+                            <span class="piw-sum-t">כפילויות יידלגו</span>
+                        </li>
+                        <li class="piw-sum @(Plan.Invalid > 0 ? "piw-sum--error" : "")">
+                            <span class="piw-sum-n">@Plan.Invalid</span>
+                            <span class="piw-sum-t">שורות לא תקינות לא ייובאו</span>
+                        </li>
+                    </ul>
+
+                    @if (DefaultedCycleCount > 0)
+                    {
+                        <p class="piw-foot-note">
+                            @DefaultedCycleCount שורות ללא מחזור בקובץ ישויכו למחזור הנוכחי@(CurrentCycleSuffix).
+                        </p>
+                    }
+                    @if (Plan.Create > 0)
+                    {
+                        <p class="piw-foot-note">
+                            פרויקטים חדשים נרשמים כמקור "ידני" וללא שיוך צוות.
+                        </p>
+                    }
+                    @if (UnreadableDuplicates > 0)
+                    {
+                        <div class="piw-note piw-note--warn">
+                            @UnreadableDuplicates כפילויות לא נקראו מהשרת ולא יעודכנו.
+                        </div>
+                    }
+                    @if (Plan.Replace > 0)
+                    {
+                        <div class="piw-note piw-note--warn">
+                            @Plan.Replace פרויקטים קיימים יוחלפו בערכי הקובץ. פעולה זו אינה ניתנת לביטול.
+                        </div>
+                    }
+                    @if (Plan.IsNoop)
+                    {
+                        <div class="piw-note piw-note--warn">אין פעולה לביצוע — אף שורה לא תיצור או תעדכן פרויקט.</div>
+                    }
+                </div>
+            }
+
+            @* ══ RUNNING ══════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Running)
+            {
+                <div class="piw-stage piw-stage--center">
+                    <span class="piw-spinner piw-spinner--lg" aria-hidden="true"></span>
+                    <p class="piw-run-title">מייבא פרויקטים…</p>
+                    <p class="piw-run-count" aria-live="polite">@_ranCount מתוך @_runTotal</p>
+                    <div class="piw-progress" role="progressbar"
+                         aria-valuemin="0" aria-valuemax="@_runTotal" aria-valuenow="@_ranCount">
+                        <span class="piw-progress-bar" style="width:@ProgressPercent%"></span>
+                    </div>
+                    <p class="piw-foot-note">אין נקודת קצה לייבוא מרוכז, ולכן הפרויקטים נשלחים אחד אחרי השני. אין לסגור את החלון.</p>
+                </div>
+            }
+
+            @* ══ DONE ═════════════════════════════════════════════════════ *@
+            @if (_stage == Stage.Done)
+            {
+                <div class="piw-stage">
+                    <ul class="piw-summary">
+                        <li class="piw-sum piw-sum--ok">
+                            <span class="piw-sum-n">@_results.Count(r => !r.Failed)</span>
+                            <span class="piw-sum-t">הצליחו</span>
+                        </li>
+                        <li class="piw-sum">
+                            <span class="piw-sum-n">@SkippedCount</span>
+                            <span class="piw-sum-t">דולגו</span>
+                        </li>
+                        <li class="piw-sum @(_results.Any(r => r.Failed) ? "piw-sum--error" : "")">
+                            <span class="piw-sum-n">@_results.Count(r => r.Failed)</span>
+                            <span class="piw-sum-t">נכשלו</span>
+                        </li>
+                    </ul>
+
+                    @if (_results.Any(r => r.Failed))
+                    {
+                        <p class="piw-stage-line">שורות שנכשלו</p>
+                        <div class="piw-tablewrap piw-tablewrap--short">
+                            <table class="piw-table">
+                                <thead>
+                                    <tr>
+                                        <th class="piw-col-line">#</th>
+                                        <th class="piw-col-narrow">מספר</th>
+                                        <th>שם הפרויקט</th>
+                                        <th>סיבה</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var failure in _results.Where(r => r.Failed))
+                                    {
+                                        <tr class="piw-row piw-row--error">
+                                            <td class="piw-col-line">@failure.Line</td>
+                                            <td>@failure.Number</td>
+                                            <td class="piw-strong">@failure.Title</td>
+                                            <td class="piw-inline piw-inline--error">@failure.Detail</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+
+                    @if (_rows.Any(r => r.State == RowState.Invalid))
+                    {
+                        <p class="piw-foot-note">
+                            @_rows.Count(r => r.State == RowState.Invalid) שורות לא תקינות לא נשלחו כלל.
+                        </p>
+                    }
+                </div>
+            }
+        </div>
+    </ChildContent>
+
+    <FooterContent>
+        <div class="piw-footer">
+            @if (_stage == Stage.Done)
+            {
+                <button type="button" class="piw-btn piw-btn-primary motiva-cta" @onclick="CloseAsync">סיום</button>
+            }
+            else if (_stage == Stage.Running)
+            {
+                <span class="piw-muted">הייבוא מתבצע…</span>
+            }
+            else
+            {
+                @if (CanGoBack)
+                {
+                    <button type="button" class="piw-btn piw-btn-ghost" @onclick="BackAsync">חזרה</button>
+                }
+                <span class="piw-footer-gap"></span>
+                <button type="button" class="piw-btn piw-btn-ghost" @onclick="CloseAsync">ביטול</button>
+
+                @if (_stage == Stage.Review)
+                {
+                    <button type="button" class="piw-btn piw-btn-primary motiva-cta"
+                            disabled="@Plan.IsNoop" @onclick="RunAsync">
+                        ייבוא פרויקטים
+                    </button>
+                }
+                else
+                {
+                    <button type="button" class="piw-btn piw-btn-primary motiva-cta"
+                            disabled="@(!CanGoNext)" @onclick="NextAsync">
+                        המשך
+                    </button>
+                }
+            }
+        </div>
+    </FooterContent>
+</MModal>
+
+@code {
+    private enum Stage { Upload, Mapping, Preview, Duplicates, Review, Running, Done }
+
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Closed by the wizard itself — the page owns IsOpen.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>The catalog currently on the page. Used ONLY to decide what
+    /// already exists; the wizard never mutates this list.</summary>
+    [Parameter] public IReadOnlyList<CatalogProjectListDto> ExistingProjects { get; set; }
+        = Array.Empty<CatalogProjectListDto>();
+
+    /// <summary>The project types the system has. A type is a foreign key, so a
+    /// file value that does not match one of these is a row error — the import
+    /// never creates a type.</summary>
+    [Parameter] public IReadOnlyList<ProjectTypeOptionDto> ProjectTypes { get; set; }
+        = Array.Empty<ProjectTypeOptionDto>();
+
+    /// <summary>The academic cycles the system has, for the same reason.</summary>
+    [Parameter] public IReadOnlyList<AcademicYearDto> AcademicYears { get; set; }
+        = Array.Empty<AcademicYearDto>();
+
+    /// <summary>Raised once a run finishes so the page can re-fetch. Fired even
+    /// on a partly failed run — some projects may still have been created.</summary>
+    [Parameter] public EventCallback OnImported { get; set; }
+
+    private Stage _stage = Stage.Upload;
+
+    // ── Upload ──────────────────────────────────────────────────────────
+    private string  _fileName = "";
+    private long    _fileSize;
+    private bool    _dragOver;
+    private bool    _parsing;
+    private bool    _helpOpen;
+    private string? _parseError;
+    private ImportFileParser.Grid? _grid;
+
+    // A catalog of a few hundred projects is a few tens of KB. The cap is
+    // here so a mis-selected video cannot be pulled into WASM memory.
+    private const long MaxFileBytes = 8 * 1024 * 1024;
+
+    // ── Mapping / rows ──────────────────────────────────────────────────
+    private List<ProjectImportModel.ColumnMapping> _mappings = new();
+    private List<ProjectImportModel.Row>           _rows     = new();
+    private readonly HashSet<int>                  _openRows = new();
+
+    /// <summary>The mapping changed since rows were last built. Rebuilding on
+    /// every Next would throw away the duplicate decisions already made.</summary>
+    private bool _mappingDirty = true;
+
+    private ProjectImportModel.DuplicateAction? _bulkAction;
+
+    // ── Existing-record fetch (duplicates stage) ────────────────────────
+    private bool    _loadingDetails;
+    private int     _detailsLoaded;
+    private int     _detailsTotal;
+    private string? _detailError;
+
+    // ── Run ─────────────────────────────────────────────────────────────
+    private sealed record RunResult(int Line, int Number, string Title, bool Failed, string? Detail);
+
+    private readonly List<RunResult> _results = new();
+    private int _ranCount;
+    private int _runTotal;
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    private List<ProjectImportModel.Row> Duplicates =>
+        _rows.Where(r => r.State == RowState.Duplicate).ToList();
+
+    private bool HasDuplicates => _rows.Any(r => r.State == RowState.Duplicate);
+
+    /// <summary>A duplicate whose existing record could not be read is forced
+    /// to Skip the moment the fetch finishes (see LoadExistingDetailsAsync), so
+    /// the plan counts it as skipped without this property having to
+    /// second-guess the rows.</summary>
+    private ProjectImportModel.Plan Plan => ProjectImportModel.BuildPlan(_rows);
+
+    private int UnreadableDuplicates =>
+        _rows.Count(r => r.State == RowState.Duplicate && r.ExistingDetail is null);
+
+    private int DefaultedCycleCount =>
+        _rows.Count(r => r.State != RowState.Invalid && r.CycleDefaulted);
+
+    private int SkippedCount => Plan.Skip + Plan.Invalid;
+
+    private int ProgressPercent => _runTotal == 0 ? 0 : (int)(100.0 * _ranCount / _runTotal);
+
+    private string StageTitle => _stage switch
+    {
+        Stage.Upload     => "ייבוא פרויקטים",
+        Stage.Mapping    => "ייבוא פרויקטים · מיפוי עמודות",
+        Stage.Preview    => "ייבוא פרויקטים · בדיקה",
+        Stage.Duplicates => "ייבוא פרויקטים · כפילויות",
+        Stage.Review     => "ייבוא פרויקטים · אישור",
+        Stage.Running    => "ייבוא פרויקטים",
+        _                => "ייבוא הסתיים",
+    };
+
+    private string TypeNamesLine => ProjectTypes.Count == 0
+        ? "אין סוגי פרויקט מוגדרים במערכת"
+        : string.Join(" / ", ProjectTypes.Select(t => t.Name));
+
+    /// <summary>" (2025-2026)" — or nothing at all when no cycle is marked
+    /// current, in which case a row without a cycle is an error anyway.</summary>
+    private string CurrentCycleSuffix
+    {
+        get
+        {
+            var current = AcademicYears.FirstOrDefault(y => y.IsCurrent) ?? AcademicYears.FirstOrDefault();
+            return current is null ? "" : $" (⁨{current.Name}⁩)";
+        }
+    }
+
+    private string FileSizeLabel => _fileSize < 1024
+        ? $"{_fileSize} B"
+        : _fileSize < 1024 * 1024
+            ? $"{_fileSize / 1024.0:0.#} KB"
+            : $"{_fileSize / (1024.0 * 1024):0.#} MB";
+
+    private string ValidationSummary
+    {
+        get
+        {
+            var valid   = _rows.Count(r => r.State != RowState.Invalid);
+            var invalid = _rows.Count(r => r.State == RowState.Invalid);
+            var dup     = _rows.Count(r => r.State == RowState.Duplicate);
+
+            var parts = new List<string> { $"{valid} תקינים" };
+            if (dup > 0)     parts.Add($"{dup} קיימים בקטלוג");
+            if (invalid > 0) parts.Add($"{invalid} דורשים תיקון");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>The rail. The duplicates step is only a step when the file
+    /// actually collides with something — a permanently visible stage the admin
+    /// can never reach reads as a step that was skipped by mistake.</summary>
+    private IReadOnlyList<MProgressStepper.Step> RailSteps
+    {
+        get
+        {
+            var names = new List<(string Label, Stage Stage)>
+            {
+                ("קובץ", Stage.Upload),
+                ("מיפוי", Stage.Mapping),
+                ("בדיקה", Stage.Preview),
+            };
+            if (HasDuplicates || _stage == Stage.Duplicates) names.Add(("כפילויות", Stage.Duplicates));
+            names.Add(("אישור", Stage.Review));
+
+            var currentIndex = names.FindIndex(n => n.Stage == _stage);
+            if (currentIndex < 0) currentIndex = names.Count - 1;   // Running sits on the last step
+
+            return names.Select((n, i) => new MProgressStepper.Step(
+                n.Label,
+                i < currentIndex ? MProgressStepper.StepState.Done
+                : i == currentIndex ? MProgressStepper.StepState.Current
+                : MProgressStepper.StepState.Upcoming)).ToList();
+        }
+    }
+
+    private bool CanGoBack => _stage is Stage.Mapping or Stage.Preview or Stage.Duplicates or Stage.Review;
+
+    private bool CanGoNext => _stage switch
+    {
+        Stage.Upload  => _grid is not null && _grid.Rows.Count > 0 && !_parsing,
+        Stage.Mapping => ProjectImportModel.MissingRequirements(_mappings).Count == 0
+                         && ProjectImportModel.ConflictingTargets(_mappings).Count == 0,
+        Stage.Duplicates => !_loadingDetails,
+        _             => true,
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Upload
+    // ─────────────────────────────────────────────────────────────────────
+
+    private async Task HandleFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _dragOver   = false;
+        _parseError = null;
+        _grid       = null;
+        _rows.Clear();
+        _openRows.Clear();
+        _mappings.Clear();
+
+        var file = e.File;
+        if (file is null) return;
+
+        _fileName = file.Name;
+        _fileSize = file.Size;
+
+        if (file.Size > MaxFileBytes)
+        {
+            _parseError = $"הקובץ גדול מדי ({FileSizeLabel}). הגודל המרבי הוא 8MB.";
+            _fileName = "";
+            return;
+        }
+
+        _parsing = true;
+        StateHasChanged();
+
+        try
+        {
+            using var stream = file.OpenReadStream(MaxFileBytes);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+
+            _grid = ImportFileParser.Parse(file.Name, buffer.ToArray());
+            _mappings = ProjectImportModel.AutoMap(_grid);
+            _mappingDirty = true;
+        }
+        catch (ImportFileParser.ParseException ex)
+        {
+            _parseError = ex.Message;
+            _fileName = "";
+        }
+        catch (Exception)
+        {
+            _parseError = "קריאת הקובץ נכשלה. יש לוודא שמדובר בקובץ CSV או XLSX תקין.";
+            _fileName = "";
+        }
+        finally
+        {
+            _parsing = false;
+        }
+    }
+
+    private void ClearFile()
+    {
+        _grid = null;
+        _fileName = "";
+        _fileSize = 0;
+        _parseError = null;
+        _mappings.Clear();
+        _rows.Clear();
+        _openRows.Clear();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Mapping
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>Which mapping row currently has its destination menu open.
+    /// -1 = none. One open surface at a time, owned by the stage rather than by
+    /// the control, so an outside click can close it.</summary>
+    private int _openMapMenu = -1;
+
+    private void ToggleMapMenu(int index, bool open) => _openMapMenu = open ? index : -1;
+
+    private void CloseMapMenu() => _openMapMenu = -1;
+
+    /// <summary>The destinations THIS row may still be given. Unavailable
+    /// fields are left out rather than listed as dead rows; changing a mapping
+    /// releases its old field and reserves the new one on the very next render
+    /// of every other row, with no cross-row write.</summary>
+    private IReadOnlyList<MSelect.Option> DestOptions(ProjectImportModel.ColumnMapping mapping) =>
+        ProjectImportModel.SelectableFields
+            .Where(f => IsFieldAvailable(mapping, f))
+            .Select(f => new MSelect.Option(f.ToString(), ProjectImportModel.FieldLabel(f)))
+            .ToList();
+
+    private void SetTarget(ProjectImportModel.ColumnMapping mapping, string? value)
+    {
+        if (Enum.TryParse<Field>(value, out var field))
+        {
+            mapping.Target = field;
+            // Once the admin has touched it, the "auto" badge would be a lie.
+            mapping.AutoMapped = false;
+            mapping.UserSet    = true;
+            _mappingDirty = true;
+        }
+    }
+
+    /// <summary>Whether a destination may still be picked in THIS row's
+    /// dropdown. Prevention, not detection — the conflict banner stays as the
+    /// fallback, but the admin should not be able to reach it by choosing.</summary>
+    private bool IsFieldAvailable(ProjectImportModel.ColumnMapping row, Field field)
+    {
+        if (field == Field.Ignore) return true;
+        if (field == row.Target)   return true;
+
+        return !_mappings
+            .Where(m => !ReferenceEquals(m, row))
+            .Select(m => m.Target)
+            .Contains(field);
+    }
+
+    /// <summary>auto / manual / needs / off — drives both the badge and the row
+    /// tint. "needs" is deliberately reserved for a column that was NOT
+    /// recognised and has NOT been decided on; an explicit "do not import" is a
+    /// decision, not an outstanding problem, so it is neutral.</summary>
+    private static string MapState(ProjectImportModel.ColumnMapping m)
+    {
+        if (m.Target != Field.Ignore) return m.AutoMapped ? "auto" : "manual";
+        return (m.Note is not null || m.UserSet) ? "off" : "needs";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Navigation
+    // ─────────────────────────────────────────────────────────────────────
+
+    private async Task NextAsync()
+    {
+        // A popup belongs to the stage that owns it; leaving the stage with an
+        // index still set would re-open it on the way back.
+        CloseMapMenu();
+
+        switch (_stage)
+        {
+            case Stage.Upload:
+                _stage = Stage.Mapping;
+                break;
+
+            case Stage.Mapping:
+                if (_mappingDirty)
+                {
+                    _rows = ProjectImportModel.BuildRows(_grid!, _mappings, ExistingProjects,
+                                                         ProjectTypes, AcademicYears);
+                    _openRows.Clear();
+                    _bulkAction   = null;
+                    _detailError  = null;
+                    _mappingDirty = false;
+                }
+                _stage = Stage.Preview;
+                break;
+
+            case Stage.Preview:
+                if (HasDuplicates)
+                {
+                    _stage = Stage.Duplicates;
+                    await LoadExistingDetailsAsync();
+                }
+                else
+                {
+                    _stage = Stage.Review;
+                }
+                break;
+
+            case Stage.Duplicates:
+                _stage = Stage.Review;
+                break;
+        }
+    }
+
+    private Task BackAsync()
+    {
+        CloseMapMenu();
+
+        _stage = _stage switch
+        {
+            Stage.Mapping    => Stage.Upload,
+            Stage.Preview    => Stage.Mapping,
+            Stage.Duplicates => Stage.Preview,
+            Stage.Review     => HasDuplicates ? Stage.Duplicates : Stage.Preview,
+            _                => _stage,
+        };
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Fetches the full record behind every duplicate. Sequential and
+    /// idempotent: a second visit to the stage re-fetches only what is still
+    /// missing, so stepping back and forward does not re-run the whole set.</summary>
+    private async Task LoadExistingDetailsAsync()
+    {
+        var pending = _rows
+            .Where(r => r.State == RowState.Duplicate && r.ExistingDetail is null && r.Existing is not null)
+            .ToList();
+
+        if (pending.Count == 0) return;
+
+        _loadingDetails = true;
+        _detailsLoaded  = 0;
+        _detailsTotal   = pending.Count;
+        _detailError    = null;
+        StateHasChanged();
+
+        foreach (var row in pending)
+        {
+            try
+            {
+                row.ExistingDetail = await _Catalog.GetProjectDetailAsync(row.Existing!.Id);
+            }
+            catch (Exception)
+            {
+                row.ExistingDetail = null;
+            }
+
+            _detailsLoaded++;
+            StateHasChanged();
+            // Yields to the renderer so the count actually paints between
+            // requests instead of after the whole loop.
+            await Task.Yield();
+        }
+
+        _loadingDetails = false;
+
+        // A row whose record could not be read cannot be updated: PUT rewrites
+        // the whole project, so a body built from half a record would blank
+        // everything the file is silent about. Forced to Skip here, once, so
+        // the plan, the review counts and the run all agree.
+        foreach (var row in pending.Where(r => r.ExistingDetail is null))
+            row.Action = DuplicateAction.Skip;
+
+        var failed = pending.Count(r => r.ExistingDetail is null);
+        if (failed > 0)
+            _detailError = $"{failed} רשומות קיימות לא נקראו מהשרת. השורות המתאימות לא יעודכנו.";
+    }
+
+    private async Task RequestCloseAsync()
+    {
+        if (_stage == Stage.Running) return;   // a run in flight must not be abandoned mid-way
+        await CloseAsync();
+    }
+
+    private async Task CloseAsync()
+    {
+        Reset();
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+
+    private void Reset()
+    {
+        _stage = Stage.Upload;
+        ClearFile();
+        _results.Clear();
+        _ranCount       = 0;
+        _runTotal       = 0;
+        _bulkAction     = null;
+        _helpOpen       = false;
+        _mappingDirty   = true;
+        _loadingDetails = false;
+        _detailsLoaded  = 0;
+        _detailsTotal   = 0;
+        _detailError    = null;
+    }
+
+    private void ToggleRowDetail(int line)
+    {
+        if (!_openRows.Remove(line)) _openRows.Add(line);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Duplicate choices
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void ApplyBulk(DuplicateAction action)
+    {
+        _bulkAction = action;
+        foreach (var row in _rows.Where(r => r.State == RowState.Duplicate && r.ExistingDetail is not null))
+            row.Action = action;
+    }
+
+    /// <summary>A per-row choice overrides the bulk one — and clears the bulk
+    /// highlight, because after an override the bulk choice is no longer what
+    /// every row is doing.</summary>
+    private void SetRowAction(ProjectImportModel.Row row, DuplicateAction action)
+    {
+        if (row.ExistingDetail is null) return;   // nothing to merge into
+        row.Action = action;
+        if (_bulkAction is not null &&
+            _rows.Any(r => r.State == RowState.Duplicate && r.ExistingDetail is not null && r.Action != _bulkAction))
+            _bulkAction = null;
+    }
+
+    private static string ActionLabel(DuplicateAction a) => a switch
+    {
+        DuplicateAction.Merge   => "מיזוג / השלמת מידע",
+        DuplicateAction.Replace => "החלפה",
+        _                       => "השארת המקורי",
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Run
+    // ─────────────────────────────────────────────────────────────────────
+
+    private async Task RunAsync()
+    {
+        var work = _rows
+            .Where(r => r.State == RowState.New ||
+                        (r.State == RowState.Duplicate
+                         && r.ExistingDetail is not null
+                         && r.Action != DuplicateAction.Skip))
+            .ToList();
+
+        _results.Clear();
+        _ranCount = 0;
+        _runTotal = work.Count;
+        _stage    = Stage.Running;
+        StateHasChanged();
+
+        foreach (var row in work)
+        {
+            try
+            {
+                if (row.State == RowState.New) await CreateAsync(row);
+                else                           await UpdateAsync(row);
+            }
+            catch (Exception ex)
+            {
+                _results.Add(new RunResult(row.LineNumber, row.ProjectNumber, row.Title,
+                                           Failed: true, Detail: $"שגיאת תקשורת: {ex.Message}"));
+            }
+
+            _ranCount++;
+            StateHasChanged();
+            await Task.Yield();
+        }
+
+        _stage = Stage.Done;
+
+        // Fired even after failures: anything that DID succeed must show up in
+        // the table behind the modal.
+        if (OnImported.HasDelegate) await OnImported.InvokeAsync();
+    }
+
+    private async Task CreateAsync(ProjectImportModel.Row row)
+    {
+        var error = await _Catalog.CreateProjectWithErrorAsync(ProjectImportModel.BuildCreate(row));
+
+        _results.Add(error is null
+            ? new RunResult(row.LineNumber, row.ProjectNumber, row.Title, false, null)
+            : new RunResult(row.LineNumber, row.ProjectNumber, row.Title, true, CleanError(error)));
+    }
+
+    private async Task UpdateAsync(ProjectImportModel.Row row)
+    {
+        var existing = row.ExistingDetail!;
+
+        // A merge with nothing to fill is a no-op. Sending it would spend a
+        // request to write the values that are already there.
+        if (row.Action == DuplicateAction.Merge &&
+            ProjectImportModel.MergeFills(existing, row).Count == 0)
+        {
+            _results.Add(new RunResult(row.LineNumber, row.ProjectNumber, row.Title, false, null));
+            return;
+        }
+
+        var request = ProjectImportModel.BuildUpdate(existing, row, row.Action);
+        var error   = await _Catalog.UpdateProjectWithErrorAsync(existing.Id, request);
+
+        _results.Add(error is null
+            ? new RunResult(row.LineNumber, row.ProjectNumber, row.Title, false, null)
+            : new RunResult(row.LineNumber, row.ProjectNumber, row.Title, true, CleanError(error)));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Display helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>The label and its marker are returned SEPARATELY so the markup
+    /// can place the marker after the text — see the .razor comment.</summary>
+    private static string MapStateLabel(string state) => state switch
+    {
+        "auto"   => "מופה אוטומטית",
+        "manual" => "מופה ידנית",
+        "needs"  => "דורש מיפוי",
+        _        => "לא מיובא",
+    };
+
+    private static string MapStateMark(string state) => state switch
+    {
+        "auto" or "manual" => "✓",
+        "needs"            => "!",
+        _                  => "—",
+    };
+
+    private static string RowClass(ProjectImportModel.Row r) => r.State switch
+    {
+        RowState.Invalid   => "error",
+        RowState.Duplicate => "dup",
+        _                  => "ok",
+    };
+
+    /// <summary>The catalog endpoints return their errors as a JSON string
+    /// literal, so the quotes travel with the message.</summary>
+    private static string CleanError(string raw) => raw.Trim('"', ' ', '\n', '\r');
+}
