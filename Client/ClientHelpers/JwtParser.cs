@@ -47,7 +47,7 @@ namespace AuthWithAdmin.Client
 
             foreach (var kvp in keyValuePairs)
             {
-                if (kvp.Key == ClaimTypes.Role)
+                if (kvp.Key == ClaimTypes.Role || kvp.Key == "role")
                 {
                     // Handle the roles claim which is an array
                     if (kvp.Value is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Array)
@@ -59,7 +59,9 @@ namespace AuthWithAdmin.Client
                     }
                     else
                     {
-                        claims.Add(new Claim(kvp.Key, kvp.Value.ToString()));
+                        // Single role value - always emit with the canonical long-form type so
+                        // ClaimsPrincipal.IsInRole() and [Authorize(Roles=...)] find it.
+                        claims.Add(new Claim(ClaimTypes.Role, kvp.Value.ToString()));
                     }
                 }
                 else

@@ -2522,6 +2522,31 @@ public class ProjectsController : ControllerBase
 
     private static string FormatWallClock(TimeSpan t) => $"{t.Hours:D2}:{t.Minutes:D2}";
 
+    // ── GET /api/projects/team-members ───────────────────────────────────────
+    // Returns the active members of the caller's project team.
+    // Used by the student Team Tasks modal to populate the assignee dropdown
+    // without requiring the full dashboard payload.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("team-members")]
+    public async Task<IActionResult> GetMyTeamMembers(int authUserId)
+    {
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return Ok(Array.Empty<TeamMemberDto>());
+
+        const string sql = @"
+            SELECT  u.Id                              AS UserId,
+                    u.FirstName || ' ' || u.LastName  AS FullName,
+                    tm.MemberRole
+            FROM    TeamMembers tm
+            JOIN    Users       u  ON tm.UserId = u.Id
+            WHERE   tm.TeamId  = @TeamId
+              AND   tm.IsActive = 1";
+
+        var members = await _db.GetRecordsAsync<TeamMemberDto>(sql, new { pt.TeamId })
+                      ?? Enumerable.Empty<TeamMemberDto>();
+        return Ok(members.ToList());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     //  TEAM TASKS
     //  Completely separate from official Tasks/TaskSubmissions.
