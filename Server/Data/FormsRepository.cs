@@ -135,6 +135,38 @@ public static class FormsRepository
             };
         }
 
+        return EvaluateGate(
+            form.IsOpen, form.Status, form.OpensAt, form.ClosesAt,
+            form.AllowEditAfterSubmit, form.Instructions, hasExistingSubmission);
+    }
+
+    /// <summary>
+    /// The same window rules, expressed over plain values so that any form —
+    /// not only the assignment form — is gated by one implementation.
+    ///
+    /// Kept as a single method on purpose: a second copy of "is this form open
+    /// right now?" is how the admin's status chip and the student's submit
+    /// button start disagreeing.
+    /// </summary>
+    public static AssignmentFormStatusDto EvaluateGate(
+        bool    isOpen,
+        string  status,
+        string? opensAtRaw,
+        string? closesAtRaw,
+        bool    allowEditAfterSubmit,
+        string  instructions,
+        bool    hasExistingSubmission)
+    {
+        var form = new AssignmentFormRow
+        {
+            IsOpen               = isOpen,
+            Status               = status ?? "",
+            OpensAt              = opensAtRaw,
+            ClosesAt             = closesAtRaw,
+            AllowEditAfterSubmit = allowEditAfterSubmit,
+            Instructions         = instructions ?? ""
+        };
+
         var dto = new AssignmentFormStatusDto
         {
             IsOpen               = form.IsOpen,
@@ -150,7 +182,7 @@ public static class FormsRepository
         {
             dto.CanSubmit     = false;
             dto.ClosedReason  = "form-closed";
-            dto.ClosedMessage = "טופס השיבוצים סגור כרגע. ניתן לפנות למרצה לפרטים.";
+            dto.ClosedMessage = "הטופס סגור כרגע. ניתן לפנות למרצה לפרטים.";
             dto.Status        = string.Equals(form.Status, FormStatuses.Closed, StringComparison.OrdinalIgnoreCase)
                 ? FormStatuses.Closed
                 : FormStatuses.Draft;
@@ -163,7 +195,7 @@ public static class FormsRepository
         {
             dto.CanSubmit     = false;
             dto.ClosedReason  = "before-open";
-            dto.ClosedMessage = $"טופס השיבוצים יפתח בתאריך {opensAt.ToLocalTime():dd/MM/yyyy HH:mm}.";
+            dto.ClosedMessage = $"הטופס יפתח בתאריך {opensAt.ToLocalTime():dd/MM/yyyy HH:mm}.";
             dto.Status        = FormStatuses.Draft;
             return dto;
         }
@@ -172,7 +204,7 @@ public static class FormsRepository
         {
             dto.CanSubmit     = false;
             dto.ClosedReason  = "after-close";
-            dto.ClosedMessage = $"טופס השיבוצים נסגר בתאריך {closesAt.ToLocalTime():dd/MM/yyyy HH:mm}.";
+            dto.ClosedMessage = $"הטופס נסגר בתאריך {closesAt.ToLocalTime():dd/MM/yyyy HH:mm}.";
             dto.Status        = FormStatuses.Closed;
             return dto;
         }
@@ -189,6 +221,228 @@ public static class FormsRepository
         dto.CanSubmit = true;
         dto.Status    = FormStatuses.Open;
         return dto;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Assignment-form layout + generic answers
+    //
+    //  The assignment form is a HYBRID: three system blocks whose answers are
+    //  real business records, plus any number of ordinary admin-added
+    //  questions whose answers are rows in FormAnswers. These helpers live
+    //  here rather than in a controller because BOTH AssignmentController (the
+    //  student's one submit action) and FormsController (the admin's editor)
+    //  need the same split, and two copies of "which block is domain-backed?"
+    //  is exactly how the two sides start disagreeing again.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Splits a form's blocks into the three domain-backed ones (matched by
+    /// BlockKey) and everything else, which is generic.
+    /// </summary>
+    public static async Task<AssignmentFormLayoutDto> LoadAssignmentLayoutAsync(DbRepository db, int formId)
+    {
+        var layout = new AssignmentFormLayoutDto { FormId = formId };
+
+        var blocks = await LoadBlocksAsync(db, formId);
+
+        foreach (var b in blocks)
+        {
+            switch (b.BlockKey)
+            {
+                case FormBlockKeys.Strengths:
+                    layout.Strengths = b;
+                    break;
+
+                case FormBlockKeys.ProjectPreferences:
+                    // Never carries options: its choices are the live catalog
+                    // and its answers are real Projects.Id values. Cleared
+                    // defensively so nothing downstream can mistake a stray row
+                    // for a selectable project.
+                    b.Options = new List<FormBlockOptionDto>();
+                    layout.Preferences = b;
+                    break;
+
+                case FormBlockKeys.Notes:
+                    layout.Notes = b;
+                    break;
+
+                default:
+                    // A block with any other key is unknown to the domain, so
+                    // it is treated as generic rather than silently dropped.
+                    layout.ExtraQuestions.Add(b);
+                    break;
+            }
+        }
+
+        return layout;
+    }
+
+    /// <summary>Loads a form's blocks with their options, in stored order.</summary>
+    public static async Task<List<FormBlockDto>> LoadBlocksAsync(DbRepository db, int formId)
+    {
+        const string blocksSql = @"
+            SELECT  Id, FormId, BlockType, BlockKey,
+                    COALESCE(Title, '')      AS Title,
+                    COALESCE(HelperText, '') AS HelperText,
+                    IsRequired,
+                    SortOrder,
+                    COALESCE(RatingScale, 5) AS RatingScale,
+                    COALESCE(MinLabel, '')   AS MinLabel,
+                    COALESCE(MaxLabel, '')   AS MaxLabel
+            FROM    FormBlocks
+            WHERE   FormId = @Id
+            ORDER   BY SortOrder, Id";
+
+        var blocks = (await db.GetRecordsAsync<FormBlockDto>(blocksSql, new { Id = formId }))?.ToList()
+                     ?? new List<FormBlockDto>();
+
+        if (blocks.Count == 0) return blocks;
+
+        const string optsSql = @"
+            SELECT  Id, FormBlockId, OptionValue, OptionLabel, SortOrder
+            FROM    FormBlockOptions
+            WHERE   FormBlockId IN (SELECT Id FROM FormBlocks WHERE FormId = @Id)
+            ORDER   BY FormBlockId, SortOrder, Id";
+
+        var opts = (await db.GetRecordsAsync<FormBlockOptionDto>(optsSql, new { Id = formId }))?.ToList()
+                   ?? new List<FormBlockOptionDto>();
+
+        var byBlock = opts.GroupBy(o => o.FormBlockId).ToDictionary(g => g.Key, g => g.ToList());
+        foreach (var b in blocks)
+            if (byBlock.TryGetValue(b.Id, out var list)) b.Options = list;
+
+        return blocks;
+    }
+
+    /// <summary>Reads back one respondent's generic answers for a form.</summary>
+    public static async Task<List<FormAnswerInputDto>> LoadGenericAnswersAsync(
+        DbRepository db, int formId, int userId)
+    {
+        var rows = (await db.GetRecordsAsync<GenericAnswerRow>(@"
+            SELECT  a.FormBlockId, a.OptionValue, a.AnswerText, a.AnswerNumber
+            FROM    FormAnswers a
+            JOIN    FormSubmissions s ON s.Id = a.FormSubmissionId
+            WHERE   s.FormId = @FormId AND s.UserId = @UserId
+            ORDER   BY a.FormBlockId, a.SortOrder, a.Id",
+            new { FormId = formId, UserId = userId }))?.ToList() ?? new List<GenericAnswerRow>();
+
+        return rows
+            .GroupBy(r => r.FormBlockId)
+            .Select(g => new FormAnswerInputDto
+            {
+                FormBlockId  = g.Key,
+                OptionValues = g.Where(r => !string.IsNullOrEmpty(r.OptionValue))
+                                .Select(r => r.OptionValue!)
+                                .ToList(),
+                Text         = g.Select(r => r.AnswerText).FirstOrDefault(t => !string.IsNullOrEmpty(t)),
+                Number       = g.Select(r => r.AnswerNumber).FirstOrDefault(n => n.HasValue)
+            })
+            .ToList();
+    }
+
+    /// <summary>
+    /// Persists answers to the admin-added questions of a form.
+    ///
+    /// Only the blocks passed in <paramref name="genericBlocks"/> are written,
+    /// so a caller can never route a domain block's answer here by accident.
+    /// The submission row is upserted per (form, user) and its answers are
+    /// replaced wholesale, which is what makes edit-after-submit produce one
+    /// row rather than a second visible submission.
+    /// </summary>
+    public static async Task SaveGenericAnswersAsync(
+        DbRepository            db,
+        int                     formId,
+        int                     userId,
+        List<FormBlockDto>      genericBlocks,
+        List<FormAnswerInputDto> answers)
+    {
+        if (genericBlocks.Count == 0) return;
+
+        var allowed = genericBlocks.ToDictionary(b => b.Id, b => b.BlockType);
+
+        var existing = (await db.GetRecordsAsync<int>(
+            "SELECT Id FROM FormSubmissions WHERE FormId = @FormId AND UserId = @UserId LIMIT 1",
+            new { FormId = formId, UserId = userId }))?.FirstOrDefault() ?? 0;
+
+        int submissionId;
+        if (existing > 0)
+        {
+            submissionId = existing;
+            await db.SaveDataAsync(
+                "UPDATE FormSubmissions SET UpdatedAt = datetime('now') WHERE Id = @Id",
+                new { Id = submissionId });
+            await db.SaveDataAsync(
+                "DELETE FROM FormAnswers WHERE FormSubmissionId = @Id",
+                new { Id = submissionId });
+        }
+        else
+        {
+            submissionId = await db.InsertReturnIdAsync(@"
+                INSERT INTO FormSubmissions (FormId, UserId, SubmittedAt, UpdatedAt)
+                VALUES (@FormId, @UserId, datetime('now'), datetime('now'))",
+                new { FormId = formId, UserId = userId });
+
+            if (submissionId == 0) return;
+        }
+
+        foreach (var a in answers)
+        {
+            if (!allowed.TryGetValue(a.FormBlockId, out var type)) continue;   // not a generic block of this form
+            if (FormBlockTypes.IsInformational(type)) continue;                // carries no answer
+
+            if (FormBlockTypes.IsRating(type))
+            {
+                if (a.Number is null) continue;
+                await InsertGenericAnswerAsync(db, submissionId, a.FormBlockId, null, null, a.Number, 0);
+                continue;
+            }
+
+            if (FormBlockTypes.HasOptions(type))
+            {
+                int order = 0;
+                foreach (var v in a.OptionValues.Where(v => !string.IsNullOrWhiteSpace(v)))
+                    await InsertGenericAnswerAsync(db, submissionId, a.FormBlockId, v, null, null, order++);
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(a.Text))
+                await InsertGenericAnswerAsync(db, submissionId, a.FormBlockId, null, a.Text.Trim(), null, 0);
+        }
+    }
+
+    /// <summary>True when a required generic block has no usable answer.</summary>
+    public static bool IsGenericAnswerMissing(FormBlockDto block, FormAnswerInputDto? a)
+    {
+        if (a is null) return true;
+        if (FormBlockTypes.IsRating(block.BlockType))   return a.Number is not > 0;
+        if (FormBlockTypes.HasOptions(block.BlockType)) return !a.OptionValues.Any(v => !string.IsNullOrWhiteSpace(v));
+        return string.IsNullOrWhiteSpace(a.Text);
+    }
+
+    private static async Task InsertGenericAnswerAsync(
+        DbRepository db, int submissionId, int blockId,
+        string? optionValue, string? text, int? number, int sortOrder) =>
+        await db.SaveDataAsync(@"
+            INSERT INTO FormAnswers
+                (FormSubmissionId, FormBlockId, OptionValue, AnswerText, AnswerNumber, SortOrder)
+            VALUES
+                (@SubmissionId, @BlockId, @OptionValue, @AnswerText, @AnswerNumber, @SortOrder)",
+            new
+            {
+                SubmissionId = submissionId,
+                BlockId      = blockId,
+                OptionValue  = optionValue,
+                AnswerText   = text,
+                AnswerNumber = number,
+                SortOrder    = sortOrder
+            });
+
+    private sealed class GenericAnswerRow
+    {
+        public int     FormBlockId  { get; set; }
+        public string? OptionValue  { get; set; }
+        public string? AnswerText   { get; set; }
+        public int?    AnswerNumber { get; set; }
     }
 
     private static async Task<bool> BlockKeyExistsAsync(DbRepository db, int formId, string key)

@@ -12,7 +12,8 @@ namespace AuthWithAdmin.Client.Services;
 public static class NavDefinitions
 {
     // ── Admin / Staff (Lecturer) ─────────────────────────────────────
-    // EIGHT destinations. המשימות שלי joined the seven below — see the note on
+    // NINE destinations. שיבוצים joined the eight below (see its own note);
+    // המשימות שלי joined the seven before that — see the note on
     // that entry; the other seven match the approved Motiva Lecturer design
     // (design/design-system/MotivaLecturerDesign/דשבורד מרצה 268.pdf).
     // The pill nav renders these identically to the student and mentor
@@ -34,6 +35,27 @@ public static class NavDefinitions
         // their own entries two and three rows down.
         new NavItem("המשימות שלי",    "lecturer/tasks",      "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
         new NavItem("הצוותים שלי",    "projects",            "oi-folder",          NavLinkMatch.Prefix, NavIcons.Projects),
+        // שיבוצים — the EXISTING /assignments workspace, added to the primary
+        // nav rather than built anew. It was reachable only through the ניהול
+        // hub ("פרויקטים וצוותים" → "שיבוץ צוותים לפרויקטים"), which buried a
+        // top-level lecturer responsibility two clicks deep behind a settings
+        // surface. Route, page, controller and authorization are untouched;
+        // this list is the only thing that changed.
+        //
+        // Placed here so the cluster reads as the lifecycle it is:
+        // הצוותים שלי (who) → שיבוצים (which project) → הגשות (what they hand in).
+        //
+        // Match.Prefix, like its siblings: /assignments has no sub-routes
+        // today, and the planned per-team detail view will keep the item lit
+        // instead of needing this changed. No other lecturer route starts with
+        // "assignments" (the student form is /student/assignment, and students
+        // resolve to _studentMain), so the prefix cannot capture anything else.
+        //
+        // NavIcons.Assignments is this destination's own icon — its summary
+        // literally reads "שיבוצים". It is currently also carried by הגשות
+        // below; that duplication is pre-existing and has no visual effect,
+        // because the pill bar renders labels only.
+        new NavItem("שיבוצים",         "assignments",         "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
         new NavItem("הגשות",           "lecturer/submissions", "oi-target",          NavLinkMatch.Prefix, NavIcons.Assignments),
         // Badge: OpenRequests count (shown by LecturerTopNav, same as student's בקשות badge).
         new NavItem("בקשות",          "management/requests", "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),

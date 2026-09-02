@@ -317,13 +317,22 @@
                 }
             </MCard>
 
-            <!-- ═══ SECTION 2 — Strengths ═══ -->
+            <!-- ═══ SECTION 2 — Strengths ═══
+                 Title, help text and the option LABELS come from the real
+                 Strengths FormBlock. The machine values behind those labels
+                 (Technology / Design / ProjectManagement / Content) are what
+                 gets written to StudentStrengths, and the server refuses to
+                 change them — so an admin rewording "עיצוב" cannot alter what
+                 SkillWeight() sees. -->
             <MCard Padding="MCard.CardPadding.Large" Class="sap-section">
                 <div class="sap-section-head">
                     <span class="sap-section-num">2</span>
                     <div>
-                        <h2 class="sap-section-title">חוזקות הצוות</h2>
-                        <p class="sap-section-sub">סמנו את תחומי הכישרון של כל חברת צוות</p>
+                        <h2 class="sap-section-title">
+                            @StrengthsTitle
+                            @if (StrengthsRequired) { <span class="sap-req" aria-label="שדה חובה">*</span> }
+                        </h2>
+                        <p class="sap-section-sub">@StrengthsHelp</p>
                     </div>
                 </div>
                 <div class="sap-strengths-grid-outer">
@@ -336,13 +345,15 @@
                                 @if (member.Id == _ctx.Me.Id) { <span class="sap-chip-you">את</span> }
                             </div>
                             <div class="sap-strengths-chips">
-                                @foreach (var (key, label, icon) in StrengthOptions)
+                                @foreach (var opt in StrengthChoices)
                                 {
+                                    var key   = opt.OptionValue;   // persisted — matching depends on it
+                                    var label = opt.OptionLabel;   // displayed — admin-editable
                                     bool isChecked = _strengths.TryGetValue(member.Id, out var set) && set.Contains(key);
                                     <label class="sap-strength-chip @(isChecked ? "sap-strength-chip--active" : "")">
                                         <input type="checkbox" class="sap-hidden-cb" checked="@isChecked"
                                                @onchange="() => ToggleStrength(member.Id, key)" />
-                                        <span class="sap-strength-icon">@icon</span>
+                                        <span class="sap-strength-icon">@StrengthIcon(key)</span>
                                         @label
                                     </label>
                                 }
@@ -356,9 +367,15 @@
             <MCard Padding="MCard.CardPadding.Large" Class="sap-section">
                 <div class="sap-section-head">
                     <span class="sap-section-num">3</span>
+                    @* Wording is the admin's; the three catalog-backed slots
+                       below are not — they are the domain invariant the server
+                       enforces on submit. *@
                     <div>
-                        <h2 class="sap-section-title">העדפות פרויקט</h2>
-                        <p class="sap-section-sub">בחרי 3 פרויקטים לפי סדר עדיפות (חובה)</p>
+                        <h2 class="sap-section-title">
+                            @PreferencesTitle
+                            <span class="sap-req" aria-label="שדה חובה">*</span>
+                        </h2>
+                        <p class="sap-section-sub">@PreferencesHelp</p>
                     </div>
                     @if (_preferences.Count == 3)
                     { <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="מלא" /> }
@@ -424,8 +441,11 @@
                 <div class="sap-section-head">
                     <span class="sap-section-num">5</span>
                     <div>
-                        <h2 class="sap-section-title">הערות נוספות</h2>
-                        <p class="sap-section-sub">מידע נוסף לצוות הקורס (אופציונלי)</p>
+                        <h2 class="sap-section-title">
+                            @NotesTitle
+                            @if (NotesRequired) { <span class="sap-req" aria-label="שדה חובה">*</span> }
+                        </h2>
+                        <p class="sap-section-sub">@NotesHelp</p>
                     </div>
                 </div>
                 <textarea class="sap-textarea"
@@ -433,6 +453,125 @@
                           rows="3"
                           @bind="_notes" @bind:event="oninput"></textarea>
             </MCard>
+
+            @* ═══ SECTION 6+ — Admin-configured questions ═══
+               Everything the admin added to the assignment form beyond the
+               three system blocks. Rendered here, inside the same form and the
+               same submit, but persisted to FormSubmissions/FormAnswers rather
+               than to the domain tables. The domain sections keep fixed
+               positions because two of them (team, own project) have no
+               FormBlock at all, so a fully block-driven page order is not
+               expressible — these follow in their own SortOrder. *@
+            @if (ExtraQuestions.Count > 0)
+            {
+                <MCard Padding="MCard.CardPadding.Large" Class="sap-section">
+                    <div class="sap-section-head">
+                        <span class="sap-section-num">6</span>
+                        <div>
+                            <h2 class="sap-section-title">שאלות נוספות</h2>
+                            <p class="sap-section-sub">שאלות שהוגדרו על ידי צוות הקורס</p>
+                        </div>
+                    </div>
+
+                    <div class="sap-extra-list">
+                        @foreach (var q in ExtraQuestions)
+                        {
+                            var block = q;
+                            var scale = block.RatingScale == 10 ? 10 : 5;
+
+                            @if (FormBlockTypes.IsInformational(block.BlockType))
+                            {
+                                <div class="sap-extra-info">
+                                    @if (!string.IsNullOrWhiteSpace(block.Title))
+                                    {
+                                        <h3 class="sap-extra-info-title">@block.Title</h3>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(block.HelperText))
+                                    {
+                                        <p class="sap-extra-info-text">@block.HelperText</p>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="sap-extra-q">
+                                    <p class="sap-extra-q-title">
+                                        <span>@block.Title</span>
+                                        @if (block.IsRequired)
+                                        {
+                                            <span class="sap-req" aria-label="שאלת חובה">*</span>
+                                        }
+                                    </p>
+                                    @if (!string.IsNullOrWhiteSpace(block.HelperText))
+                                    {
+                                        <p class="sap-extra-q-help">@block.HelperText</p>
+                                    }
+
+                                    @if (block.BlockType == FormBlockTypes.SingleChoice)
+                                    {
+                                        <div class="sap-extra-choices" role="radiogroup" aria-label="@block.Title">
+                                            @foreach (var opt in block.Options)
+                                            {
+                                                var o = opt;
+                                                var on = ExtraHasValue(block.Id, o.OptionValue);
+                                                <label class="sap-extra-choice @(on ? "sap-extra-choice--on" : "")">
+                                                    <input type="radio" name="@($"extra-{block.Id}")" checked="@on"
+                                                           @onchange="() => ExtraPickSingle(block.Id, o.OptionValue)" />
+                                                    <span>@o.OptionLabel</span>
+                                                </label>
+                                            }
+                                        </div>
+                                    }
+                                    else if (block.BlockType == FormBlockTypes.MultiChoice)
+                                    {
+                                        <div class="sap-extra-choices" role="group" aria-label="@block.Title">
+                                            @foreach (var opt in block.Options)
+                                            {
+                                                var o = opt;
+                                                var on = ExtraHasValue(block.Id, o.OptionValue);
+                                                <label class="sap-extra-choice @(on ? "sap-extra-choice--on" : "")">
+                                                    <input type="checkbox" checked="@on"
+                                                           @onchange="() => ExtraToggleMulti(block.Id, o.OptionValue)" />
+                                                    <span>@o.OptionLabel</span>
+                                                </label>
+                                            }
+                                        </div>
+                                    }
+                                    else if (block.BlockType == FormBlockTypes.Rating)
+                                    {
+                                        <div class="sap-extra-scale" role="group" aria-label="@block.Title">
+                                            @for (int v = 1; v <= scale; v++)
+                                            {
+                                                var val = v;
+                                                var on  = ExtraNumber(block.Id) == val;
+                                                <button type="button"
+                                                        class="sap-extra-scale-btn @(on ? "sap-extra-scale-btn--on" : "")"
+                                                        aria-pressed="@(on ? "true" : "false")"
+                                                        @onclick="() => ExtraSetNumber(block.Id, val)">@val</button>
+                                            }
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(block.MinLabel) ||
+                                             !string.IsNullOrWhiteSpace(block.MaxLabel))
+                                        {
+                                            <div class="sap-extra-scale-labels">
+                                                <span>@block.MinLabel</span>
+                                                <span>@block.MaxLabel</span>
+                                            </div>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <textarea class="sap-textarea" rows="3"
+                                                  placeholder="כתבו את תשובתכם כאן"
+                                                  value="@ExtraText(block.Id)"
+                                                  @oninput="e => ExtraSetText(block.Id, e.Value?.ToString() ?? string.Empty)"></textarea>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                </MCard>
+            }
 
             <!-- ── Footer ── -->
             <div class="sap-footer">
@@ -474,18 +613,152 @@
     private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max] + "…";
     private static string FormatDate(string iso) => iso.Length >= 10 ? iso[..10] : iso;
 
-    private static readonly (string Key, string Label, string Icon)[] StrengthOptions =
+    // ── Presentation from the real form ──────────────────────────────────────
+    //
+    // The labels used to live here as a static array, which is precisely why an
+    // admin editing the Strengths block in the form editor changed nothing on
+    // this page. They now come from the block. What stays hardcoded is only the
+    // ICON, keyed by the MACHINE VALUE — a stable literal the server refuses to
+    // let anyone rename — so a reworded label keeps its icon and an unknown
+    // value simply gets none.
+    private static readonly Dictionary<string, string> StrengthIcons = new()
     {
-        ("Design",            "עיצוב",         "🎨"),
-        ("Content",           "תוכן",          "✍"),
-        ("Technology",        "טכנולוגיה",     "💻"),
-        ("ProjectManagement", "ניהול פרויקט",  "📋"),
+        ["Design"]            = "🎨",
+        ["Content"]           = "✍",
+        ["Technology"]        = "💻",
+        ["ProjectManagement"] = "📋",
     };
 
-    private static string GetStrengthLabel(string key) =>
-        StrengthOptions.FirstOrDefault(o => o.Key == key).Label ?? key;
-    private static string GetStrengthIcon(string key) =>
-        StrengthOptions.FirstOrDefault(o => o.Key == key).Icon ?? "";
+    private static string StrengthIcon(string value) =>
+        StrengthIcons.TryGetValue(value, out var icon) ? icon : "";
+
+    private AssignmentFormLayoutDto? Layout => _ctx?.FormLayout;
+
+    /// <summary>
+    /// The strength choices as the admin configured them. Falls back to the
+    /// four canonical values when no form row exists yet (legacy installs), so
+    /// the page can never render an empty strengths section.
+    /// </summary>
+    private IReadOnlyList<FormBlockOptionDto> StrengthChoices
+    {
+        get
+        {
+            var opts = Layout?.Strengths?.Options;
+            if (opts is { Count: > 0 }) return opts;
+
+            return FormBlockKeys.ProtectedStrengthValues
+                .Select(v => new FormBlockOptionDto { OptionValue = v, OptionLabel = v })
+                .ToList();
+        }
+    }
+
+    /// <summary>Block text with a fallback, so a blank field never blanks the page.</summary>
+    private static string Text(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value!;
+
+    private string StrengthsTitle    => Text(Layout?.Strengths?.Title,      "חוזקות הצוות");
+    private string StrengthsHelp     => Text(Layout?.Strengths?.HelperText, "סמנו את תחומי הכישרון של כל חברת צוות");
+    private bool   StrengthsRequired => Layout?.Strengths?.IsRequired ?? false;
+
+    private string PreferencesTitle  => Text(Layout?.Preferences?.Title,      "העדפות פרויקט");
+    private string PreferencesHelp   => Text(Layout?.Preferences?.HelperText, "בחרי 3 פרויקטים לפי סדר עדיפות (חובה)");
+
+    private string NotesTitle        => Text(Layout?.Notes?.Title,      "הערות נוספות");
+    private string NotesHelp         => Text(Layout?.Notes?.HelperText, "מידע נוסף לצוות הקורס (אופציונלי)");
+    private bool   NotesRequired     => Layout?.Notes?.IsRequired ?? false;
+
+    private List<FormBlockDto> ExtraQuestions => Layout?.ExtraQuestions ?? new();
+
+    private string GetStrengthLabel(string key) =>
+        StrengthChoices.FirstOrDefault(o => o.OptionValue == key)?.OptionLabel ?? key;
+
+    private static string GetStrengthIcon(string key) => StrengthIcon(key);
+
+    // ── Answers to the admin-added questions ─────────────────────────────────
+    // Held separately from the domain state on purpose: these never touch
+    // TeamProjectPreferences or StudentStrengths.
+    private readonly Dictionary<int, List<string>> _extraChoices = new();
+    private readonly Dictionary<int, string>       _extraTexts   = new();
+    private readonly Dictionary<int, int>          _extraNumbers = new();
+
+    private bool ExtraHasValue(int blockId, string value) =>
+        _extraChoices.TryGetValue(blockId, out var list) && list.Contains(value);
+
+    private void ExtraPickSingle(int blockId, string value) =>
+        _extraChoices[blockId] = new List<string> { value };
+
+    private void ExtraToggleMulti(int blockId, string value)
+    {
+        if (!_extraChoices.TryGetValue(blockId, out var list))
+        {
+            list = new List<string>();
+            _extraChoices[blockId] = list;
+        }
+        if (!list.Remove(value)) list.Add(value);
+    }
+
+    private string ExtraText(int blockId)   => _extraTexts.TryGetValue(blockId, out var t) ? t : "";
+    private void   ExtraSetText(int blockId, string v) => _extraTexts[blockId] = v;
+
+    private int?   ExtraNumber(int blockId) => _extraNumbers.TryGetValue(blockId, out var n) ? n : null;
+    private void   ExtraSetNumber(int blockId, int v)  => _extraNumbers[blockId] = v;
+
+    /// <summary>Seeds the extra-question state from answers already submitted.</summary>
+    private void HydrateExtraAnswers(ExistingAssignmentDto? existing)
+    {
+        _extraChoices.Clear();
+        _extraTexts.Clear();
+        _extraNumbers.Clear();
+
+        if (existing is null) return;
+
+        foreach (var a in existing.ExtraAnswers)
+        {
+            if (a.OptionValues.Count > 0)      _extraChoices[a.FormBlockId] = new List<string>(a.OptionValues);
+            if (!string.IsNullOrEmpty(a.Text)) _extraTexts[a.FormBlockId]   = a.Text!;
+            if (a.Number is not null)          _extraNumbers[a.FormBlockId] = a.Number.Value;
+        }
+    }
+
+    /// <summary>
+    /// The first unanswered required question, or null. The server validates
+    /// too and is the authority; this exists so the student is told which
+    /// question is missing before a round trip.
+    /// </summary>
+    private string? FirstMissingRequired()
+    {
+        if (StrengthsRequired && !_strengths.Any(kv => kv.Value.Count > 0))
+            return $"יש לבחור לפחות תחום אחד ב\"{StrengthsTitle}\".";
+
+        if (NotesRequired && string.IsNullOrWhiteSpace(_notes))
+            return $"יש למלא את \"{NotesTitle}\".";
+
+        foreach (var q in ExtraQuestions)
+        {
+            if (!q.IsRequired || FormBlockTypes.IsInformational(q.BlockType)) continue;
+
+            bool answered =
+                FormBlockTypes.IsRating(q.BlockType)   ? ExtraNumber(q.Id) is > 0 :
+                FormBlockTypes.HasOptions(q.BlockType) ? _extraChoices.TryGetValue(q.Id, out var c) && c.Count > 0 :
+                                                         !string.IsNullOrWhiteSpace(ExtraText(q.Id));
+
+            if (!answered) return $"יש לענות על השאלה \"{q.Title}\".";
+        }
+
+        return null;
+    }
+
+    private List<FormAnswerInputDto> BuildExtraAnswers() =>
+        ExtraQuestions
+            .Where(q => !FormBlockTypes.IsInformational(q.BlockType))
+            .Select(q => new FormAnswerInputDto
+            {
+                FormBlockId  = q.Id,
+                OptionValues = _extraChoices.TryGetValue(q.Id, out var c) ? c : new List<string>(),
+                Text         = _extraTexts.TryGetValue(q.Id, out var t) ? t : null,
+                Number       = _extraNumbers.TryGetValue(q.Id, out var n) ? n : null
+            })
+            .ToList();
 
     private AssignmentCatalogItemDto? FindProject(int id) =>
         _ctx?.Catalog.FirstOrDefault(p => p.Id == id);
@@ -567,6 +840,10 @@
         _preferences.Clear();
         foreach (var pref in ex.Preferences)
             _preferences[pref.Priority] = pref.ProjectId;
+
+        // Every load path funnels through here, so the admin-added questions
+        // are restored wherever the domain answers are.
+        HydrateExtraAnswers(ex);
     }
 
     private void EnterEditMode()
@@ -582,6 +859,8 @@
             foreach (var m in _ctx.TeamMembers)
                 _strengths[m.UserId] = new HashSet<string>(m.Strengths);
         }
+
+        HydrateExtraAnswers(_ctx?.ExistingSubmission);
     }
 
     // ── Partner / strength helpers ───────────────────────────────────────────
@@ -628,6 +907,11 @@
         if (!TeamReady)  { _submitError = "יש לבחור שותפה אחת לצוות לפני ההגשה";          return; }
         if (_preferences.Count < 3) { _submitError = "יש לבחור 3 פרויקטים לפני ההגשה"; return; }
 
+        // Requirements the admin configured on the form. Checked here so the
+        // student sees which question is missing; the server checks the same
+        // things and is the authority.
+        if (FirstMissingRequired() is { } missing) { _submitError = missing; return; }
+
         _submitting = true;
 
         var strengthsList = new List<StudentStrengthDto>();
@@ -642,7 +926,10 @@
             Preferences           = _preferences.Select(kv => new ProjectPreferenceDto { Priority = kv.Key, ProjectId = kv.Value }).ToList(),
             HasOwnProject         = _hasOwnProject,
             OwnProjectDescription = _ownProjectDescription,
-            Notes                 = _notes
+            Notes                 = _notes,
+            // Same request, one student action — but the server routes these to
+            // FormAnswers rather than to the domain tables.
+            ExtraAnswers          = BuildExtraAnswers()
         });
 
         _submitting = false;

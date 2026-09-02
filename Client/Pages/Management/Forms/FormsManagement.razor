@@ -1,3 +1,42 @@
+@*
+    ── טפסים (Admin Forms management) ────────────────────────────────────────
+    Route:  /management/forms  — reached from the ניהול hub
+            (LecturerManagementPage → "טפסים ומשאבים" → "טפסים").
+
+    Visual source:
+        design/design-system/Motiva Admin Form Editor.dc.html
+    (the reference draws the EDITOR; this list follows the same visual
+    language and the composition already settled on the other redesigned
+    Admin screens — title + summary + one primary / toolbar / full-width
+    table.)
+
+    WHAT IS REAL HERE
+    ─────────────────
+    Every row comes from GET /api/forms. Name, cycle, status, window, question
+    count and submission count are all persisted values:
+      · QuestionCount   — COUNT over FormBlocks for the form.
+      · SubmissionCount — for the assignment form, the real team submissions in
+        AssignmentFormSubmissions; for every other form, the real rows in
+        FormSubmissions. Nothing is estimated and nothing is mocked.
+
+    THE FOURTH STATUS
+    ─────────────────
+    The reference draws טיוטה / פתוח / מתוזמן / סגור, but Forms.Status stores
+    only three. "מתוזמן" is not invented for the chip — it is what an Open form
+    whose OpensAt is still in the future already is, and the server's own gate
+    agrees (FormsRepository.EvaluateGate → "before-open"). It is DERIVED in
+    FormDisplayStatus.Resolve from persisted values, and the status PICKER
+    offers only the three that can actually be stored.
+
+    CREATION
+    ────────
+    "טופס חדש" opens a modal that POSTs a real Forms row and then hands the
+    admin to the editor, per the reference's flow. The old
+    /management/forms/new page was a SECOND form builder that assembled blocks
+    in local state before creating anything; it is gone, so there is now one
+    builder (FormEditor) and one creation path.
+*@
+
 @page "/management/forms"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin)]
@@ -7,326 +46,677 @@
 @inject IFormsManagementService FormsService
 @inject IManagementService ManagementService
 
-<div class="fm-page">
+@* ══ CREATE FORM MODAL ═══════════════════════════════════════════════════ *@
+<MModal IsOpen="_createOpen"
+        Title="טופס חדש"
+        Size="MModal.ModalSize.Medium"
+        OnClose="CloseCreate">
+    <ChildContent>
+        <div class="fml-form">
+            <label class="fml-field">
+                <span class="fml-label">שם הטופס <span class="fml-req">*</span></span>
+                <input class="fml-input" @bind="_newName" maxlength="120"
+                       placeholder="לדוגמה: טופס משוב סוף סמסטר" />
+            </label>
 
-    <!-- Top bar -->
-    <div class="fm-topbar">
-        <div class="fm-topbar-start">
-            <button class="fm-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))" title="חזרה לניהול">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="fm-breadcrumb">ניהול</div>
-                <h1 class="fm-title">טפסים</h1>
-            </div>
-        </div>
-        <div class="fm-topbar-end">
-            <button class="fm-btn fm-btn-primary"
-                    @onclick="@(() => Nav.NavigateTo("/management/forms/new"))">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                טופס חדש
-            </button>
-        </div>
-    </div>
-
-    @if (_loading)
-    {
-        <div class="fm-state">טוען טפסים…</div>
-    }
-    else if (_loadError)
-    {
-        <div class="fm-state fm-state-error">
-            <span class="oi oi-warning" aria-hidden="true"></span>
-            שגיאה בטעינת הטפסים. נסו לרענן את הדף.
-        </div>
-    }
-    else if (_forms.Count == 0)
-    {
-        <div class="fm-state">
-            לא נמצאו טפסים.
-        </div>
-    }
-    else
-    {
-        @if (!string.IsNullOrEmpty(_actionMessage))
-        {
-            <div class="fm-toast @(_actionError ? "fm-toast-error" : "")">@_actionMessage</div>
-        }
-
-        <div class="fm-list">
-            @foreach (var f in _forms)
-            {
-                <article class="fm-card">
-                    <div class="fm-card-head">
-                        <div class="fm-card-head-main">
-                            <h2 class="fm-card-title">@f.Name</h2>
-                            @if (!string.IsNullOrWhiteSpace(f.AcademicYear))
-                            {
-                                <span class="fm-card-year">מחזור @f.AcademicYear</span>
-                            }
-                        </div>
-                        <span class="fm-status @StatusClass(f.Status)">@StatusLabel(f.Status)</span>
-                    </div>
-
-                    <div class="fm-card-meta">
-                        <div class="fm-meta-item">
-                            <span class="fm-meta-label">פתיחה</span>
-                            <span class="fm-meta-value">@FormatDateOrEmpty(f.OpensAt)</span>
-                        </div>
-                        <div class="fm-meta-item">
-                            <span class="fm-meta-label">סגירה</span>
-                            <span class="fm-meta-value">@FormatDateOrEmpty(f.ClosesAt)</span>
-                        </div>
-                        <div class="fm-meta-item">
-                            <span class="fm-meta-label">הגשות</span>
-                            <span class="fm-meta-value">@f.SubmissionCount</span>
-                        </div>
-                    </div>
-
-                    <div class="fm-card-actions">
-                        <button class="fm-btn fm-btn-primary"
-                                @onclick="@(() => Nav.NavigateTo($"/management/forms/{f.Id}"))">
-                            <span class="oi oi-pencil" aria-hidden="true"></span>
-                            עריכה
-                        </button>
-                        <button class="fm-btn fm-btn-secondary"
-                                disabled="@_busyIds.Contains(f.Id)"
-                                @onclick="@(() => ToggleOpen(f))">
-                            <span class="oi @(f.IsOpen ? "oi-lock-locked" : "oi-lock-unlocked")" aria-hidden="true"></span>
-                            @(f.IsOpen ? "סגור טופס" : "פתח טופס")
-                        </button>
-                        <button class="fm-btn fm-btn-secondary"
-                                @onclick="@(() => Nav.NavigateTo("/assignments"))">
-                            <span class="oi oi-document" aria-hidden="true"></span>
-                            צפייה בהגשות
-                        </button>
-                        <button class="fm-btn fm-btn-secondary"
-                                @onclick="@(() => OpenDuplicateModal(f))">
-                            <span class="oi oi-layers" aria-hidden="true"></span>
-                            שכפול טופס
-                        </button>
-                    </div>
-                </article>
-            }
-        </div>
-    }
-</div>
-
-@* ── Duplicate-form modal ──────────────────────────────────────────────────── *@
-@if (_dupSource is not null)
-{
-    <div class="fm-dup-backdrop" @onclick="CloseDuplicateModal"></div>
-    <div class="fm-dup-modal" dir="rtl" @onclick:stopPropagation="true">
-        <div class="fm-dup-header">
-            <div class="fm-dup-title">שכפול טופס</div>
-            <button class="fm-dup-close" @onclick="CloseDuplicateModal" title="סגירה">
-                <span class="oi oi-x" aria-hidden="true"></span>
-            </button>
-        </div>
-
-        <div class="fm-dup-body">
-            <p class="fm-dup-source">
-                שכפול הטופס: <strong>@_dupSource.Name</strong> (מחזור @_dupSource.AcademicYear)
-            </p>
-
-            <div class="fm-dup-field">
-                <label class="fm-dup-label">שם הטופס החדש <span class="fm-dup-required">*</span></label>
-                <input class="fm-dup-input @(_dupTouched && string.IsNullOrWhiteSpace(_dupNewName) ? "fm-dup-input-error" : "")"
-                       maxlength="200"
-                       @bind="_dupNewName" @bind:event="oninput"
-                       disabled="@_dupSubmitting" />
-            </div>
-
-            <div class="fm-dup-field">
-                <label class="fm-dup-label">מחזור / שנה אקדמית <span class="fm-dup-required">*</span></label>
-                <select class="fm-dup-input @(_dupTouched && _dupYearId == 0 ? "fm-dup-input-error" : "")"
-                        @bind="_dupYearIdRaw"
-                        disabled="@_dupSubmitting">
-                    <option value="0">— בחר מחזור —</option>
+            <label class="fml-field">
+                <span class="fml-label">מחזור <span class="fml-req">*</span></span>
+                <select class="fml-input" @bind="_newYearId">
                     @foreach (var y in _years)
                     {
                         <option value="@y.Id">@y.Name</option>
                     }
                 </select>
+            </label>
+
+            <label class="fml-field">
+                <span class="fml-label">הוראות לסטודנטים</span>
+                <textarea class="fml-textarea" rows="3" @bind="_newInstructions"
+                          placeholder="הסבר קצר שיוצג בראש הטופס"></textarea>
+            </label>
+
+            <div class="fml-form-row">
+                <label class="fml-field">
+                    <span class="fml-label">תאריך פתיחה</span>
+                    <input class="fml-input" type="date" dir="ltr" @bind="_newOpens" />
+                </label>
+                <label class="fml-field">
+                    <span class="fml-label">תאריך סגירה</span>
+                    <input class="fml-input" type="date" dir="ltr" @bind="_newCloses" />
+                </label>
+                <label class="fml-field">
+                    <span class="fml-label">סטטוס</span>
+                    @* Only the three statuses the column can hold. *@
+                    <select class="fml-input" @bind="_newStatus">
+                        @foreach (var st in FormStatuses.All)
+                        {
+                            <option value="@st">@FormStatuses.Label(st)</option>
+                        }
+                    </select>
+                </label>
             </div>
 
-            <div class="fm-dup-field">
-                <label class="fm-dup-label">סטטוס התחלתי</label>
-                <select class="fm-dup-input"
-                        @bind="_dupInitialStatus"
-                        disabled="@_dupSubmitting">
-                    <option value="@FormStatuses.Draft">טיוטה</option>
-                    <option value="@FormStatuses.Open">פתוח</option>
-                    <option value="@FormStatuses.Closed">סגור</option>
-                </select>
-            </div>
-
-            <div class="fm-dup-hint">
-                <span class="oi oi-info" aria-hidden="true"></span>
-                השכפול יעתיק את מבנה הטופס בלבד, ללא הגשות קיימות.
-            </div>
-
-            @if (!string.IsNullOrEmpty(_dupError))
+            @if (!string.IsNullOrEmpty(_createError))
             {
-                <div class="fm-dup-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_dupError
-                </div>
+                <div class="fml-form-error">@_createError</div>
+            }
+        </div>
+    </ChildContent>
+    <FooterContent>
+        <button type="button" class="fml-btn-ghost" @onclick="CloseCreate" disabled="@_creating">ביטול</button>
+        <button type="button" class="fml-btn-primary motiva-cta" @onclick="CreateForm" disabled="@_creating">
+            @if (_creating)
+            {
+                <span class="fml-spinner" aria-hidden="true"></span>
+            }
+            יצירה ומעבר לעורך
+        </button>
+    </FooterContent>
+</MModal>
+
+@* ══ DELETE CONFIRM ══════════════════════════════════════════════════════ *@
+<MConfirmDialog IsOpen="_deleteTarget is not null"
+                Title="מחיקת טופס"
+                Message="@DeleteMessage"
+                Error="@_deleteError"
+                Tone="MConfirmDialog.ConfirmTone.Danger"
+                ConfirmText="מחיקה"
+                Busy="_deleting"
+                BusyText="מוחק…"
+                OnConfirm="ConfirmDelete"
+                OnCancel="CancelDelete" />
+
+@{
+    // Materialized once per render so the summary, the count and the rows all
+    // read the same filtered list.
+    var rows = FilteredForms.ToList();
+}
+
+<div class="fml-page" dir="rtl" @onclick="CloseAllMenus">
+
+    @* ══ Header ═══════════════════════════════════════════════════════════ *@
+    <header class="fml-head">
+        <div class="fml-head-title">
+            <h1 class="fml-h1">טפסים</h1>
+            @if (!_loading && !_loadError)
+            {
+                <p class="fml-summary">@SummaryLine</p>
             }
         </div>
 
-        <div class="fm-dup-footer">
-            <button class="fm-btn fm-btn-secondary"
-                    @onclick="CloseDuplicateModal"
-                    disabled="@_dupSubmitting">
-                ביטול
-            </button>
-            <button class="fm-btn fm-btn-primary"
-                    @onclick="SubmitDuplicate"
-                    disabled="@_dupSubmitting">
-                @if (_dupSubmitting) { <span class="fm-dup-spinner"></span> }
-                else                  { <span class="oi oi-check" aria-hidden="true"></span> }
-                שכפל
+        <div class="fml-head-actions" @onclick:stopPropagation="true">
+            <button type="button" class="fml-btn-primary fml-btn-primary--lg motiva-cta" @onclick="OpenCreate">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                </svg>
+                טופס חדש
             </button>
         </div>
-    </div>
-}
+    </header>
+
+    @if (!string.IsNullOrEmpty(_toast))
+    {
+        <div class="fml-toast @(_toastError ? "fml-toast--error" : "")" role="status">@_toast</div>
+    }
+
+    @if (_loadError)
+    {
+        @* Error state — distinct from "no forms", which is a legitimate empty. *@
+        <div class="fml-state fml-state--error" role="alert">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" />
+            </svg>
+            <span>שגיאה בטעינת הטפסים.</span>
+            <button type="button" class="fml-retry" @onclick="LoadAsync">ניסיון חוזר</button>
+        </div>
+    }
+    else
+    {
+        @* ══ Toolbar ══════════════════════════════════════════════════════ *@
+        <div class="fml-toolbar" @onclick:stopPropagation="true">
+            <MSearchField Value="@_search"
+                          ValueChanged="OnSearchChanged"
+                          Placeholder="חיפוש לפי שם טופס"
+                          AriaLabel="חיפוש טפסים"
+                          Class="fml-search" />
+
+            @foreach (var f in BuildFilters())
+            {
+                var key  = f.Key;
+                var open = _openFilter == key;
+
+                <div class="fml-filter">
+                    <button type="button"
+                            class="fml-filter-btn @(f.IsActive ? "fml-filter-btn--on" : "")"
+                            @onclick="@(() => ToggleFilter(key))"
+                            aria-haspopup="listbox" aria-expanded="@(open ? "true" : "false")">
+                        <span class="fml-filter-name">@f.Name</span>
+                        <span class="fml-filter-value">@f.CurrentLabel</span>
+                        <svg class="fml-filter-chev @(open ? "fml-filter-chev--open" : "")"
+                             width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m6 9 6 6 6-6" />
+                        </svg>
+                    </button>
+
+                    @if (open)
+                    {
+                        <div class="fml-menu fml-menu--filter" role="listbox" aria-label="@f.Name">
+                            @foreach (var o in f.Options)
+                            {
+                                var val = o.Value;
+                                var selected = o.Value == f.CurrentValue;
+                                <button type="button"
+                                        class="fml-menu-item @(selected ? "fml-menu-item--on" : "")"
+                                        role="option" aria-selected="@(selected ? "true" : "false")"
+                                        @onclick="@(() => PickFilter(key, val))">
+                                    <span class="fml-menu-item-label">@o.Label</span>
+                                    @if (selected)
+                                    {
+                                        <svg class="fml-menu-check" width="12" height="12" viewBox="0 0 24 24"
+                                             fill="none" stroke="currentColor" stroke-width="2.6"
+                                             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="m5 12.5 4.5 4.5L19 7" />
+                                        </svg>
+                                    }
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (HasActiveFilters)
+            {
+                <button type="button" class="fml-clear" @onclick="ClearFilters">ניקוי סינון</button>
+            }
+
+            @if (!_loading)
+            {
+                <span class="fml-result">@ResultLine(rows.Count)</span>
+            }
+        </div>
+
+        @* ══ Table ════════════════════════════════════════════════════════ *@
+        <MDataTable TItem="FormListItemDto"
+                    Items="rows"
+                    Loading="_loading"
+                    LoadingText="טוען טפסים…"
+                    ColumnCount="7"
+                    MinWidth="960px"
+                    Class="fml-table">
+
+            <Columns>
+                @* Name carries no width: under table-layout:fixed the six sized
+                   columns are honoured and the name takes the remainder. *@
+                <col />
+                <col class="fml-col-cycle" />
+                <col class="fml-col-status" />
+                <col class="fml-col-window" />
+                <col class="fml-col-num" />
+                <col class="fml-col-num" />
+                <col class="fml-col-actions" />
+            </Columns>
+
+            <HeaderContent>
+                <th scope="col">שם הטופס</th>
+                <th scope="col">מחזור</th>
+                <th scope="col">סטטוס</th>
+                <th scope="col">חלון הגשה</th>
+                <th scope="col">שאלות</th>
+                <th scope="col">הגשות</th>
+                <th scope="col"><span class="fml-sr">פעולות</span></th>
+            </HeaderContent>
+
+            <EmptyContent>
+                <MEmptyState Title="@EmptyTitle" Description="@EmptyDescription">
+                    <Action>
+                        @if (!HasActiveFilters && string.IsNullOrWhiteSpace(_search))
+                        {
+                            <button type="button" class="fml-btn-primary motiva-cta" @onclick="OpenCreate">
+                                יצירת טופס ראשון
+                            </button>
+                        }
+                        else
+                        {
+                            <button type="button" class="fml-btn-ghost" @onclick="ClearFilters">ניקוי סינון</button>
+                        }
+                    </Action>
+                </MEmptyState>
+            </EmptyContent>
+
+            @* MDataTable renders <tbody> and calls RowTemplate per item WITHOUT
+               wrapping it — the row element is the caller's to supply. Without
+               this <tr> every cell collapses into one implicit row. *@
+            <RowTemplate Context="form">
+                <tr class="@(_openRowMenu == form.Id ? "m-dt-row-active" : "")">
+                <td>
+                    <button type="button" class="fml-name" @onclick="@(() => OpenEditor(form.Id))">
+                        <span class="fml-name-text">@form.Name</span>
+                        @if (form.IsAssignmentForm)
+                        {
+                            @* The one form wired to project assignment. Flagged
+                               because its questions are not freely editable. *@
+                            <span class="fml-tag-system">טופס מערכת</span>
+                        }
+                    </button>
+                </td>
+
+                <td><span class="fml-muted">@(string.IsNullOrWhiteSpace(form.AcademicYear) ? "—" : form.AcademicYear)</span></td>
+
+                <td>
+                    <span class="fml-status fml-status--@StatusSlug(form.DisplayStatus)">
+                        <span class="fml-status-dot" aria-hidden="true"></span>
+                        @FormDisplayStatus.Label(form.DisplayStatus)
+                    </span>
+                </td>
+
+                <td><span class="fml-muted" dir="ltr">@WindowLabel(form)</span></td>
+
+                <td><span class="fml-num">@form.QuestionCount</span></td>
+
+                <td>
+                    @if (form.SubmissionCount > 0)
+                    {
+                        <button type="button" class="fml-num fml-num--link"
+                                @onclick="@(() => OpenSubmissions(form))">@form.SubmissionCount</button>
+                    }
+                    else
+                    {
+                        <span class="fml-num fml-num--zero">0</span>
+                    }
+                </td>
+
+                <td @onclick:stopPropagation="true">
+                    <div class="fml-row-actions">
+                        <button type="button" class="fml-kebab"
+                                @onclick="@(() => ToggleRowMenu(form.Id))"
+                                aria-haspopup="menu" aria-expanded="@(_openRowMenu == form.Id ? "true" : "false")"
+                                title="פעולות" aria-label="@($"פעולות עבור {form.Name}")">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <circle cx="12" cy="5" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="12" cy="19" r="1.7" />
+                            </svg>
+                        </button>
+
+                        @if (_openRowMenu == form.Id)
+                        {
+                            <div class="fml-menu fml-menu--row" role="menu">
+                                <button type="button" class="fml-menu-item" role="menuitem"
+                                        @onclick="@(() => OpenEditor(form.Id))">עריכת טופס</button>
+
+                                <button type="button" class="fml-menu-item" role="menuitem"
+                                        @onclick="@(() => OpenSubmissions(form))">הגשות</button>
+
+                                @* Delete is offered only where the server would
+                                   actually allow it — an assignment form with
+                                   submissions is refused, so drawing the item
+                                   would promise something that 409s. *@
+                                @if (!(form.IsAssignmentForm && form.SubmissionCount > 0))
+                                {
+                                    <button type="button" class="fml-menu-item fml-menu-item--danger" role="menuitem"
+                                            @onclick="@(() => AskDelete(form))">מחיקת טופס</button>
+                                }
+                            </div>
+                        }
+                    </div>
+                </td>
+                </tr>
+            </RowTemplate>
+        </MDataTable>
+    }
+</div>
 
 @code {
-    private List<FormListItemDto> _forms = new();
-    private bool _loading = true;
-    private bool _loadError;
-    private readonly HashSet<int> _busyIds = new();
-    private string? _actionMessage;
-    private bool    _actionError;
+    // ── State ────────────────────────────────────────────────────────────────
 
-    // ── Duplicate-modal state ─────────────────────────────────────────────
-    private List<AcademicYearDto> _years = new();
-    private FormListItemDto?      _dupSource;
-    private string                _dupNewName       = "";
-    private string                _dupYearIdRaw     = "0";  // bound to the <select>
-    private string                _dupInitialStatus = FormStatuses.Draft;
-    private bool                  _dupTouched;
-    private bool                  _dupSubmitting;
-    private string?               _dupError;
+    private List<FormListItemDto>  _forms = new();
+    private List<AcademicYearDto>  _years = new();
 
-    private int _dupYearId =>
-        int.TryParse(_dupYearIdRaw, out var v) ? v : 0;
+    private bool   _loading   = true;
+    private bool   _loadError = false;
 
-    protected override async Task OnInitializedAsync()
+    private string _search       = "";
+    private string _filterCycle  = "";   // "" = all; otherwise AcademicYearId as string
+    private string _filterStatus = "";   // "" = all; otherwise a FormDisplayStatus value
+    private string _openFilter   = "";
+    private int    _openRowMenu  = 0;
+
+    private string _toast      = "";
+    private bool   _toastError = false;
+
+    // Create modal
+    private bool   _createOpen        = false;
+    private bool   _creating          = false;
+    private string _createError       = "";
+    private string _newName           = "";
+    private int    _newYearId         = 0;
+    private string _newInstructions   = "";
+    private DateTime? _newOpens       = null;
+    private DateTime? _newCloses      = null;
+    private string _newStatus         = FormStatuses.Draft;
+
+    // Delete
+    private FormListItemDto? _deleteTarget = null;
+    private bool             _deleting     = false;
+    private string           _deleteError  = "";
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
     {
-        await Reload();
-        // Academic-year list is loaded once for the duplicate modal — cheap,
-        // and gives the lecturer a real dropdown without a roundtrip on click.
-        _years = (await ManagementService.GetAcademicYearsAsync()) ?? new();
-    }
+        _loading   = true;
+        _loadError = false;
+        StateHasChanged();
 
-    private async Task Reload()
-    {
-        _loading = true; _loadError = false;
-        var data = await FormsService.GetFormsAsync();
-        if (data is null) _loadError = true;
-        else _forms = data;
-        _loading = false;
-    }
+        // Cycles are needed by the create modal and the cycle filter's labels.
+        // Loaded once alongside the forms rather than lazily, so opening the
+        // modal never shows an empty cycle list.
+        var formsTask = FormsService.GetFormsAsync();
+        var yearsTask = ManagementService.GetAcademicYearsAsync();
+        await Task.WhenAll(formsTask, yearsTask);
 
-    // ── Duplicate-form handlers ───────────────────────────────────────────
-    private void OpenDuplicateModal(FormListItemDto src)
-    {
-        _dupSource        = src;
-        _dupNewName       = src.Name + " (עותק)";
-        _dupYearIdRaw     = "0";
-        _dupInitialStatus = FormStatuses.Draft;
-        _dupTouched       = false;
-        _dupError         = null;
-    }
+        var forms = await formsTask;
+        _years = (await yearsTask) ?? new();
 
-    private void CloseDuplicateModal()
-    {
-        if (_dupSubmitting) return;
-        _dupSource    = null;
-        _dupError     = null;
-        _dupTouched   = false;
-    }
-
-    private async Task SubmitDuplicate()
-    {
-        if (_dupSource is null) return;
-        _dupTouched = true;
-        _dupError   = null;
-
-        if (string.IsNullOrWhiteSpace(_dupNewName))
+        if (forms is null)
         {
-            _dupError = "שם הטופס החדש הוא שדה חובה";
-            return;
-        }
-        if (_dupYearId <= 0)
-        {
-            _dupError = "יש לבחור מחזור / שנה אקדמית";
-            return;
-        }
-
-        _dupSubmitting = true;
-        var (newId, err) = await FormsService.DuplicateFormAsync(_dupSource.Id,
-            new DuplicateFormRequest
-            {
-                NewName        = _dupNewName.Trim(),
-                AcademicYearId = _dupYearId,
-                InitialStatus  = _dupInitialStatus,
-            });
-        _dupSubmitting = false;
-
-        if (newId is null)
-        {
-            _dupError = err ?? "שגיאה בשכפול הטופס";
-            return;
-        }
-
-        // Success — close modal, refresh the list, surface a toast-style banner
-        var sourceName = _dupSource.Name;
-        _dupSource = null;
-        await Reload();
-        _actionError   = false;
-        _actionMessage = $"הטופס שוכפל בהצלחה ({sourceName} → \"{_dupNewName.Trim()}\").";
-    }
-
-    private async Task ToggleOpen(FormListItemDto f)
-    {
-        _busyIds.Add(f.Id);
-        var ok = await FormsService.ToggleOpenAsync(f.Id);
-        _busyIds.Remove(f.Id);
-        if (ok)
-        {
-            _actionError = false;
-            _actionMessage = f.IsOpen ? "הטופס נסגר" : "הטופס נפתח";
-            await Reload();
+            _loadError = true;
+            _forms     = new();
         }
         else
         {
-            _actionError = true;
-            _actionMessage = "פעולת השינוי נכשלה.";
+            _forms = forms;
+        }
+
+        _loading = false;
+        StateHasChanged();
+    }
+
+    // ── Filtering ────────────────────────────────────────────────────────────
+
+    private IEnumerable<FormListItemDto> FilteredForms =>
+        _forms.Where(f =>
+            (string.IsNullOrWhiteSpace(_search) ||
+             f.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrEmpty(_filterCycle) ||
+             f.AcademicYearId.ToString() == _filterCycle) &&
+            (string.IsNullOrEmpty(_filterStatus) ||
+             string.Equals(f.DisplayStatus, _filterStatus, StringComparison.Ordinal)));
+
+    private bool HasActiveFilters =>
+        !string.IsNullOrEmpty(_filterCycle) || !string.IsNullOrEmpty(_filterStatus);
+
+    private sealed record FilterOption(string Value, string Label);
+    private sealed record FilterSpec(string Key, string Name, string CurrentValue,
+                                     string CurrentLabel, bool IsActive, List<FilterOption> Options);
+
+    private List<FilterSpec> BuildFilters()
+    {
+        // Cycle options are DERIVED from the cycles the loaded forms actually
+        // belong to, so the filter can never offer a value that matches nothing.
+        var cycleOptions = new List<FilterOption> { new("", "הכול") };
+        cycleOptions.AddRange(
+            _forms.Where(f => f.AcademicYearId > 0)
+                  .GroupBy(f => f.AcademicYearId)
+                  .Select(g => new FilterOption(
+                      g.Key.ToString(),
+                      g.First().AcademicYear is { Length: > 0 } n ? n : $"מחזור {g.Key}"))
+                  .OrderBy(o => o.Label));
+
+        var statusOptions = new List<FilterOption> { new("", "הכול") };
+        statusOptions.AddRange(new[]
+        {
+            FormDisplayStatus.Draft, FormDisplayStatus.Open,
+            FormDisplayStatus.Scheduled, FormDisplayStatus.Closed
+        }.Select(s => new FilterOption(s, FormDisplayStatus.Label(s))));
+
+        return new List<FilterSpec>
+        {
+            new("cycle", "מחזור", _filterCycle,
+                cycleOptions.FirstOrDefault(o => o.Value == _filterCycle)?.Label ?? "הכול",
+                !string.IsNullOrEmpty(_filterCycle), cycleOptions),
+
+            new("status", "סטטוס", _filterStatus,
+                statusOptions.FirstOrDefault(o => o.Value == _filterStatus)?.Label ?? "הכול",
+                !string.IsNullOrEmpty(_filterStatus), statusOptions),
+        };
+    }
+
+    private void OnSearchChanged(string value)
+    {
+        _search = value ?? "";
+        CloseAllMenus();
+    }
+
+    private void ToggleFilter(string key)
+    {
+        _openFilter  = _openFilter == key ? "" : key;
+        _openRowMenu = 0;
+    }
+
+    private void PickFilter(string key, string value)
+    {
+        if (key == "cycle")  _filterCycle  = value;
+        if (key == "status") _filterStatus = value;
+        _openFilter = "";
+    }
+
+    private void ClearFilters()
+    {
+        _filterCycle  = "";
+        _filterStatus = "";
+        _openFilter   = "";
+    }
+
+    private void ToggleRowMenu(int formId)
+    {
+        _openRowMenu = _openRowMenu == formId ? 0 : formId;
+        _openFilter  = "";
+    }
+
+    private void CloseAllMenus()
+    {
+        _openFilter  = "";
+        _openRowMenu = 0;
+    }
+
+    // ── Summary / labels ─────────────────────────────────────────────────────
+
+    private string SummaryLine
+    {
+        get
+        {
+            int total = _forms.Count;
+            if (total == 0) return "אין עדיין טפסים";
+
+            int open = _forms.Count(f => f.DisplayStatus == FormDisplayStatus.Open);
+            return open > 0
+                ? $"{total} טפסים · {open} פתוחים להגשה"
+                : $"{total} טפסים";
         }
     }
 
-    private static string StatusLabel(string status) => status switch
+    private string ResultLine(int count) =>
+        count == _forms.Count ? $"{count} טפסים" : $"{count} מתוך {_forms.Count}";
+
+    private string EmptyTitle =>
+        HasActiveFilters || !string.IsNullOrWhiteSpace(_search)
+            ? "לא נמצאו טפסים תואמים"
+            : "אין עדיין טפסים";
+
+    private string EmptyDescription =>
+        HasActiveFilters || !string.IsNullOrWhiteSpace(_search)
+            ? "נסו לשנות את החיפוש או לנקות את הסינון."
+            : "צרו טופס חדש כדי להתחיל לבנות שאלות עבור הסטודנטים.";
+
+    private static string StatusSlug(string displayStatus) => displayStatus switch
     {
-        FormStatuses.Draft  => "טיוטה",
-        FormStatuses.Open   => "פתוח",
-        FormStatuses.Closed => "סגור",
-        _                   => status
+        FormDisplayStatus.Open      => "open",
+        FormDisplayStatus.Scheduled => "scheduled",
+        FormDisplayStatus.Closed    => "closed",
+        _                           => "draft",
     };
 
-    private static string StatusClass(string status) => status switch
+    /// <summary>
+    /// The submission window as a date range. Dashes rather than a fabricated
+    /// date when a bound is not set — an open-ended window is a real state.
+    /// </summary>
+    private static string WindowLabel(FormListItemDto f)
     {
-        FormStatuses.Open   => "fm-status-open",
-        FormStatuses.Closed => "fm-status-closed",
-        _                   => "fm-status-draft"
-    };
+        string o = FormatDate(f.OpensAt);
+        string c = FormatDate(f.ClosesAt);
+        if (o == "—" && c == "—") return "—";
+        return $"{o} – {c}";
+    }
 
-    private static string FormatDateOrEmpty(string? raw)
+    private static string FormatDate(string? iso) =>
+        DateTime.TryParse(iso, out var d) ? d.ToLocalTime().ToString("dd.MM.yyyy") : "—";
+
+    // ── Navigation ───────────────────────────────────────────────────────────
+
+    private void OpenEditor(int formId)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return "—";
-        if (DateTime.TryParse(raw, out var dt)) return dt.IsraelFormat();
-        return raw;
+        CloseAllMenus();
+        Nav.NavigateTo($"/management/forms/{formId}");
+    }
+
+    /// <summary>
+    /// Submissions live in two different places because the data does.
+    /// The assignment form's submissions are team-scoped rows in
+    /// AssignmentFormSubmissions and already have a purpose-built screen at
+    /// /assignments; every other form's submissions are per-user rows in
+    /// FormSubmissions and open in the form's own submissions view. Sending
+    /// both to one screen would mean inventing a shape for data that does not
+    /// share one.
+    /// </summary>
+    private void OpenSubmissions(FormListItemDto form)
+    {
+        CloseAllMenus();
+        Nav.NavigateTo(form.IsAssignmentForm ? "/assignments" : $"/management/forms/{form.Id}/submissions");
+    }
+
+    // ── Create ───────────────────────────────────────────────────────────────
+
+    private void OpenCreate()
+    {
+        CloseAllMenus();
+        _createError     = "";
+        _newName         = "";
+        _newInstructions = "";
+        _newOpens        = null;
+        _newCloses       = null;
+        _newStatus       = FormStatuses.Draft;
+        _newYearId       = _years.FirstOrDefault(y => y.IsCurrent)?.Id
+                           ?? _years.FirstOrDefault()?.Id
+                           ?? 0;
+        _createOpen      = true;
+    }
+
+    private void CloseCreate()
+    {
+        if (_creating) return;
+        _createOpen  = false;
+        _createError = "";
+    }
+
+    private async Task CreateForm()
+    {
+        _createError = "";
+
+        if (string.IsNullOrWhiteSpace(_newName)) { _createError = "שם הטופס חובה"; return; }
+        if (_newYearId <= 0)                     { _createError = "יש לבחור מחזור"; return; }
+        if (_newOpens is not null && _newCloses is not null && _newOpens >= _newCloses)
+        {
+            _createError = "תאריך הפתיחה חייב להיות לפני תאריך הסגירה";
+            return;
+        }
+
+        _creating = true;
+
+        // FormType is left as "Custom": the server turns that into a type
+        // unique within the cycle, so a second form here does not collide with
+        // the UNIQUE (AcademicYearId, FormType) the assignment form relies on.
+        var (newId, error) = await FormsService.CreateFormDetailedAsync(new SaveFormRequest
+        {
+            AcademicYearId       = _newYearId,
+            Name                 = _newName.Trim(),
+            FormType             = "Custom",
+            Instructions         = _newInstructions ?? "",
+            IsOpen               = _newStatus == FormStatuses.Open,
+            OpensAt              = ToIso(_newOpens),
+            ClosesAt             = ToIso(_newCloses),
+            AllowEditAfterSubmit = true,
+            Status               = _newStatus
+        });
+
+        _creating = false;
+
+        if (newId is null)
+        {
+            _createError = error ?? "שגיאה ביצירת הטופס";
+            return;
+        }
+
+        _createOpen = false;
+        Nav.NavigateTo($"/management/forms/{newId.Value}");
+    }
+
+    private static string? ToIso(DateTime? d) => d?.ToString("yyyy-MM-dd");
+
+    // ── Delete ───────────────────────────────────────────────────────────────
+
+    private string DeleteMessage =>
+        _deleteTarget is null
+            ? ""
+            : $"למחוק את הטופס \u201C{_deleteTarget.Name}\u201D? הפעולה אינה הפיכה.";
+
+    private void AskDelete(FormListItemDto form)
+    {
+        CloseAllMenus();
+        _deleteError  = "";
+        _deleteTarget = form;
+    }
+
+    private void CancelDelete()
+    {
+        if (_deleting) return;
+        _deleteTarget = null;
+        _deleteError  = "";
+    }
+
+    private async Task ConfirmDelete()
+    {
+        if (_deleteTarget is null) return;
+
+        _deleting    = true;
+        _deleteError = "";
+
+        bool ok = await FormsService.DeleteFormAsync(_deleteTarget.Id);
+
+        _deleting = false;
+
+        if (!ok)
+        {
+            // The server refuses to delete an assignment form that already has
+            // submissions; surfacing that is more useful than a generic failure.
+            _deleteError = "לא ניתן למחוק את הטופס. ייתכן שקיימות עבורו הגשות.";
+            return;
+        }
+
+        _deleteTarget = null;
+        await LoadAsync();
+        ShowToast("הטופס נמחק");
+    }
+
+    // ── Toast ────────────────────────────────────────────────────────────────
+
+    private void ShowToast(string text, bool isError = false)
+    {
+        _toast      = text;
+        _toastError = isError;
     }
 }

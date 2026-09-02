@@ -1481,6 +1481,83 @@ public static class DatabaseMigrator
                 FOREIGN KEY (FormBlockId) REFERENCES FormBlocks(Id) ON DELETE CASCADE
             )");
 
+        // ── Rating configuration on FormBlocks ────────────────────────────────
+        // Added for the "דירוג" block type. Three nullable-by-default columns
+        // rather than a new table: they are per-block scalars with no identity
+        // of their own, and a RatingConfig side-table would cost a join on
+        // every read to store three values. Every existing row keeps working —
+        // RatingScale defaults to 5 and the labels to '' — and no non-Rating
+        // block ever reads them.
+        var formBlockColumns = await GetColumnsAsync(connection, "FormBlocks");
+
+        if (!formBlockColumns.Contains("RatingScale"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE FormBlocks ADD COLUMN RatingScale INTEGER NOT NULL DEFAULT 5");
+
+        if (!formBlockColumns.Contains("MinLabel"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE FormBlocks ADD COLUMN MinLabel TEXT NOT NULL DEFAULT ''");
+
+        if (!formBlockColumns.Contains("MaxLabel"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE FormBlocks ADD COLUMN MaxLabel TEXT NOT NULL DEFAULT ''");
+
+        // ── Generic form responses ────────────────────────────────────────────
+        // FormSubmissions : one row per (form, respondent)
+        // FormAnswers     : one row per answered VALUE
+        //
+        // WHY THESE ARE NEW TABLES AND NOT A MIGRATION TARGET
+        // ───────────────────────────────────────────────────
+        // Until now the form-builder could describe a form but nothing could
+        // answer one: the only answer storage in the system is the assignment
+        // form's three domain tables (AssignmentFormSubmissions /
+        // TeamProjectPreferences / StudentStrengths). Those are NOT superseded
+        // by these tables and nothing is copied out of them.
+        //
+        // They cannot be: TeamProjectPreferences.ProjectId is a real FK that
+        // AssignmentManagementController joins to Projects and scores by
+        // Priority, and StudentStrengths.Strength holds the literals
+        // SkillWeight() switches on. Folding either into a generic
+        // (block, value) store would turn live business data into loose
+        // strings. The assignment form therefore keeps its dedicated flow, and
+        // these tables serve every OTHER form the builder can now produce.
+        //
+        // One submission per respondent per form; re-submitting updates it in
+        // place when the form allows editing after submit, so a student never
+        // ends up with two conflicting answer sets.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS FormSubmissions (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                FormId      INTEGER NOT NULL,
+                UserId      INTEGER NOT NULL,
+                SubmittedAt TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (FormId, UserId),
+                FOREIGN KEY (FormId) REFERENCES Forms(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // One row per value: a MultiChoice answer is N rows, everything else is
+        // one. OptionValue stores the option's VALUE rather than its label, so
+        // renaming a label later never rewrites what somebody answered.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS FormAnswers (
+                Id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                FormSubmissionId INTEGER NOT NULL,
+                FormBlockId      INTEGER NOT NULL,
+                OptionValue      TEXT,
+                AnswerText       TEXT,
+                AnswerNumber     INTEGER,
+                SortOrder        INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (FormSubmissionId) REFERENCES FormSubmissions(Id) ON DELETE CASCADE,
+                FOREIGN KEY (FormBlockId)      REFERENCES FormBlocks(Id)      ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_FormAnswers_Submission ON FormAnswers(FormSubmissionId)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_FormSubmissions_Form ON FormSubmissions(FormId)");
+
         // ── External Forms (Innovation Team iframe-embedded forms) ───────────
         // These forms live OUTSIDE Gradify — they're hosted by the Innovation
         // Team and embedded via iframe. We only store metadata + URL so
