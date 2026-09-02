@@ -2683,6 +2683,33 @@ public class ProjectsController : ControllerBase
         return Ok();
     }
 
+    // ── GET /api/projects/team-members ───────────────────────────────────────
+    // Returns Student-role members of the current user's team, ordered
+    // alphabetically. Used by the team-task assignee dropdown — mentors, staff
+    // and other non-students are excluded because team tasks are student-owned.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("team-members")]
+    public async Task<IActionResult> GetTeamMembers(int authUserId)
+    {
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return Ok(Enumerable.Empty<TeamMemberDto>());
+
+        const string sql = @"
+            SELECT  u.Id                             AS UserId,
+                    u.FirstName || ' ' || u.LastName AS FullName,
+                    tm.MemberRole
+            FROM    TeamMembers tm
+            JOIN    Users       u  ON tm.UserId  = u.Id
+            JOIN    UserRoles   ur ON ur.UserId   = u.Id AND ur.Role = 'Student'
+            WHERE   tm.TeamId   = @TeamId
+              AND   tm.IsActive  = 1
+            ORDER   BY u.FirstName, u.LastName";
+
+        var members = await _db.GetRecordsAsync<TeamMemberDto>(
+            sql, new { pt.TeamId });
+        return Ok(members ?? Enumerable.Empty<TeamMemberDto>());
+    }
+
     // ── DELETE /api/projects/team-tasks/{id} ─────────────────────────────────
     // Permanently deletes a team task. Any team member may delete any task.
     // ─────────────────────────────────────────────────────────────────────────
