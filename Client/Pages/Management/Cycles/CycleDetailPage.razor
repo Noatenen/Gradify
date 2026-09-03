@@ -1,0 +1,1348 @@
+@*
+    ── תוכנית המחזור (Admin Cycle Detail) ───────────────────────────────────
+    Route:  /management/cycles/{CycleId}
+            Reached from the cycle name or the row menu on /management/cycles.
+
+    Visual source:
+        design/design-system/Motiva Admin Cycle Detail.dc.html
+
+    WHAT WAS TAKEN FROM THE REFERENCE, AND WHAT WAS NOT
+    ───────────────────────────────────────────────────
+    Taken: the composition (breadcrumb → title + state pill + meta line +
+    edit action / a section head carrying the program's own actions / one
+    full-width table of compact rows), the "#" order disc, the type chip with
+    its dot, the dot-and-text status, the up/down order controls, the row
+    kebab, and both modals.
+
+    NOT taken: the prototype's outer shell — its logo, top nav, profile
+    cluster, page background and rounded frame. Admin already resolves to the
+    canvas shell in AppLayout, so this page renders CONTENT ONLY.
+
+    NOT taken either: every milestone, date, count and cycle name in the
+    prototype. All of it is mock. Everything below is
+    AcademicYearMilestones ⋈ MilestoneTemplates for THIS cycle.
+
+    WHERE THE REAL MODEL DIFFERS FROM THE PROTOTYPE
+    ───────────────────────────────────────────────
+    • TWO TABLES, ONE ROW. Title / description / project-type / required live
+      on the SHARED MilestoneTemplate; dates / active / order live on this
+      cycle's AcademicYearMilestones row. The edit modal writes both and warns
+      when the template is shared with another cycle — see the modal's note.
+    • ORDER. The prototype reorders a local array. Here the arrows PATCH
+      AcademicYearMilestones.DisplayOrder, a column added for this screen
+      because the only order that existed before was the template's global
+      OrderIndex — which would have moved the milestone in every other cycle
+      too. The modal shows the position read-only: the arrows own it, and two
+      editors for one value only drift apart.
+    • A "פרויקטים" COLUMN THE PROTOTYPE DOES NOT DRAW. Real cycles mix
+      curriculum milestones held by every project with milestones that exist
+      for a single team, and the prototype's columns give no way to tell them
+      apart. It is also the number that decides whether removal is safe.
+    • "מבוסס על תבנית" IS ABSENT. In this product EVERY cycle milestone is
+      based on a template — the chip would be true on all rows and mean
+      nothing. What the row says instead, when it is true, is that the
+      template is shared with other cycles.
+    • DELETE IS GUARDED, NOT FREE. The server refuses to remove a milestone
+      that projects already hold, and the dialog says so before asking.
+
+    TWO DIFFERENT "APPLY TEMPLATES", BOTH REAL, BOTH IN THIS MENU
+    ────────────────────────────────────────────────────────────
+      • החלת תבניות             library templates → THIS cycle's program
+                                (POST .../program/apply-templates)
+      • החלה על פרויקטי המחזור   this program → ProjectMilestones + Tasks
+                                (POST .../apply-templates — pre-existing, and
+                                previously the list page's per-row button)
+    The reference places the first in this menu. The second is the existing
+    rollout and keeps its own confirmation, because it writes to every active
+    project in the cycle.
+*@
+
+@page "/management/cycles/{CycleId:int}"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IManagementService ManagementService
+
+@* ══════════════════════════════════════════
+     ADD / EDIT MILESTONE MODAL
+     ══════════════════════════════════════════ *@
+@if (_msOpen)
+{
+    <div class="cd-modal-overlay" @onclick="CloseMilestoneModal">
+        <div class="cd-modal-box cd-modal-box--lg" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+
+            <div class="cd-modal-header">
+                <span class="cd-modal-glyph" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                    </svg>
+                </span>
+                <div class="cd-modal-titles">
+                    <div class="cd-modal-title">@(_msEditId == 0 ? "אבן דרך חדשה" : "עריכת אבן דרך")</div>
+                    <div class="cd-modal-subtitle">אבן דרך במחזור @(_cycle?.Name ?? "")</div>
+                </div>
+                <button type="button" class="cd-modal-close" @onclick="CloseMilestoneModal" aria-label="סגירה">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="cd-modal-body">
+
+                <p class="cd-form-section">פרטים בסיסיים</p>
+
+                <div class="cd-form-grid cd-form-grid--name">
+                    <div class="cd-form-field">
+                        <label class="cd-form-label" for="cd-ms-name">שם אבן הדרך <span class="cd-req">*</span></label>
+                        <input id="cd-ms-name" class="cd-form-input" @bind="_msName"
+                               placeholder="לדוגמה: אפיון ועיצוב" maxlength="120" />
+                    </div>
+                    <div class="cd-form-field">
+                        <label class="cd-form-label" for="cd-ms-order">מספר סדר</label>
+                        <div id="cd-ms-order" class="cd-form-readonly" title="הסדר נקבע בחצי הסידור בטבלה">
+                            @(_msEditId == 0 ? (_program.Count + 1).ToString("00") : _msOrderLabel)
+                        </div>
+                    </div>
+                </div>
+
+                <div class="cd-form-field">
+                    <label class="cd-form-label" for="cd-ms-desc">תיאור</label>
+                    <textarea id="cd-ms-desc" class="cd-form-textarea" @bind="_msDescription"
+                              placeholder="תיאור קצר של אבן הדרך ומטרתה" rows="3"></textarea>
+                </div>
+
+                <p class="cd-form-section">רלוונטיות</p>
+                <span class="cd-form-label">רלוונטי לסוג פרויקט</span>
+
+                @* Three real values, exactly what MilestoneTemplates.ProjectTypeId
+                   stores: NULL = both, 1 = Technological, 2 = Methodological. *@
+                <div class="cd-choice-grid">
+                    @foreach (var choice in TypeChoices)
+                    {
+                        var val = choice.Value;
+                        var on  = _msProjectTypeId == val;
+                        <button type="button"
+                                class="cd-choice @(on ? "cd-choice--on" : "")"
+                                @onclick="@(() => _msProjectTypeId = val)"
+                                aria-pressed="@(on ? "true" : "false")">
+                            <span class="cd-choice-dot cd-choice-dot--@choice.Tone" aria-hidden="true"></span>
+                            <span class="cd-choice-label">@choice.Label</span>
+                        </button>
+                    }
+                </div>
+
+                <p class="cd-form-section">הגדרות</p>
+
+                <div class="cd-form-grid">
+                    <div class="cd-switch-row">
+                        <div class="cd-switch-copy">
+                            <span class="cd-switch-title">חובה</span>
+                            <span class="cd-switch-note">נדרשת בכל פרויקט רלוונטי במחזור</span>
+                        </div>
+                        <MToggle Checked="_msRequired"
+                                 CheckedChanged="@(v => _msRequired = v)"
+                                 AriaLabel="אבן דרך חובה" />
+                    </div>
+
+                    <div class="cd-switch-row">
+                        <div class="cd-switch-copy">
+                            <span class="cd-switch-title">פעיל</span>
+                            <span class="cd-switch-note">מוצג בציר ההתקדמות של הפרויקטים</span>
+                        </div>
+                        <MToggle Checked="_msActive"
+                                 CheckedChanged="@(v => _msActive = v)"
+                                 AriaLabel="אבן דרך פעילה" />
+                    </div>
+                </div>
+
+                <p class="cd-form-section">
+                    תאריכים במחזור <span class="cd-form-section-note">(רשות)</span>
+                </p>
+
+                <div class="cd-form-grid">
+                    <div class="cd-form-field">
+                        <label class="cd-form-label" for="cd-ms-start">תאריך התחלה</label>
+                        <input id="cd-ms-start" type="date" class="cd-form-input"
+                               @bind="_msOpenDate" @bind:format="yyyy-MM-dd" />
+                    </div>
+                    <div class="cd-form-field">
+                        <label class="cd-form-label" for="cd-ms-due">תאריך יעד</label>
+                        <input id="cd-ms-due" type="date" class="cd-form-input"
+                               @bind="_msDueDate" @bind:format="yyyy-MM-dd" />
+                    </div>
+                </div>
+
+                @* AcademicYearMilestones.DueDate is NOT NULL. Rather than
+                   reject an empty due date the server falls back to the
+                   cycle's end date, so the admin is told what will be saved
+                   instead of finding out afterwards. *@
+                @if (_msDueDate is null && _cycle is not null)
+                {
+                    <div class="cd-form-note">
+                        ללא תאריך יעד — אבן הדרך תקבל את תאריך סיום המחזור
+                        (@_cycle.EndDate.ToString("dd.MM.yyyy")).
+                    </div>
+                }
+
+                @* The one thing this screen must never do silently: rename a
+                   template that another cycle is also using. *@
+                @if (_msSharedCycles > 1)
+                {
+                    <div class="cd-form-warn">
+                        התבנית של אבן דרך זו משמשת @_msSharedCycles מחזורים.
+                        שינוי השם, התיאור, סוג הפרויקט או סימון החובה ישפיע על כולם —
+                        התאריכים והסטטוס נשמרים למחזור זה בלבד.
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(_msError))
+                {
+                    <div class="cd-form-error" role="alert">@_msError</div>
+                }
+            </div>
+
+            <div class="cd-modal-footer">
+                <span class="cd-footer-note">שדות המסומנים ב־<span class="cd-req">*</span> הם חובה</span>
+                <div class="cd-footer-actions">
+                    <button type="button" class="cd-btn-ghost" @onclick="CloseMilestoneModal" disabled="@_msSaving">ביטול</button>
+                    <button type="button" class="cd-btn-primary motiva-cta" @onclick="SaveMilestone" disabled="@_msSaving">
+                        @if (_msSaving) { <span class="cd-spinner" aria-hidden="true"></span> }
+                        שמירה
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ══════════════════════════════════════════
+     EDIT CYCLE MODAL
+     ══════════════════════════════════════════ *@
+@if (_cyOpen && _cycle is not null)
+{
+    <div class="cd-modal-overlay" @onclick="CloseCycleModal">
+        <div class="cd-modal-box" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+            <div class="cd-modal-header">
+                <span class="cd-modal-glyph" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="4" width="18" height="18" rx="2" />
+                        <path d="M16 2v4M8 2v4M3 10h18" />
+                    </svg>
+                </span>
+                <div class="cd-modal-titles">
+                    <div class="cd-modal-title">עריכת מחזור</div>
+                    <div class="cd-modal-subtitle">מחזור @_cycle.Name</div>
+                </div>
+                <button type="button" class="cd-modal-close" @onclick="CloseCycleModal" aria-label="סגירה">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="cd-modal-body">
+                <div class="cd-form-field">
+                    <label class="cd-form-label" for="cd-cy-name">שם מחזור <span class="cd-req">*</span></label>
+                    <input id="cd-cy-name" class="cd-form-input" @bind="_cyName" maxlength="50" />
+                </div>
+
+                <div class="cd-form-grid">
+                    <div class="cd-form-field">
+                        <label class="cd-form-label" for="cd-cy-start">תאריך התחלה</label>
+                        <input id="cd-cy-start" type="date" class="cd-form-input"
+                               @bind="_cyStart" @bind:format="yyyy-MM-dd" />
+                    </div>
+                    <div class="cd-form-field">
+                        <label class="cd-form-label" for="cd-cy-end">תאריך סיום</label>
+                        <input id="cd-cy-end" type="date" class="cd-form-input"
+                               @bind="_cyEnd" @bind:format="yyyy-MM-dd" />
+                    </div>
+                </div>
+
+                <div class="cd-switch-row">
+                    <div class="cd-switch-copy">
+                        <span class="cd-switch-title">מחזור נוכחי</span>
+                        <span class="cd-switch-note">המחזור המוצג כברירת מחדל במערכת</span>
+                    </div>
+                    <MToggle Checked="_cyCurrent"
+                             CheckedChanged="@(v => _cyCurrent = v)"
+                             Disabled="@CycleLocked"
+                             AriaLabel="מחזור נוכחי" />
+                </div>
+
+                <div class="cd-switch-row">
+                    <div class="cd-switch-copy">
+                        <span class="cd-switch-title">מחזור פעיל</span>
+                        <span class="cd-switch-note">מחזור לא פעיל נשמר במערכת אך אינו זמין לשיבוץ</span>
+                    </div>
+                    <MToggle Checked="_cyActive"
+                             CheckedChanged="@(v => _cyActive = v)"
+                             Disabled="@CycleLocked"
+                             AriaLabel="מחזור פעיל" />
+                </div>
+
+                @* The server clears IsCurrent on every other cycle before
+                   setting it here — the single-current rule is enforced there,
+                   not by this form. The admin is told, not asked. *@
+                @if (_cyCurrent && _cycle is not null && !_cycle.IsCurrent)
+                {
+                    <div class="cd-form-note">כל שאר המחזורים יוגדרו כ"לא נוכחי"</div>
+                }
+
+                @if (!string.IsNullOrEmpty(_cyError))
+                {
+                    <div class="cd-form-error" role="alert">@_cyError</div>
+                }
+            </div>
+
+            <div class="cd-modal-footer">
+                <div class="cd-footer-actions cd-footer-actions--only">
+                    <button type="button" class="cd-btn-ghost" @onclick="CloseCycleModal" disabled="@_cySaving">ביטול</button>
+                    <button type="button" class="cd-btn-primary motiva-cta" @onclick="SaveCycle" disabled="@_cySaving">
+                        @if (_cySaving) { <span class="cd-spinner" aria-hidden="true"></span> }
+                        שמירה
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ══════════════════════════════════════════
+     APPLY TEMPLATES — library → this cycle's program
+     ══════════════════════════════════════════ *@
+@if (_tplOpen)
+{
+    <div class="cd-modal-overlay" @onclick="CloseTemplatesModal">
+        <div class="cd-modal-box cd-modal-box--lg" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+            <div class="cd-modal-header">
+                <span class="cd-modal-glyph" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                    </svg>
+                </span>
+                <div class="cd-modal-titles">
+                    <div class="cd-modal-title">החלת תבניות</div>
+                    <div class="cd-modal-subtitle">הוספת אבני דרך מספריית התבניות למחזור @(_cycle?.Name ?? "")</div>
+                </div>
+                <button type="button" class="cd-modal-close" @onclick="CloseTemplatesModal" aria-label="סגירה">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="cd-modal-body">
+                @if (_tplLoading)
+                {
+                    <div class="cd-inline-state">
+                        <span class="cd-spinner cd-spinner--ink" aria-hidden="true"></span>
+                        טוען תבניות…
+                    </div>
+                }
+                else if (_templates.Count == 0)
+                {
+                    @* Not an error: it means the cycle already holds every
+                       active template in the library. *@
+                    <MEmptyState Title="אין תבניות להוספה"
+                                 Description="כל התבניות הפעילות בספרייה כבר נמצאות בתוכנית המחזור"
+                                 Live="true" />
+                }
+                else
+                {
+                    <p class="cd-modal-text">
+                        בחרו את התבניות שיתווספו לתוכנית המחזור. התאריכים והסטטוס יילקחו מברירות המחדל של
+                        כל תבנית וניתן לערוך אותם לאחר מכן — ההוספה אינה משנה את התבנית עצמה.
+                    </p>
+
+                    <div class="cd-tpl-list">
+                        @foreach (var t in _templates)
+                        {
+                            var id = t.Id;
+                            var picked = _tplPicked.Contains(id);
+                            <button type="button"
+                                    class="cd-tpl-row @(picked ? "cd-tpl-row--on" : "")"
+                                    @onclick="@(() => ToggleTemplate(id))"
+                                    aria-pressed="@(picked ? "true" : "false")">
+                                <span class="cd-tpl-check @(picked ? "cd-tpl-check--on" : "")" aria-hidden="true">
+                                    @if (picked)
+                                    {
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="m5 12.5 4.5 4.5L19 7" />
+                                        </svg>
+                                    }
+                                </span>
+                                <span class="cd-tpl-copy">
+                                    <span class="cd-tpl-title">@t.Title</span>
+                                    @if (!string.IsNullOrWhiteSpace(t.Description))
+                                    {
+                                        <span class="cd-tpl-desc">@t.Description</span>
+                                    }
+                                </span>
+                                <span class="cd-type cd-type--@ToneFor(t.ProjectTypeId)">
+                                    <span class="cd-type-dot" aria-hidden="true"></span>@t.Applicability
+                                </span>
+                                <span class="cd-tpl-tasks">@t.TaskTemplateCount משימות</span>
+                            </button>
+                        }
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(_tplError))
+                {
+                    <div class="cd-form-error" role="alert">@_tplError</div>
+                }
+
+                @if (_tplResult is not null)
+                {
+                    <div class="cd-form-success">
+                        נוספו @_tplResult.Added אבני דרך לתוכנית המחזור@(_tplResult.Skipped > 0 ? $" · {_tplResult.Skipped} כבר היו קיימות" : "").
+                    </div>
+                }
+            </div>
+
+            <div class="cd-modal-footer">
+                <span class="cd-footer-note">
+                    @(_tplPicked.Count > 0 ? $"נבחרו {_tplPicked.Count} תבניות" : "לא נבחרו תבניות")
+                </span>
+                <div class="cd-footer-actions">
+                    <button type="button" class="cd-btn-ghost" @onclick="CloseTemplatesModal" disabled="@_tplSaving">סגירה</button>
+                    <button type="button" class="cd-btn-primary motiva-cta"
+                            @onclick="ApplyTemplatesToProgram"
+                            disabled="@(_tplSaving || _tplPicked.Count == 0)">
+                        @if (_tplSaving) { <span class="cd-spinner" aria-hidden="true"></span> }
+                        הוספה לתוכנית
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ══════════════════════════════════════════
+     ROLL OUT TO PROJECTS — the pre-existing apply-templates business action
+     ══════════════════════════════════════════ *@
+@if (_rolloutPhase != RolloutPhase.None)
+{
+    <div class="cd-modal-overlay" @onclick="@(() => { if (_rolloutPhase != RolloutPhase.Running) CloseRollout(); })">
+        <div class="cd-modal-box cd-modal-box--sm" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+            <div class="cd-modal-header">
+                <span class="cd-modal-glyph" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 3v6h-6" />
+                    </svg>
+                </span>
+                <div class="cd-modal-titles">
+                    <div class="cd-modal-title">החלה על פרויקטי המחזור</div>
+                    <div class="cd-modal-subtitle">@(_cycle?.Name ?? "")</div>
+                </div>
+            </div>
+
+            <div class="cd-modal-body">
+                @if (_rolloutPhase == RolloutPhase.Confirm)
+                {
+                    <p class="cd-modal-text">
+                        המערכת תיצור את אבני הדרך של תוכנית המחזור, ואת המשימות שלהן, בכל הפרויקטים
+                        הפעילים של המחזור. פריטים קיימים יישמרו ולא ייכפלו — הפעולה בטוחה לביצוע חוזר.
+                    </p>
+                }
+                else if (_rolloutPhase == RolloutPhase.Running)
+                {
+                    <div class="cd-inline-state">
+                        <span class="cd-spinner cd-spinner--ink" aria-hidden="true"></span>
+                        מחיל את התוכנית על פרויקטי המחזור…
+                    </div>
+                }
+                else if (_rolloutPhase == RolloutPhase.Result && _rolloutResult is not null)
+                {
+                    <p class="cd-modal-text">סיכום הפעולה:</p>
+                    <div class="cd-stat-grid">
+                        <div class="cd-stat">
+                            <span class="cd-stat-value">@_rolloutResult.ProjectsProcessed</span>
+                            <span class="cd-stat-label">פרויקטים עובדו</span>
+                        </div>
+                        <div class="cd-stat">
+                            <span class="cd-stat-value">@_rolloutResult.MilestonesCreated</span>
+                            <span class="cd-stat-label">אבני דרך נוצרו</span>
+                        </div>
+                        <div class="cd-stat">
+                            <span class="cd-stat-value">@_rolloutResult.TasksCreated</span>
+                            <span class="cd-stat-label">משימות נוצרו</span>
+                        </div>
+                        <div class="cd-stat cd-stat--quiet">
+                            <span class="cd-stat-value">@_rolloutResult.MilestonesSkipped</span>
+                            <span class="cd-stat-label">אבני דרך קיימות</span>
+                        </div>
+                        <div class="cd-stat cd-stat--quiet">
+                            <span class="cd-stat-value">@_rolloutResult.TasksSkipped</span>
+                            <span class="cd-stat-label">משימות קיימות</span>
+                        </div>
+                    </div>
+                }
+                else if (_rolloutPhase == RolloutPhase.Error)
+                {
+                    <div class="cd-form-error" role="alert">@_rolloutError</div>
+                }
+            </div>
+
+            <div class="cd-modal-footer">
+                <div class="cd-footer-actions cd-footer-actions--only">
+                    @if (_rolloutPhase == RolloutPhase.Confirm)
+                    {
+                        <button type="button" class="cd-btn-ghost" @onclick="CloseRollout">ביטול</button>
+                        <button type="button" class="cd-btn-primary motiva-cta" @onclick="ExecuteRollout">בצע החלה</button>
+                    }
+                    else if (_rolloutPhase == RolloutPhase.Error)
+                    {
+                        <button type="button" class="cd-btn-ghost" @onclick="CloseRollout">סגירה</button>
+                        <button type="button" class="cd-btn-primary motiva-cta" @onclick="ExecuteRollout">נסו שנית</button>
+                    }
+                    else if (_rolloutPhase == RolloutPhase.Result)
+                    {
+                        <button type="button" class="cd-btn-primary motiva-cta" @onclick="CloseRollout">סגירה</button>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Removal. The server refuses once projects hold the milestone, so the
+   dialog states the count up front and the confirm carries the rose fill. *@
+<MConfirmDialog IsOpen="_deleteOpen"
+                Title="הסרת אבן דרך מהמחזור"
+                Tone="MConfirmDialog.ConfirmTone.Danger"
+                ConfirmText="הסרה מהמחזור"
+                Busy="_deleteBusy"
+                Error="@_deleteError"
+                OnConfirm="ExecuteDelete"
+                OnCancel="@(() => { if (!_deleteBusy) { _deleteOpen = false; _deleteError = null; } })">
+    @if (_deleteTarget is not null)
+    {
+        @if (_deleteTarget.ProjectCount > 0)
+        {
+            <span>
+                אבן הדרך <strong>@_deleteTarget.Title</strong> משויכת כבר
+                <strong>@_deleteTarget.ProjectCount</strong> פרויקטים במחזור, ולכן לא ניתן להסיר אותה —
+                ההסרה הייתה מוחקת את ההתקדמות שנרשמה בהם. ניתן להשבית אותה במקום זאת.
+            </span>
+        }
+        else
+        {
+            <span>
+                להסיר את <strong>@_deleteTarget.Title</strong> מתוכנית המחזור?
+                התבנית עצמה תישמר בספריית התבניות וניתן יהיה להוסיף אותה שוב.
+            </span>
+        }
+    }
+</MConfirmDialog>
+
+<div class="cd-page" dir="rtl" @onclick="CloseAllMenus">
+
+    @* ══ Header ═══════════════════════════════════════════════════════════ *@
+    <header class="cd-head">
+        <div class="cd-head-main">
+            <MAdminBack Href="/management/cycles" Label="מחזורים אקדמיים" />
+
+            <div class="cd-head-line">
+                <h1 class="cd-h1">@(_cycle is null ? "מחזור" : $"מחזור {_cycle.Name}")</h1>
+
+                @if (_cycle is not null)
+                {
+                    @if (_cycle.IsCurrent)
+                    {
+                        <span class="cd-state-tag">
+                            <span class="cd-state-dot" aria-hidden="true"></span>נוכחי
+                        </span>
+                    }
+
+                    @* Only the non-default lifecycle states are surfaced. A
+                       plain active, non-current cycle needs no badge — the
+                       absence of one already says it. *@
+                    @if (_cycle.Status is "Closed" or "Archived" or "Inactive")
+                    {
+                        <span class="cd-status cd-status--@_cycle.Status.ToLowerInvariant()">
+                            <span class="cd-status-dot" aria-hidden="true"></span>@StatusLabel(_cycle.Status)
+                        </span>
+                    }
+
+                    <p class="cd-meta">@MetaLine</p>
+                }
+            </div>
+        </div>
+
+        @if (_cycle is not null)
+        {
+            <div class="cd-head-actions" @onclick:stopPropagation="true">
+                <button type="button" class="cd-btn-secondary" @onclick="OpenCycleModal">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    </svg>
+                    עריכת מחזור
+                </button>
+            </div>
+        }
+    </header>
+
+    @if (_loadError)
+    {
+        <MEmptyState Title="שגיאה בטעינת המחזור"
+                     Description="ייתכן שהמחזור נמחק או שאין חיבור לשרת. חזרו לרשימת המחזורים ונסו שנית."
+                     Live="true" />
+    }
+    else
+    {
+        @* ══ Program section head ═════════════════════════════════════════ *@
+        <div class="cd-section-head" @onclick:stopPropagation="true">
+            <p class="cd-section-title">
+                תוכנית המחזור
+                @if (!_loading)
+                {
+                    <span class="cd-section-note">@ProgramLine</span>
+                }
+            </p>
+
+            <div class="cd-section-actions">
+                <button type="button" class="cd-btn-primary motiva-cta"
+                        @onclick="OpenNewMilestone" disabled="@CycleLocked">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14" />
+                    </svg>
+                    אבן דרך
+                </button>
+
+                <div class="cd-actions">
+                    <button type="button"
+                            class="cd-round-btn @(_programMenuOpen ? "cd-round-btn--on" : "")"
+                            @onclick="ToggleProgramMenu"
+                            aria-haspopup="true" aria-expanded="@(_programMenuOpen ? "true" : "false")"
+                            title="פעולות נוספות" aria-label="פעולות נוספות על תוכנית המחזור">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <circle cx="12" cy="5" r="1.7" />
+                            <circle cx="12" cy="12" r="1.7" />
+                            <circle cx="12" cy="19" r="1.7" />
+                        </svg>
+                    </button>
+
+                    @if (_programMenuOpen)
+                    {
+                        <div class="cd-menu cd-menu--program" role="menu">
+                            <button type="button" class="cd-menu-item cd-menu-item--rich" role="menuitem"
+                                    @onclick="OpenTemplatesModal" disabled="@CycleLocked">
+                                <span class="cd-menu-ico" aria-hidden="true">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                                        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                                        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                                        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                                    </svg>
+                                </span>
+                                <span class="cd-menu-copy">
+                                    <span class="cd-menu-title">החלת תבניות</span>
+                                    <span class="cd-menu-note">הוספת אבני דרך מספריית התבניות למחזור זה</span>
+                                </span>
+                            </button>
+
+                            <button type="button" class="cd-menu-item cd-menu-item--rich" role="menuitem"
+                                    @onclick="OpenRollout" disabled="@(CycleLocked || _program.Count == 0)">
+                                <span class="cd-menu-ico" aria-hidden="true">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 3v6h-6" />
+                                    </svg>
+                                </span>
+                                <span class="cd-menu-copy">
+                                    <span class="cd-menu-title">החלה על פרויקטי המחזור</span>
+                                    <span class="cd-menu-note">יצירת אבני הדרך והמשימות בכל הפרויקטים הפעילים</span>
+                                </span>
+                            </button>
+
+                            <div class="cd-menu-sep"></div>
+
+                            <button type="button" class="cd-menu-item" role="menuitem"
+                                    @onclick="@(() => Nav.NavigateTo($"/management/cycles/{CycleId}/stages"))">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M3 3v18h18" /><path d="m7 14 3-3 3 3 5-5" />
+                                </svg>
+                                ניהול שלבי תוכנית
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        @if (CycleLocked)
+        {
+            <div class="cd-locked-note">
+                תוכנית המחזור נעולה לעריכה — המחזור @(_cycle?.Status == "Archived" ? "בארכיון" : "סגור").
+            </div>
+        }
+
+        @* ══ The program table ════════════════════════════════════════════ *@
+        <MDataTable TItem="CycleMilestoneDto"
+                    Items="_program"
+                    Loading="_loading"
+                    LoadingText="טוען את תוכנית המחזור…"
+                    ColumnCount="9"
+                    MinWidth="1040px"
+                    Class="cd-table">
+
+            <Columns>
+                <col class="cd-col-num" />
+                <col />
+                <col class="cd-col-type" />
+                <col class="cd-col-dates" />
+                <col class="cd-col-count" />
+                <col class="cd-col-count" />
+                <col class="cd-col-status" />
+                <col class="cd-col-order" />
+                <col class="cd-col-actions" />
+            </Columns>
+
+            <HeaderContent>
+                <th scope="col"><span class="cd-sr">מספר סידורי</span></th>
+                <th scope="col">אבן דרך</th>
+                <th scope="col">רלוונטי ל־</th>
+                <th scope="col">תאריכים במחזור</th>
+                <th scope="col">משימות</th>
+                <th scope="col">פרויקטים</th>
+                <th scope="col">סטטוס</th>
+                <th scope="col">סדר</th>
+                <th scope="col"><span class="cd-sr">פעולות</span></th>
+            </HeaderContent>
+
+            <EmptyContent>
+                <MEmptyState Title="אין אבני דרך במחזור זה"
+                             Description="החילו תבניות מהספרייה או הוסיפו אבן דרך ידנית"
+                             Live="true" />
+            </EmptyContent>
+
+            <RowTemplate Context="m">
+                @{
+                    var index    = _program.IndexOf(m);
+                    var menuOpen = _openRowMenuId == m.Id;
+                    var first    = index == 0;
+                    var last     = index == _program.Count - 1;
+                }
+                <tr class="@(menuOpen ? "m-dt-row-active" : "") @(m.IsActive ? "" : "cd-row--off")">
+
+                    <td>
+                        <span class="cd-num" aria-hidden="true">@((index + 1).ToString("00"))</span>
+                    </td>
+
+                    <td class="cd-cell-name">
+                        <span class="cd-name-line">
+                            <span class="cd-name" title="@m.Title">@m.Title</span>
+                            @if (m.TemplateCycleUsage > 1)
+                            {
+                                <span class="cd-shared" title="התבנית משמשת יותר ממחזור אחד">
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <rect x="9" y="9" width="12" height="12" rx="2" />
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                    </svg>
+                                    תבנית משותפת
+                                </span>
+                            }
+                        </span>
+                        @if (!string.IsNullOrWhiteSpace(m.Description))
+                        {
+                            <span class="cd-desc" title="@m.Description">@m.Description</span>
+                        }
+                    </td>
+
+                    <td>
+                        <span class="cd-type cd-type--@ToneFor(m.ProjectTypeId)">
+                            <span class="cd-type-dot" aria-hidden="true"></span>@m.Applicability
+                        </span>
+                    </td>
+
+                    <td class="cd-cell-dates @(HasDates(m) ? "" : "cd-cell-empty")">@DateRange(m)</td>
+
+                    <td class="cd-cell-num">@m.TaskTemplateCount</td>
+
+                    <td class="cd-cell-num @(m.ProjectCount == 0 ? "cd-cell-empty" : "")">
+                        @(m.ProjectCount == 0 ? "—" : m.ProjectCount.ToString())
+                    </td>
+
+                    <td>
+                        <span class="cd-status @(m.IsActive ? "cd-status--on" : "cd-status--off")">
+                            <span class="cd-status-dot" aria-hidden="true"></span>
+                            @(m.IsActive ? "פעיל" : "לא פעיל")
+                        </span>
+                    </td>
+
+                    <td @onclick:stopPropagation="true">
+                        <span class="cd-order">
+                            <button type="button" class="cd-order-btn"
+                                    @onclick="@(() => MoveMilestone(m, -1))"
+                                    disabled="@(first || CycleLocked || _movingId == m.Id)"
+                                    title="הזזה למעלה" aria-label="@($"הזזת {m.Title} למעלה")">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="m18 15-6-6-6 6" />
+                                </svg>
+                            </button>
+                            <button type="button" class="cd-order-btn"
+                                    @onclick="@(() => MoveMilestone(m, 1))"
+                                    disabled="@(last || CycleLocked || _movingId == m.Id)"
+                                    title="הזזה למטה" aria-label="@($"הזזת {m.Title} למטה")">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="m6 9 6 6 6-6" />
+                                </svg>
+                            </button>
+                        </span>
+                    </td>
+
+                    <td class="cd-cell-actions" @onclick:stopPropagation="true">
+                        <div class="cd-actions">
+                            <button type="button"
+                                    class="cd-kebab @(menuOpen ? "cd-kebab--on" : "")"
+                                    @onclick="@(() => ToggleRowMenu(m.Id))"
+                                    disabled="@CycleLocked"
+                                    aria-haspopup="true" aria-expanded="@(menuOpen ? "true" : "false")"
+                                    title="פעולות" aria-label="@($"פעולות עבור {m.Title}")">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <circle cx="12" cy="5" r="1.7" />
+                                    <circle cx="12" cy="12" r="1.7" />
+                                    <circle cx="12" cy="19" r="1.7" />
+                                </svg>
+                            </button>
+
+                            @if (menuOpen)
+                            {
+                                <div class="cd-menu cd-menu--row" role="menu">
+                                    <button type="button" class="cd-menu-item" role="menuitem"
+                                            @onclick="@(() => OpenEditMilestone(m))">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                                        </svg>
+                                        עריכת אבן דרך
+                                    </button>
+
+                                    <button type="button" class="cd-menu-item" role="menuitem"
+                                            @onclick="@(() => ToggleMilestoneActive(m))">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <circle cx="12" cy="12" r="9" />
+                                            @if (m.IsActive)
+                                            {
+                                                <path d="M5.6 5.6 18.4 18.4" />
+                                            }
+                                            else
+                                            {
+                                                <path d="m8.5 12.2 2.4 2.4 4.6-4.9" />
+                                            }
+                                        </svg>
+                                        @(m.IsActive ? "השבתה במחזור" : "הפעלה במחזור")
+                                    </button>
+
+                                    <div class="cd-menu-sep"></div>
+
+                                    <button type="button" class="cd-menu-item cd-menu-item--danger" role="menuitem"
+                                            @onclick="@(() => RequestDelete(m))">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M3 6h18" />
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                                            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                        </svg>
+                                        הסרה מהמחזור
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    </td>
+                </tr>
+            </RowTemplate>
+        </MDataTable>
+    }
+</div>
+
+@code {
+
+    [Parameter] public int CycleId { get; set; }
+
+    // ─────────────────────────────────────────────────
+    //  Data
+    // ─────────────────────────────────────────────────
+    private AcademicYearDto?       _cycle;
+    private List<CycleMilestoneDto> _program = new();
+    private bool _loading   = true;
+    private bool _loadError = false;
+
+    /// <summary>Closed and Archived cycles are immutable server-side. Every
+    /// write control on this page is disabled rather than left to fail on
+    /// submit — the same guard ManagementController and the program endpoints
+    /// enforce, surfaced before the click instead of after it.</summary>
+    private bool CycleLocked => _cycle?.Status is "Closed" or "Archived";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        _cycle = await ManagementService.GetAcademicYearAsync(CycleId);
+
+        if (_cycle is null) { _loadError = true; _program = new(); return; }
+
+        _loadError = false;
+
+        // The server returns the program already sorted; the list is rendered
+        // in the order it arrives and never re-sorted here, so the "#" column
+        // and the up/down arrows always agree with what the server will do.
+        _program = await ManagementService.GetCycleProgramAsync(CycleId) ?? new();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Header / section copy
+    // ─────────────────────────────────────────────────
+    private string MetaLine
+    {
+        get
+        {
+            if (_cycle is null) return "";
+
+            var dates = $"{_cycle.StartDate:dd.MM.yyyy} – {_cycle.EndDate:dd.MM.yyyy}";
+            return _cycle.ProjectCount > 0 ? $"{dates} · {_cycle.ProjectCount} פרויקטים" : dates;
+        }
+    }
+
+    private string ProgramLine
+    {
+        get
+        {
+            if (_program.Count == 0) return "אין אבני דרך";
+            int active = _program.Count(m => m.IsActive);
+            return $"{_program.Count} אבני דרך · {active} פעילות";
+        }
+    }
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "Active"   => "פעיל",
+        "Inactive" => "לא פעיל",
+        "Closed"   => "סגור",
+        "Archived" => "בארכיון",
+        _          => status,
+    };
+
+    /// <summary>Colour role for a project-type chip. Categorical, not semantic:
+    /// a project type means neither progress nor attention, so these are the
+    /// brand hues at low alpha and rose is not used at all.</summary>
+    private static string ToneFor(int? projectTypeId) => projectTypeId switch
+    {
+        1 => "tech",
+        2 => "method",
+        _ => "both",
+    };
+
+    private record TypeChoice(int? Value, string Label, string Tone);
+
+    /// <summary>The three values ProjectTypeId can hold. Not a lookup from the
+    /// server: ProjectTypes has exactly these two rows plus the NULL "both"
+    /// case, and MilestoneTemplatesController resolves the same three labels.</summary>
+    private static readonly TypeChoice[] TypeChoices =
+    {
+        new(1,    "טכנולוגי",   "tech"),
+        new(2,    "מתודולוגי",  "method"),
+        new(null, "שניהם",      "both"),
+    };
+
+    private static bool HasDates(CycleMilestoneDto m) => m.OpenDate is not null || m.DueDate is not null;
+
+    /// <summary>"01.10.25 – 15.10.25", or one endpoint, or an em dash. Two-digit
+    /// years: the column is 138px in the reference and a full year on both ends
+    /// wraps.</summary>
+    private static string DateRange(CycleMilestoneDto m)
+    {
+        string? open = m.OpenDate?.ToString("dd.MM.yy");
+        string? due  = m.DueDate?.ToString("dd.MM.yy");
+
+        if (open is not null && due is not null) return $"{open} – {due}";
+        if (due  is not null)                    return $"עד {due}";
+        if (open is not null)                    return $"מ־{open}";
+        return "—";
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Menus
+    // ─────────────────────────────────────────────────
+    private int  _openRowMenuId    = -1;
+    private bool _programMenuOpen  = false;
+
+    private void ToggleRowMenu(int id)
+    {
+        _openRowMenuId   = _openRowMenuId == id ? -1 : id;
+        _programMenuOpen = false;
+    }
+
+    private void ToggleProgramMenu()
+    {
+        _programMenuOpen = !_programMenuOpen;
+        _openRowMenuId   = -1;
+    }
+
+    private void CloseAllMenus()
+    {
+        _openRowMenuId   = -1;
+        _programMenuOpen = false;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Ordering
+    // ─────────────────────────────────────────────────
+    private int _movingId = -1;
+
+    /// <summary>
+    /// One step up or down. The list is re-read from the server afterwards
+    /// rather than swapped locally: the move endpoint normalises DisplayOrder
+    /// across the whole cycle, so the authoritative order is the one it
+    /// returns, not the one this page guessed.
+    /// </summary>
+    private async Task MoveMilestone(CycleMilestoneDto m, int direction)
+    {
+        if (CycleLocked || _movingId != -1) return;
+
+        _movingId = m.Id;
+        bool ok = await ManagementService.MoveCycleMilestoneAsync(CycleId, m.Id, direction);
+        if (ok) _program = await ManagementService.GetCycleProgramAsync(CycleId) ?? _program;
+        _movingId = -1;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Milestone modal
+    // ─────────────────────────────────────────────────
+    private bool      _msOpen;
+    private bool      _msSaving;
+    private int       _msEditId;          // 0 = create
+    private string    _msName        = "";
+    private string    _msDescription = "";
+    private int?      _msProjectTypeId;
+    private bool      _msRequired    = true;
+    private bool      _msActive      = true;
+    private DateTime? _msOpenDate;
+    private DateTime? _msDueDate;
+    private int       _msSharedCycles;
+    private string    _msOrderLabel  = "";
+    private string    _msError       = "";
+
+    private void OpenNewMilestone()
+    {
+        if (CycleLocked) return;
+        CloseAllMenus();
+
+        _msEditId        = 0;
+        _msName          = "";
+        _msDescription   = "";
+        _msProjectTypeId = null;
+        _msRequired      = true;
+        _msActive        = true;
+        _msOpenDate      = null;
+        _msDueDate       = null;
+        _msSharedCycles  = 0;
+        _msOrderLabel    = "";
+        _msError         = "";
+        _msOpen          = true;
+    }
+
+    private void OpenEditMilestone(CycleMilestoneDto m)
+    {
+        CloseAllMenus();
+
+        _msEditId        = m.Id;
+        _msName          = m.Title;
+        _msDescription   = m.Description ?? "";
+        _msProjectTypeId = m.ProjectTypeId;
+        _msRequired      = m.IsRequired;
+        _msActive        = m.IsActive;
+        _msOpenDate      = m.OpenDate;
+        _msDueDate       = m.DueDate;
+        _msSharedCycles  = m.TemplateCycleUsage;
+        _msOrderLabel    = (_program.IndexOf(m) + 1).ToString("00");
+        _msError         = "";
+        _msOpen          = true;
+    }
+
+    private void CloseMilestoneModal()
+    {
+        if (_msSaving) return;
+        _msOpen  = false;
+        _msError = "";
+    }
+
+    private async Task SaveMilestone()
+    {
+        _msError = "";
+
+        if (string.IsNullOrWhiteSpace(_msName)) { _msError = "שם אבן הדרך הוא שדה חובה"; return; }
+
+        if (_msOpenDate is not null && _msDueDate is not null && _msDueDate < _msOpenDate)
+        {
+            _msError = "תאריך היעד חייב להיות אחרי תאריך ההתחלה";
+            return;
+        }
+
+        _msSaving = true;
+
+        var req = new SaveCycleMilestoneRequest
+        {
+            Title         = _msName.Trim(),
+            Description   = string.IsNullOrWhiteSpace(_msDescription) ? null : _msDescription.Trim(),
+            IsRequired    = _msRequired,
+            ProjectTypeId = _msProjectTypeId,
+            OpenDate      = _msOpenDate,
+            DueDate       = _msDueDate,
+            IsActive      = _msActive,
+        };
+
+        var (ok, error) = _msEditId == 0
+            ? await ManagementService.CreateCycleMilestoneAsync(CycleId, req)
+            : await ManagementService.UpdateCycleMilestoneAsync(CycleId, _msEditId, req);
+
+        _msSaving = false;
+
+        if (!ok) { _msError = error ?? "שגיאה בשמירה. נסו שנית."; return; }
+
+        _msOpen = false;
+        await ReloadAsync();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Per-cycle activation
+    // ─────────────────────────────────────────────────
+    private async Task ToggleMilestoneActive(CycleMilestoneDto m)
+    {
+        CloseAllMenus();
+
+        if (await ManagementService.ToggleCycleMilestoneActiveAsync(CycleId, m.Id))
+            m.IsActive = !m.IsActive;
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Removal from the cycle
+    // ─────────────────────────────────────────────────
+    private bool                _deleteOpen;
+    private bool                _deleteBusy;
+    private string?             _deleteError;
+    private CycleMilestoneDto?  _deleteTarget;
+
+    private void RequestDelete(CycleMilestoneDto m)
+    {
+        CloseAllMenus();
+        _deleteTarget = m;
+        _deleteError  = null;
+        _deleteOpen   = true;
+    }
+
+    private async Task ExecuteDelete()
+    {
+        if (_deleteTarget is null) return;
+
+        _deleteBusy  = true;
+        _deleteError = null;
+
+        var (ok, error) = await ManagementService.DeleteCycleMilestoneAsync(CycleId, _deleteTarget.Id);
+
+        _deleteBusy = false;
+
+        if (!ok)
+        {
+            // The server's own sentence, not a generic failure: it names the
+            // number of projects holding the milestone and the alternative.
+            _deleteError = error ?? "ההסרה נכשלה. נסו שנית.";
+            return;
+        }
+
+        _deleteOpen   = false;
+        _deleteTarget = null;
+        await ReloadAsync();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Edit cycle modal
+    // ─────────────────────────────────────────────────
+    private bool     _cyOpen;
+    private bool     _cySaving;
+    private string   _cyName    = "";
+    private DateTime _cyStart   = DateTime.Today;
+    private DateTime _cyEnd     = DateTime.Today;
+    private bool     _cyCurrent;
+    private bool     _cyActive  = true;
+    private string   _cyError   = "";
+
+    private void OpenCycleModal()
+    {
+        if (_cycle is null) return;
+        CloseAllMenus();
+
+        _cyName    = _cycle.Name;
+        _cyStart   = _cycle.StartDate;
+        _cyEnd     = _cycle.EndDate;
+        _cyCurrent = _cycle.IsCurrent;
+        _cyActive  = _cycle.IsActive;
+        _cyError   = "";
+        _cyOpen    = true;
+    }
+
+    private void CloseCycleModal()
+    {
+        if (_cySaving) return;
+        _cyOpen  = false;
+        _cyError = "";
+    }
+
+    private async Task SaveCycle()
+    {
+        _cyError = "";
+
+        if (string.IsNullOrWhiteSpace(_cyName)) { _cyError = "שם המחזור הוא שדה חובה"; return; }
+        if (_cyEnd <= _cyStart)                 { _cyError = "תאריך סיום חייב להיות אחרי תאריך ההתחלה"; return; }
+
+        _cySaving = true;
+
+        bool ok = await ManagementService.UpdateAcademicYearAsync(CycleId, new SaveAcademicYearRequest
+        {
+            Name      = _cyName.Trim(),
+            StartDate = _cyStart,
+            EndDate   = _cyEnd,
+            IsActive  = _cyActive,
+            IsCurrent = _cyCurrent,
+        });
+
+        _cySaving = false;
+
+        if (!ok) { _cyError = "שגיאה בשמירה. נסו שנית."; return; }
+
+        _cyOpen = false;
+        await ReloadAsync();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Apply templates — library → this cycle's program
+    // ─────────────────────────────────────────────────
+    private bool _tplOpen;
+    private bool _tplLoading;
+    private bool _tplSaving;
+    private List<AvailableMilestoneTemplateDto> _templates = new();
+    private HashSet<int> _tplPicked = new();
+    private ApplyMilestoneTemplatesResultDto? _tplResult;
+    private string _tplError = "";
+
+    private async Task OpenTemplatesModal()
+    {
+        if (CycleLocked) return;
+        CloseAllMenus();
+
+        _tplOpen    = true;
+        _tplLoading = true;
+        _tplPicked  = new();
+        _tplResult  = null;
+        _tplError   = "";
+
+        _templates  = await ManagementService.GetAvailableMilestoneTemplatesAsync(CycleId) ?? new();
+        _tplLoading = false;
+    }
+
+    private void CloseTemplatesModal()
+    {
+        if (_tplSaving) return;
+        _tplOpen = false;
+    }
+
+    private void ToggleTemplate(int id)
+    {
+        if (!_tplPicked.Add(id)) _tplPicked.Remove(id);
+        _tplResult = null;
+    }
+
+    private async Task ApplyTemplatesToProgram()
+    {
+        if (_tplPicked.Count == 0) return;
+
+        _tplSaving = true;
+        _tplError  = "";
+        _tplResult = null;
+
+        var result = await ManagementService.ApplyMilestoneTemplatesAsync(CycleId, _tplPicked.ToList());
+
+        _tplSaving = false;
+
+        if (result is null) { _tplError = "שגיאה בהחלת התבניות. נסו שנית."; return; }
+
+        _tplResult = result;
+        _tplPicked = new();
+
+        // Both lists change: the program grew, and the templates just applied
+        // are no longer available to apply again.
+        await ReloadAsync();
+        _templates = await ManagementService.GetAvailableMilestoneTemplatesAsync(CycleId) ?? new();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Roll out to projects — the pre-existing business action
+    // ─────────────────────────────────────────────────
+    private enum RolloutPhase { None, Confirm, Running, Result, Error }
+
+    private RolloutPhase             _rolloutPhase = RolloutPhase.None;
+    private ApplyTemplatesResultDto? _rolloutResult;
+    private string                   _rolloutError = "";
+
+    private void OpenRollout()
+    {
+        if (CycleLocked || _program.Count == 0) return;
+        CloseAllMenus();
+
+        _rolloutResult = null;
+        _rolloutError  = "";
+        _rolloutPhase  = RolloutPhase.Confirm;
+    }
+
+    private async Task ExecuteRollout()
+    {
+        _rolloutPhase = RolloutPhase.Running;
+
+        var result = await ManagementService.ApplyTemplatesAsync(CycleId);
+
+        if (result is null)
+        {
+            _rolloutError = "שגיאה בהחלת התוכנית. בדקו את החיבור לשרת ונסו שנית.";
+            _rolloutPhase = RolloutPhase.Error;
+            return;
+        }
+
+        _rolloutResult = result;
+        _rolloutPhase  = RolloutPhase.Result;
+
+        // The rollout creates ProjectMilestones, which is exactly what the
+        // פרויקטים column counts.
+        await ReloadAsync();
+    }
+
+    private void CloseRollout() => _rolloutPhase = RolloutPhase.None;
+}

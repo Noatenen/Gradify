@@ -57,11 +57,16 @@ public class FormsController : ControllerBase
                     f.OpensAt,
                     f.ClosesAt,
                     f.UpdatedAt,
-                    (SELECT COUNT(1)
-                     FROM   AssignmentFormSubmissions s
-                     JOIN   Teams t ON t.Id = s.TeamId
-                     WHERE  f.FormType = 'AssignmentForm'
-                       AND  t.AcademicYearId = f.AcademicYearId) AS SubmissionCount
+                    (SELECT COUNT(1) FROM FormBlocks b WHERE b.FormId = f.Id) AS QuestionCount,
+                    (CASE WHEN f.FormType = 'AssignmentForm'
+                          THEN (SELECT COUNT(1)
+                                FROM   AssignmentFormSubmissions s
+                                JOIN   Teams t ON t.Id = s.TeamId
+                                WHERE  t.AcademicYearId = f.AcademicYearId)
+                          ELSE (SELECT COUNT(1)
+                                FROM   FormSubmissions fs
+                                WHERE  fs.FormId = f.Id)
+                     END) AS SubmissionCount
             FROM    Forms f
             LEFT JOIN AcademicYears ay ON ay.Id = f.AcademicYearId
             ORDER   BY ay.IsCurrent DESC, f.UpdatedAt DESC";
@@ -90,10 +95,30 @@ public class FormsController : ControllerBase
         if (!await ExistsAsync("SELECT 1 FROM AcademicYears WHERE Id = @Id", new { Id = req.AcademicYearId }))
             return BadRequest("המחזור האקדמי לא נמצא");
 
-        bool dup = await ExistsAsync(
-            "SELECT 1 FROM Forms WHERE AcademicYearId = @YearId AND FormType = @Type",
-            new { YearId = req.AcademicYearId, Type = req.FormType });
-        if (dup) return Conflict("כבר קיים טופס מסוג זה למחזור הנבחר");
+        // ── FormType, and why a custom form gets a generated one ──────────
+        // Forms carries UNIQUE (AcademicYearId, FormType), which is exactly
+        // right for AssignmentForm — a cycle has one, and a second would make
+        // "the assignment form for this year" ambiguous. But it also means two
+        // ordinary forms in the same cycle collide on any shared type string,
+        // so "טופס חדש" could only ever be pressed once per cycle.
+        //
+        // Rather than drop a constraint the assignment flow depends on, a
+        // custom form is given its own unique type. The constraint keeps
+        // meaning what it meant; custom forms simply never share a key.
+        string formType = req.FormType?.Trim() ?? "";
+
+        if (formType.Length == 0 ||
+            string.Equals(formType, CustomFormTypePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            formType = await GenerateCustomFormTypeAsync(req.AcademicYearId);
+        }
+        else
+        {
+            bool dup = await ExistsAsync(
+                "SELECT 1 FROM Forms WHERE AcademicYearId = @YearId AND FormType = @Type",
+                new { YearId = req.AcademicYearId, Type = formType });
+            if (dup) return Conflict("כבר קיים טופס מסוג זה למחזור הנבחר");
+        }
 
         int newId = await _db.InsertReturnIdAsync(@"
             INSERT INTO Forms
@@ -106,7 +131,7 @@ public class FormsController : ControllerBase
             {
                 req.AcademicYearId,
                 Name        = req.Name.Trim(),
-                req.FormType,
+                FormType    = formType,
                 Instructions= req.Instructions ?? "",
                 IsOpenInt   = req.IsOpen ? 1 : 0,
                 req.OpensAt,
@@ -117,8 +142,10 @@ public class FormsController : ControllerBase
 
         if (newId == 0) return StatusCode(500, "שגיאה ביצירת הטופס");
 
-        // For an AssignmentForm, seed the canonical 3 blocks.
-        if (string.Equals(req.FormType, "AssignmentForm", StringComparison.OrdinalIgnoreCase))
+        // For an AssignmentForm, seed the canonical 3 blocks. A custom form
+        // starts genuinely empty — the editor's empty state invites the first
+        // question rather than pre-filling questions nobody asked for.
+        if (string.Equals(formType, FormsRepository.AssignmentFormType, StringComparison.OrdinalIgnoreCase))
             await FormsRepository.SeedAssignmentBlocksAsync(_db, newId);
 
         return Ok(new { id = newId });
@@ -207,16 +234,23 @@ public class FormsController : ControllerBase
                 new { Id = id })).FirstOrDefault();
 
         int newId = await _db.InsertReturnIdAsync(@"
-            INSERT INTO FormBlocks (FormId, BlockType, Title, HelperText, IsRequired, SortOrder)
-            VALUES (@FormId, @BlockType, @Title, @HelperText, @IsRequiredInt, @SortOrder)",
+            INSERT INTO FormBlocks
+                (FormId, BlockType, Title, HelperText, IsRequired, SortOrder,
+                 RatingScale, MinLabel, MaxLabel)
+            VALUES
+                (@FormId, @BlockType, @Title, @HelperText, @IsRequiredInt, @SortOrder,
+                 @RatingScale, @MinLabel, @MaxLabel)",
             new
             {
                 FormId       = id,
                 req.BlockType,
                 Title        = req.Title.Trim(),
                 HelperText   = req.HelperText ?? "",
-                IsRequiredInt= req.IsRequired ? 1 : 0,
-                SortOrder    = sortOrder
+                IsRequiredInt= NormalizeRequired(req.BlockType, req.IsRequired),
+                SortOrder    = sortOrder,
+                RatingScale  = NormalizeScale(req.RatingScale),
+                MinLabel     = req.MinLabel ?? "",
+                MaxLabel     = req.MaxLabel ?? ""
             });
 
         if (newId == 0) return StatusCode(500, "שגיאה בהוספת הבלוק");
@@ -251,12 +285,15 @@ public class FormsController : ControllerBase
 
         await _db.SaveDataAsync(@"
             UPDATE FormBlocks
-            SET    BlockType  = @BlockType,
-                   Title      = @Title,
-                   HelperText = @HelperText,
-                   IsRequired = @IsRequiredInt,
-                   SortOrder  = @SortOrder,
-                   UpdatedAt  = datetime('now')
+            SET    BlockType   = @BlockType,
+                   Title       = @Title,
+                   HelperText  = @HelperText,
+                   IsRequired  = @IsRequiredInt,
+                   SortOrder   = @SortOrder,
+                   RatingScale = @RatingScale,
+                   MinLabel    = @MinLabel,
+                   MaxLabel    = @MaxLabel,
+                   UpdatedAt   = datetime('now')
             WHERE  Id = @Id",
             new
             {
@@ -264,8 +301,11 @@ public class FormsController : ControllerBase
                 req.BlockType,
                 Title        = req.Title.Trim(),
                 HelperText   = req.HelperText ?? "",
-                IsRequiredInt= req.IsRequired ? 1 : 0,
-                req.SortOrder
+                IsRequiredInt= NormalizeSystemRequired(info.BlockKey, req.BlockType, req.IsRequired),
+                req.SortOrder,
+                RatingScale  = NormalizeScale(req.RatingScale),
+                MinLabel     = req.MinLabel ?? "",
+                MaxLabel     = req.MaxLabel ?? ""
             });
 
         await TouchFormAsync(info.FormId);
@@ -560,6 +600,400 @@ public class FormsController : ControllerBase
         public int    SortOrder   { get; set; }
     }
 
+    // ── PUT /api/forms/{id}/structure ───────────────────────────────────────
+    //
+    //  The editor's single "שמירה". Replaces the question list in one call.
+    //
+    //  UPSERT, NOT REPLACE
+    //  ───────────────────
+    //  Blocks and options keep their Ids. Deleting and re-inserting would give
+    //  every block a fresh Id and orphan every FormAnswer already recorded
+    //  against it, so an admin fixing a typo would quietly destroy the
+    //  responses. Id = 0 means "new"; everything else is matched and updated.
+    //
+    //  ORDER
+    //  ─────
+    //  SortOrder is written from array position rather than taken from the
+    //  payload, so what the admin sees is what persists. Reordering is
+    //  therefore just a save — there is no separate reorder path that could
+    //  half-apply.
+    //
+    //  ATOMICITY
+    //  ─────────
+    //  DbRepository exposes no transaction (every write in this codebase is a
+    //  standalone statement), so this is not atomic. Writes are ordered
+    //  upserts-first / deletes-last: a failure part-way leaves extra blocks,
+    //  never missing ones, and re-saving converges.
+    [HttpPut("{id:int}/structure")]
+    public async Task<IActionResult> SaveStructure(int id, int authUserId, [FromBody] SaveFormStructureRequest req)
+    {
+        if (req is null) return BadRequest("נתונים חסרים");
+
+        if (!await ExistsAsync("SELECT 1 FROM Forms WHERE Id = @Id", new { Id = id }))
+            return NotFound("הטופס לא נמצא");
+
+        // Existing structure, needed to tell inserts from updates and to know
+        // which blocks are system-anchored.
+        var existingBlocks = (await _db.GetRecordsAsync<StructureBlockRow>(
+            "SELECT Id, BlockType, BlockKey FROM FormBlocks WHERE FormId = @Id",
+            new { Id = id }))?.ToList() ?? new List<StructureBlockRow>();
+
+        var existingById = existingBlocks.ToDictionary(b => b.Id);
+
+        var existingOptions = (await _db.GetRecordsAsync<StructureOptionRow>(@"
+            SELECT o.Id, o.FormBlockId, o.OptionValue
+            FROM   FormBlockOptions o
+            JOIN   FormBlocks b ON b.Id = o.FormBlockId
+            WHERE  b.FormId = @Id",
+            new { Id = id }))?.ToList() ?? new List<StructureOptionRow>();
+
+        // ── Validate the whole payload before writing anything ────────────
+        foreach (var incoming in req.Blocks)
+        {
+            if (!IsValidBlockType(incoming.BlockType))
+                return BadRequest("סוג שאלה לא חוקי");
+
+            if (string.IsNullOrWhiteSpace(incoming.Title))
+                return BadRequest("לכל שאלה בטופס חייבת להיות כותרת");
+
+            if (incoming.Id > 0 && existingById.TryGetValue(incoming.Id, out var current))
+            {
+                // A system block's type is load-bearing — the assignment flow
+                // reads it by key and expects a specific shape.
+                if (!string.IsNullOrEmpty(current.BlockKey) &&
+                    !string.Equals(current.BlockType, incoming.BlockType, StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest("לא ניתן לשנות סוג של בלוק מערכת");
+                }
+            }
+        }
+
+        int sortOrder = 0;
+        var keptBlockIds = new HashSet<int>();
+
+        foreach (var incoming in req.Blocks)
+        {
+            sortOrder++;
+
+            bool   isExisting = incoming.Id > 0 && existingById.ContainsKey(incoming.Id);
+            var    current    = isExisting ? existingById[incoming.Id] : null;
+            string blockKey   = current?.BlockKey ?? "";
+            int    blockId;
+
+            if (isExisting)
+            {
+                blockId = incoming.Id;
+                await _db.SaveDataAsync(@"
+                    UPDATE FormBlocks
+                    SET    BlockType   = @BlockType,
+                           Title       = @Title,
+                           HelperText  = @HelperText,
+                           IsRequired  = @IsRequiredInt,
+                           SortOrder   = @SortOrder,
+                           RatingScale = @RatingScale,
+                           MinLabel    = @MinLabel,
+                           MaxLabel    = @MaxLabel,
+                           UpdatedAt   = datetime('now')
+                    WHERE  Id = @Id",
+                    new
+                    {
+                        Id            = blockId,
+                        incoming.BlockType,
+                        Title         = incoming.Title.Trim(),
+                        HelperText    = incoming.HelperText ?? "",
+                        IsRequiredInt = NormalizeSystemRequired(blockKey, incoming.BlockType, incoming.IsRequired),
+                        SortOrder     = sortOrder,
+                        RatingScale   = NormalizeScale(incoming.RatingScale),
+                        MinLabel      = incoming.MinLabel ?? "",
+                        MaxLabel      = incoming.MaxLabel ?? ""
+                    });
+            }
+            else
+            {
+                blockId = await _db.InsertReturnIdAsync(@"
+                    INSERT INTO FormBlocks
+                        (FormId, BlockType, Title, HelperText, IsRequired, SortOrder,
+                         RatingScale, MinLabel, MaxLabel)
+                    VALUES
+                        (@FormId, @BlockType, @Title, @HelperText, @IsRequiredInt, @SortOrder,
+                         @RatingScale, @MinLabel, @MaxLabel)",
+                    new
+                    {
+                        FormId        = id,
+                        incoming.BlockType,
+                        Title         = incoming.Title.Trim(),
+                        HelperText    = incoming.HelperText ?? "",
+                        IsRequiredInt = NormalizeRequired(incoming.BlockType, incoming.IsRequired),
+                        SortOrder     = sortOrder,
+                        RatingScale   = NormalizeScale(incoming.RatingScale),
+                        MinLabel      = incoming.MinLabel ?? "",
+                        MaxLabel      = incoming.MaxLabel ?? ""
+                    });
+
+                if (blockId == 0) return StatusCode(500, "שגיאה בשמירת השאלות");
+            }
+
+            keptBlockIds.Add(blockId);
+            await SaveBlockOptionsAsync(blockId, blockKey, incoming, existingOptions);
+        }
+
+        // ── Deletes last ──────────────────────────────────────────────────
+        // System blocks are never removed, even when a client omits them: the
+        // assignment flow looks them up by key and a missing one would break
+        // the student form. They are kept and pushed after the sent blocks.
+        int tailOrder = sortOrder;
+        foreach (var stale in existingBlocks.Where(b => !keptBlockIds.Contains(b.Id)))
+        {
+            if (!string.IsNullOrEmpty(stale.BlockKey))
+            {
+                tailOrder++;
+                await _db.SaveDataAsync(
+                    "UPDATE FormBlocks SET SortOrder = @SortOrder WHERE Id = @Id",
+                    new { Id = stale.Id, SortOrder = tailOrder });
+                continue;
+            }
+
+            await _db.SaveDataAsync("DELETE FROM FormBlocks WHERE Id = @Id", new { Id = stale.Id });
+        }
+
+        await TouchFormAsync(id);
+
+        var detail = await LoadFormDetailAsync(id);
+        return Ok(detail);
+    }
+
+    /// <summary>
+    /// Upserts one block's options, honouring the two system-block rules.
+    /// </summary>
+    private async Task SaveBlockOptionsAsync(
+        int blockId,
+        string blockKey,
+        SaveStructureBlockDto incoming,
+        List<StructureOptionRow> existingOptions)
+    {
+        // ProjectPreferences draws its choices from the live project catalog.
+        // It has no stored options and must not gain any — static rows here
+        // would be disconnected strings where assignment expects Projects.Id.
+        if (FormBlockKeys.HasSystemSuppliedOptions(blockKey)) return;
+
+        var currentForBlock = existingOptions.Where(o => o.FormBlockId == blockId).ToList();
+        var currentById     = currentForBlock.ToDictionary(o => o.Id);
+
+        // Options only mean anything for choice blocks. Switching a block away
+        // from a choice type clears them rather than leaving dead rows behind.
+        if (!FormBlockTypes.HasOptions(incoming.BlockType))
+        {
+            foreach (var stale in currentForBlock)
+                await _db.SaveDataAsync("DELETE FROM FormBlockOptions WHERE Id = @Id", new { Id = stale.Id });
+            return;
+        }
+
+        bool valuesProtected = FormBlockKeys.HasProtectedOptionValues(blockKey);
+
+        int  order = 0;
+        var  kept  = new HashSet<int>();
+
+        foreach (var opt in incoming.Options)
+        {
+            order++;
+
+            string label = (opt.OptionLabel ?? "").Trim();
+            if (label.Length == 0) continue;   // an empty option row is not an option
+
+            bool isExisting = opt.Id > 0 && currentById.ContainsKey(opt.Id);
+
+            // The machine value. For the Strengths block it is what
+            // SkillWeight() switches on, so an existing option keeps the value
+            // already stored no matter what the client sends. Elsewhere it
+            // falls back to the label when the client leaves it blank.
+            string value;
+            if (isExisting && valuesProtected)
+                value = currentById[opt.Id].OptionValue;
+            else
+                value = string.IsNullOrWhiteSpace(opt.OptionValue) ? label : opt.OptionValue.Trim();
+
+            if (isExisting)
+            {
+                await _db.SaveDataAsync(@"
+                    UPDATE FormBlockOptions
+                    SET    OptionValue = @OptionValue,
+                           OptionLabel = @OptionLabel,
+                           SortOrder   = @SortOrder
+                    WHERE  Id = @Id",
+                    new { Id = opt.Id, OptionValue = value, OptionLabel = label, SortOrder = order });
+
+                kept.Add(opt.Id);
+            }
+            else
+            {
+                int newOptId = await _db.InsertReturnIdAsync(@"
+                    INSERT INTO FormBlockOptions (FormBlockId, OptionValue, OptionLabel, SortOrder)
+                    VALUES (@BlockId, @OptionValue, @OptionLabel, @SortOrder)",
+                    new { BlockId = blockId, OptionValue = value, OptionLabel = label, SortOrder = order });
+
+                if (newOptId > 0) kept.Add(newOptId);
+            }
+        }
+
+        foreach (var stale in currentForBlock.Where(o => !kept.Contains(o.Id)))
+        {
+            // A protected option is not deletable, only re-wordable.
+            //
+            // Renaming its VALUE was already refused above, but deleting the
+            // row was not — and dropping "Technology" removes that strength
+            // from the student form entirely, which silently changes what
+            // SkillWeight() can ever score. Same reasoning as system blocks:
+            // it is kept and pushed to the end rather than removed.
+            if (valuesProtected &&
+                FormBlockKeys.ProtectedStrengthValues.Contains(stale.OptionValue, StringComparer.Ordinal))
+            {
+                order++;
+                await _db.SaveDataAsync(
+                    "UPDATE FormBlockOptions SET SortOrder = @SortOrder WHERE Id = @Id",
+                    new { Id = stale.Id, SortOrder = order });
+                continue;
+            }
+
+            await _db.SaveDataAsync("DELETE FROM FormBlockOptions WHERE Id = @Id", new { Id = stale.Id });
+        }
+    }
+
+    // ── GET /api/forms/{id}/submissions ─────────────────────────────────────
+    //
+    //  Real rows from FormSubmissions. The assignment form is deliberately NOT
+    //  served here: its submissions are team-scoped and live in
+    //  AssignmentFormSubmissions, and they already have a purpose-built screen
+    //  at /assignments. Returning an empty list for it would read as "nobody
+    //  submitted", so this reports the mismatch instead and the client links
+    //  to the real screen.
+    [HttpGet("{id:int}/submissions")]
+    public async Task<IActionResult> GetSubmissions(int id, int authUserId)
+    {
+        var info = (await _db.GetRecordsAsync<FormTypeRow>(
+            "SELECT FormType, AcademicYearId FROM Forms WHERE Id = @Id",
+            new { Id = id }))?.FirstOrDefault();
+
+        if (info is null) return NotFound("הטופס לא נמצא");
+
+        if (string.Equals(info.FormType, FormsRepository.AssignmentFormType, StringComparison.OrdinalIgnoreCase))
+            return BadRequest("הגשות טופס השיבוץ מנוהלות במסך השיבוצים");
+
+        const string sql = @"
+            SELECT  fs.Id,
+                    fs.FormId,
+                    fs.UserId,
+                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS UserName,
+                    COALESCE(u.Email, '')                          AS UserEmail,
+                    fs.SubmittedAt,
+                    fs.UpdatedAt,
+                    (SELECT COUNT(DISTINCT a.FormBlockId)
+                     FROM   FormAnswers a
+                     WHERE  a.FormSubmissionId = fs.Id) AS AnswerCount
+            FROM    FormSubmissions fs
+            LEFT JOIN users u ON u.Id = fs.UserId
+            WHERE   fs.FormId = @Id
+            ORDER   BY fs.UpdatedAt DESC, fs.Id DESC";
+
+        var rows = (await _db.GetRecordsAsync<FormSubmissionListItemDto>(sql, new { Id = id }))?.ToList()
+                   ?? new List<FormSubmissionListItemDto>();
+
+        return Ok(rows);
+    }
+
+    // ── GET /api/forms/submissions/{submissionId} ───────────────────────────
+    [HttpGet("submissions/{submissionId:int}")]
+    public async Task<IActionResult> GetSubmission(int submissionId, int authUserId)
+    {
+        const string headSql = @"
+            SELECT  fs.Id,
+                    fs.FormId,
+                    COALESCE(f.Name, '')                           AS FormName,
+                    fs.UserId,
+                    COALESCE(u.FirstName || ' ' || u.LastName, '') AS UserName,
+                    COALESCE(u.Email, '')                          AS UserEmail,
+                    fs.SubmittedAt,
+                    fs.UpdatedAt
+            FROM    FormSubmissions fs
+            LEFT JOIN Forms f ON f.Id = fs.FormId
+            LEFT JOIN users u ON u.Id = fs.UserId
+            WHERE   fs.Id = @Id";
+
+        var head = (await _db.GetRecordsAsync<FormSubmissionDetailDto>(headSql, new { Id = submissionId }))
+                   ?.FirstOrDefault();
+        if (head is null) return NotFound("ההגשה לא נמצאה");
+
+        head.Answers = await LoadAnswersForDisplayAsync(submissionId, head.FormId);
+        return Ok(head);
+    }
+
+    /// <summary>
+    /// Resolves stored answers into display rows: option VALUES become their
+    /// current labels, and blocks with no answer are omitted.
+    /// </summary>
+    private async Task<List<FormAnswerDto>> LoadAnswersForDisplayAsync(int submissionId, int formId)
+    {
+        var blocks = (await _db.GetRecordsAsync<FormBlockDto>(@"
+            SELECT  Id, FormId, BlockType, BlockKey,
+                    COALESCE(Title, '') AS Title,
+                    SortOrder
+            FROM    FormBlocks
+            WHERE   FormId = @FormId
+            ORDER   BY SortOrder, Id",
+            new { FormId = formId }))?.ToList() ?? new List<FormBlockDto>();
+
+        var options = (await _db.GetRecordsAsync<FormBlockOptionDto>(@"
+            SELECT  o.Id, o.FormBlockId, o.OptionValue, o.OptionLabel, o.SortOrder
+            FROM    FormBlockOptions o
+            JOIN    FormBlocks b ON b.Id = o.FormBlockId
+            WHERE   b.FormId = @FormId",
+            new { FormId = formId }))?.ToList() ?? new List<FormBlockOptionDto>();
+
+        var answers = (await _db.GetRecordsAsync<AnswerRow>(@"
+            SELECT  FormBlockId, OptionValue, AnswerText, AnswerNumber, SortOrder
+            FROM    FormAnswers
+            WHERE   FormSubmissionId = @Id
+            ORDER   BY FormBlockId, SortOrder, Id",
+            new { Id = submissionId }))?.ToList() ?? new List<AnswerRow>();
+
+        var byBlock = answers.GroupBy(a => a.FormBlockId).ToDictionary(g => g.Key, g => g.ToList());
+        var result  = new List<FormAnswerDto>();
+
+        foreach (var b in blocks)
+        {
+            if (FormBlockTypes.IsInformational(b.BlockType)) continue;
+            if (!byBlock.TryGetValue(b.Id, out var rows)) continue;
+
+            var dto = new FormAnswerDto
+            {
+                FormBlockId = b.Id,
+                BlockType   = b.BlockType,
+                BlockTitle  = b.Title
+            };
+
+            foreach (var r in rows)
+            {
+                if (r.AnswerNumber.HasValue) dto.Number = r.AnswerNumber;
+                if (!string.IsNullOrEmpty(r.AnswerText)) dto.Text = r.AnswerText;
+
+                if (!string.IsNullOrEmpty(r.OptionValue))
+                {
+                    // Resolve to the CURRENT label; fall back to the raw stored
+                    // value when the option has since been removed, so a
+                    // deleted option never blanks a real answer.
+                    var match = options.FirstOrDefault(
+                        o => o.FormBlockId == b.Id &&
+                             string.Equals(o.OptionValue, r.OptionValue, StringComparison.Ordinal));
+
+                    dto.Values.Add(match?.OptionLabel is { Length: > 0 } lbl ? lbl : r.OptionValue);
+                }
+            }
+
+            result.Add(dto);
+        }
+
+        return result;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Internal helpers
     // ─────────────────────────────────────────────────────────────────────────
@@ -578,11 +1012,15 @@ public class FormsController : ControllerBase
                     f.ClosesAt,
                     f.AllowEditAfterSubmit,
                     f.Status,
-                    (SELECT COUNT(1)
-                     FROM   AssignmentFormSubmissions s
-                     JOIN   Teams t ON t.Id = s.TeamId
-                     WHERE  f.FormType = 'AssignmentForm'
-                       AND  t.AcademicYearId = f.AcademicYearId) AS SubmissionCount
+                    (CASE WHEN f.FormType = 'AssignmentForm'
+                          THEN (SELECT COUNT(1)
+                                FROM   AssignmentFormSubmissions s
+                                JOIN   Teams t ON t.Id = s.TeamId
+                                WHERE  t.AcademicYearId = f.AcademicYearId)
+                          ELSE (SELECT COUNT(1)
+                                FROM   FormSubmissions fs
+                                WHERE  fs.FormId = f.Id)
+                     END) AS SubmissionCount
             FROM    Forms f
             LEFT JOIN AcademicYears ay ON ay.Id = f.AcademicYearId
             WHERE   f.Id = @Id";
@@ -595,7 +1033,10 @@ public class FormsController : ControllerBase
                     COALESCE(Title, '')      AS Title,
                     COALESCE(HelperText, '') AS HelperText,
                     IsRequired,
-                    SortOrder
+                    SortOrder,
+                    COALESCE(RatingScale, 5) AS RatingScale,
+                    COALESCE(MinLabel, '')   AS MinLabel,
+                    COALESCE(MaxLabel, '')   AS MaxLabel
             FROM    FormBlocks
             WHERE   FormId = @Id
             ORDER   BY SortOrder, Id";
@@ -641,12 +1082,64 @@ public class FormsController : ControllerBase
         return rows is not null && rows.Any();
     }
 
-    private static bool IsValidBlockType(string t) => t is
-        FormBlockTypes.Text or
-        FormBlockTypes.SingleChoice or
-        FormBlockTypes.MultiChoice or
-        FormBlockTypes.Ranking or
-        FormBlockTypes.OpenText;
+    // Was a hand-written subset that silently omitted Heading, FileUpload and
+    // Date, so the reference's "טקסט / מידע" block could never be saved. Reads
+    // the canonical list instead, which now also carries Rating.
+    private static bool IsValidBlockType(string t) =>
+        FormBlockTypes.All.Contains(t, StringComparer.Ordinal);
+
+    /// <summary>Marker the client sends when it wants a generated form type.</summary>
+    private const string CustomFormTypePrefix = "Custom";
+
+    /// <summary>
+    /// Produces a form type unique within the cycle: Custom, then Custom-2,
+    /// Custom-3 … Deterministic and readable, so the stored value still says
+    /// what it is when read straight out of the table.
+    /// </summary>
+    private async Task<string> GenerateCustomFormTypeAsync(int academicYearId)
+    {
+        var taken = (await _db.GetRecordsAsync<string>(
+            "SELECT FormType FROM Forms WHERE AcademicYearId = @YearId",
+            new { YearId = academicYearId }))?.ToHashSet(StringComparer.OrdinalIgnoreCase)
+            ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!taken.Contains(CustomFormTypePrefix)) return CustomFormTypePrefix;
+
+        for (int i = 2; i < 10_000; i++)
+        {
+            var candidate = $"{CustomFormTypePrefix}-{i}";
+            if (!taken.Contains(candidate)) return candidate;
+        }
+
+        return $"{CustomFormTypePrefix}-{Guid.NewGuid():N}";
+    }
+
+    /// <summary>Rating scales are 5 or 10; anything else falls back to 5.</summary>
+    private static int NormalizeScale(int raw) => raw == 10 ? 10 : 5;
+
+    /// <summary>
+    /// An informational block carries no answer, so it can never be required.
+    /// Enforced server-side as well as in the editor: a Heading saved as
+    /// required would make the student form permanently unsubmittable.
+    /// </summary>
+    private static int NormalizeRequired(string blockType, bool isRequired) =>
+        FormBlockTypes.IsInformational(blockType) ? 0 : (isRequired ? 1 : 0);
+
+    /// <summary>
+    /// Same rule, plus the one system block whose required flag is not the
+    /// admin's to set.
+    ///
+    /// The project-preferences block is backed by TeamProjectPreferences,
+    /// which AssignmentManagementController scores 30/20/10 by priority and
+    /// joins to Projects. Exactly three ranked choices is a DOMAIN invariant,
+    /// not a form setting, so an admin clearing "required" here would produce
+    /// a form whose own configuration contradicts what the server enforces on
+    /// submit. It is pinned instead, and the editor draws it as pinned.
+    /// </summary>
+    private static int NormalizeSystemRequired(string? blockKey, string blockType, bool isRequired) =>
+        FormBlockKeys.HasSystemSuppliedOptions(blockKey)
+            ? 1
+            : NormalizeRequired(blockType, isRequired);
 
     private static string NormalizeStatus(string raw, bool isOpen)
     {
@@ -692,6 +1185,29 @@ public class FormsController : ControllerBase
     {
         public int FormBlockId { get; set; }
         public int FormId      { get; set; }
+    }
+
+    private sealed class StructureBlockRow
+    {
+        public int     Id        { get; set; }
+        public string  BlockType { get; set; } = "";
+        public string? BlockKey  { get; set; }
+    }
+
+    private sealed class StructureOptionRow
+    {
+        public int    Id          { get; set; }
+        public int    FormBlockId { get; set; }
+        public string OptionValue { get; set; } = "";
+    }
+
+    private sealed class AnswerRow
+    {
+        public int     FormBlockId  { get; set; }
+        public string? OptionValue  { get; set; }
+        public string? AnswerText   { get; set; }
+        public int?    AnswerNumber { get; set; }
+        public int     SortOrder    { get; set; }
     }
 
     private sealed class ToggleRow

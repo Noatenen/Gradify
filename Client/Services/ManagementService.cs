@@ -22,6 +22,20 @@ public interface IManagementService
     Task<bool>                        ArchiveYearAsync(int id);
     Task<ApplyTemplatesResultDto?>    ApplyTemplatesAsync(int id);
 
+    // ── Cycle Program — the milestones configured for ONE cycle ───────────────
+    // Backed by /api/academic-years/{yearId}/program. Every row is an
+    // AcademicYearMilestones row; see CycleProgramDto for the template-vs-cycle
+    // field split these calls write across.
+    Task<AcademicYearDto?>                    GetAcademicYearAsync(int id);
+    Task<List<CycleMilestoneDto>?>            GetCycleProgramAsync(int yearId);
+    Task<List<AvailableMilestoneTemplateDto>?> GetAvailableMilestoneTemplatesAsync(int yearId);
+    Task<(bool ok, string? error)>            CreateCycleMilestoneAsync(int yearId, SaveCycleMilestoneRequest request);
+    Task<(bool ok, string? error)>            UpdateCycleMilestoneAsync(int yearId, int aymId, SaveCycleMilestoneRequest request);
+    Task<bool>                                ToggleCycleMilestoneActiveAsync(int yearId, int aymId);
+    Task<bool>                                MoveCycleMilestoneAsync(int yearId, int aymId, int direction);
+    Task<(bool ok, string? error)>            DeleteCycleMilestoneAsync(int yearId, int aymId);
+    Task<ApplyMilestoneTemplatesResultDto?>   ApplyMilestoneTemplatesAsync(int yearId, List<int> templateIds);
+
     // Airtable sync method intentionally removed from this interface.
     // The only legitimate import path is now:
     //   IAirtableIntegrationService.PreviewAsync(id)
@@ -172,6 +186,119 @@ public class ManagementService : IManagementService
             return await resp.Content.ReadFromJsonAsync<ApplyTemplatesResultDto>();
         }
         catch { return null; }
+    }
+
+    // ── Cycle Program ─────────────────────────────────────────────────────────
+    //
+    // The write calls return the SERVER'S message rather than a bare bool. These
+    // endpoints refuse work for reasons the admin has to be told about and
+    // cannot guess — a milestone already held by N projects, a closed cycle, a
+    // due date before the start date — so swallowing the body into `false` would
+    // strand them. Reads keep the nullable-list convention used above.
+
+    public async Task<AcademicYearDto?> GetAcademicYearAsync(int id)
+    {
+        try { return await _http.GetFromJsonAsync<AcademicYearDto>($"api/academic-years/{id}"); }
+        catch { return null; }
+    }
+
+    public async Task<List<CycleMilestoneDto>?> GetCycleProgramAsync(int yearId)
+    {
+        try { return await _http.GetFromJsonAsync<List<CycleMilestoneDto>>($"api/academic-years/{yearId}/program"); }
+        catch { return null; }
+    }
+
+    public async Task<List<AvailableMilestoneTemplateDto>?> GetAvailableMilestoneTemplatesAsync(int yearId)
+    {
+        try
+        {
+            return await _http.GetFromJsonAsync<List<AvailableMilestoneTemplateDto>>(
+                $"api/academic-years/{yearId}/available-templates");
+        }
+        catch { return null; }
+    }
+
+    public async Task<(bool ok, string? error)> CreateCycleMilestoneAsync(
+        int yearId, SaveCycleMilestoneRequest request)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync($"api/academic-years/{yearId}/program", request);
+            return await ReadResultAsync(resp);
+        }
+        catch { return (false, null); }
+    }
+
+    public async Task<(bool ok, string? error)> UpdateCycleMilestoneAsync(
+        int yearId, int aymId, SaveCycleMilestoneRequest request)
+    {
+        try
+        {
+            var resp = await _http.PutAsJsonAsync($"api/academic-years/{yearId}/program/{aymId}", request);
+            return await ReadResultAsync(resp);
+        }
+        catch { return (false, null); }
+    }
+
+    public async Task<bool> ToggleCycleMilestoneActiveAsync(int yearId, int aymId)
+    {
+        try
+        {
+            var resp = await _http.PatchAsync(
+                $"api/academic-years/{yearId}/program/{aymId}/toggle-active", null);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    public async Task<bool> MoveCycleMilestoneAsync(int yearId, int aymId, int direction)
+    {
+        try
+        {
+            var resp = await _http.PatchAsJsonAsync(
+                $"api/academic-years/{yearId}/program/{aymId}/move",
+                new MoveCycleMilestoneRequest { Direction = direction });
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    public async Task<(bool ok, string? error)> DeleteCycleMilestoneAsync(int yearId, int aymId)
+    {
+        try
+        {
+            var resp = await _http.DeleteAsync($"api/academic-years/{yearId}/program/{aymId}");
+            return await ReadResultAsync(resp);
+        }
+        catch { return (false, null); }
+    }
+
+    public async Task<ApplyMilestoneTemplatesResultDto?> ApplyMilestoneTemplatesAsync(
+        int yearId, List<int> templateIds)
+    {
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(
+                $"api/academic-years/{yearId}/program/apply-templates",
+                new ApplyMilestoneTemplatesRequest { TemplateIds = templateIds });
+
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<ApplyMilestoneTemplatesResultDto>();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Success, or the server's own Hebrew explanation. The controllers return
+    /// their reasons as a plain-string body (BadRequest/Conflict/NotFound), so
+    /// the body IS the message — no envelope to unwrap.
+    /// </summary>
+    private static async Task<(bool ok, string? error)> ReadResultAsync(HttpResponseMessage resp)
+    {
+        if (resp.IsSuccessStatusCode) return (true, null);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        return (false, string.IsNullOrWhiteSpace(body) ? null : body.Trim('"'));
     }
 
     // SyncAirtableProjectsAsync intentionally removed — see interface comment.

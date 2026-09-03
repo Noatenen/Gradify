@@ -1481,6 +1481,83 @@ public static class DatabaseMigrator
                 FOREIGN KEY (FormBlockId) REFERENCES FormBlocks(Id) ON DELETE CASCADE
             )");
 
+        // ── Rating configuration on FormBlocks ────────────────────────────────
+        // Added for the "דירוג" block type. Three nullable-by-default columns
+        // rather than a new table: they are per-block scalars with no identity
+        // of their own, and a RatingConfig side-table would cost a join on
+        // every read to store three values. Every existing row keeps working —
+        // RatingScale defaults to 5 and the labels to '' — and no non-Rating
+        // block ever reads them.
+        var formBlockColumns = await GetColumnsAsync(connection, "FormBlocks");
+
+        if (!formBlockColumns.Contains("RatingScale"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE FormBlocks ADD COLUMN RatingScale INTEGER NOT NULL DEFAULT 5");
+
+        if (!formBlockColumns.Contains("MinLabel"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE FormBlocks ADD COLUMN MinLabel TEXT NOT NULL DEFAULT ''");
+
+        if (!formBlockColumns.Contains("MaxLabel"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE FormBlocks ADD COLUMN MaxLabel TEXT NOT NULL DEFAULT ''");
+
+        // ── Generic form responses ────────────────────────────────────────────
+        // FormSubmissions : one row per (form, respondent)
+        // FormAnswers     : one row per answered VALUE
+        //
+        // WHY THESE ARE NEW TABLES AND NOT A MIGRATION TARGET
+        // ───────────────────────────────────────────────────
+        // Until now the form-builder could describe a form but nothing could
+        // answer one: the only answer storage in the system is the assignment
+        // form's three domain tables (AssignmentFormSubmissions /
+        // TeamProjectPreferences / StudentStrengths). Those are NOT superseded
+        // by these tables and nothing is copied out of them.
+        //
+        // They cannot be: TeamProjectPreferences.ProjectId is a real FK that
+        // AssignmentManagementController joins to Projects and scores by
+        // Priority, and StudentStrengths.Strength holds the literals
+        // SkillWeight() switches on. Folding either into a generic
+        // (block, value) store would turn live business data into loose
+        // strings. The assignment form therefore keeps its dedicated flow, and
+        // these tables serve every OTHER form the builder can now produce.
+        //
+        // One submission per respondent per form; re-submitting updates it in
+        // place when the form allows editing after submit, so a student never
+        // ends up with two conflicting answer sets.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS FormSubmissions (
+                Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                FormId      INTEGER NOT NULL,
+                UserId      INTEGER NOT NULL,
+                SubmittedAt TEXT    NOT NULL DEFAULT (datetime('now')),
+                UpdatedAt   TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (FormId, UserId),
+                FOREIGN KEY (FormId) REFERENCES Forms(Id) ON DELETE CASCADE,
+                FOREIGN KEY (UserId) REFERENCES users(Id) ON DELETE CASCADE
+            )");
+
+        // One row per value: a MultiChoice answer is N rows, everything else is
+        // one. OptionValue stores the option's VALUE rather than its label, so
+        // renaming a label later never rewrites what somebody answered.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS FormAnswers (
+                Id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                FormSubmissionId INTEGER NOT NULL,
+                FormBlockId      INTEGER NOT NULL,
+                OptionValue      TEXT,
+                AnswerText       TEXT,
+                AnswerNumber     INTEGER,
+                SortOrder        INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (FormSubmissionId) REFERENCES FormSubmissions(Id) ON DELETE CASCADE,
+                FOREIGN KEY (FormBlockId)      REFERENCES FormBlocks(Id)      ON DELETE CASCADE
+            )");
+
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_FormAnswers_Submission ON FormAnswers(FormSubmissionId)");
+        await connection.ExecuteNonQueryAsync(
+            "CREATE INDEX IF NOT EXISTS IX_FormSubmissions_Form ON FormSubmissions(FormId)");
+
         // ── External Forms (Innovation Team iframe-embedded forms) ───────────
         // These forms live OUTSIDE Gradify — they're hosted by the Innovation
         // Team and embedded via iframe. We only store metadata + URL so
@@ -1679,6 +1756,35 @@ public static class DatabaseMigrator
         // year-specific dates are intentionally left NULL so admins fill them.
         await EnsureRoadmapStagesAsync(connection);
 
+        // ── Per-cycle milestone ordering ─────────────────────────────────────
+        // The cycle program (Admin → מחזורים → cycle detail) orders milestones
+        // with per-row up/down controls. Until now the only order available was
+        // MilestoneTemplates.OrderIndex, which is GLOBAL: two cycles sharing a
+        // template shared its position, so reordering inside one cycle silently
+        // reordered every other cycle. AcademicYearMilestones.DisplayOrder makes
+        // the order an attribute of the milestone-in-this-cycle, which is what
+        // the screen actually edits.
+        //
+        // Nullable on purpose. NULL means "never reordered here", and every read
+        // falls back to the template's OrderIndex:
+        //     ORDER BY COALESCE(aym.DisplayOrder, mt.OrderIndex), aym.Id
+        // so existing cycles keep the exact order they had before this column
+        // existed, and no backfill is required.
+        await EnsureCycleMilestoneOrderAsync(connection);
+
+        // ── Unassigned task templates ────────────────────────────────────────
+        // TaskTemplates.MilestoneTemplateId was NOT NULL, which made a task
+        // template unable to exist without a milestone — so the Admin milestone
+        // editor had no safe meaning for "remove this task from this milestone".
+        // It is now nullable: NULL = an unassigned library template, present in
+        // the Task Templates library but attached to no milestone and therefore
+        // never rolled out to a cycle.
+        //
+        // The FK also moves from ON DELETE CASCADE to ON DELETE SET NULL, so
+        // deleting a milestone template detaches its task templates instead of
+        // destroying library content.
+        await EnsureNullableTaskTemplateMilestoneAsync(connection);
+
         // ── Airtable bootstrap: one-time seed from appsettings.json ──────────
         // The DB is the sole runtime source of Airtable integration config.
         // For existing dev/staging machines that still have an "Airtable"
@@ -1854,6 +1960,107 @@ public static class DatabaseMigrator
                 ('ClientChallenge',           'אתגר מול לקוח',       'קושי או בעיה מול לקוח הפרויקט',               1, 'Admin,Staff',        0, 'Optional', 1),
                 ('ContentChallenge',          'אתגר תוכן',           'בעיית תוכן או נושאים אקדמיים בפרויקט',         1, 'Admin,Staff',        0, 'Optional', 1),
                 ('CharacterizationChallenge', 'אתגר אפיון',          'בעיה באפיון הפרויקט או בדרישות',               1, 'Admin,Staff',        0, 'Optional', 1)");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureNullableTaskTemplateMilestoneAsync
+    //
+    //  Makes TaskTemplates.MilestoneTemplateId nullable and switches its FK from
+    //  ON DELETE CASCADE to ON DELETE SET NULL.
+    //
+    //  WHY. Two Admin behaviours depend on it:
+    //    • The milestone editor's "remove task from this milestone" — under a
+    //      NOT NULL column the only ways to express that were to delete the task
+    //      template or to retire it everywhere, neither of which is what the
+    //      action means.
+    //    • Deleting a milestone template used to CASCADE its task templates out
+    //      of existence. Detaching them keeps library content that took work to
+    //      author.
+    //
+    //  SQLite cannot ALTER a column's nullability or drop an FK, so the table is
+    //  rebuilt — the same approach the ResourceFiles migration above uses.
+    //  Guarded by a schema probe so it runs at most once, and the copy is
+    //  column-for-column: no row is filtered, no value is rewritten. A task
+    //  template that has a milestone today still has exactly that milestone
+    //  afterwards.
+    //
+    //  Nothing downstream changes: project `Tasks` are snapshots created by the
+    //  rollout and hold no FK to TaskTemplates, so instantiated project data is
+    //  untouched by this or by any later detach.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureNullableTaskTemplateMilestoneAsync(SqliteConnection connection)
+    {
+        await using var probe = connection.CreateCommand();
+        probe.CommandText =
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='TaskTemplates'";
+        var schemaSql = (await probe.ExecuteScalarAsync())?.ToString() ?? "";
+
+        // Already rebuilt (or table absent) — nothing to do.
+        if (schemaSql.Length == 0) return;
+        if (!schemaSql.Contains("MilestoneTemplateId INTEGER NOT NULL")) return;
+
+        await connection.ExecuteNonQueryAsync("PRAGMA foreign_keys = OFF");
+        try
+        {
+            await connection.ExecuteNonQueryAsync(@"
+                CREATE TABLE TaskTemplates_new (
+                    Id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Title                  TEXT    NOT NULL,
+                    Description            TEXT,
+                    MilestoneTemplateId    INTEGER,
+                    StartDate              TEXT    NOT NULL,
+                    DueDate                TEXT    NOT NULL,
+                    IsActive               INTEGER NOT NULL DEFAULT 1,
+                    CreatedAt              TEXT    NOT NULL DEFAULT (datetime('now')),
+                    IsSubmission           INTEGER NOT NULL DEFAULT 0,
+                    SubmissionInstructions TEXT,
+                    MaxFilesCount          INTEGER,
+                    MaxFileSizeMb          INTEGER,
+                    AllowedFileTypes       TEXT,
+                    FOREIGN KEY (MilestoneTemplateId)
+                        REFERENCES MilestoneTemplates(Id) ON DELETE SET NULL
+                )");
+
+            await connection.ExecuteNonQueryAsync(@"
+                INSERT INTO TaskTemplates_new
+                    (Id, Title, Description, MilestoneTemplateId, StartDate, DueDate,
+                     IsActive, CreatedAt, IsSubmission, SubmissionInstructions,
+                     MaxFilesCount, MaxFileSizeMb, AllowedFileTypes)
+                SELECT
+                    Id, Title, Description, MilestoneTemplateId, StartDate, DueDate,
+                    IsActive, CreatedAt, COALESCE(IsSubmission, 0), SubmissionInstructions,
+                    MaxFilesCount, MaxFileSizeMb, AllowedFileTypes
+                FROM TaskTemplates");
+
+            await connection.ExecuteNonQueryAsync("DROP TABLE TaskTemplates");
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE TaskTemplates_new RENAME TO TaskTemplates");
+        }
+        finally
+        {
+            await connection.ExecuteNonQueryAsync("PRAGMA foreign_keys = ON");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  EnsureCycleMilestoneOrderAsync
+    //
+    //  Adds AcademicYearMilestones.DisplayOrder — the per-cycle position of a
+    //  milestone inside its cycle's program.
+    //
+    //  Idempotent: guarded by PRAGMA table_info, and left entirely NULL. A NULL
+    //  DisplayOrder is not "position zero", it is "unset", and every consumer
+    //  resolves it as COALESCE(aym.DisplayOrder, mt.OrderIndex). Backfilling it
+    //  would freeze today's template order into every cycle and break that
+    //  fallback for cycles the admin has never touched.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task EnsureCycleMilestoneOrderAsync(SqliteConnection connection)
+    {
+        var aymColumns = await GetColumnsAsync(connection, "AcademicYearMilestones");
+
+        if (!aymColumns.Contains("DisplayOrder"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE AcademicYearMilestones ADD COLUMN DisplayOrder INTEGER");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

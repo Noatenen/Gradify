@@ -133,6 +133,25 @@ public class AssignmentController : ControllerBase
         var formRow    = await FormsRepository.GetAssignmentFormAsync(_db, formYearId);
         var formStatus = FormsRepository.EvaluateGate(formRow, hasExistingSubmission: existing is not null);
 
+        // ── Presentation from the real form ───────────────────────────────
+        // The page used to hardcode its own section wording and strength
+        // labels, so editing those blocks in the admin form editor changed
+        // nothing here. It now renders from this layout.
+        AssignmentFormLayoutDto? layout = null;
+        if (formRow is not null)
+        {
+            layout = await FormsRepository.LoadAssignmentLayoutAsync(_db, formRow.Id);
+
+            // Answers to the admin-added questions, so an edit reopens filled in.
+            // Keyed by the SUBMITTING user: FormSubmissions is (FormId, UserId),
+            // while the domain half of this form is per-team.
+            if (existing is not null && layout.ExtraQuestions.Count > 0)
+            {
+                existing.ExtraAnswers =
+                    await FormsRepository.LoadGenericAnswersAsync(_db, formRow.Id, authUserId);
+            }
+        }
+
         return Ok(new AssignmentContextDto
         {
             Me                = new StudentBasicDto { Id = meRow?.Id ?? authUserId, FullName = meRow?.FullName ?? "" },
@@ -149,7 +168,8 @@ public class AssignmentController : ControllerBase
                 Description   = r.Description
             }).ToList(),
             ExistingSubmission = existing,
-            FormStatus         = formStatus
+            FormStatus         = formStatus,
+            FormLayout         = layout
         });
     }
 
@@ -220,6 +240,49 @@ public class AssignmentController : ControllerBase
         if (!gate.CanSubmit)
             return BadRequest(gate.ClosedMessage ?? "טופס השיבוצים אינו פתוח להגשה כרגע.");
 
+        // ── Validate against the admin's configuration ────────────────────
+        // Done BEFORE any write, so a form that fails validation leaves both
+        // the domain tables and FormAnswers untouched.
+        AssignmentFormLayoutDto? layout = null;
+        if (gateForm is not null)
+        {
+            layout = await FormsRepository.LoadAssignmentLayoutAsync(_db, gateForm.Id);
+
+            // The three preference slots are a DOMAIN invariant, not a form
+            // setting: TeamProjectPreferences is scored 30/20/10 by priority
+            // and AssignmentManagementController reads exactly those ranks.
+            // The admin cannot switch it off, so it is checked unconditionally.
+            var prefs = req.Preferences.Where(p => p.ProjectId > 0).ToList();
+            if (prefs.Select(p => p.Priority).Distinct().Count() != 3 || prefs.Count != 3)
+                return BadRequest("יש לבחור שלושה פרויקטים לפי סדר עדיפות.");
+
+            // Strengths: the block's required flag now actually means something.
+            if (layout.Strengths is { IsRequired: true } &&
+                !req.Strengths.Any(x => !string.IsNullOrWhiteSpace(x.Strength)))
+            {
+                return BadRequest($"יש לבחור לפחות תחום אחד ב\"{layout.Strengths.Title}\".");
+            }
+
+            // Notes: same — a required notes block is now enforced.
+            if (layout.Notes is { IsRequired: true } && string.IsNullOrWhiteSpace(req.Notes))
+                return BadRequest($"יש למלא את \"{layout.Notes.Title}\".");
+
+            // Admin-added questions.
+            var byBlock = req.ExtraAnswers
+                .Where(a => a.FormBlockId > 0)
+                .GroupBy(a => a.FormBlockId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            foreach (var q in layout.ExtraQuestions)
+            {
+                if (!q.IsRequired || FormBlockTypes.IsInformational(q.BlockType)) continue;
+
+                byBlock.TryGetValue(q.Id, out var answer);
+                if (FormsRepository.IsGenericAnswerMissing(q, answer))
+                    return BadRequest($"יש לענות על השאלה \"{q.Title}\".");
+            }
+        }
+
         // Strengths — replace all for team members
         foreach (var uid in memberIds)
             await _db.SaveDataAsync("DELETE FROM StudentStrengths WHERE UserId = @UserId", new { UserId = uid });
@@ -252,6 +315,25 @@ public class AssignmentController : ControllerBase
                 OwnProjectDescription = req.OwnProjectDescription ?? "",
                 Notes                 = req.Notes ?? ""
             });
+
+        // ── The generic half of the same submission ───────────────────────
+        // Written last, and only for blocks the layout classified as generic,
+        // so an answer can never land in TeamProjectPreferences or
+        // StudentStrengths by accident.
+        //
+        // TRANSACTIONAL LIMITATION: DbRepository exposes no transaction and
+        // every write in this codebase is a standalone statement, so the
+        // domain half and this half are not atomic. Ordering puts the domain
+        // records first — the ones assignment actually depends on — so a
+        // failure here leaves a valid assignment submission with missing
+        // answers to the optional extra questions, never the reverse. Making
+        // this atomic would need a repository-wide transaction refactor, which
+        // is deliberately out of scope.
+        if (gateForm is not null && layout is not null && layout.ExtraQuestions.Count > 0)
+        {
+            await FormsRepository.SaveGenericAnswersAsync(
+                _db, gateForm.Id, authUserId, layout.ExtraQuestions, req.ExtraAnswers);
+        }
 
         return Ok(new { teamId });
     }

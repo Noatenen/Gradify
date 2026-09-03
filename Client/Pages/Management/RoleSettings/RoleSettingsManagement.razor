@@ -1,128 +1,244 @@
+@*
+    ── הרשאות לפי תפקיד (Admin role-feature matrix) ─────────────────────────
+    Route:  /management/role-settings  — reached from the ניהול hub
+            (group "הגדרות").
+
+    Visual source:
+        Client/Pages/Management/Milestones/MilestonesManagement.razor
+        Client/Pages/Management/Users/UsersManagement.razor
+    — the finished Admin list screens. Same header rhythm, strip, MDataTable
+    treatment and button language, applied to a matrix instead of a list.
+
+    WHAT THIS PAGE IS
+    ─────────────────
+    The RoleSettings feature-flag matrix behind /api/role-settings: one row
+    per role, one column per flag in RoleFeatures.All. It is deliberately
+    NOT the key-based Permissions/RolePermissions system — the two coexist,
+    and this screen is the only way to reach these flags, which
+    ManagementHubDefinitions itself reads through RequiresFlag.
+
+    Saving is PER ROLE, because the API is PUT /api/role-settings/{roleName}
+    — one row, one request. A single "save everything" button would have to
+    fan out into five independent requests that can half-fail, so the row
+    keeps its own action and its own dirty state.
+
+    WHAT CHANGED IN THIS PASS — PRESENTATION ONLY
+    ─────────────────────────────────────────────
+    The matrix moved onto MDataTable, the checkboxes and role chips adopted
+    the Motiva controls, and the two families of flag (ניהול / שימוש) are
+    separated by a hairline so the grid can be scanned. Toggle, dirty
+    tracking, save payload and error handling are untouched.
+*@
+
 @page "/management/role-settings"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin)]
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Shared.AuthSharedModels
-@inject NavigationManager Nav
 @inject IRoleSettingsManagementService RoleSettingsService
 
 <div class="rs-page" dir="rtl">
 
-    <!-- ── Top bar ── -->
-    <div class="rs-topbar">
-        <div class="rs-topbar-start">
-            <button class="rs-back-btn"
-                    @onclick="@(() => Nav.NavigateTo("/management"))"
-                    title="חזרה לניהול">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="rs-breadcrumb">ניהול</div>
-                <h1 class="rs-page-title">הרשאות לפי תפקיד</h1>
-                <p class="rs-page-subtitle">
-                    הפעלה/השבתה של יכולות לפי תפקיד.
-                    שינויים נכנסים לתוקף עבור משתמשים חדשים מיד; משתמשים קיימים ירעננו את הדף.
-                </p>
-            </div>
-        </div>
-    </div>
+    @* ══ Header ═══════════════════════════════════════════════════════════ *@
+    <header class="rs-head">
+        <div class="rs-head-main">
+            <MAdminBack />
 
-    <!-- ── Loading / error / empty ── -->
-    @if (_loading)
-    {
-        <div class="rs-empty"><span class="rs-spinner-inline"></span>טוען הרשאות…</div>
-    }
-    else if (_loadError)
-    {
-        <div class="rs-empty rs-empty--error">
-            <span class="oi oi-warning" aria-hidden="true"></span>
-            שגיאה בטעינת ההרשאות. רענן את הדף.
-        </div>
-    }
-    else
-    {
-        <!-- ── Matrix table ── -->
-        <div class="rs-table-panel">
-            <div class="rs-table-wrap">
-                <table class="rs-table">
-                    <thead>
-                        <tr>
-                            <th class="rs-th-role">תפקיד</th>
-                            @foreach (var f in RoleFeatures.All)
-                            {
-                                <th class="rs-th-flag" title="@f">@RoleFeatures.Label(f)</th>
-                            }
-                            <th class="rs-th-actions"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach (var row in _rows)
-                        {
-                            <tr class="rs-row @(_dirtyRoles.Contains(row.RoleName) ? "rs-row-dirty" : "")">
-                                <td class="rs-cell-role">
-                                    <span class="rs-role-badge rs-role-@row.RoleName.ToLower()">
-                                        @RoleLabel(row.RoleName)
-                                    </span>
-                                </td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanManageRequests"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageRequests, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanManageMilestones"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageMilestones, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanManageAssignments"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageAssignments, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanManageUsers"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageUsers, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanManageAirtable"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanManageAirtable, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanOpenRequests"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanOpenRequests, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanViewTasks"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanViewTasks, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanSubmitTasks"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanSubmitTasks, e))" /></td>
-                                <td class="rs-cell-flag"><input type="checkbox" class="rs-checkbox"
-                                       checked="@row.CanViewLecturerDashboard"
-                                       @onchange="@(e => Toggle(row, RoleFeatures.CanViewLecturerDashboard, e))" /></td>
-                                <td class="rs-cell-actions">
-                                    <button class="rs-save-btn"
-                                            disabled="@(!_dirtyRoles.Contains(row.RoleName) || _savingRoles.Contains(row.RoleName))"
-                                            @onclick="() => SaveRow(row)">
-                                        @if (_savingRoles.Contains(row.RoleName))
-                                        {
-                                            <span class="rs-spinner-sm"></span>
-                                        }
-                                        else
-                                        {
-                                            <span class="oi oi-check" aria-hidden="true"></span>
-                                        }
-                                        שמור
-                                    </button>
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
+            <div class="rs-head-line">
+                <h1 class="rs-h1">הרשאות לפי תפקיד</h1>
+                <MInfoTip Text="מה מותר לכל תפקיד במערכת. כל שורה היא תפקיד, כל עמודה יכולת. השמירה מתבצעת לכל תפקיד בנפרד — שינויים נכנסים לתוקף עבור משתמשים חדשים מיד, ומשתמשים קיימים ירעננו את הדף." />
+
+                @* Three separate bordered pills used to sit in a strip under
+                   this header — three containers for three facts about one
+                   page. One container now, on the header line, where the rest
+                   of the Admin area keeps its page metadata. *@
+                @if (!_loading && !_loadError)
+                {
+                    <MSummaryTag Metrics="SummaryMetrics" />
+                }
             </div>
-            @if (!string.IsNullOrEmpty(_saveError))
-            {
-                <div class="rs-table-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_saveError
-                </div>
-            }
         </div>
+
+        @if (!_loading && !_loadError && _dirtyRoles.Count > 0)
+        {
+            <div class="rs-head-actions">
+                <span class="rs-dirty-note">
+                    <span class="rs-dirty-dot" aria-hidden="true"></span>
+                    @DirtyLine
+                </span>
+            </div>
+        }
+    </header>
+
+    @* ══ The matrix ═══════════════════════════════════════════════════════ *@
+    <MDataTable TItem="RoleSettingsDto"
+                Items="_rows"
+                Loading="_loading"
+                LoadingText="טוען הרשאות…"
+                ColumnCount="11"
+                MinWidth="1080px"
+                Class="rs-table">
+
+        <Columns>
+            <col class="rs-col-role" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-flag" />
+            <col class="rs-col-actions" />
+        </Columns>
+
+        <HeaderContent>
+            <th scope="col" class="rs-th-role">תפקיד</th>
+            @* The five ניהול flags, then the four שימוש flags. The band change
+               is drawn by rs-th-flag--band / rs-cell-flag--band below. *@
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanManageRequests">@RoleFeatures.Label(RoleFeatures.CanManageRequests)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanManageMilestones">@RoleFeatures.Label(RoleFeatures.CanManageMilestones)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanManageAssignments">@RoleFeatures.Label(RoleFeatures.CanManageAssignments)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanManageUsers">@RoleFeatures.Label(RoleFeatures.CanManageUsers)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanManageAirtable">@RoleFeatures.Label(RoleFeatures.CanManageAirtable)</th>
+            <th scope="col" class="rs-th-flag rs-th-flag--band" title="@RoleFeatures.CanOpenRequests">@RoleFeatures.Label(RoleFeatures.CanOpenRequests)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanViewTasks">@RoleFeatures.Label(RoleFeatures.CanViewTasks)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanSubmitTasks">@RoleFeatures.Label(RoleFeatures.CanSubmitTasks)</th>
+            <th scope="col" class="rs-th-flag" title="@RoleFeatures.CanViewLecturerDashboard">@RoleFeatures.Label(RoleFeatures.CanViewLecturerDashboard)</th>
+            <th scope="col" class="rs-th-actions"><span class="rs-sr">שמירה</span></th>
+        </HeaderContent>
+
+        <EmptyContent>
+            @if (_loadError)
+            {
+                <MEmptyState Title="שגיאה בטעינת ההרשאות"
+                             Description="רעננו את הדף או נסו שוב מאוחר יותר"
+                             Live="true" />
+            }
+            else
+            {
+                <MEmptyState Title="לא הוגדרו תפקידים"
+                             Description="אין שורות הרשאה להצגה"
+                             Live="true" />
+            }
+        </EmptyContent>
+
+        <RowTemplate Context="row">
+            @{
+                var dirty  = _dirtyRoles.Contains(row.RoleName);
+                var saving = _savingRoles.Contains(row.RoleName);
+            }
+            <tr class="@(dirty ? "rs-row--dirty" : "")">
+
+                <td class="rs-cell-role">
+                    <span class="rs-role rs-role--@row.RoleName.ToLowerInvariant()">@RoleLabel(row.RoleName)</span>
+                    @if (dirty)
+                    {
+                        <span class="rs-unsaved">לא נשמר</span>
+                    }
+                </td>
+
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanManageRequests)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanManageRequests"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanManageRequests, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanManageMilestones)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanManageMilestones"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanManageMilestones, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanManageAssignments)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanManageAssignments"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanManageAssignments, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanManageUsers)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanManageUsers"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanManageUsers, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanManageAirtable)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanManageAirtable"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanManageAirtable, e))" />
+                </td>
+
+                <td class="rs-cell-flag rs-cell-flag--band">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanOpenRequests)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanOpenRequests"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanOpenRequests, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanViewTasks)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanViewTasks"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanViewTasks, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanSubmitTasks)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanSubmitTasks"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanSubmitTasks, e))" />
+                </td>
+                <td class="rs-cell-flag">
+                    <input type="checkbox" class="rs-check"
+                           aria-label="@($"{RoleFeatures.Label(RoleFeatures.CanViewLecturerDashboard)} — {RoleLabel(row.RoleName)}")"
+                           checked="@row.CanViewLecturerDashboard"
+                           @onchange="@(e => Toggle(row, RoleFeatures.CanViewLecturerDashboard, e))" />
+                </td>
+
+                <td class="rs-cell-actions">
+                    <button type="button"
+                            class="rs-save @(dirty ? "rs-save--on motiva-cta" : "rs-save--off")"
+                            disabled="@(!dirty || saving)"
+                            @onclick="@(() => SaveRow(row))">
+                        @(saving ? "שומר…" : "שמירה")
+                    </button>
+                </td>
+            </tr>
+        </RowTemplate>
+    </MDataTable>
+
+    @if (!string.IsNullOrEmpty(_saveError))
+    {
+        <p class="rs-error" role="alert">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" />
+            </svg>
+            @_saveError
+        </p>
+    }
+
+    @* The two families the columns are grouped into. A legend rather than a
+       second header row: MDataTable renders exactly one <tr> in its head. *@
+    @if (!_loading && !_loadError)
+    {
+        <p class="rs-legend">
+            <span class="rs-legend-item"><span class="rs-legend-dot rs-legend-dot--manage" aria-hidden="true"></span>חמש העמודות הראשונות — יכולות ניהול</span>
+            <span class="rs-legend-item"><span class="rs-legend-dot rs-legend-dot--use" aria-hidden="true"></span>ארבע האחרונות — יכולות שימוש יומיומיות</span>
+        </p>
     }
 </div>
 
 @code {
+    /// <summary>The header's summary tag. The SAME two expressions the
+    /// two stat pills evaluated — nothing is counted differently, they are
+    /// just metrics in one container now.</summary>
+    private IReadOnlyList<MSummaryTag.Metric> SummaryMetrics => new[]
+    {
+        new MSummaryTag.Metric(_rows.Count.ToString(), "תפקידים"),
+        new MSummaryTag.Metric(RoleFeatures.All.Count.ToString(), "יכולות"),
+    };
+
     private List<RoleSettingsDto> _rows = new();
     private bool _loading   = true;
     private bool _loadError;
@@ -139,6 +255,10 @@
         _rows      = result ?? new();
         _loading   = false;
     }
+
+    private string DirtyLine => _dirtyRoles.Count == 1
+        ? "שינוי שלא נשמר בתפקיד אחד"
+        : $"שינויים שלא נשמרו ב-{_dirtyRoles.Count} תפקידים";
 
     private void Toggle(RoleSettingsDto row, string flag, ChangeEventArgs e)
     {

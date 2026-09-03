@@ -79,6 +79,7 @@ builder.Services.AddScoped<IAssignmentManagementService, AssignmentManagementSer
 
 // Reusable form-builder system
 builder.Services.AddScoped<IFormsManagementService, FormsManagementService>();
+builder.Services.AddScoped<IFormResponseService, FormResponseService>();
 
 // Airtable per-academic-year integration management
 builder.Services.AddScoped<IAirtableIntegrationService, AirtableIntegrationService>();

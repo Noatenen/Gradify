@@ -1,0 +1,235 @@
+@*
+    ── הגשות טופס (Admin) ────────────────────────────────────────────────────
+    Route:  /management/forms/{FormId:int}/submissions
+
+    Reached from the "הגשות" action in the forms list and in the editor header.
+
+    WHY THIS EXISTS RATHER THAN REUSING /assignments
+    ────────────────────────────────────────────────
+    The two are not the same data. /assignments reads team-scoped rows in
+    AssignmentFormSubmissions joined to TeamProjectPreferences and Projects —
+    it is an assignment workbench, not a submissions list. Generic forms
+    produce per-USER rows in FormSubmissions with free-form answers, which that
+    screen has no shape for.
+
+    So the split is by data, not by taste: the assignment form's "הגשות" action
+    goes to /assignments, and this page serves every other form. The server
+    enforces the same split — GET /api/forms/{id}/submissions refuses an
+    assignment form rather than returning an empty list that would read as
+    "nobody submitted".
+
+    Counts and rows are real. Nothing here is generated.
+*@
+
+@page "/management/forms/{FormId:int}/submissions"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+@inject IFormsManagementService FormsService
+
+@* ══ ONE SUBMISSION ══════════════════════════════════════════════════════ *@
+<MModal IsOpen="_detail is not null"
+        Title="@(_detail?.UserName is { Length: > 0 } n ? n : "הגשה")"
+        Size="MModal.ModalSize.Medium"
+        OnClose="CloseDetail">
+    <ChildContent>
+        @if (_detail is not null)
+        {
+            <div class="fsb-detail">
+                <div class="fsb-detail-meta">
+                    @if (!string.IsNullOrWhiteSpace(_detail.UserEmail))
+                    {
+                        <span class="fsb-detail-email" dir="ltr">@_detail.UserEmail</span>
+                    }
+                    <span class="fsb-detail-date">הוגש @FormatDateTime(_detail.SubmittedAt)</span>
+                    @if (_detail.UpdatedAt != _detail.SubmittedAt)
+                    {
+                        <span class="fsb-detail-date">· עודכן @FormatDateTime(_detail.UpdatedAt)</span>
+                    }
+                </div>
+
+                @if (_detail.Answers.Count == 0)
+                {
+                    <p class="fsb-muted">ההגשה אינה מכילה תשובות.</p>
+                }
+                else
+                {
+                    <ol class="fsb-answers">
+                        @foreach (var a in _detail.Answers)
+                        {
+                            <li class="fsb-answer">
+                                <p class="fsb-answer-q">@a.BlockTitle</p>
+
+                                @if (a.Number is not null)
+                                {
+                                    <p class="fsb-answer-a fsb-answer-a--num">@a.Number</p>
+                                }
+                                else if (a.Values.Count > 0)
+                                {
+                                    <div class="fsb-chips">
+                                        @foreach (var v in a.Values)
+                                        {
+                                            <span class="fsb-chip">@v</span>
+                                        }
+                                    </div>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(a.Text))
+                                {
+                                    <p class="fsb-answer-a">@a.Text</p>
+                                }
+                                else
+                                {
+                                    <p class="fsb-answer-a fsb-muted">— ללא תשובה</p>
+                                }
+                            </li>
+                        }
+                    </ol>
+                }
+            </div>
+        }
+    </ChildContent>
+    <FooterContent>
+        <button type="button" class="fsb-btn-ghost" @onclick="CloseDetail">סגירה</button>
+    </FooterContent>
+</MModal>
+
+<div class="fsb-page" dir="rtl">
+
+    <header class="fsb-head">
+        <button type="button" class="fsb-back" title="חזרה לעורך" aria-label="חזרה לעורך" @onclick="GoBack">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12h14" /><path d="m12 5-7 7 7 7" />
+            </svg>
+        </button>
+        <div class="fsb-head-title">
+            <h1 class="fsb-h1">הגשות</h1>
+            @if (!_loading && _error.Length == 0)
+            {
+                <MSummaryTag Metrics="SummaryMetrics" />
+            }
+        </div>
+    </header>
+
+    @if (_error.Length > 0)
+    {
+        <div class="fsb-state fsb-state--error" role="alert">
+            <span>@_error</span>
+            <button type="button" class="fsb-retry" @onclick="GoBack">חזרה לעורך</button>
+        </div>
+    }
+    else
+    {
+        <MDataTable TItem="FormSubmissionListItemDto"
+                    Items="_rows"
+                    Loading="_loading"
+                    LoadingText="טוען הגשות…"
+                    ColumnCount="5"
+                    MinWidth="720px"
+                    Class="fsb-table">
+
+            <Columns>
+                <col />
+                <col class="fsb-col-email" />
+                <col class="fsb-col-date" />
+                <col class="fsb-col-num" />
+                <col class="fsb-col-actions" />
+            </Columns>
+
+            <HeaderContent>
+                <th scope="col">מגיש</th>
+                <th scope="col">אימייל</th>
+                <th scope="col">תאריך הגשה</th>
+                <th scope="col">תשובות</th>
+                <th scope="col"><span class="fsb-sr">פעולות</span></th>
+            </HeaderContent>
+
+            <EmptyContent>
+                <MEmptyState Title="אין עדיין הגשות"
+                             Description="כשסטודנטים יגישו את הטופס, ההגשות שלהם יופיעו כאן." />
+            </EmptyContent>
+
+            @* The <tr> belongs to the caller — see MDataTable. *@
+            <RowTemplate Context="row">
+                <tr>
+                <td>
+                    <button type="button" class="fsb-name" @onclick="@(() => OpenDetail(row.Id))">
+                        @(string.IsNullOrWhiteSpace(row.UserName) ? $"משתמש {row.UserId}" : row.UserName)
+                    </button>
+                </td>
+                <td><span class="fsb-muted" dir="ltr">@(string.IsNullOrWhiteSpace(row.UserEmail) ? "—" : row.UserEmail)</span></td>
+                <td><span class="fsb-muted">@FormatDateTime(row.SubmittedAt)</span></td>
+                <td><span class="fsb-num">@row.AnswerCount</span></td>
+                <td>
+                    <button type="button" class="fsb-open" @onclick="@(() => OpenDetail(row.Id))">צפייה</button>
+                </td>
+                </tr>
+            </RowTemplate>
+        </MDataTable>
+    }
+</div>
+
+@code {
+    [Parameter] public int FormId { get; set; }
+
+    private List<FormSubmissionListItemDto> _rows = new();
+    private FormSubmissionDetailDto?        _detail = null;
+
+    private bool   _loading = true;
+    private string _error   = "";
+    private int    _loadedFormId = 0;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedFormId == FormId) return;
+        _loadedFormId = FormId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = "";
+        StateHasChanged();
+
+        var rows = await FormsService.GetSubmissionsAsync(FormId);
+
+        if (rows is null)
+        {
+            // The server refuses this route for the assignment form, whose
+            // submissions are team-scoped and live at /assignments. Saying so
+            // is more useful than an empty table.
+            _error = "לא ניתן להציג כאן את ההגשות של טופס זה. הגשות טופס השיבוץ מנוהלות במסך השיבוצים.";
+            _rows  = new();
+        }
+        else
+        {
+            _rows = rows;
+        }
+
+        _loading = false;
+        StateHasChanged();
+    }
+
+    /// <summary>One metric, so the tag draws no rule — the container is the
+    /// same one every other Admin header wears.</summary>
+    private IReadOnlyList<MSummaryTag.Metric> SummaryMetrics =>
+        _rows.Count == 0
+            ? new[] { new MSummaryTag.Metric("אין עדיין הגשות") }
+            : new[] { new MSummaryTag.Metric(_rows.Count.ToString(), "הגשות") };
+
+    private async Task OpenDetail(int submissionId)
+    {
+        _detail = await FormsService.GetSubmissionAsync(submissionId);
+        StateHasChanged();
+    }
+
+    private void CloseDetail() => _detail = null;
+
+    private void GoBack() => Nav.NavigateTo($"/management/forms/{FormId}");
+
+    private static string FormatDateTime(string? iso) =>
+        DateTime.TryParse(iso, out var d) ? d.ToLocalTime().ToString("dd.MM.yyyy HH:mm") : "—";
+}

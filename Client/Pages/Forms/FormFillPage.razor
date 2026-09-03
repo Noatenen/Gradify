@@ -1,0 +1,544 @@
+@*
+    ── מילוי טופס (student-side rendering) ───────────────────────────────────
+    Route:  /forms/{FormId:int}
+
+    WHY THIS PAGE EXISTS
+    ────────────────────
+    The form builder was previously write-only: an admin could describe a form
+    but nothing in the product could render one, because the only answer
+    storage in the system belonged to the assignment form's own domain tables.
+    This page renders a form from its SAVED block definitions and persists
+    answers through /api/form-responses into FormSubmissions / FormAnswers.
+
+    WHAT IT DELIBERATELY DOES NOT RENDER
+    ────────────────────────────────────
+    טופס שיבוץ פרויקט. Its answers are team-scoped and carry real Projects.Id
+    values that the assignment algorithm joins and scores, so it is answered at
+    /student/assignment against its own endpoints. The server rejects it on
+    these routes; this page shows that rather than drawing a generic imitation
+    that would silently store project choices as loose strings.
+
+    STATES
+    ──────
+    Loading · not-available · closed-window (with the server's own reason) ·
+    fillable · already-submitted (re-openable only when the form allows editing
+    after submit). The window is the server's — the same
+    FormsRepository.EvaluateGate the admin's status chip reads — so the button
+    here and the chip there cannot disagree.
+*@
+
+@page "/forms/{FormId:int}"
+@layout AppLayout
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IFormResponseService FormsResponses
+@inject NavigationManager Nav
+
+<div class="ffl-page" dir="rtl">
+
+    @if (_loading)
+    {
+        <MLoadingState Label="טוען טופס…" />
+    }
+    else if (_form is null)
+    {
+        <MEmptyState Title="הטופס אינו זמין"
+                     Description="ייתכן שהטופס נסגר, נמחק או שאינו מיועד עבורך.">
+            <Action>
+                <button type="button" class="ffl-btn-ghost" @onclick="@(() => Nav.NavigateTo("/dashboard"))">
+                    חזרה למסך הבית
+                </button>
+            </Action>
+        </MEmptyState>
+    }
+    else
+    {
+        <header class="ffl-head">
+            <h1 class="ffl-h1">@_form.Name</h1>
+            <div class="ffl-head-meta">
+                <span class="ffl-status ffl-status--@StatusSlug">
+                    <span class="ffl-status-dot" aria-hidden="true"></span>
+                    @FormDisplayStatus.Label(_form.DisplayStatus)
+                </span>
+                @if (!string.IsNullOrWhiteSpace(_form.AcademicYear))
+                {
+                    <span class="ffl-cycle">@_form.AcademicYear</span>
+                }
+                @if (WindowLabel.Length > 0)
+                {
+                    <span class="ffl-cycle" dir="ltr">@WindowLabel</span>
+                }
+            </div>
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(_form.Instructions))
+        {
+            <div class="ffl-instructions">@_form.Instructions</div>
+        }
+
+        @if (_justSubmitted)
+        {
+            <div class="ffl-banner ffl-banner--ok" role="status">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="m5 12.5 4.5 4.5L19 7" />
+                </svg>
+                <span>הטופס נשלח בהצלחה.</span>
+            </div>
+        }
+        else if (_form.SubmittedAt is not null && !_editing)
+        {
+            <div class="ffl-banner ffl-banner--info" role="status">
+                <span>הגשתם את הטופס בתאריך @FormatDateTime(_form.SubmittedAt).</span>
+                @if (_form.CanSubmit && _form.AllowEditAfterSubmit)
+                {
+                    <button type="button" class="ffl-banner-action" @onclick="StartEditing">עריכת התשובות</button>
+                }
+            </div>
+        }
+
+        @* The window gate. The server's own message is shown rather than a
+           generic one, because it says WHICH bound was hit and when. *@
+        @if (!_form.CanSubmit)
+        {
+            <div class="ffl-banner ffl-banner--closed" role="status">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" />
+                </svg>
+                <span>@(_form.ClosedMessage ?? "הטופס אינו פתוח להגשה כרגע.")</span>
+            </div>
+        }
+
+        @if (_form.Blocks.Count == 0)
+        {
+            <MEmptyState Title="הטופס ריק"
+                         Description="עדיין לא נוספו שאלות לטופס הזה." />
+        }
+        else
+        {
+            <ol class="ffl-blocks">
+                @foreach (var b in _form.Blocks)
+                {
+                    var block = b;
+
+                    if (FormBlockTypes.IsInformational(block.BlockType))
+                    {
+                        @* Information block — not a question, so it is not
+                           numbered and never carries a required marker. *@
+                        <li class="ffl-info">
+                            @if (!string.IsNullOrWhiteSpace(block.Title))
+                            {
+                                <h2 class="ffl-info-title">@block.Title</h2>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(block.HelperText))
+                            {
+                                <p class="ffl-info-text">@block.HelperText</p>
+                            }
+                        </li>
+                    }
+                    else
+                    {
+                        var num     = QuestionNumber(block.Id);
+                        var invalid = _invalidBlockIds.Contains(block.Id);
+                        var scale   = block.RatingScale == 10 ? 10 : 5;
+
+                        <li class="ffl-block @(invalid ? "ffl-block--invalid" : "")">
+                            <div class="ffl-q">
+                                <span class="ffl-q-num">@num</span>
+                                <div class="ffl-q-text">
+                                    <p class="ffl-q-title">
+                                        <span>@block.Title</span>
+                                        @if (block.IsRequired)
+                                        {
+                                            @* A separate flex child, never glued
+                                               to the text node: an RTL marker
+                                               inside the run jumps sides. *@
+                                            <span class="ffl-req" aria-label="שאלת חובה">*</span>
+                                        }
+                                    </p>
+                                    @if (!string.IsNullOrWhiteSpace(block.HelperText))
+                                    {
+                                        <p class="ffl-q-help">@block.HelperText</p>
+                                    }
+                                </div>
+                            </div>
+
+                            <div class="ffl-answer">
+                                @if (block.BlockType == FormBlockTypes.SingleChoice)
+                                {
+                                    <div class="ffl-choices" role="radiogroup" aria-label="@block.Title">
+                                        @foreach (var opt in block.Options)
+                                        {
+                                            var o        = opt;
+                                            var selected = IsSelected(block.Id, o.OptionValue);
+                                            <label class="ffl-choice @(selected ? "ffl-choice--on" : "")">
+                                                <input type="radio"
+                                                       name="@($"block-{block.Id}")"
+                                                       checked="@selected"
+                                                       disabled="@ReadOnly"
+                                                       @onchange="@(() => PickSingle(block.Id, o.OptionValue))" />
+                                                <span>@o.OptionLabel</span>
+                                            </label>
+                                        }
+                                    </div>
+                                }
+                                else if (block.BlockType == FormBlockTypes.MultiChoice)
+                                {
+                                    <div class="ffl-choices" role="group" aria-label="@block.Title">
+                                        @foreach (var opt in block.Options)
+                                        {
+                                            var o        = opt;
+                                            var selected = IsSelected(block.Id, o.OptionValue);
+                                            <label class="ffl-choice @(selected ? "ffl-choice--on" : "")">
+                                                <input type="checkbox"
+                                                       checked="@selected"
+                                                       disabled="@ReadOnly"
+                                                       @onchange="@(() => ToggleMulti(block.Id, o.OptionValue))" />
+                                                <span>@o.OptionLabel</span>
+                                            </label>
+                                        }
+                                    </div>
+                                }
+                                else if (block.BlockType == FormBlockTypes.Rating)
+                                {
+                                    <div class="ffl-rating">
+                                        <div class="ffl-scale" role="group" aria-label="@block.Title">
+                                            @for (int v = 1; v <= scale; v++)
+                                            {
+                                                var val = v;
+                                                var on  = GetNumber(block.Id) == val;
+                                                <button type="button"
+                                                        class="ffl-scale-btn @(on ? "ffl-scale-btn--on" : "")"
+                                                        aria-pressed="@(on ? "true" : "false")"
+                                                        disabled="@ReadOnly"
+                                                        @onclick="@(() => SetNumber(block.Id, val))">@val</button>
+                                            }
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(block.MinLabel) ||
+                                             !string.IsNullOrWhiteSpace(block.MaxLabel))
+                                        {
+                                            <div class="ffl-scale-labels">
+                                                <span>@block.MinLabel</span>
+                                                <span>@block.MaxLabel</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                                else if (block.BlockType == FormBlockTypes.OpenText)
+                                {
+                                    <textarea class="ffl-textarea" rows="4"
+                                              placeholder="כתבו את תשובתכם כאן"
+                                              disabled="@ReadOnly"
+                                              value="@GetText(block.Id)"
+                                              @oninput="@(e => SetText(block.Id, e.Value?.ToString() ?? ""))"></textarea>
+                                }
+                                else if (block.BlockType == FormBlockTypes.Text)
+                                {
+                                    @* Short text. Still rendered because
+                                       existing forms may store it, even though
+                                       the builder no longer offers it. *@
+                                    <input class="ffl-input"
+                                           placeholder="תשובה קצרה"
+                                           disabled="@ReadOnly"
+                                           value="@GetText(block.Id)"
+                                           @oninput="@(e => SetText(block.Id, e.Value?.ToString() ?? ""))" />
+                                }
+                                else if (block.BlockType == FormBlockTypes.Date)
+                                {
+                                    <input class="ffl-input" type="date" dir="ltr"
+                                           disabled="@ReadOnly"
+                                           value="@GetText(block.Id)"
+                                           @oninput="@(e => SetText(block.Id, e.Value?.ToString() ?? ""))" />
+                                }
+                                else
+                                {
+                                    @* Ranking and FileUpload have no generic
+                                       student control: ranking is the
+                                       assignment form's catalog-fed block, and
+                                       file upload needs the existing upload
+                                       pipeline. Saying so beats a dead field. *@
+                                    <p class="ffl-unsupported">
+                                        סוג שאלה זה (@FormBlockTypes.Label(block.BlockType)) אינו נתמך במסך זה.
+                                    </p>
+                                }
+                            </div>
+                        </li>
+                    }
+                }
+            </ol>
+
+            @if (!ReadOnly)
+            {
+                @if (!string.IsNullOrEmpty(_error))
+                {
+                    <div class="ffl-banner ffl-banner--error" role="alert">@_error</div>
+                }
+
+                <div class="ffl-actions">
+                    @if (_editing)
+                    {
+                        <button type="button" class="ffl-btn-ghost" @onclick="CancelEditing" disabled="@_submitting">
+                            ביטול
+                        </button>
+                    }
+                    <button type="button" class="ffl-submit motiva-cta"
+                            disabled="@_submitting" @onclick="Submit">
+                        @if (_submitting)
+                        {
+                            <span class="ffl-spinner" aria-hidden="true"></span>
+                        }
+                        <span>@(_form.SubmittedAt is not null ? "עדכון ההגשה" : "שליחת הטופס")</span>
+                    </button>
+                </div>
+            }
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public int FormId { get; set; }
+
+    private FormFillDto? _form = null;
+
+    private bool   _loading       = true;
+    private bool   _submitting    = false;
+    private bool   _editing       = false;
+    private bool   _justSubmitted = false;
+    private string _error         = "";
+
+    // Answers keyed by block id. Option VALUES are stored, never labels, so a
+    // later label edit by an admin never rewrites what was answered.
+    private readonly Dictionary<int, List<string>> _choices = new();
+    private readonly Dictionary<int, string>       _texts   = new();
+    private readonly Dictionary<int, int>          _numbers = new();
+
+    private readonly HashSet<int> _invalidBlockIds = new();
+
+    private int _loadedFormId = 0;
+
+    /// <summary>
+    /// Read-only once the form is submitted, unless the student has chosen to
+    /// edit and the form allows editing after submit — and always read-only
+    /// when the server's window gate is shut.
+    /// </summary>
+    private bool ReadOnly =>
+        _form is null || !_form.CanSubmit || (_form.SubmittedAt is not null && !_editing);
+
+    /// <summary>
+    /// Display number for a question. Informational blocks are skipped, so the
+    /// numbering counts questions rather than blocks. Computed from the block
+    /// list rather than incremented inside the render loop, which would make
+    /// the number depend on render order.
+    /// </summary>
+    private int QuestionNumber(int blockId)
+    {
+        if (_form is null) return 0;
+
+        int n = 0;
+        foreach (var b in _form.Blocks)
+        {
+            if (FormBlockTypes.IsInformational(b.BlockType)) continue;
+            n++;
+            if (b.Id == blockId) return n;
+        }
+        return n;
+    }
+
+    // Guarded on the route parameter: OnParametersSetAsync runs on every
+    // parameter set, and an unguarded reload would discard answers in progress.
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedFormId == FormId) return;
+        _loadedFormId = FormId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error   = "";
+        StateHasChanged();
+
+        _form = await FormsResponses.GetFormAsync(FormId);
+
+        if (_form is not null) HydrateAnswers(_form);
+
+        _loading = false;
+        StateHasChanged();
+    }
+
+    /// <summary>Seeds the editing state from answers already submitted.</summary>
+    private void HydrateAnswers(FormFillDto form)
+    {
+        _choices.Clear();
+        _texts.Clear();
+        _numbers.Clear();
+
+        foreach (var a in form.ExistingAnswers)
+        {
+            if (a.OptionValues.Count > 0) _choices[a.FormBlockId] = new List<string>(a.OptionValues);
+            if (!string.IsNullOrEmpty(a.Text)) _texts[a.FormBlockId] = a.Text!;
+            if (a.Number is not null) _numbers[a.FormBlockId] = a.Number.Value;
+        }
+    }
+
+    // ── Labels ───────────────────────────────────────────────────────────────
+
+    private string StatusSlug => _form?.DisplayStatus switch
+    {
+        FormDisplayStatus.Open      => "open",
+        FormDisplayStatus.Scheduled => "scheduled",
+        FormDisplayStatus.Closed    => "closed",
+        _                           => "draft",
+    };
+
+    private string WindowLabel
+    {
+        get
+        {
+            if (_form is null) return "";
+            string o = FormatDate(_form.OpensAt);
+            string c = FormatDate(_form.ClosesAt);
+            if (o == "—" && c == "—") return "";
+            return $"{o} – {c}";
+        }
+    }
+
+    private static string FormatDate(string? iso) =>
+        DateTime.TryParse(iso, out var d) ? d.ToLocalTime().ToString("dd.MM.yyyy") : "—";
+
+    private static string FormatDateTime(string? iso) =>
+        DateTime.TryParse(iso, out var d) ? d.ToLocalTime().ToString("dd.MM.yyyy HH:mm") : "—";
+
+    // ── Answer accessors ─────────────────────────────────────────────────────
+
+    private bool IsSelected(int blockId, string value) =>
+        _choices.TryGetValue(blockId, out var list) && list.Contains(value);
+
+    private void PickSingle(int blockId, string value)
+    {
+        _choices[blockId] = new List<string> { value };
+        _invalidBlockIds.Remove(blockId);
+    }
+
+    private void ToggleMulti(int blockId, string value)
+    {
+        if (!_choices.TryGetValue(blockId, out var list))
+        {
+            list = new List<string>();
+            _choices[blockId] = list;
+        }
+
+        if (!list.Remove(value)) list.Add(value);
+        _invalidBlockIds.Remove(blockId);
+    }
+
+    private string GetText(int blockId) => _texts.TryGetValue(blockId, out var t) ? t : "";
+
+    private void SetText(int blockId, string value)
+    {
+        _texts[blockId] = value;
+        _invalidBlockIds.Remove(blockId);
+    }
+
+    private int? GetNumber(int blockId) => _numbers.TryGetValue(blockId, out var n) ? n : null;
+
+    private void SetNumber(int blockId, int value)
+    {
+        _numbers[blockId] = value;
+        _invalidBlockIds.Remove(blockId);
+    }
+
+    // ── Editing an existing submission ───────────────────────────────────────
+
+    private void StartEditing()
+    {
+        _editing       = true;
+        _justSubmitted = false;
+        _error         = "";
+    }
+
+    private void CancelEditing()
+    {
+        _editing = false;
+        _error   = "";
+        _invalidBlockIds.Clear();
+        if (_form is not null) HydrateAnswers(_form);   // discard unsaved edits
+    }
+
+    // ── Submit ───────────────────────────────────────────────────────────────
+
+    private async Task Submit()
+    {
+        if (_form is null || _submitting) return;
+
+        _error = "";
+        _invalidBlockIds.Clear();
+
+        // Client-side required validation. The server validates too and is the
+        // authority; this exists so the student sees WHICH question is missing
+        // rather than a single message at the bottom.
+        foreach (var b in _form.Blocks)
+        {
+            if (!b.IsRequired || FormBlockTypes.IsInformational(b.BlockType)) continue;
+            if (!IsAnswered(b)) _invalidBlockIds.Add(b.Id);
+        }
+
+        if (_invalidBlockIds.Count > 0)
+        {
+            _error = _invalidBlockIds.Count == 1
+                ? "יש לענות על שאלת החובה המסומנת."
+                : $"יש לענות על {_invalidBlockIds.Count} שאלות חובה המסומנות.";
+            StateHasChanged();
+            return;
+        }
+
+        _submitting = true;
+        StateHasChanged();
+
+        var payload = new SubmitFormResponseRequest
+        {
+            Answers = _form.Blocks
+                .Where(b => !FormBlockTypes.IsInformational(b.BlockType))
+                .Select(b => new FormAnswerInputDto
+                {
+                    FormBlockId  = b.Id,
+                    OptionValues = _choices.TryGetValue(b.Id, out var c) ? c : new List<string>(),
+                    Text         = _texts.TryGetValue(b.Id, out var t) ? t : null,
+                    Number       = _numbers.TryGetValue(b.Id, out var n) ? n : null
+                })
+                .ToList()
+        };
+
+        var error = await FormsResponses.SubmitAsync(FormId, payload);
+
+        _submitting = false;
+
+        if (error is not null)
+        {
+            _error = error;
+            StateHasChanged();
+            return;
+        }
+
+        // Reload from the server so SubmittedAt, the gate and the stored
+        // answers all come back authoritative rather than being guessed here.
+        _editing       = false;
+        _justSubmitted = true;
+        await LoadAsync();
+    }
+
+    private bool IsAnswered(FormBlockDto b)
+    {
+        if (FormBlockTypes.IsRating(b.BlockType))
+            return _numbers.TryGetValue(b.Id, out var n) && n > 0;
+
+        if (FormBlockTypes.HasOptions(b.BlockType))
+            return _choices.TryGetValue(b.Id, out var c) && c.Count > 0;
+
+        return _texts.TryGetValue(b.Id, out var t) && !string.IsNullOrWhiteSpace(t);
+    }
+}

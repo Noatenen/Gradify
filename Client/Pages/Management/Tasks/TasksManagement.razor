@@ -1,616 +1,1028 @@
+@*
+    ── ניהול תבניות משימות (Admin Task Template library) ────────────────────
+    Route:  /management/tasks  — reached from the ניהול hub.
+
+    Visual source:
+        design/design-system/Motiva Admin Task Templates.dc.html
+        Client/Pages/Management/Milestones/MilestonesManagement.razor  (its
+        sibling — the two pages share one stylesheet vocabulary on purpose)
+
+    WHAT THIS PAGE IS
+    ─────────────────
+    The GLOBAL, reusable task TEMPLATE library — TaskTemplates rows. It is not
+    a project's task list. The hierarchy:
+
+        MilestoneTemplates  ──┐
+          TaskTemplates    ←──┘  this page: a task template belongs to at most
+                                 one milestone template
+            → project Tasks      created by the cycle rollout as SNAPSHOTS
+
+    PROPAGATION, PRECISELY — this is the thing to get right on this screen:
+      • Creating an ACTIVE template propagates immediately: the server inserts a
+        Tasks row into every active project whose cycle already carries the
+        parent milestone (TaskTemplatesController.PropagateTemplateToProjectsAsync).
+        The modal says so before you save.
+      • EDITING a template propagates to NOTHING. Project tasks are snapshots
+        taken when they were created and hold no FK back here.
+      • DELETING or DETACHING a template removes no project task either.
+    Editing therefore cannot corrupt live student data, and creating is the one
+    action that reaches it — so only that one is announced.
+
+    WHERE THE REAL MODEL DIFFERS FROM THE PROTOTYPE
+    ──────────────────────────────────────────────
+    • ONE MILESTONE, NOT MANY. The prototype models milestones as an array and
+      draws removable chips. TaskTemplates.MilestoneTemplateId is a single FK,
+      so this page offers ONE milestone — plus "לא משויך", which the nullable
+      column now permits. A join table would have been a real architecture
+      change to a rollout every cycle depends on; it was not invented.
+    • PROJECT TYPE IS INHERITED, NOT CHOSEN. The prototype gives a task its own
+      three type cards. TaskTemplates has no ProjectTypeId, and the rollout
+      decides applicability from the MILESTONE's. So the type is displayed —
+      filterable, because that filter reflects what the engine really does — but
+      never editable here. Adding a task-level type would have rendered a
+      control nothing reads.
+    • DATES ARE REQUIRED, not optional. StartDate and DueDate are NOT NULL in
+      TaskTemplates. The prototype marks them "(רשות)"; that was not honoured.
+    • THE SUBMISSION TOGGLE OPENS A REAL POLICY. The prototype has the toggle
+      alone. The product stores instructions, a file-count cap, a size cap, an
+      extension allow-list and linked resource files, and the existing screen
+      edited all of them — so the toggle reveals them rather than dropping
+      working capability to match a drawing.
+*@
+
 @page "/management/tasks"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
 @inject NavigationManager Nav
 @inject ITaskManagementService TaskService
 @inject IResourceFilesService ResourceFilesService
 
-<div class="tk-page" @onclick="CloseAllMenus">
+@* ══════════════════════════════════════════
+     CREATE / EDIT TASK TEMPLATE MODAL
+     ══════════════════════════════════════════ *@
+@if (_modalOpen)
+{
+    <div class="tt-modal-overlay" @onclick="CloseModal">
+        <div class="tt-modal-box tt-modal-box--lg" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
 
-    <!-- ══════════════════════════════════════════
-         TOP BAR
-         ══════════════════════════════════════════ -->
-    <div class="tk-topbar">
-        <div class="tk-topbar-start">
-            <button class="tk-back-btn" @onclick="@(() => Nav.NavigateTo("/management"))"
-                    @onclick:stopPropagation="true" title="חזרה לניהול">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="tk-breadcrumb">ניהול</div>
-                <h1 class="tk-page-title">ניהול משימות</h1>
-            </div>
-        </div>
-
-        <div class="tk-topbar-end" @onclick:stopPropagation="true">
-            <button class="tk-add-btn" @onclick="OpenAddForm">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                תבנית חדשה
-            </button>
-        </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════
-         KPI SUMMARY CARDS
-         ══════════════════════════════════════════ -->
-    @if (!_loading && !_loadError)
-    {
-        <div class="tk-kpi-row">
-            <div class="tk-kpi-card">
-                <div class="tk-kpi-value">@_allTemplates.Count</div>
-                <div class="tk-kpi-label">סה"כ תבניות</div>
-            </div>
-            <div class="tk-kpi-card tk-kpi--active">
-                <div class="tk-kpi-value">@_allTemplates.Count(t => t.IsActive && TaskTemplateStatus(t) == "open")</div>
-                <div class="tk-kpi-label">תבניות פתוחות כעת</div>
-            </div>
-            <div class="tk-kpi-card tk-kpi--system">
-                <div class="tk-kpi-value">@_allTemplates.Count(t => t.IsActive)</div>
-                <div class="tk-kpi-label">תבניות פעילות</div>
-            </div>
-            <div class="tk-kpi-card tk-kpi--student">
-                <div class="tk-kpi-value">@_milestones.Count</div>
-                <div class="tk-kpi-label">אבני דרך מקושרות</div>
-            </div>
-        </div>
-    }
-
-    <!-- ══════════════════════════════════════════
-         ADD / EDIT FORM PANEL (TaskTemplates only)
-         ══════════════════════════════════════════ -->
-    @if (_showForm)
-    {
-        <div class="tk-form-panel" @onclick:stopPropagation="true">
-            <div class="tk-form-header">
-                <span class="oi @(_editingId == 0 ? "oi-plus" : "oi-pencil")" aria-hidden="true"></span>
-                @(_editingId == 0 ? "הוספת תבנית משימה" : $"עריכה: {_formTitle}")
+            <div class="tt-modal-header">
+                <span class="tt-modal-glyph" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 11l3 3 8-8" />
+                        <path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" />
+                    </svg>
+                </span>
+                <div class="tt-modal-titles">
+                    <div class="tt-modal-title">@(_editId == 0 ? "תבנית משימה חדשה" : "עריכת תבנית משימה")</div>
+                    <div class="tt-modal-subtitle">תבנית משימה גלובלית לשימוש חוזר</div>
+                </div>
+                <button type="button" class="tt-modal-close" @onclick="CloseModal" aria-label="סגירה">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
             </div>
 
-            <div class="tk-form-grid">
-                <div class="tk-field tk-field-full">
-                    <label class="tk-label">שם המשימה <span class="tk-required">*</span></label>
-                    <input type="text" class="tk-input" @bind="_formTitle"
-                           placeholder="לדוגמה: הגשת מסמך דרישות" maxlength="200" />
+            <div class="tt-modal-body">
+
+                <p class="tt-form-section">פרטי המשימה</p>
+
+                <div class="tt-form-field">
+                    <label class="tt-form-label" for="tt-f-name">שם המשימה <span class="tt-req">*</span></label>
+                    <input id="tt-f-name" class="tt-form-input" @bind="_fTitle"
+                           placeholder="לדוגמה: מסמך אפיון ראשוני" maxlength="150" />
                 </div>
 
-                <div class="tk-field tk-field-full">
-                    <label class="tk-label">אבן דרך משויכת <span class="tk-required">*</span></label>
-                    <select class="tk-input" @bind="_formMilestoneId">
-                        <option value="0">— בחר אבן דרך —</option>
-                        @foreach (var m in _milestones)
+                <div class="tt-form-field">
+                    <label class="tt-form-label" for="tt-f-desc">תיאור</label>
+                    <textarea id="tt-f-desc" class="tt-form-textarea" @bind="_fDescription"
+                              placeholder="תיאור קצר של המשימה" rows="3"></textarea>
+                </div>
+
+                <p class="tt-form-section">שיוך</p>
+
+                <div class="tt-form-field">
+                    <label class="tt-form-label" for="tt-f-ms">אבן דרך משויכת</label>
+                    <select id="tt-f-ms" class="tt-form-select" @bind="_fMilestoneId">
+                        @* "לא משויך" is a real, storable state now that
+                           MilestoneTemplateId is nullable — an authored template
+                           that is not yet part of any milestone's programme. *@
+                        <option value="0">לא משויך</option>
+                        @foreach (var ms in _milestones.OrderBy(m => m.OrderIndex).ThenBy(m => m.Id))
                         {
-                            <option value="@m.Id">@m.Title</option>
+                            <option value="@ms.Id">@ms.Title</option>
                         }
                     </select>
                 </div>
 
-                <div class="tk-field">
-                    <label class="tk-label">תאריך פתיחה <span class="tk-required">*</span></label>
-                    <input type="date" class="tk-input" @bind="_formStartDate" />
+                @* Read-only, and labelled as inherited. The rollout reads the
+                   MILESTONE's project type; a second editable one here would be
+                   a setting the engine ignores. *@
+                <div class="tt-inherit">
+                    <span class="tt-inherit-label">רלוונטי לסוג פרויקט</span>
+                    <span class="tt-type tt-type--@ToneFor(SelectedMilestone?.ProjectTypeId, _fMilestoneId == 0)">
+                        <span class="tt-type-dot" aria-hidden="true"></span>@SelectedApplicability
+                    </span>
+                    <span class="tt-inherit-note">
+                        @(_fMilestoneId == 0
+                            ? "ייקבע לפי אבן הדרך שתיבחר"
+                            : "נגזר מאבן הדרך המשויכת ואינו ניתן לעריכה כאן")
+                    </span>
                 </div>
 
-                <div class="tk-field">
-                    <label class="tk-label">תאריך יעד <span class="tk-required">*</span></label>
-                    <input type="date" class="tk-input" @bind="_formDueDate" />
-                </div>
+                @if (_fMilestoneId == 0)
+                {
+                    <div class="tt-form-note">
+                        תבנית שאינה משויכת לאבן דרך נשמרת בספרייה אך לא תיווצר באף פרויקט
+                        בעת החלת התבניות על מחזור.
+                    </div>
+                }
 
-                <div class="tk-field tk-field-full">
-                    <label class="tk-label">תיאור <span class="tk-optional">(אופציונלי)</span></label>
-                    <textarea class="tk-input tk-textarea" @bind="_formDescription"
-                              placeholder="תיאור קצר של המשימה..."
-                              rows="2" maxlength="500"></textarea>
-                </div>
+                <p class="tt-form-section">תזמון ברירת מחדל</p>
 
-                <div class="tk-field">
-                    <div class="tk-check-row">
-                        <input type="checkbox" id="chk-active" class="tk-checkbox"
-                               @bind="_formIsActive" />
-                        <label for="chk-active" class="tk-check-label">פעיל</label>
+                <div class="tt-form-grid">
+                    <div class="tt-form-field">
+                        <label class="tt-form-label" for="tt-f-start">תאריך פתיחה <span class="tt-req">*</span></label>
+                        <input id="tt-f-start" type="date" class="tt-form-input"
+                               @bind="_fStartDate" @bind:format="yyyy-MM-dd" />
+                    </div>
+                    <div class="tt-form-field">
+                        <label class="tt-form-label" for="tt-f-due">תאריך יעד <span class="tt-req">*</span></label>
+                        <input id="tt-f-due" type="date" class="tt-form-input"
+                               @bind="_fDueDate" @bind:format="yyyy-MM-dd" />
                     </div>
                 </div>
 
-                <div class="tk-field">
-                    <div class="tk-check-row">
-                        <input type="checkbox" id="chk-submission" class="tk-checkbox"
-                               @bind="_formIsSubmission" />
-                        <label for="chk-submission" class="tk-check-label">משימת הגשה</label>
+                <p class="tt-form-section">הגדרות</p>
+
+                <div class="tt-form-grid">
+                    <div class="tt-switch-row">
+                        <div class="tt-switch-copy">
+                            <span class="tt-switch-title">משימת הגשה</span>
+                            <span class="tt-switch-note">דורשת הגשת תוצר לבדיקה</span>
+                        </div>
+                        <MToggle Checked="_fIsSubmission"
+                                 CheckedChanged="@(v => _fIsSubmission = v)"
+                                 AriaLabel="משימת הגשה" />
+                    </div>
+
+                    <div class="tt-switch-row">
+                        <div class="tt-switch-copy">
+                            <span class="tt-switch-title">פעיל</span>
+                            <span class="tt-switch-note">זמין להחלה במחזורים חדשים</span>
+                        </div>
+                        <MToggle Checked="_fIsActive"
+                                 CheckedChanged="@(v => _fIsActive = v)"
+                                 AriaLabel="תבנית פעילה" />
                     </div>
                 </div>
-            </div>
 
-            @if (_formIsSubmission)
-            {
-                <div class="tk-submission-section">
-                    <div class="tk-submission-header">
-                        <span class="oi oi-cloud-upload" aria-hidden="true"></span>
-                        הגדרות הגשה
-                    </div>
+                @* ══ Submission policy — the real fields behind the toggle ══ *@
+                @if (_fIsSubmission)
+                {
+                    <div class="tt-subpanel">
+                        <p class="tt-form-section tt-form-section--inline">מדיניות הגשה</p>
 
-                    <div class="tk-form-grid">
-                        <div class="tk-field tk-field-full">
-                            <label class="tk-label">הוראות הגשה <span class="tk-optional">(אופציונלי)</span></label>
-                            <textarea class="tk-input tk-textarea" @bind="_formSubmissionInstructions"
-                                      placeholder="הוראות מפורטות לסטודנטים לגבי אופן ההגשה..."
-                                      rows="2" maxlength="1000"></textarea>
+                        <div class="tt-form-field">
+                            <label class="tt-form-label" for="tt-f-inst">הנחיות הגשה</label>
+                            <textarea id="tt-f-inst" class="tt-form-textarea" @bind="_fSubmissionInstructions"
+                                      placeholder="מה על הסטודנטים להגיש ובאיזה פורמט" rows="2"></textarea>
                         </div>
 
-                        <div class="tk-field">
-                            <label class="tk-label">מספר קבצים מקסימלי <span class="tk-required">*</span></label>
-                            <input type="number" class="tk-input" @bind="_formMaxFilesCount"
-                                   min="1" max="20" />
+                        <div class="tt-form-grid">
+                            <div class="tt-form-field">
+                                <label class="tt-form-label" for="tt-f-maxn">מספר קבצים מקסימלי <span class="tt-req">*</span></label>
+                                <input id="tt-f-maxn" type="number" min="1" class="tt-form-input tt-form-input--num"
+                                       @bind="_fMaxFilesCount" />
+                            </div>
+                            <div class="tt-form-field">
+                                <label class="tt-form-label" for="tt-f-maxmb">גודל מקסימלי (MB) <span class="tt-req">*</span></label>
+                                <input id="tt-f-maxmb" type="number" min="1" class="tt-form-input tt-form-input--num"
+                                       @bind="_fMaxFileSizeMb" />
+                            </div>
                         </div>
 
-                        <div class="tk-field">
-                            <label class="tk-label">גודל קובץ מקסימלי (MB) <span class="tk-required">*</span></label>
-                            <input type="number" class="tk-input" @bind="_formMaxFileSizeMb"
-                                   min="1" max="200" />
-                        </div>
-
-                        <div class="tk-field tk-field-full">
-                            <label class="tk-label">סוגי קבצים מותרים <span class="tk-required">*</span></label>
-                            <div class="tk-file-type-grid">
-                                @foreach (var ft in _fileTypeOptions)
+                        <div class="tt-form-field">
+                            <span class="tt-form-label">סוגי קבצים מותרים</span>
+                            <div class="tt-chip-row">
+                                @foreach (var ft in FileTypeOptions)
                                 {
                                     var ftCopy = ft;
-                                    <label class="tk-file-type-item">
-                                        <input type="checkbox" class="tk-checkbox"
-                                               checked="@_formAllowedFileTypes.Contains(ftCopy)"
-                                               @onchange="@(e => ToggleFileType(ftCopy, (bool)e.Value!))" />
-                                        .@ftCopy
-                                    </label>
+                                    var on = _fAllowedFileTypes.Contains(ftCopy);
+                                    <button type="button"
+                                            class="tt-chip @(on ? "tt-chip--on" : "")"
+                                            @onclick="@(() => ToggleFileType(ftCopy))"
+                                            aria-pressed="@(on ? "true" : "false")">.@ftCopy</button>
                                 }
                             </div>
                         </div>
 
-                        <div class="tk-field tk-field-full">
-                            <label class="tk-label">קבצי עזר מקושרים <span class="tk-optional">(אופציונלי)</span></label>
+                        <div class="tt-form-field">
+                            <span class="tt-form-label">קבצי עזר מקושרים <span class="tt-optional">(רשות)</span></span>
                             @if (_allResourceFiles.Count == 0)
                             {
-                                <div class="tk-no-files">אין קבצים זמינים במאגר — ניתן להוסיף דרך עמוד ניהול קבצים</div>
+                                <p class="tt-form-note">אין קבצים זמינים במאגר — ניתן להוסיף דרך עמוד ניהול קבצים</p>
                             }
                             else
                             {
-                                <div class="tk-resource-picker">
+                                <div class="tt-res-list">
                                     @foreach (var rf in _allResourceFiles)
                                     {
                                         var rfCopy = rf;
-                                        <label class="tk-resource-item">
-                                            <input type="checkbox" class="tk-checkbox"
-                                                   checked="@_formLinkedResourceFileIds.Contains(rfCopy.Id)"
-                                                   @onchange="@(e => ToggleResourceFile(rfCopy.Id, (bool)e.Value!))" />
-                                            <span class="tk-resource-icon oi @FileTypeIcon(rfCopy.ContentType)" aria-hidden="true"></span>
-                                            <span class="tk-resource-name">@rfCopy.FileName</span>
-                                        </label>
+                                        var picked = _fLinkedResourceFileIds.Contains(rfCopy.Id);
+                                        <button type="button"
+                                                class="tt-res-row @(picked ? "tt-res-row--on" : "")"
+                                                @onclick="@(() => ToggleResourceFile(rfCopy.Id))"
+                                                aria-pressed="@(picked ? "true" : "false")">
+                                            <span class="tt-res-check @(picked ? "tt-res-check--on" : "")" aria-hidden="true">
+                                                @if (picked)
+                                                {
+                                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                         stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="m5 12.5 4.5 4.5L19 7" />
+                                                    </svg>
+                                                }
+                                            </span>
+                                            <span class="tt-res-name" title="@rfCopy.FileName">@rfCopy.FileName</span>
+                                        </button>
                                     }
                                 </div>
                             }
                         </div>
                     </div>
-                </div>
-            }
+                }
 
-            @if (!string.IsNullOrEmpty(_formError))
-            {
-                <div class="tk-form-error">
-                    <span class="oi oi-warning" aria-hidden="true"></span>
-                    @_formError
-                </div>
-            }
+                @* The one action on this screen that writes to live project data.
+                   Announced before the click, not discovered afterwards. *@
+                @if (_editId == 0 && _fIsActive && _fMilestoneId != 0)
+                {
+                    <div class="tt-form-note tt-form-note--reach">
+                        התבנית תיווצר מיד כמשימה בכל הפרויקטים הפעילים שאבן הדרך שלהם כבר משויכת למחזור.
+                        עריכה של תבנית קיימת אינה משנה משימות שכבר נוצרו.
+                    </div>
+                }
 
-            <div class="tk-form-actions">
-                <button class="tk-ghost-btn" @onclick="CancelForm" disabled="@_formSaving">ביטול</button>
-                <button class="tk-add-btn tk-add-btn--save" @onclick="SubmitForm" disabled="@_formSaving">
-                    @if (_formSaving) { <span class="tk-spinner-sm"></span> }
-                    @(_editingId == 0 ? "הוספה" : "שמירה")
-                </button>
+                @if (!string.IsNullOrEmpty(_formError))
+                {
+                    <div class="tt-form-error" role="alert">@_formError</div>
+                }
             </div>
+
+            <div class="tt-modal-footer">
+                <span class="tt-footer-note">שדות המסומנים ב־<span class="tt-req">*</span> הם חובה</span>
+                <div class="tt-footer-actions">
+                    <button type="button" class="tt-btn-ghost" @onclick="CloseModal" disabled="@_saving">ביטול</button>
+                    <button type="button" class="tt-btn-primary motiva-cta" @onclick="SaveTemplate" disabled="@_saving">
+                        @if (_saving) { <span class="tt-spinner" aria-hidden="true"></span> }
+                        שמירה
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Delete. Hard-deletes the template row only — project tasks already created
+   from it are snapshots and are left untouched. *@
+<MConfirmDialog IsOpen="_deleteOpen"
+                Title="מחיקת תבנית משימה"
+                Tone="MConfirmDialog.ConfirmTone.Danger"
+                ConfirmText="מחיקה"
+                Busy="_deleteBusy"
+                Error="@_deleteError"
+                OnConfirm="ExecuteDelete"
+                OnCancel="@(() => { if (!_deleteBusy) { _deleteOpen = false; _deleteError = null; } })">
+    @if (_deleteTarget is not null)
+    {
+        <span>
+            למחוק את התבנית <strong>@_deleteTarget.Title</strong> מהספרייה?
+            משימות שכבר נוצרו בפרויקטים מתבנית זו יישארו כפי שהן — הן עותקים עצמאיים.
+            התבנית עצמה לא תוחל יותר על מחזורים חדשים. פעולה זו אינה ניתנת לביטול.
+        </span>
+    }
+</MConfirmDialog>
+
+@{
+    var rows = FilteredTemplates.ToList();
+}
+
+<div class="tt-page" dir="rtl" @onclick="CloseAllMenus">
+
+    @* ══ Header ═══════════════════════════════════════════════════════════ *@
+    <header class="tt-head">
+        <div class="tt-head-main">
+            <MAdminBack />
+            <div class="tt-head-line">
+                <h1 class="tt-h1">ניהול תבניות משימות</h1>
+                <MInfoTip Text="תבניות גלובליות המשויכות לאבני דרך" />
+            </div>
+        </div>
+
+        <div class="tt-head-actions" @onclick:stopPropagation="true">
+            <button type="button" class="tt-btn-primary tt-btn-primary--lg motiva-cta" @onclick="OpenCreate">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                </svg>
+                תבנית משימה
+            </button>
+        </div>
+    </header>
+
+    @* ══ Summary pills ════════════════════════════════════════════════════ *@
+    @if (!_loading && !_loadError)
+    {
+        <div class="tt-stats">
+            <span class="tt-stat">
+                <span class="tt-stat-dot tt-stat-dot--total" aria-hidden="true"></span>
+                <span class="tt-stat-value">@_all.Count</span>
+                <span class="tt-stat-label">סה"כ תבניות</span>
+            </span>
+            <span class="tt-stat">
+                <span class="tt-stat-dot tt-stat-dot--active" aria-hidden="true"></span>
+                <span class="tt-stat-value">@_all.Count(t => t.IsActive)</span>
+                <span class="tt-stat-label">פעילות</span>
+            </span>
+            <span class="tt-stat">
+                <span class="tt-stat-dot tt-stat-dot--submission" aria-hidden="true"></span>
+                <span class="tt-stat-value">@_all.Count(t => t.IsSubmission)</span>
+                <span class="tt-stat-label">משימות הגשה</span>
+            </span>
+            @* Surfaced only when the pool is non-empty. A permanent "0 לא משויכות"
+               would advertise a state most libraries never enter. *@
+            @if (_all.Any(t => t.MilestoneTemplateId is null))
+            {
+                <span class="tt-stat">
+                    <span class="tt-stat-dot tt-stat-dot--unassigned" aria-hidden="true"></span>
+                    <span class="tt-stat-value">@_all.Count(t => t.MilestoneTemplateId is null)</span>
+                    <span class="tt-stat-label">לא משויכות</span>
+                </span>
+            }
         </div>
     }
 
-    <!-- ══════════════════════════════════════════
-         SECTION A — GLOBAL TASK TEMPLATES
-         ══════════════════════════════════════════ -->
-    <div class="tk-section-bar">
-        <div class="tk-section-bar-start">
-            <span class="oi oi-cog tk-section-icon" aria-hidden="true"></span>
-            <span class="tk-section-title">תבניות משימות גלובליות</span>
-            @if (!_loading)
-            {
-                <span class="tk-section-count">@_allTemplates.Count</span>
-            }
-        </div>
-        <div class="tk-section-bar-note">תבניות אקדמיות המקושרות לאבני דרך</div>
-    </div>
+    @* ══ Toolbar ══════════════════════════════════════════════════════════ *@
+    <div class="tt-toolbar" @onclick:stopPropagation="true">
+        <MSearchField Value="@_searchQuery"
+                      ValueChanged="OnSearchChanged"
+                      Placeholder="חיפוש לפי שם משימה"
+                      AriaLabel="חיפוש תבניות משימות"
+                      Class="tt-search" />
 
-    <div class="tk-filters-bar">
-        <div class="tk-search-wrap">
-            <span class="oi oi-magnifying-glass tk-search-icon" aria-hidden="true"></span>
-            <input class="tk-search" type="text"
-                   placeholder="חיפוש לפי שם..."
-                   @bind="_searchQuery" @bind:event="oninput" />
-        </div>
-        <div class="tk-filters">
-            <select class="tk-filter-select" @bind="_filterMilestone">
-                <option value="">כל אבני הדרך</option>
-                @foreach (var m in _milestones)
+        @foreach (var f in BuildFilters())
+        {
+            var key = f.Key;
+            var open = _openFilter == key;
+
+            <div class="tt-filter">
+                <button type="button"
+                        class="tt-filter-btn @(f.IsActive ? "tt-filter-btn--on" : "")"
+                        @onclick="@(() => ToggleFilter(key))"
+                        aria-haspopup="listbox" aria-expanded="@(open ? "true" : "false")">
+                    <span class="tt-filter-name">@f.Name</span>
+                    <span class="tt-filter-value">@f.CurrentLabel</span>
+                    <svg class="tt-filter-chev @(open ? "tt-filter-chev--open" : "")"
+                         width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </button>
+
+                @if (open)
                 {
-                    <option value="@m.Id.ToString()">@m.Title</option>
+                    <div class="tt-menu tt-menu--filter" role="listbox" aria-label="@f.Name">
+                        @foreach (var o in f.Options)
+                        {
+                            var val = o.Value;
+                            var selected = o.Value == f.CurrentValue;
+                            <button type="button"
+                                    class="tt-menu-item @(selected ? "tt-menu-item--on" : "")"
+                                    role="option" aria-selected="@(selected ? "true" : "false")"
+                                    @onclick="@(() => PickFilter(key, val))">
+                                <span class="tt-menu-item-label">@o.Label</span>
+                                @if (selected)
+                                {
+                                    <svg class="tt-menu-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                         stroke="currentColor" stroke-width="2.6" stroke-linecap="round"
+                                         stroke-linejoin="round" aria-hidden="true">
+                                        <path d="m5 12.5 4.5 4.5L19 7" />
+                                    </svg>
+                                }
+                            </button>
+                        }
+                    </div>
                 }
-            </select>
-            <select class="tk-filter-select" @bind="_filterStatus">
-                <option value="">כל הסטטוסים</option>
-                <option value="locked">מנוע</option>
-                <option value="open">פתוח</option>
-                <option value="closed">סגור</option>
-            </select>
-            <select class="tk-filter-select" @bind="_filterActive">
-                <option value="">פעיל ולא פעיל</option>
-                <option value="active">פעיל בלבד</option>
-                <option value="inactive">לא פעיל בלבד</option>
-            </select>
-        </div>
+            </div>
+        }
+
+        @if (HasActiveFilters)
+        {
+            <button type="button" class="tt-clear" @onclick="ClearFilters">ניקוי סינון</button>
+        }
+
+        @if (!_loading)
+        {
+            <span class="tt-result">@ResultLine(rows.Count)</span>
+        }
     </div>
 
-    <div class="tk-table-panel">
-        <div class="tk-table-wrap">
-            <table class="tk-table">
-                <thead>
-                    <tr>
-                        <th>שם התבנית</th>
-                        <th>אבן דרך</th>
-                        <th>תאריך פתיחה</th>
-                        <th>תאריך יעד</th>
-                        <th>סטטוס</th>
-                        <th>פעיל</th>
-                        <th>הגשה</th>
-                        <th class="tk-th-actions">פעולות</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (_loading)
+    @* ══ The table ════════════════════════════════════════════════════════ *@
+    <MDataTable TItem="TaskTemplateDto"
+                Items="rows"
+                Loading="_loading"
+                LoadingText="טוען תבניות משימות…"
+                ColumnCount="7"
+                MinWidth="980px"
+                Class="tt-table">
+
+        <Columns>
+            <col />
+            <col class="tt-col-ms" />
+            <col class="tt-col-type" />
+            <col class="tt-col-dates" />
+            <col class="tt-col-sub" />
+            <col class="tt-col-status" />
+            <col class="tt-col-actions" />
+        </Columns>
+
+        <HeaderContent>
+            <th scope="col">שם התבנית</th>
+            <th scope="col">אבן דרך</th>
+            <th scope="col">רלוונטי ל־</th>
+            <th scope="col">תזמון ברירת מחדל</th>
+            <th scope="col">הגשה</th>
+            <th scope="col">סטטוס</th>
+            <th scope="col"><span class="tt-sr">פעולות</span></th>
+        </HeaderContent>
+
+        <EmptyContent>
+            @if (_loadError)
+            {
+                <MEmptyState Title="שגיאה בטעינת תבניות המשימות"
+                             Description="רעננו את הדף או נסו שוב מאוחר יותר"
+                             Live="true" />
+            }
+            else
+            {
+                <MEmptyState Title="לא נמצאו תבניות משימות"
+                             Description="נסו לשנות את החיפוש או הסינון"
+                             Live="true" />
+            }
+        </EmptyContent>
+
+        <RowTemplate Context="t">
+            @{
+                var menuOpen = _openRowMenuId == t.Id;
+                var unassigned = t.MilestoneTemplateId is null;
+            }
+            <tr class="@(menuOpen ? "m-dt-row-active" : "") @(t.IsActive ? "" : "tt-row--off")">
+
+                <td class="tt-cell-name">
+                    <span class="tt-name" title="@t.Title">@t.Title</span>
+                    @if (!string.IsNullOrWhiteSpace(t.Description))
                     {
-                        <tr><td colspan="8" class="tk-empty"><span class="tk-spinner-inline"></span>טוען תבניות...</td></tr>
+                        <span class="tt-desc" title="@t.Description">@t.Description</span>
                     }
-                    else if (_loadError)
+                </td>
+
+                @* The mirror of the Milestones page's משימות column — the other
+                   half of the same relationship. *@
+                <td class="tt-cell-ms">
+                    @if (unassigned)
                     {
-                        <tr><td colspan="8" class="tk-empty tk-empty--error"><span class="oi oi-warning"></span>שגיאה בטעינה. רענן את הדף.</td></tr>
-                    }
-                    else if (!FilteredTemplates.Any())
-                    {
-                        <tr><td colspan="8" class="tk-empty"><span class="oi oi-magnifying-glass"></span>לא נמצאו תבניות התואמות את הסינון</td></tr>
+                        <span class="tt-unassigned">לא משויך</span>
                     }
                     else
                     {
-                        foreach (var t in FilteredTemplates)
-                        {
-                            var status = TaskTemplateStatus(t);
-                            <tr class="tk-row @(!t.IsActive ? "tk-row-inactive" : "")">
-                                <td>
-                                    <button class="tk-title-link" @onclick="@(() => OpenEditForm(t))">@t.Title</button>
-                                    @if (!string.IsNullOrWhiteSpace(t.Description))
-                                    {
-                                        <div class="tk-cell-desc" title="@t.Description">@Truncate(t.Description, 55)</div>
-                                    }
-                                </td>
-                                <td><span class="tk-milestone-tag">@t.MilestoneTitle</span></td>
-                                <td class="tk-cell-date">@FormatDate(t.StartDate)</td>
-                                <td class="tk-cell-date">@FormatDate(t.DueDate)</td>
-                                <td>
-                                    <span class="tk-status-badge tk-status--@status">@TemplateStatusLabel(status)</span>
-                                </td>
-                                <td class="tk-cell-center">
-                                    @if (t.IsActive) { <span class="oi oi-circle-check tk-active-check"></span> }
-                                    else             { <span class="tk-dash">—</span> }
-                                </td>
-                                <td class="tk-cell-center">
-                                    @if (t.IsSubmission)
-                                    {
-                                        <span class="tk-submission-badge" title="@($"עד {t.MaxFilesCount} קבצים, {t.MaxFileSizeMb} MB")">
-                                            <span class="oi oi-cloud-upload" aria-hidden="true"></span>
-                                            הגשה
-                                        </span>
-                                    }
-                                    else { <span class="tk-dash">—</span> }
-                                </td>
-                                <td class="tk-cell-actions" @onclick:stopPropagation="true">
-                                    <div class="tk-actions-wrap">
-                                        <button class="tk-dots-btn" @onclick="@(() => ToggleRowMenu(t.Id))" title="פעולות">
-                                            <span class="oi oi-ellipses"></span>
-                                        </button>
-                                        @if (_openRowMenuId == t.Id)
-                                        {
-                                            <div class="tk-row-menu">
-                                                <button class="tk-row-action" @onclick="@(() => OpenEditForm(t))">
-                                                    <span class="oi oi-pencil"></span>עריכה
-                                                </button>
-                                                <div class="tk-row-menu-sep"></div>
-                                                <button class="tk-row-action" @onclick="@(async () => await ToggleActive(t))">
-                                                    @if (t.IsActive) { <span class="oi oi-ban"></span><span>השבתה</span> }
-                                                    else             { <span class="oi oi-circle-check"></span><span>הפעלה</span> }
-                                                </button>
-                                                <div class="tk-row-menu-sep"></div>
-                                                <button class="tk-row-action tk-row-action--danger" @onclick="@(async () => await DeleteTemplate(t))">
-                                                    <span class="oi oi-trash"></span>מחיקה
-                                                </button>
-                                            </div>
-                                        }
-                                    </div>
-                                </td>
-                            </tr>
-                        }
+                        <span class="tt-ms-name" title="@t.MilestoneTitle">@t.MilestoneTitle</span>
                     }
-                </tbody>
-            </table>
-        </div>
-        <div class="tk-table-footer">
-            <span class="tk-count">
-                @{ var tCount = FilteredTemplates.Count(); }
-                @tCount תבניות
-                @if (!string.IsNullOrEmpty(_searchQuery) || !string.IsNullOrEmpty(_filterMilestone) ||
-                     !string.IsNullOrEmpty(_filterStatus) || !string.IsNullOrEmpty(_filterActive))
-                {
-                    <span class="tk-count-note">(מסוננות מתוך @_allTemplates.Count)</span>
-                }
-            </span>
-            <div class="tk-legend">
-                <span class="tk-status-badge tk-status--locked">מנוע</span>
-                <span class="tk-status-badge tk-status--open">פתוח</span>
-                <span class="tk-status-badge tk-status--closed">סגור</span>
-            </div>
-        </div>
-    </div>
+                </td>
 
+                <td>
+                    <span class="tt-type tt-type--@ToneFor(t.ProjectTypeId, unassigned)">
+                        <span class="tt-type-dot" aria-hidden="true"></span>@t.Applicability
+                    </span>
+                </td>
 
+                <td class="tt-cell-dates">@DateRange(t)</td>
+
+                <td>
+                    @if (t.IsSubmission)
+                    {
+                        <span class="tt-sub-yes" title="משימת הגשה">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <path d="m17 8-5-5-5 5" /><path d="M12 3v12" />
+                            </svg>
+                            הגשה
+                        </span>
+                    }
+                    else
+                    {
+                        <span class="tt-cell-empty">—</span>
+                    }
+                </td>
+
+                <td>
+                    <span class="tt-status @(t.IsActive ? "tt-status--on" : "tt-status--off")">
+                        <span class="tt-status-dot" aria-hidden="true"></span>
+                        @(t.IsActive ? "פעיל" : "לא פעיל")
+                    </span>
+                </td>
+
+                <td class="tt-cell-actions" @onclick:stopPropagation="true">
+                    <div class="tt-actions">
+                        <button type="button"
+                                class="tt-kebab @(menuOpen ? "tt-kebab--on" : "")"
+                                @onclick="@(() => ToggleRowMenu(t.Id))"
+                                aria-haspopup="true" aria-expanded="@(menuOpen ? "true" : "false")"
+                                title="פעולות" aria-label="@($"פעולות עבור {t.Title}")">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <circle cx="12" cy="5" r="1.7" />
+                                <circle cx="12" cy="12" r="1.7" />
+                                <circle cx="12" cy="19" r="1.7" />
+                            </svg>
+                        </button>
+
+                        @if (menuOpen)
+                        {
+                            <div class="tt-menu tt-menu--row" role="menu">
+                                <button type="button" class="tt-menu-item" role="menuitem"
+                                        @onclick="@(() => OpenEdit(t))">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                                    </svg>
+                                    עריכת תבנית
+                                </button>
+
+                                <button type="button" class="tt-menu-item" role="menuitem"
+                                        @onclick="@(() => ToggleActive(t))">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <circle cx="12" cy="12" r="9" />
+                                        @if (t.IsActive)
+                                        {
+                                            <path d="M5.6 5.6 18.4 18.4" />
+                                        }
+                                        else
+                                        {
+                                            <path d="m8.5 12.2 2.4 2.4 4.6-4.9" />
+                                        }
+                                    </svg>
+                                    @(t.IsActive ? "השבתה" : "הפעלה")
+                                </button>
+
+                                @if (!unassigned)
+                                {
+                                    <button type="button" class="tt-menu-item" role="menuitem"
+                                            @onclick="@(() => DetachFromMilestone(t))" disabled="@_busy">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M18 6 6 18M6 6l12 12" />
+                                        </svg>
+                                        ביטול שיוך לאבן דרך
+                                    </button>
+                                }
+
+                                <div class="tt-menu-sep"></div>
+
+                                <button type="button" class="tt-menu-item tt-menu-item--danger" role="menuitem"
+                                        @onclick="@(() => RequestDelete(t))">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M3 6h18" />
+                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                                        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    </svg>
+                                    מחיקה
+                                </button>
+                            </div>
+                        }
+                    </div>
+                </td>
+            </tr>
+        </RowTemplate>
+    </MDataTable>
 </div>
 
 @code {
 
     // ─────────────────────────────────────────────────
-    //  TaskTemplates — global admin catalog
+    //  Data
     // ─────────────────────────────────────────────────
-    private List<TaskTemplateDto>      _allTemplates    = new();
-    private List<MilestoneTemplateDto> _milestones      = new();
+    private List<TaskTemplateDto>      _all              = new();
+    private List<MilestoneTemplateDto> _milestones       = new();
     private List<ResourceFileDto>      _allResourceFiles = new();
+
     private bool _loading   = true;
     private bool _loadError = false;
+    private bool _busy      = false;
 
     protected override async Task OnInitializedAsync()
     {
-        await Task.WhenAll(LoadTemplatesAsync(), LoadMilestonesAsync(), LoadResourceFilesAsync());
+        await ReloadAsync();
         _loading = false;
     }
 
-    private async Task LoadTemplatesAsync()
+    private async Task ReloadAsync()
     {
-        var list   = await TaskService.GetTemplatesAsync();
-        _loadError = list is null;
-        _allTemplates = list ?? _allTemplates;
-    }
+        var templates = await TaskService.GetTemplatesAsync();
+        _loadError = templates is null;
+        _all       = templates ?? _all;
 
-    private async Task LoadMilestonesAsync()
-    {
-        _milestones = await TaskService.GetMilestoneTemplatesAsync() ?? new();
-    }
-
-    private async Task LoadResourceFilesAsync()
-    {
+        _milestones       = await TaskService.GetMilestoneTemplatesAsync() ?? new();
         _allResourceFiles = await ResourceFilesService.GetAllAsync() ?? new();
     }
 
-    private async Task Reload()
+    // ─────────────────────────────────────────────────
+    //  Search + filters
+    // ─────────────────────────────────────────────────
+    private string  _searchQuery     = "";
+    private string  _filterMilestone = "";
+    private string  _filterType      = "";
+    private string  _filterStatus    = "";
+    private string  _filterSubmission = "";
+    private string? _openFilter;
+
+    private void OnSearchChanged(string value)
     {
-        var list   = await TaskService.GetTemplatesAsync();
-        _loadError = list is null;
-        _allTemplates = list ?? _allTemplates;
+        _searchQuery = value ?? "";
+        _openFilter  = null;
     }
 
-    // ─────────────────────────────────────────────────
-    //  Filters
-    // ─────────────────────────────────────────────────
-    private string _searchQuery     = "";
-    private string _filterMilestone = "";
-    private string _filterStatus    = "";
-    private string _filterActive    = "";
+    private bool HasActiveFilters =>
+        !string.IsNullOrEmpty(_filterMilestone) || !string.IsNullOrEmpty(_filterType)
+        || !string.IsNullOrEmpty(_filterStatus) || !string.IsNullOrEmpty(_filterSubmission);
 
-    private IEnumerable<TaskTemplateDto> FilteredTemplates => _allTemplates
+    private IEnumerable<TaskTemplateDto> FilteredTemplates => _all
         .Where(t => string.IsNullOrEmpty(_searchQuery)
-                    || t.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
-        .Where(t => string.IsNullOrEmpty(_filterMilestone)
-                    || t.MilestoneTemplateId.ToString() == _filterMilestone)
-        .Where(t => string.IsNullOrEmpty(_filterStatus)
-                    || TaskTemplateStatus(t) == _filterStatus)
-        .Where(t => _filterActive switch
+                    || t.Title.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase)
+                    || (t.Description ?? "").Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+        .Where(t => _filterMilestone switch
         {
-            "active"   =>  t.IsActive,
+            ""           => true,
+            "unassigned" => t.MilestoneTemplateId is null,
+            var id       => t.MilestoneTemplateId?.ToString() == id,
+        })
+        // Project type is the INHERITED one, so this filter matches what the
+        // rollout actually does. An unassigned template has no type and is
+        // therefore excluded from every type filter rather than counted as "both".
+        .Where(t => _filterType switch
+        {
+            "1"    => t.MilestoneTemplateId is not null && t.ProjectTypeId is null or 1,
+            "2"    => t.MilestoneTemplateId is not null && t.ProjectTypeId is null or 2,
+            "both" => t.MilestoneTemplateId is not null && t.ProjectTypeId is null,
+            _      => true,
+        })
+        .Where(t => _filterStatus switch
+        {
+            "active"   => t.IsActive,
             "inactive" => !t.IsActive,
             _          => true,
-        });
-
-    // ─────────────────────────────────────────────────
-    //  Form state
-    // ─────────────────────────────────────────────────
-    private bool     _showForm        = false;
-    private bool     _formSaving      = false;
-    private int      _editingId       = 0;
-    private string   _formTitle       = "";
-    private string   _formDescription = "";
-    private int      _formMilestoneId = 0;
-    private DateTime _formStartDate   = DateTime.Today;
-    private DateTime _formDueDate     = DateTime.Today.AddDays(7);
-    private bool     _formIsActive    = true;
-    private string   _formError       = "";
-
-    // Submission policy fields
-    private bool            _formIsSubmission           = false;
-    private string          _formSubmissionInstructions = "";
-    private int             _formMaxFilesCount          = 1;
-    private int             _formMaxFileSizeMb          = 10;
-    private HashSet<string> _formAllowedFileTypes       = new();
-    private HashSet<int>    _formLinkedResourceFileIds  = new();
-
-    private static readonly string[] _fileTypeOptions =
-        ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "jpg", "png", "zip"];
-
-    private void OpenAddForm()
-    {
-        _editingId                  = 0;
-        _formTitle                  = "";
-        _formDescription            = "";
-        _formMilestoneId            = 0;
-        _formStartDate              = DateTime.Today;
-        _formDueDate                = DateTime.Today.AddDays(7);
-        _formIsActive               = true;
-        _formIsSubmission           = false;
-        _formSubmissionInstructions = "";
-        _formMaxFilesCount          = 1;
-        _formMaxFileSizeMb          = 10;
-        _formAllowedFileTypes       = new();
-        _formLinkedResourceFileIds  = new();
-        _formError                  = "";
-        _showForm                   = true;
-        CloseAllMenus();
-    }
-
-    private void OpenEditForm(TaskTemplateDto t)
-    {
-        _openRowMenuId              = -1;
-        _editingId                  = t.Id;
-        _formTitle                  = t.Title;
-        _formDescription            = t.Description ?? "";
-        _formMilestoneId            = t.MilestoneTemplateId;
-        _formStartDate              = t.StartDate;
-        _formDueDate                = t.DueDate;
-        _formIsActive               = t.IsActive;
-        _formIsSubmission           = t.IsSubmission;
-        _formSubmissionInstructions = t.SubmissionInstructions ?? "";
-        _formMaxFilesCount          = t.MaxFilesCount ?? 1;
-        _formMaxFileSizeMb          = t.MaxFileSizeMb ?? 10;
-        _formAllowedFileTypes       = string.IsNullOrEmpty(t.AllowedFileTypes)
-            ? new()
-            : t.AllowedFileTypes.Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
-        _formLinkedResourceFileIds  = t.LinkedResourceFiles.Select(f => f.Id).ToHashSet();
-        _formError                  = "";
-        _showForm                   = true;
-    }
-
-    private void CancelForm()
-    {
-        _showForm  = false;
-        _formError = "";
-    }
-
-    private async Task SubmitForm()
-    {
-        _formError = "";
-        if (string.IsNullOrWhiteSpace(_formTitle)) { _formError = "שם המשימה הוא שדה חובה"; return; }
-        if (_formMilestoneId <= 0)                 { _formError = "יש לבחור אבן דרך"; return; }
-        if (_formDueDate <= _formStartDate)        { _formError = "תאריך היעד חייב להיות אחרי תאריך הפתיחה"; return; }
-        if (_formIsSubmission && _formMaxFilesCount <= 0) { _formError = "יש להגדיר מספר קבצים מקסימלי גדול מ-0"; return; }
-        if (_formIsSubmission && _formMaxFileSizeMb <= 0) { _formError = "יש להגדיר גודל קובץ מקסימלי גדול מ-0"; return; }
-
-        _formSaving = true;
-
-        var req = new SaveTaskTemplateRequest
+        })
+        .Where(t => _filterSubmission switch
         {
-            Title                  = _formTitle.Trim(),
-            Description            = string.IsNullOrWhiteSpace(_formDescription) ? null : _formDescription.Trim(),
-            MilestoneTemplateId    = _formMilestoneId,
-            StartDate              = _formStartDate,
-            DueDate                = _formDueDate,
-            IsActive               = _formIsActive,
-            IsSubmission           = _formIsSubmission,
-            SubmissionInstructions = _formIsSubmission && !string.IsNullOrWhiteSpace(_formSubmissionInstructions)
-                ? _formSubmissionInstructions.Trim() : null,
-            MaxFilesCount          = _formIsSubmission ? _formMaxFilesCount : null,
-            MaxFileSizeMb          = _formIsSubmission ? _formMaxFileSizeMb : null,
-            AllowedFileTypes       = _formIsSubmission && _formAllowedFileTypes.Count > 0
-                ? string.Join(",", _formAllowedFileTypes) : null,
-            LinkedResourceFileIds  = _formIsSubmission
-                ? _formLinkedResourceFileIds.ToList() : new(),
+            "yes" => t.IsSubmission,
+            "no"  => !t.IsSubmission,
+            _     => true,
+        })
+        .OrderBy(t => t.MilestoneTemplateId is null ? 1 : 0)
+        .ThenBy(t => t.StartDate)
+        .ThenBy(t => t.Id);
+
+    private record FilterOption(string Value, string Label);
+
+    private record FilterSpec(string Key, string Name, string CurrentValue,
+                              string CurrentLabel, bool IsActive, List<FilterOption> Options);
+
+    private List<FilterSpec> BuildFilters()
+    {
+        // Milestone options are DERIVED from the loaded library, never a
+        // hardcoded list — the same rule the Users page uses for its cycles.
+        var msOptions = new List<FilterOption> { new("", "הכל") };
+        msOptions.AddRange(_milestones
+            .OrderBy(m => m.OrderIndex).ThenBy(m => m.Id)
+            .Select(m => new FilterOption(m.Id.ToString(), m.Title)));
+
+        if (_all.Any(t => t.MilestoneTemplateId is null))
+            msOptions.Add(new FilterOption("unassigned", "לא משויך"));
+
+        var typeOptions = new List<FilterOption>
+        {
+            new("",     "הכל"),
+            new("1",    "טכנולוגי"),
+            new("2",    "מתודולוגי"),
+            new("both", "שניהם"),
         };
 
-        string? error = _editingId == 0
-            ? await TaskService.CreateAsync(req)
-            : await TaskService.UpdateAsync(_editingId, req);
+        var statusOptions = new List<FilterOption>
+        {
+            new("",         "הכל"),
+            new("active",   "פעיל"),
+            new("inactive", "לא פעיל"),
+        };
 
-        _formSaving = false;
+        var subOptions = new List<FilterOption>
+        {
+            new("",    "הכל"),
+            new("yes", "משימת הגשה"),
+            new("no",  "ללא הגשה"),
+        };
 
-        if (error != null) { _formError = error.Trim('"', ' '); return; }
+        return new List<FilterSpec>
+        {
+            new("milestone", "אבן דרך", _filterMilestone,
+                (msOptions.FirstOrDefault(o => o.Value == _filterMilestone) ?? msOptions[0]).Label,
+                !string.IsNullOrEmpty(_filterMilestone), msOptions),
 
-        _showForm = false;
-        _loading  = true;
-        await Reload();
-        _loading  = false;
+            new("type", "רלוונטיות", _filterType,
+                typeOptions.First(o => o.Value == _filterType).Label,
+                !string.IsNullOrEmpty(_filterType), typeOptions),
+
+            new("submission", "הגשה", _filterSubmission,
+                subOptions.First(o => o.Value == _filterSubmission).Label,
+                !string.IsNullOrEmpty(_filterSubmission), subOptions),
+
+            new("status", "סטטוס", _filterStatus,
+                statusOptions.First(o => o.Value == _filterStatus).Label,
+                !string.IsNullOrEmpty(_filterStatus), statusOptions),
+        };
     }
 
-    private void ToggleFileType(string ft, bool isChecked)
+    private void ToggleFilter(string key)
     {
-        if (isChecked) _formAllowedFileTypes.Add(ft);
-        else           _formAllowedFileTypes.Remove(ft);
+        _openFilter    = _openFilter == key ? null : key;
+        _openRowMenuId = -1;
     }
 
-    private void ToggleResourceFile(int id, bool isChecked)
+    private void PickFilter(string key, string value)
     {
-        if (isChecked) _formLinkedResourceFileIds.Add(id);
-        else           _formLinkedResourceFileIds.Remove(id);
+        switch (key)
+        {
+            case "milestone":  _filterMilestone  = value; break;
+            case "type":       _filterType       = value; break;
+            case "status":     _filterStatus     = value; break;
+            case "submission": _filterSubmission = value; break;
+        }
+        _openFilter = null;
     }
+
+    private void ClearFilters()
+    {
+        _filterMilestone  = "";
+        _filterType       = "";
+        _filterStatus     = "";
+        _filterSubmission = "";
+        _openFilter       = null;
+    }
+
+    private string ResultLine(int shown) =>
+        HasActiveFilters || !string.IsNullOrWhiteSpace(_searchQuery)
+            ? $"מציג {shown} מתוך {_all.Count}"
+            : $"מציג את כל {_all.Count} התבניות";
 
     // ─────────────────────────────────────────────────
-    //  Row menu
+    //  Menus
     // ─────────────────────────────────────────────────
     private int _openRowMenuId = -1;
 
-    private void ToggleRowMenu(int id) =>
-        _openRowMenuId = _openRowMenuId == id ? -1 : id;
-
-    private void CloseAllMenus() => _openRowMenuId = -1;
-
-    private async Task ToggleActive(TaskTemplateDto t)
+    private void ToggleRowMenu(int id)
     {
-        _openRowMenuId = -1;
-        bool ok = await TaskService.ToggleActiveAsync(t.Id);
-        if (ok) t.IsActive = !t.IsActive;
+        _openRowMenuId = _openRowMenuId == id ? -1 : id;
+        _openFilter    = null;
     }
 
-    private async Task DeleteTemplate(TaskTemplateDto t)
+    private void CloseAllMenus()
     {
         _openRowMenuId = -1;
-        bool ok = await TaskService.DeleteAsync(t.Id);
-        if (ok) _allTemplates.Remove(t);
+        _openFilter    = null;
     }
 
     // ─────────────────────────────────────────────────
     //  Display helpers
     // ─────────────────────────────────────────────────
 
-    /// <summary>Date-based status for TaskTemplates: "locked" | "open" | "closed".</summary>
-    private static string TaskTemplateStatus(TaskTemplateDto t)
+    /// <summary>Colour role for the inherited project-type chip. Unassigned gets
+    /// its own quiet tone — it is an absence, not a third project type.</summary>
+    private static string ToneFor(int? projectTypeId, bool unassigned) =>
+        unassigned ? "none"
+        : projectTypeId switch
+        {
+            1 => "tech",
+            2 => "method",
+            _ => "both",
+        };
+
+    private MilestoneTemplateDto? SelectedMilestone =>
+        _fMilestoneId == 0 ? null : _milestones.FirstOrDefault(m => m.Id == _fMilestoneId);
+
+    private string SelectedApplicability =>
+        _fMilestoneId == 0 ? "לא משויך" : (SelectedMilestone?.Applicability ?? "שניהם");
+
+    /// <summary>StartDate and DueDate are NOT NULL, so this always has both
+    /// ends — unlike the milestone library, where defaults are optional.</summary>
+    private static string DateRange(TaskTemplateDto t) =>
+        $"{t.StartDate:dd.MM.yy} – {t.DueDate:dd.MM.yy}";
+
+    private static readonly string[] FileTypeOptions =
+        { "pdf", "docx", "pptx", "xlsx", "zip", "jpg", "png" };
+
+    // ─────────────────────────────────────────────────
+    //  Create / edit modal
+    // ─────────────────────────────────────────────────
+    private bool     _modalOpen;
+    private bool     _saving;
+    private int      _editId;          // 0 = create
+    private string   _fTitle       = "";
+    private string   _fDescription = "";
+    private int      _fMilestoneId;    // 0 = unassigned
+    private DateTime _fStartDate   = DateTime.Today;
+    private DateTime _fDueDate     = DateTime.Today.AddDays(14);
+    private bool     _fIsActive    = true;
+    private bool     _fIsSubmission;
+    private string   _fSubmissionInstructions = "";
+    private int      _fMaxFilesCount = 1;
+    private int      _fMaxFileSizeMb = 10;
+    private HashSet<string> _fAllowedFileTypes      = new();
+    private HashSet<int>    _fLinkedResourceFileIds = new();
+    private string   _formError = "";
+
+    private void OpenCreate()
     {
-        var today = DateTime.Today;
-        if (today < t.StartDate.Date) return "locked";
-        if (today > t.DueDate.Date)   return "closed";
-        return "open";
+        CloseAllMenus();
+
+        _editId       = 0;
+        _fTitle       = "";
+        _fDescription = "";
+        _fMilestoneId = 0;
+        _fStartDate   = DateTime.Today;
+        _fDueDate     = DateTime.Today.AddDays(14);
+        _fIsActive    = true;
+        _fIsSubmission = false;
+        _fSubmissionInstructions = "";
+        _fMaxFilesCount = 1;
+        _fMaxFileSizeMb = 10;
+        _fAllowedFileTypes      = new();
+        _fLinkedResourceFileIds = new();
+        _formError    = "";
+        _modalOpen    = true;
     }
 
-    private static string TemplateStatusLabel(string s) => s switch
+    private void OpenEdit(TaskTemplateDto t)
     {
-        "locked" => "מנוע",
-        "open"   => "פתוח",
-        "closed" => "סגור",
-        _        => s,
-    };
+        CloseAllMenus();
 
-    private static string FormatDate(DateTime d) => d.ToString("dd/MM/yyyy");
+        _editId       = t.Id;
+        _fTitle       = t.Title;
+        _fDescription = t.Description ?? "";
+        _fMilestoneId = t.MilestoneTemplateId ?? 0;
+        _fStartDate   = t.StartDate;
+        _fDueDate     = t.DueDate;
+        _fIsActive    = t.IsActive;
+        _fIsSubmission = t.IsSubmission;
+        _fSubmissionInstructions = t.SubmissionInstructions ?? "";
+        _fMaxFilesCount = t.MaxFilesCount ?? 1;
+        _fMaxFileSizeMb = t.MaxFileSizeMb ?? 10;
+        _fAllowedFileTypes = (t.AllowedFileTypes ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet();
+        _fLinkedResourceFileIds = t.LinkedResourceFiles.Select(f => f.Id).ToHashSet();
+        _formError    = "";
+        _modalOpen    = true;
+    }
 
-    private static string FileTypeIcon(string contentType) => contentType switch
+    private void CloseModal()
     {
-        var c when c.Contains("pdf")   => "oi-document",
-        var c when c.Contains("image") => "oi-image",
-        var c when c.Contains("zip")   => "oi-box",
-        _                              => "oi-file",
-    };
+        if (_saving) return;
+        _modalOpen = false;
+        _formError = "";
+    }
 
-    private static string Truncate(string? s, int max) =>
-        s is null ? "" : s.Length <= max ? s : s[..max] + "…";
+    private void ToggleFileType(string ft)
+    {
+        if (!_fAllowedFileTypes.Add(ft)) _fAllowedFileTypes.Remove(ft);
+    }
+
+    private void ToggleResourceFile(int id)
+    {
+        if (!_fLinkedResourceFileIds.Add(id)) _fLinkedResourceFileIds.Remove(id);
+    }
+
+    private async Task SaveTemplate()
+    {
+        _formError = "";
+
+        if (string.IsNullOrWhiteSpace(_fTitle)) { _formError = "שם המשימה הוא שדה חובה"; return; }
+        if (_fDueDate <= _fStartDate)           { _formError = "תאריך היעד חייב להיות אחרי תאריך הפתיחה"; return; }
+
+        if (_fIsSubmission)
+        {
+            if (_fMaxFilesCount <= 0) { _formError = "יש להגדיר מספר קבצים מקסימלי גדול מ-0"; return; }
+            if (_fMaxFileSizeMb <= 0) { _formError = "יש להגדיר גודל קובץ מקסימלי גדול מ-0"; return; }
+        }
+
+        _saving = true;
+
+        var req = new SaveTaskTemplateRequest
+        {
+            Title       = _fTitle.Trim(),
+            Description = string.IsNullOrWhiteSpace(_fDescription) ? null : _fDescription.Trim(),
+            // 0 in the <select> is the "לא משויך" option; the column stores null.
+            MilestoneTemplateId = _fMilestoneId == 0 ? null : _fMilestoneId,
+            StartDate   = _fStartDate,
+            DueDate     = _fDueDate,
+            IsActive    = _fIsActive,
+            IsSubmission = _fIsSubmission,
+            SubmissionInstructions = _fIsSubmission
+                ? (string.IsNullOrWhiteSpace(_fSubmissionInstructions) ? null : _fSubmissionInstructions.Trim())
+                : null,
+            MaxFilesCount    = _fIsSubmission ? _fMaxFilesCount : null,
+            MaxFileSizeMb    = _fIsSubmission ? _fMaxFileSizeMb : null,
+            AllowedFileTypes = _fIsSubmission && _fAllowedFileTypes.Count > 0
+                ? string.Join(",", _fAllowedFileTypes)
+                : null,
+            LinkedResourceFileIds = _fIsSubmission
+                ? _fLinkedResourceFileIds.ToList()
+                : new List<int>(),
+        };
+
+        var error = _editId == 0
+            ? await TaskService.CreateAsync(req)
+            : await TaskService.UpdateAsync(_editId, req);
+
+        _saving = false;
+
+        if (error is not null) { _formError = error; return; }
+
+        _modalOpen = false;
+        await ReloadAsync();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Row actions
+    // ─────────────────────────────────────────────────
+    private async Task ToggleActive(TaskTemplateDto t)
+    {
+        CloseAllMenus();
+        if (await TaskService.ToggleActiveAsync(t.Id))
+            t.IsActive = !t.IsActive;
+    }
+
+    /// <summary>
+    /// Detaches from the milestone — the same PATCH the milestone editor's ✕
+    /// issues, offered from this side too so the relationship is editable from
+    /// whichever page the admin happens to be on.
+    /// </summary>
+    private async Task DetachFromMilestone(TaskTemplateDto t)
+    {
+        CloseAllMenus();
+        _busy = true;
+
+        var error = await TaskService.SetMilestoneAsync(t.Id, null);
+
+        _busy = false;
+        if (error is not null) return;
+
+        await ReloadAsync();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  Delete
+    // ─────────────────────────────────────────────────
+    private bool             _deleteOpen;
+    private bool             _deleteBusy;
+    private string?          _deleteError;
+    private TaskTemplateDto? _deleteTarget;
+
+    private void RequestDelete(TaskTemplateDto t)
+    {
+        CloseAllMenus();
+        _deleteTarget = t;
+        _deleteError  = null;
+        _deleteOpen   = true;
+    }
+
+    private async Task ExecuteDelete()
+    {
+        if (_deleteTarget is null) return;
+
+        _deleteBusy  = true;
+        _deleteError = null;
+
+        bool ok = await TaskService.DeleteAsync(_deleteTarget.Id);
+
+        _deleteBusy = false;
+
+        if (!ok) { _deleteError = "המחיקה נכשלה. נסו שנית."; return; }
+
+        _deleteOpen   = false;
+        _deleteTarget = null;
+        await ReloadAsync();
+    }
 }

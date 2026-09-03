@@ -1,546 +1,1104 @@
+@*
+    ── עורך טופס (Admin Form Editor) ─────────────────────────────────────────
+    Route:  /management/forms/{FormId:int}
+
+    Visual source:
+        design/design-system/Motiva Admin Form Editor.dc.html
+
+    WHAT WAS TAKEN FROM THE REFERENCE
+    ─────────────────────────────────
+    The composition: a sticky editor header carrying identity + save state +
+    the four actions; a collapsible settings card summarised by its own line
+    when closed; and a question list of collapsed rows that expand in place
+    into their own editor. The density, the segmented rating scale, the option
+    rows with their move/remove controls and the empty state are all its.
+
+    WHAT WAS NOT
+    ────────────
+    Every value in the prototype. Its form name, cycle, dates, "38" submissions
+    and its seven sample questions — including the four project names — are
+    mock. Nothing here is seeded from them: the form comes from
+    GET /api/forms/{id} and the submission count is the real one the list
+    query computes.
+
+    In particular the reference's "עדיפות ראשונה / עדיפות שנייה" single-choice
+    questions, whose options are four hardcoded project titles, are NOT
+    reproduced. Project preferences in this system are not a choice block with
+    copied labels: they are rows in TeamProjectPreferences carrying real
+    Projects.Id values that the assignment algorithm joins and scores. Copying
+    project names into static options would look identical and silently sever
+    that. The assignment form's preference block therefore stays a system block
+    fed from the live catalog, and says so.
+
+    SAVING
+    ──────
+    Explicit, not auto — the reference's own header states dirty / saving /
+    saved, and an admin restructuring a live form should choose when it lands.
+    One press writes both halves: settings via PUT /api/forms/{id} and the
+    question list via PUT /api/forms/{id}/structure, which upserts by Id so
+    answers already recorded stay attached, and derives SortOrder from array
+    position so the order shown is the order stored. There is no timer
+    anywhere; the saved state is set from the server's response.
+*@
+
 @page "/management/forms/{FormId:int}"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin)]
 @using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
 @inject NavigationManager Nav
 @inject IFormsManagementService FormsService
+@inject IManagementService ManagementService
+@inject IJSRuntime JS
 
-<div class="fm-page">
-
-    <div class="fm-topbar">
-        <div class="fm-topbar-start">
-            <button class="fm-back-btn"
-                    @onclick="@(() => Nav.NavigateTo("/management/forms"))" title="חזרה לרשימה">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="fm-breadcrumb">ניהול · טפסים</div>
-                <h1 class="fm-title">@(_form?.Name ?? "טופס")</h1>
-            </div>
-        </div>
-        @if (_form is not null)
-        {
-            <div class="fm-topbar-end">
-                <span class="fm-status @StatusClass(_form.Status)">@StatusLabel(_form.Status)</span>
-            </div>
-        }
-    </div>
+<div class="fed-page" dir="rtl" @onclick="CloseAllPopovers">
 
     @if (_loading)
     {
-        <div class="fm-state">טוען טופס…</div>
+        <MLoadingState Label="טוען טופס…" />
     }
     else if (_form is null)
     {
-        <div class="fm-state fm-state-error">
-            <span class="oi oi-warning" aria-hidden="true"></span>
-            הטופס לא נמצא.
+        <div class="fed-state fed-state--error" role="alert">
+            <span>הטופס לא נמצא.</span>
+            <button type="button" class="fed-retry" @onclick="@(() => Nav.NavigateTo("/management/forms"))">
+                חזרה לטפסים
+            </button>
         </div>
     }
     else
     {
-        @if (!string.IsNullOrEmpty(_message))
+        @* ══ STICKY EDITOR HEADER ═════════════════════════════════════════ *@
+        <header class="fed-header" @onclick:stopPropagation="true">
+            <MAdminBack Href="/management/forms" Label="טפסים" />
+
+            <div class="fed-identity">
+                <div class="fed-identity-row">
+                    <h1 class="fed-title" title="@_form.Name">@DisplayName</h1>
+
+                    <span class="fed-status fed-status--@StatusSlug(CurrentDisplayStatus)">
+                        <span class="fed-status-dot" aria-hidden="true"></span>
+                        @FormDisplayStatus.Label(CurrentDisplayStatus)
+                    </span>
+
+                    <span class="fed-cycle">@CycleLabel</span>
+                </div>
+
+                @* Save state is reported, never animated on a timer. *@
+                <p class="fed-savestate fed-savestate--@SaveStateSlug">@SaveStateText</p>
+            </div>
+
+            <div class="fed-actions">
+                <button type="button" class="fed-icon-action" title="העתקת קישור לטופס"
+                        aria-label="העתקת קישור לטופס" @onclick="CopyLink">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                </button>
+
+                @* The assignment form is answered at /student/assignment, every
+                   other form at /forms/{id}. One button, correct destination. *@
+                <a class="fed-action" href="@StudentUrl" target="_blank" rel="noopener">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <path d="M15 3h6v6" /><path d="M10 14 21 3" />
+                    </svg>
+                    @OpenFormLabel
+                </a>
+
+                <button type="button" class="fed-action" @onclick="GoToSubmissions">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <path d="M14 2v6h6" /><path d="M16 13H8" /><path d="M16 17H8" />
+                    </svg>
+                    הגשות <span class="fed-action-count">@_form.SubmissionCount</span>
+                </button>
+
+                <button type="button"
+                        class="fed-save @(IsDirty && !_saving ? "motiva-cta" : "fed-save--idle")"
+                        disabled="@(!IsDirty || _saving)"
+                        @onclick="SaveAll">
+                    @if (_saving)
+                    {
+                        <span class="fed-spinner" aria-hidden="true"></span>
+                        <span>שומר…</span>
+                    }
+                    else
+                    {
+                        <span>שמירה</span>
+                    }
+                </button>
+            </div>
+        </header>
+
+        @if (!string.IsNullOrEmpty(_error))
         {
-            <div class="fm-toast @(_messageError ? "fm-toast-error" : "")">@_message</div>
+            <div class="fed-state fed-state--error" role="alert">@_error</div>
         }
 
-        <!-- ── Settings panel ────────────────────────────────────────── -->
-        <section class="fm-panel">
-            <div class="fm-panel-head">
-                <h2 class="fm-panel-title">הגדרות הטופס</h2>
-                <button class="fm-btn fm-btn-primary"
-                        disabled="@_savingSettings"
-                        @onclick="SaveSettings">
-                    @(_savingSettings ? "שומר…" : "שמירת הגדרות")
-                </button>
-            </div>
-
-            <div class="fm-grid">
-                <div class="fm-field fm-field-full">
-                    <label class="fm-label">שם הטופס <span class="fm-req">*</span></label>
-                    <input class="fm-input" @bind="_form.Name" maxlength="100" />
-                </div>
-
-                <div class="fm-field fm-field-full">
-                    <label class="fm-label">הוראות לסטודנטים</label>
-                    <textarea class="fm-textarea" rows="3" @bind="_form.Instructions"
-                              placeholder="הסבר קצר שיוצג לסטודנטים בראש הטופס"></textarea>
-                </div>
-
-                <div class="fm-field">
-                    <label class="fm-label">תאריך פתיחה</label>
-                    <input class="fm-input" type="datetime-local"
-                           value="@FormatLocalForInput(_form.OpensAt)"
-                           @oninput="@(e => _form.OpensAt = ParseLocalInput(e.Value?.ToString()))" />
-                </div>
-
-                <div class="fm-field">
-                    <label class="fm-label">תאריך סגירה</label>
-                    <input class="fm-input" type="datetime-local"
-                           value="@FormatLocalForInput(_form.ClosesAt)"
-                           @oninput="@(e => _form.ClosesAt = ParseLocalInput(e.Value?.ToString()))" />
-                </div>
-
-                <div class="fm-field">
-                    <label class="fm-check-row">
-                        <input type="checkbox" @bind="_form.IsOpen" />
-                        <span>הטופס פתוח להגשה</span>
-                    </label>
-                </div>
-
-                <div class="fm-field">
-                    <label class="fm-check-row">
-                        <input type="checkbox" @bind="_form.AllowEditAfterSubmit" />
-                        <span>אפשר עריכה לאחר ההגשה</span>
-                    </label>
-                </div>
-
-                <div class="fm-field fm-field-full">
-                    <label class="fm-label">סטטוס</label>
-                    <select class="fm-input" @bind="_form.Status">
-                        <option value="@FormStatuses.Draft">טיוטה</option>
-                        <option value="@FormStatuses.Open">פתוח</option>
-                        <option value="@FormStatuses.Closed">סגור</option>
-                    </select>
+        @if (_form.IsAssignmentForm)
+        {
+            @* Not decoration. The three system blocks below behave differently
+               from anything the admin adds, and saying so once here is what
+               makes the locked controls legible rather than broken-looking. *@
+            <div class="fed-notice">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" />
+                </svg>
+                <div>
+                    <strong>טופס שיבוץ פרויקט הוא טופס מערכת.</strong>
+                    שאלות המערכת שלו מזינות את אלגוריתם השיבוץ — ניתן לשנות את הניסוח, אך לא למחוק אותן
+                    או לשנות את סוגן. הטופס מוגש במסך השיבוץ של הסטודנטים, לא בטופס גנרי.
                 </div>
             </div>
+        }
+
+        @* ══ SETTINGS ═════════════════════════════════════════════════════ *@
+        <section class="fed-card" @onclick:stopPropagation="true">
+            <button type="button" class="fed-card-head" @onclick="ToggleSettings"
+                    aria-expanded="@(_settingsOpen ? "true" : "false")">
+                <span class="fed-card-icon" aria-hidden="true">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                </span>
+                <span class="fed-card-head-text">
+                    <span class="fed-card-title">הגדרות הטופס</span>
+                    <span class="fed-card-sub">@SettingsSummary</span>
+                </span>
+                <span class="fed-chev @(_settingsOpen ? "fed-chev--open" : "")" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </span>
+            </button>
+
+            @if (_settingsOpen)
+            {
+                <div class="fed-card-body">
+                    <div class="fed-grid fed-grid--name-cycle">
+                        <label class="fed-field">
+                            <span class="fed-label">שם הטופס <span class="fed-req">*</span></span>
+                            <input class="fed-input" value="@_form.Name" maxlength="120"
+                                   @oninput="@(e => SetName(e.Value?.ToString() ?? ""))" />
+                        </label>
+
+                        <label class="fed-field">
+                            <span class="fed-label">מחזור</span>
+                            @* Read-only on purpose: the cycle is half of the
+                               UNIQUE (AcademicYearId, FormType) key and the
+                               update endpoint does not move a form between
+                               cycles. Drawing an editable picker would offer a
+                               change the API silently drops. *@
+                            <div class="fed-readonly" title="לא ניתן להעביר טופס בין מחזורים">
+                                <span>@CycleLabel</span>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <rect x="3" y="11" width="18" height="11" rx="2" />
+                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                </svg>
+                            </div>
+                        </label>
+                    </div>
+
+                    <label class="fed-field">
+                        <span class="fed-label">הוראות לסטודנטים</span>
+                        <textarea class="fed-textarea" rows="3"
+                                  placeholder="הסבר קצר שיוצג בראש הטופס"
+                                  value="@_form.Instructions"
+                                  @oninput="@(e => SetInstructions(e.Value?.ToString() ?? ""))"></textarea>
+                    </label>
+
+                    <div class="fed-grid fed-grid--three">
+                        <label class="fed-field">
+                            <span class="fed-label">תאריך פתיחה</span>
+                            <input class="fed-input" type="date" dir="ltr" value="@_opensDate"
+                                   @oninput="@(e => SetOpens(e.Value?.ToString()))" />
+                        </label>
+                        <label class="fed-field">
+                            <span class="fed-label">תאריך סגירה</span>
+                            <input class="fed-input" type="date" dir="ltr" value="@_closesDate"
+                                   @oninput="@(e => SetCloses(e.Value?.ToString()))" />
+                        </label>
+                        <label class="fed-field">
+                            <span class="fed-label">סטטוס</span>
+                            @* Three options, not the reference's four. "מתוזמן"
+                               is derived from Status + OpensAt, so offering it
+                               here would be a status the column cannot hold. *@
+                            <select class="fed-input" value="@_form.Status"
+                                    @onchange="@(e => SetStatus(e.Value?.ToString() ?? FormStatuses.Draft))">
+                                @foreach (var st in FormStatuses.All)
+                                {
+                                    <option value="@st">@FormStatuses.Label(st)</option>
+                                }
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="fed-grid fed-grid--toggles">
+                        <div class="fed-toggle-row">
+                            <span class="fed-toggle-label">הטופס פתוח להגשה</span>
+                            <MToggle Checked="_form.IsOpen"
+                                     CheckedChanged="SetIsOpen"
+                                     AriaLabel="הטופס פתוח להגשה" />
+                        </div>
+                        <div class="fed-toggle-row">
+                            <span class="fed-toggle-label">אפשר עריכה לאחר הגשה</span>
+                            <MToggle Checked="_form.AllowEditAfterSubmit"
+                                     CheckedChanged="SetAllowEdit"
+                                     AriaLabel="אפשר עריכה לאחר הגשה" />
+                        </div>
+                    </div>
+
+                    @if (_scheduledHint)
+                    {
+                        <p class="fed-hint">
+                            הטופס מסומן כפתוח אך תאריך הפתיחה עוד לא הגיע — עד אז הוא יוצג כ"מתוזמן"
+                            והסטודנטים לא יוכלו להגיש.
+                        </p>
+                    }
+                </div>
+            }
         </section>
 
-        <!-- ── Blocks panel ──────────────────────────────────────────── -->
-        <section class="fm-panel">
-            <div class="fm-panel-head">
-                <h2 class="fm-panel-title">בלוקים בטופס (@_form.Blocks.Count)</h2>
-                <button class="fm-btn fm-btn-secondary"
-                        @onclick="OpenAddBlock">
-                    <span class="oi oi-plus" aria-hidden="true"></span>
-                    הוסף בלוק
-                </button>
-            </div>
+        @* ══ QUESTIONS ════════════════════════════════════════════════════ *@
+        <div class="fed-section-head" @onclick:stopPropagation="true">
+            <h2 class="fed-h2">שאלות בטופס <span class="fed-count">@_blocks.Count</span></h2>
+            <button type="button" class="fed-add motiva-cta" @onclick="AddBlock">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                </svg>
+                שאלה חדשה
+            </button>
+        </div>
 
-            @if (_form.Blocks.Count == 0)
+        <section class="fed-blocks" @onclick:stopPropagation="true">
+            @if (_blocks.Count == 0)
             {
-                <div class="fm-empty-block">אין עדיין בלוקים. לחצו על "הוסף בלוק" כדי להתחיל.</div>
+                <div class="fed-empty">
+                    <p class="fed-empty-title">אין עדיין שאלות בטופס</p>
+                    <p class="fed-empty-sub">הוסיפו שאלה ראשונה כדי להתחיל לבנות את הטופס</p>
+                </div>
             }
             else
             {
-                <div class="fm-block-list">
-                    @for (int i = 0; i < _form.Blocks.Count; i++)
-                    {
-                        var idx   = i;
-                        var block = _form.Blocks[idx];
-                        var isSystem = !string.IsNullOrEmpty(block.BlockKey);
+                @for (int i = 0; i < _blocks.Count; i++)
+                {
+                    var idx      = i;
+                    var b        = _blocks[idx];
+                    var expanded = _expandedKey == b.Key;
+                    var isInfo   = FormBlockTypes.IsInformational(b.BlockType);
 
-                        <article class="fm-block-card">
-                            <header class="fm-block-head">
-                                <div class="fm-block-head-main">
-                                    <span class="fm-block-type">@BlockTypeLabel(block.BlockType)</span>
-                                    @if (isSystem)
-                                    {
-                                        <span class="fm-block-system">בלוק מערכת</span>
-                                    }
-                                    @if (block.IsRequired)
-                                    {
-                                        <span class="fm-block-required">חובה</span>
-                                    }
-                                </div>
-                                <div class="fm-block-actions">
-                                    <button class="fm-icon-btn" title="הזז למעלה"
-                                            disabled="@(idx == 0 || _busyBlock == block.Id)"
-                                            @onclick="@(() => MoveBlock(idx, -1))">
-                                        <span class="oi oi-arrow-top" aria-hidden="true"></span>
+                    <article class="fed-block @(expanded ? "fed-block--open" : "")">
+
+                        @* ── collapsed row ─────────────────────────────── *@
+                        <div class="fed-block-row" @onclick="@(() => ToggleExpand(b.Key))">
+                            <span class="fed-block-num">@(idx + 1)</span>
+
+                            <span class="fed-block-title @(string.IsNullOrWhiteSpace(b.Title) ? "fed-block-title--empty" : "")">
+                                @(string.IsNullOrWhiteSpace(b.Title) ? "שאלה ללא כותרת" : b.Title)
+                            </span>
+
+                            <span class="fed-block-type">@FormBlockTypes.Label(b.BlockType)</span>
+
+                            @if (b.IsSystem)
+                            {
+                                <span class="fed-block-system">מערכת</span>
+                            }
+
+                            @if (b.IsRequired && !isInfo)
+                            {
+                                <span class="fed-block-req">חובה</span>
+                            }
+
+                            <span class="fed-block-tools" @onclick:stopPropagation="true">
+                                <button type="button" class="fed-tool" title="הזזה למעלה" aria-label="הזזה למעלה"
+                                        disabled="@(idx == 0)" @onclick="@(() => MoveBlock(idx, -1))">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="m18 15-6-6-6 6" />
+                                    </svg>
+                                </button>
+                                <button type="button" class="fed-tool" title="הזזה למטה" aria-label="הזזה למטה"
+                                        disabled="@(idx == _blocks.Count - 1)" @onclick="@(() => MoveBlock(idx, 1))">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="m6 9 6 6 6-6" />
+                                    </svg>
+                                </button>
+
+                                @* A system block has no delete control at all,
+                                   rather than a disabled one: the server would
+                                   refuse, and an always-dead button is worse
+                                   than no button. *@
+                                @if (!b.IsSystem)
+                                {
+                                    <button type="button" class="fed-tool fed-tool--danger" title="מחיקת שאלה"
+                                            aria-label="מחיקת שאלה" @onclick="@(() => RemoveBlock(b.Key))">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M3 6h18" />
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                                            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                        </svg>
                                     </button>
-                                    <button class="fm-icon-btn" title="הזז למטה"
-                                            disabled="@(idx == _form.Blocks.Count - 1 || _busyBlock == block.Id)"
-                                            @onclick="@(() => MoveBlock(idx, 1))">
-                                        <span class="oi oi-arrow-bottom" aria-hidden="true"></span>
-                                    </button>
-                                    @if (!isSystem)
-                                    {
-                                        <button class="fm-icon-btn fm-icon-btn-danger" title="מחיקת בלוק"
-                                                disabled="@(_busyBlock == block.Id)"
-                                                @onclick="@(() => DeleteBlock(block))">
-                                            <span class="oi oi-trash" aria-hidden="true"></span>
-                                        </button>
-                                    }
-                                </div>
-                            </header>
+                                }
 
-                            <div class="fm-grid">
-                                <div class="fm-field fm-field-full">
-                                    <label class="fm-label">כותרת / שאלה <span class="fm-req">*</span></label>
-                                    <input class="fm-input" @bind="block.Title" maxlength="200" />
-                                </div>
+                                <span class="fed-chev @(expanded ? "fed-chev--open" : "")" aria-hidden="true">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="m6 9 6 6 6-6" />
+                                    </svg>
+                                </span>
+                            </span>
+                        </div>
 
-                                <div class="fm-field fm-field-full">
-                                    <label class="fm-label">טקסט עזר</label>
-                                    <textarea class="fm-textarea" rows="2" @bind="block.HelperText"
-                                              placeholder="טקסט הסבר שיוצג מתחת לכותרת"></textarea>
-                                </div>
+                        @* ── expanded editor ───────────────────────────── *@
+                        @if (expanded)
+                        {
+                            <div class="fed-block-body">
+                                <div class="fed-grid fed-grid--title-type">
+                                    <label class="fed-field">
+                                        <span class="fed-label">@(isInfo ? "כותרת" : "השאלה")</span>
+                                        <input class="fed-input" placeholder="נוסח השאלה" maxlength="200"
+                                               value="@b.Title"
+                                               @oninput="@(e => SetBlockTitle(b, e.Value?.ToString() ?? ""))" />
+                                    </label>
 
-                                <div class="fm-field">
-                                    <label class="fm-label">סוג בלוק</label>
-                                    <select class="fm-input" disabled="@isSystem"
-                                            value="@block.BlockType"
-                                            @onchange="@(e => block.BlockType = e.Value?.ToString() ?? block.BlockType)">
-                                        <option value="@FormBlockTypes.Text">טקסט / מידע</option>
-                                        <option value="@FormBlockTypes.SingleChoice">בחירה יחידה</option>
-                                        <option value="@FormBlockTypes.MultiChoice">בחירה מרובה</option>
-                                        <option value="@FormBlockTypes.Ranking">דירוג</option>
-                                        <option value="@FormBlockTypes.OpenText">טקסט פתוח</option>
-                                    </select>
-                                </div>
-
-                                <div class="fm-field">
-                                    <label class="fm-check-row">
-                                        <input type="checkbox" @bind="block.IsRequired" />
-                                        <span>שדה חובה</span>
+                                    <label class="fed-field">
+                                        <span class="fed-label">סוג</span>
+                                        @if (b.IsSystem)
+                                        {
+                                            <div class="fed-readonly" title="לא ניתן לשנות סוג של שאלת מערכת">
+                                                <span>@FormBlockTypes.Label(b.BlockType)</span>
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                    <rect x="3" y="11" width="18" height="11" rx="2" />
+                                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                                </svg>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <select class="fed-input" value="@b.BlockType"
+                                                    @onchange="@(e => SetBlockType(b, e.Value?.ToString() ?? b.BlockType))">
+                                                @foreach (var t in FormBlockTypes.BuilderTypes)
+                                                {
+                                                    <option value="@t">@FormBlockTypes.Label(t)</option>
+                                                }
+                                                @* A block already stored as a type the builder no
+                                                   longer offers keeps its own option, so opening it
+                                                   never silently retypes it. *@
+                                                @if (!FormBlockTypes.BuilderTypes.Contains(b.BlockType))
+                                                {
+                                                    <option value="@b.BlockType">@FormBlockTypes.Label(b.BlockType)</option>
+                                                }
+                                            </select>
+                                        }
                                     </label>
                                 </div>
-                            </div>
 
-                            <div class="fm-block-card-actions">
-                                <button class="fm-btn fm-btn-secondary"
-                                        disabled="@(_busyBlock == block.Id)"
-                                        @onclick="@(() => SaveBlock(block))">
-                                    שמירת בלוק
-                                </button>
-                            </div>
+                                @if (isInfo)
+                                {
+                                    <label class="fed-field">
+                                        <span class="fed-label">תוכן הטקסט</span>
+                                        <textarea class="fed-textarea" rows="3"
+                                                  placeholder="טקסט הסבר שיוצג לסטודנטים"
+                                                  value="@b.HelperText"
+                                                  @oninput="@(e => SetBlockHelper(b, e.Value?.ToString() ?? ""))"></textarea>
+                                    </label>
+                                }
+                                else
+                                {
+                                    <label class="fed-field">
+                                        <span class="fed-label">
+                                            טקסט עזר <span class="fed-optional">אופציונלי</span>
+                                        </span>
+                                        <input class="fed-input" placeholder="הסבר קצר מתחת לשאלה" maxlength="300"
+                                               value="@b.HelperText"
+                                               @oninput="@(e => SetBlockHelper(b, e.Value?.ToString() ?? ""))" />
+                                    </label>
+                                }
 
-                            @if (BlockSupportsOptions(block.BlockType))
-                            {
-                                <div class="fm-options-section">
-                                    <div class="fm-options-head">
-                                        <h3 class="fm-options-title">אפשרויות (@block.Options.Count)</h3>
-                                        @if (string.Equals(block.BlockKey, FormBlockKeys.ProjectPreferences, StringComparison.Ordinal))
-                                        {
-                                            <span class="fm-options-note">בלוק זה מוזן אוטומטית מקטלוג הפרויקטים</span>
-                                        }
-                                    </div>
-
-                                    @if (!string.Equals(block.BlockKey, FormBlockKeys.ProjectPreferences, StringComparison.Ordinal))
+                                @* ── options ──────────────────────────── *@
+                                @if (FormBlockTypes.HasOptions(b.BlockType))
+                                {
+                                    @if (b.OptionsAreSystemSupplied)
                                     {
-                                        <ul class="fm-options-list">
-                                            @foreach (var opt in block.Options.OrderBy(o => o.SortOrder).ToList())
-                                            {
-                                                <li class="fm-option-row">
-                                                    <input class="fm-input fm-option-label" @bind="opt.OptionLabel"
-                                                           placeholder="תווית האפשרות" />
-                                                    <input class="fm-input fm-option-value" @bind="opt.OptionValue"
-                                                           placeholder="ערך (אופציונלי)" />
-                                                    <button class="fm-icon-btn"
-                                                            disabled="@(_busyOption == opt.Id)"
-                                                            @onclick="@(() => SaveOption(opt))" title="שמור">
-                                                        <span class="oi oi-check" aria-hidden="true"></span>
-                                                    </button>
-                                                    <button class="fm-icon-btn fm-icon-btn-danger"
-                                                            disabled="@(_busyOption == opt.Id)"
-                                                            @onclick="@(() => DeleteOption(block, opt))" title="מחק">
-                                                        <span class="oi oi-trash" aria-hidden="true"></span>
-                                                    </button>
-                                                </li>
-                                            }
-                                        </ul>
+                                        @* Project preferences. No option editor,
+                                           because there are no stored options to
+                                           edit — the choices are the live catalog
+                                           and the answers are real Projects.Id. *@
+                                        <div class="fed-system-note">
+                                            <strong>האפשרויות נטענות מקטלוג הפרויקטים.</strong>
+                                            הסטודנטים בוחרים פרויקטים מהמחזור הנוכחי, והתשובה נשמרת כמזהה פרויקט
+                                            אמיתי — לכן אין כאן רשימת אפשרויות קבועה.
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="fed-options">
+                                            <span class="fed-label">אפשרויות</span>
 
-                                        <div class="fm-option-add">
-                                            <input class="fm-input fm-option-label" @bind="_newOptionLabel"
-                                                   placeholder="תווית אפשרות חדשה" />
-                                            <input class="fm-input fm-option-value" @bind="_newOptionValue"
-                                                   placeholder="ערך (אופציונלי)" />
-                                            <button class="fm-btn fm-btn-secondary"
-                                                    disabled="@(_busyBlock == block.Id || string.IsNullOrWhiteSpace(_newOptionLabel))"
-                                                    @onclick="@(() => AddOption(block))">
-                                                <span class="oi oi-plus" aria-hidden="true"></span>
-                                                הוסף
+                                            @if (b.ValuesAreProtected)
+                                            {
+                                                <p class="fed-options-note">
+                                                    ניתן לשנות את הניסוח המוצג. הערך המזהה של כל אפשרות נעול —
+                                                    אלגוריתם השיבוץ מחשב את ציון ההתאמה לפיו.
+                                                </p>
+                                            }
+
+                                            <div class="fed-option-list">
+                                                @for (int oi = 0; oi < b.Options.Count; oi++)
+                                                {
+                                                    var optIdx = oi;
+                                                    var opt    = b.Options[optIdx];
+
+                                                    <div class="fed-option-row">
+                                                        <input class="fed-option-input" placeholder="נוסח האפשרות" maxlength="160"
+                                                               value="@opt.Label"
+                                                               @oninput="@(e => SetOptionLabel(b, opt, e.Value?.ToString() ?? ""))" />
+
+                                                        @if (b.ValuesAreProtected && opt.Id > 0)
+                                                        {
+                                                            <span class="fed-option-value" dir="ltr" title="ערך מזהה נעול">@opt.Value</span>
+                                                        }
+
+                                                        <span class="fed-option-tools">
+                                                            <button type="button" class="fed-tool fed-tool--sm" title="למעלה" aria-label="הזזת אפשרות למעלה"
+                                                                    disabled="@(optIdx == 0)" @onclick="@(() => MoveOption(b, optIdx, -1))">
+                                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                    <path d="m18 15-6-6-6 6" />
+                                                                </svg>
+                                                            </button>
+                                                            <button type="button" class="fed-tool fed-tool--sm" title="למטה" aria-label="הזזת אפשרות למטה"
+                                                                    disabled="@(optIdx == b.Options.Count - 1)" @onclick="@(() => MoveOption(b, optIdx, 1))">
+                                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                    <path d="m6 9 6 6 6-6" />
+                                                                </svg>
+                                                            </button>
+                                                            <button type="button" class="fed-tool fed-tool--sm fed-tool--danger" title="הסרה"
+                                                                    aria-label="הסרת אפשרות" @onclick="@(() => RemoveOption(b, opt))">
+                                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                                     stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                                                                    <path d="M18 6 6 18M6 6l12 12" />
+                                                                </svg>
+                                                            </button>
+                                                        </span>
+                                                    </div>
+                                                }
+                                            </div>
+
+                                            <button type="button" class="fed-add-option" @onclick="@(() => AddOption(b))">
+                                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                     stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                                                    <path d="M12 5v14M5 12h14" />
+                                                </svg>
+                                                הוספת אפשרות
                                             </button>
                                         </div>
                                     }
+                                }
+
+                                @* ── rating scale ─────────────────────── *@
+                                @if (FormBlockTypes.IsRating(b.BlockType))
+                                {
+                                    <div class="fed-rating">
+                                        <span class="fed-label">סולם דירוג</span>
+                                        <div class="fed-rating-row">
+                                            <span class="fed-seg" role="group" aria-label="סולם דירוג">
+                                                <button type="button"
+                                                        class="fed-seg-btn @(b.RatingScale == 5 ? "fed-seg-btn--on" : "")"
+                                                        aria-pressed="@(b.RatingScale == 5 ? "true" : "false")"
+                                                        @onclick="@(() => SetScale(b, 5))">1–5</button>
+                                                <button type="button"
+                                                        class="fed-seg-btn @(b.RatingScale == 10 ? "fed-seg-btn--on" : "")"
+                                                        aria-pressed="@(b.RatingScale == 10 ? "true" : "false")"
+                                                        @onclick="@(() => SetScale(b, 10))">1–10</button>
+                                            </span>
+
+                                            <input class="fed-option-input" maxlength="60"
+                                                   placeholder="תווית מינימום (למשל: כלל לא)"
+                                                   value="@b.MinLabel"
+                                                   @oninput="@(e => SetMinLabel(b, e.Value?.ToString() ?? ""))" />
+                                            <input class="fed-option-input" maxlength="60"
+                                                   placeholder="תווית מקסימום (למשל: במידה רבה)"
+                                                   value="@b.MaxLabel"
+                                                   @oninput="@(e => SetMaxLabel(b, e.Value?.ToString() ?? ""))" />
+                                        </div>
+                                    </div>
+                                }
+
+                                @* ── footer ───────────────────────────── *@
+                                <div class="fed-block-foot">
+                                    @if (b.RequiredIsPinned)
+                                    {
+                                        @* Not a disabled toggle — a stated fact.
+                                           Three ranked preferences is a domain
+                                           invariant the server pins, so offering
+                                           a switch here would promise a change
+                                           that never lands. *@
+                                        <span class="fed-foot-note fed-foot-note--pinned">
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                <rect x="3" y="11" width="18" height="11" rx="2" />
+                                                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                            </svg>
+                                            שאלת חובה קבועה — נדרשות שלוש העדפות לצורך השיבוץ
+                                        </span>
+                                    }
+                                    else if (!isInfo)
+                                    {
+                                        <span class="fed-required">
+                                            <MToggle Checked="b.IsRequired"
+                                                     CheckedChanged="@(v => SetRequired(b, v))"
+                                                     AriaLabel="שאלת חובה" />
+                                            <span class="fed-toggle-label">שאלת חובה</span>
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        @* An information block carries no answer,
+                                           so "required" would be unsatisfiable. *@
+                                        <span class="fed-foot-note">בלוק מידע — אינו שאלה ואינו ניתן לסימון כחובה</span>
+                                    }
+
+                                    <button type="button" class="fed-close-block" @onclick="@(() => ToggleExpand(b.Key))">
+                                        סגירה
+                                    </button>
                                 </div>
-                            }
-                        </article>
-                    }
-                </div>
+                            </div>
+                        }
+                    </article>
+                }
             }
         </section>
     }
 </div>
 
-<!-- ── Add-block modal ───────────────────────────────────────────────── -->
-@if (_showAddBlock)
+@if (!string.IsNullOrEmpty(_toast))
 {
-    <div class="fm-modal-backdrop" @onclick="CloseAddBlock"></div>
-    <div class="fm-modal" dir="rtl" role="dialog" aria-modal="true">
-        <h2 class="fm-modal-title">הוספת בלוק חדש</h2>
-        <div class="fm-grid">
-            <div class="fm-field fm-field-full">
-                <label class="fm-label">סוג בלוק</label>
-                <select class="fm-input" @bind="_newBlockType">
-                    <option value="@FormBlockTypes.Text">טקסט / מידע</option>
-                    <option value="@FormBlockTypes.SingleChoice">בחירה יחידה</option>
-                    <option value="@FormBlockTypes.MultiChoice">בחירה מרובה</option>
-                    <option value="@FormBlockTypes.Ranking">דירוג</option>
-                    <option value="@FormBlockTypes.OpenText">טקסט פתוח</option>
-                </select>
-            </div>
-            <div class="fm-field fm-field-full">
-                <label class="fm-label">כותרת <span class="fm-req">*</span></label>
-                <input class="fm-input" @bind="_newBlockTitle" maxlength="200" />
-            </div>
-            <div class="fm-field fm-field-full">
-                <label class="fm-label">טקסט עזר</label>
-                <textarea class="fm-textarea" rows="2" @bind="_newBlockHelper"></textarea>
-            </div>
-            <div class="fm-field">
-                <label class="fm-check-row">
-                    <input type="checkbox" @bind="_newBlockRequired" />
-                    <span>שדה חובה</span>
-                </label>
-            </div>
-        </div>
-        <div class="fm-modal-actions">
-            <button class="fm-btn fm-btn-secondary" @onclick="CloseAddBlock">ביטול</button>
-            <button class="fm-btn fm-btn-primary"
-                    disabled="@(string.IsNullOrWhiteSpace(_newBlockTitle) || _addingBlock)"
-                    @onclick="ConfirmAddBlock">
-                @(_addingBlock ? "מוסיף…" : "הוספה")
-            </button>
-        </div>
+    <div class="fed-toast" role="status">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7BE0B8"
+             stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m5 12.5 4.5 4.5L19 7" />
+        </svg>
+        @_toast
     </div>
 }
 
 @code {
     [Parameter] public int FormId { get; set; }
 
-    private FormDetailDto? _form;
-    private bool _loading = true;
+    // ── Editing model ────────────────────────────────────────────────────────
+    //
+    // The page edits its OWN copy rather than mutating the DTO in place, for
+    // one specific reason: a newly added block has no database Id yet, and the
+    // list still has to identify it to expand, move, retype and delete it
+    // before the first save. `Key` is that identity — client-side, stable for
+    // the lifetime of the row, and never sent to the server. `Id` stays the
+    // database truth (0 = not yet persisted).
 
-    private bool _savingSettings;
-    private string? _message;
-    private bool    _messageError;
+    private sealed class EditableOption
+    {
+        public int    Key   { get; init; }
+        public int    Id    { get; set; }
+        public string Value { get; set; } = "";
+        public string Label { get; set; } = "";
+    }
 
-    // Per-row "busy" markers to gate buttons during inflight requests.
-    private int _busyBlock;
-    private int _busyOption;
+    private sealed class EditableBlock
+    {
+        public int     Key         { get; init; }
+        public int     Id          { get; set; }
+        public string  BlockType   { get; set; } = FormBlockTypes.OpenText;
+        public string? BlockKey    { get; set; }
+        public string  Title       { get; set; } = "";
+        public string  HelperText  { get; set; } = "";
+        public bool    IsRequired  { get; set; }
+        public int     RatingScale { get; set; } = 5;
+        public string  MinLabel    { get; set; } = "";
+        public string  MaxLabel    { get; set; } = "";
+        public List<EditableOption> Options { get; set; } = new();
 
-    // Add-block modal state
-    private bool   _showAddBlock;
-    private bool   _addingBlock;
-    private string _newBlockType    = FormBlockTypes.OpenText;
-    private string _newBlockTitle   = "";
-    private string _newBlockHelper  = "";
-    private bool   _newBlockRequired;
+        public bool IsSystem                 => !string.IsNullOrEmpty(BlockKey);
+        public bool ValuesAreProtected        => FormBlockKeys.HasProtectedOptionValues(BlockKey);
+        public bool OptionsAreSystemSupplied  => FormBlockKeys.HasSystemSuppliedOptions(BlockKey);
 
-    // Buffer for "add option" inputs (per-block, but we keep a single buffer
-    // since only one block's add-row is interacted with at a time).
-    private string _newOptionLabel = "";
-    private string _newOptionValue = "";
+        /// <summary>
+        /// True for the project-preferences block, whose required flag the
+        /// server pins (see FormsController.NormalizeSystemRequired).
+        /// </summary>
+        public bool RequiredIsPinned          => FormBlockKeys.HasSystemSuppliedOptions(BlockKey);
+    }
 
-    protected override async Task OnInitializedAsync() => await LoadForm();
+    // ── State ────────────────────────────────────────────────────────────────
 
+    private FormDetailDto?      _form   = null;
+    private List<EditableBlock> _blocks = new();
+
+    private bool   _loading        = true;
+    private bool   _saving         = false;
+    private bool   _settingsOpen   = false;
+    private bool   _settingsDirty  = false;
+    private bool   _structureDirty = false;
+    private int    _expandedKey    = 0;
+    private string _error          = "";
+    private string _toast          = "";
+
+    private string _opensDate = "";
+    private string _closesDate = "";
+
+    private int _nextKey = 1;
+
+    private bool IsDirty => _settingsDirty || _structureDirty;
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+
+    private int _loadedFormId = 0;
+
+    // Guarded on the route parameter. OnParametersSetAsync runs on every
+    // parameter set, not only on navigation, and an unguarded reload here
+    // would silently discard the admin's unsaved edits mid-session.
     protected override async Task OnParametersSetAsync()
     {
-        if (_form is not null && _form.Id != FormId) await LoadForm();
+        if (_loadedFormId == FormId) return;
+        _loadedFormId = FormId;
+        await LoadAsync();
     }
 
-    private async Task LoadForm()
+    private async Task LoadAsync()
     {
         _loading = true;
+        _error   = "";
+        StateHasChanged();
+
         _form = await FormsService.GetFormAsync(FormId);
+
+        if (_form is not null)
+        {
+            RebindFrom(_form);
+        }
+
         _loading = false;
+        StateHasChanged();
     }
 
-    private async Task Reload(string? success = null, bool isError = false)
+    /// <summary>
+    /// Rebuilds the editing state from server truth and clears both dirty
+    /// flags. Called on load and after every successful save, so newly created
+    /// blocks pick up their real Ids and the order shown is the stored order.
+    /// </summary>
+    private void RebindFrom(FormDetailDto form)
     {
-        var refreshed = await FormsService.GetFormAsync(FormId);
-        if (refreshed is not null) _form = refreshed;
-        if (success is not null) { _message = success; _messageError = isError; }
+        // Which question was open, expressed in terms that survive the rebind.
+        // Keys are client-side and regenerated below, so carrying the key over
+        // would always miss and the admin's open card would slam shut on every
+        // save. The database Id survives for an existing block; for one that
+        // was still unsaved, its position does.
+        var wasExpanded = _blocks.FirstOrDefault(b => b.Key == _expandedKey);
+        int expandedId  = wasExpanded?.Id ?? 0;
+        int expandedIdx = wasExpanded is null ? -1 : _blocks.IndexOf(wasExpanded);
+
+        _blocks = form.Blocks
+            .OrderBy(b => b.SortOrder).ThenBy(b => b.Id)
+            .Select(b => new EditableBlock
+            {
+                Key         = _nextKey++,
+                Id          = b.Id,
+                BlockType   = b.BlockType,
+                BlockKey    = b.BlockKey,
+                Title       = b.Title,
+                HelperText  = b.HelperText,
+                IsRequired  = b.IsRequired,
+                RatingScale = b.RatingScale == 10 ? 10 : 5,
+                MinLabel    = b.MinLabel,
+                MaxLabel    = b.MaxLabel,
+                Options     = b.Options
+                    .OrderBy(o => o.SortOrder).ThenBy(o => o.Id)
+                    .Select(o => new EditableOption
+                    {
+                        Key   = _nextKey++,
+                        Id    = o.Id,
+                        Value = o.OptionValue,
+                        Label = o.OptionLabel
+                    })
+                    .ToList()
+            })
+            .ToList();
+
+        _opensDate  = ToDateInput(form.OpensAt);
+        _closesDate = ToDateInput(form.ClosesAt);
+
+        _settingsDirty  = false;
+        _structureDirty = false;
+
+        // Restore the open card: by Id when the block already existed, else by
+        // the position it occupied (a block added and saved in the same pass).
+        var restored = expandedId > 0
+            ? _blocks.FirstOrDefault(b => b.Id == expandedId)
+            : (expandedIdx >= 0 && expandedIdx < _blocks.Count ? _blocks[expandedIdx] : null);
+
+        _expandedKey = restored?.Key ?? 0;
     }
 
-    private async Task SaveSettings()
+    // ── Header labels ────────────────────────────────────────────────────────
+
+    private string DisplayName =>
+        string.IsNullOrWhiteSpace(_form?.Name) ? "טופס ללא שם" : _form!.Name;
+
+    private string CycleLabel =>
+        string.IsNullOrWhiteSpace(_form?.AcademicYear) ? "ללא שיוך" : _form!.AcademicYear;
+
+    /// <summary>
+    /// The chip reflects the values currently in the editor, not the last
+    /// saved ones — otherwise switching the status to "פתוח" would leave the
+    /// header contradicting the field the admin just changed.
+    /// </summary>
+    private string CurrentDisplayStatus =>
+        _form is null
+            ? FormDisplayStatus.Draft
+            : FormDisplayStatus.Resolve(_form.Status, _form.OpensAt, _form.ClosesAt);
+
+    private static string StatusSlug(string displayStatus) => displayStatus switch
     {
-        if (_form is null) return;
-        _savingSettings = true;
-        var ok = await FormsService.UpdateFormAsync(_form.Id, new SaveFormRequest
-        {
-            AcademicYearId       = _form.AcademicYearId,
-            Name                 = _form.Name,
-            FormType             = _form.FormType,
-            Instructions         = _form.Instructions,
-            IsOpen               = _form.IsOpen,
-            OpensAt              = string.IsNullOrWhiteSpace(_form.OpensAt) ? null : _form.OpensAt,
-            ClosesAt             = string.IsNullOrWhiteSpace(_form.ClosesAt) ? null : _form.ClosesAt,
-            AllowEditAfterSubmit = _form.AllowEditAfterSubmit,
-            Status               = _form.Status
-        });
-        _savingSettings = false;
-        if (ok) await Reload("ההגדרות נשמרו");
-        else { _message = "שמירת ההגדרות נכשלה"; _messageError = true; }
-    }
-
-    private void OpenAddBlock()
-    {
-        _newBlockType     = FormBlockTypes.OpenText;
-        _newBlockTitle    = "";
-        _newBlockHelper   = "";
-        _newBlockRequired = false;
-        _showAddBlock     = true;
-    }
-
-    private void CloseAddBlock() => _showAddBlock = false;
-
-    private async Task ConfirmAddBlock()
-    {
-        if (_form is null || string.IsNullOrWhiteSpace(_newBlockTitle)) return;
-        _addingBlock = true;
-        var newId = await FormsService.AddBlockAsync(_form.Id, new SaveBlockRequest
-        {
-            BlockType  = _newBlockType,
-            Title      = _newBlockTitle,
-            HelperText = _newBlockHelper,
-            IsRequired = _newBlockRequired,
-            SortOrder  = (_form.Blocks.LastOrDefault()?.SortOrder ?? 0) + 1
-        });
-        _addingBlock = false;
-        _showAddBlock = false;
-        if (newId is not null) await Reload("הבלוק נוסף");
-        else { _message = "הוספת הבלוק נכשלה"; _messageError = true; }
-    }
-
-    private async Task SaveBlock(FormBlockDto block)
-    {
-        if (_form is null) return;
-        _busyBlock = block.Id;
-        var ok = await FormsService.UpdateBlockAsync(block.Id, new SaveBlockRequest
-        {
-            BlockType  = block.BlockType,
-            Title      = block.Title,
-            HelperText = block.HelperText,
-            IsRequired = block.IsRequired,
-            SortOrder  = block.SortOrder
-        });
-        _busyBlock = 0;
-        if (ok) await Reload("הבלוק נשמר");
-        else { _message = "שמירת הבלוק נכשלה"; _messageError = true; }
-    }
-
-    private async Task DeleteBlock(FormBlockDto block)
-    {
-        if (_form is null) return;
-        _busyBlock = block.Id;
-        var ok = await FormsService.DeleteBlockAsync(block.Id);
-        _busyBlock = 0;
-        if (ok) await Reload("הבלוק נמחק");
-        else { _message = "מחיקת הבלוק נכשלה"; _messageError = true; }
-    }
-
-    private async Task MoveBlock(int index, int delta)
-    {
-        if (_form is null) return;
-        int newIndex = index + delta;
-        if (newIndex < 0 || newIndex >= _form.Blocks.Count) return;
-
-        var a = _form.Blocks[index];
-        var b = _form.Blocks[newIndex];
-
-        // Swap SortOrder values via two PUTs.
-        int aOrder = a.SortOrder, bOrder = b.SortOrder;
-        if (aOrder == bOrder) { aOrder = index + 1; bOrder = newIndex + 1; }
-
-        _busyBlock = a.Id;
-        await FormsService.UpdateBlockAsync(a.Id, new SaveBlockRequest
-        {
-            BlockType  = a.BlockType, Title = a.Title, HelperText = a.HelperText,
-            IsRequired = a.IsRequired, SortOrder = bOrder
-        });
-        await FormsService.UpdateBlockAsync(b.Id, new SaveBlockRequest
-        {
-            BlockType  = b.BlockType, Title = b.Title, HelperText = b.HelperText,
-            IsRequired = b.IsRequired, SortOrder = aOrder
-        });
-        _busyBlock = 0;
-        await Reload();
-    }
-
-    private async Task AddOption(FormBlockDto block)
-    {
-        if (_form is null || string.IsNullOrWhiteSpace(_newOptionLabel)) return;
-        _busyBlock = block.Id;
-        var newId = await FormsService.AddOptionAsync(block.Id, new SaveOptionRequest
-        {
-            OptionLabel = _newOptionLabel,
-            OptionValue = _newOptionValue,
-            SortOrder   = (block.Options.LastOrDefault()?.SortOrder ?? 0) + 1
-        });
-        _busyBlock = 0;
-        _newOptionLabel = ""; _newOptionValue = "";
-        if (newId is not null) await Reload("האפשרות נוספה");
-        else { _message = "הוספת האפשרות נכשלה"; _messageError = true; }
-    }
-
-    private async Task SaveOption(FormBlockOptionDto opt)
-    {
-        _busyOption = opt.Id;
-        var ok = await FormsService.UpdateOptionAsync(opt.Id, new SaveOptionRequest
-        {
-            OptionLabel = opt.OptionLabel,
-            OptionValue = opt.OptionValue,
-            SortOrder   = opt.SortOrder
-        });
-        _busyOption = 0;
-        if (ok) await Reload("האפשרות נשמרה");
-        else { _message = "שמירת האפשרות נכשלה"; _messageError = true; }
-    }
-
-    private async Task DeleteOption(FormBlockDto block, FormBlockOptionDto opt)
-    {
-        _busyOption = opt.Id;
-        var ok = await FormsService.DeleteOptionAsync(opt.Id);
-        _busyOption = 0;
-        if (ok) await Reload("האפשרות נמחקה");
-        else { _message = "מחיקת האפשרות נכשלה"; _messageError = true; }
-    }
-
-    private static bool BlockSupportsOptions(string type) =>
-        type is FormBlockTypes.SingleChoice or FormBlockTypes.MultiChoice or FormBlockTypes.Ranking;
-
-    private static string BlockTypeLabel(string type) => type switch
-    {
-        FormBlockTypes.Text         => "טקסט / מידע",
-        FormBlockTypes.SingleChoice => "בחירה יחידה",
-        FormBlockTypes.MultiChoice  => "בחירה מרובה",
-        FormBlockTypes.Ranking      => "דירוג",
-        FormBlockTypes.OpenText     => "טקסט פתוח",
-        _                           => type
+        FormDisplayStatus.Open      => "open",
+        FormDisplayStatus.Scheduled => "scheduled",
+        FormDisplayStatus.Closed    => "closed",
+        _                           => "draft",
     };
 
-    private static string StatusLabel(string s) => s switch
-    {
-        FormStatuses.Draft  => "טיוטה",
-        FormStatuses.Open   => "פתוח",
-        FormStatuses.Closed => "סגור",
-        _                   => s
-    };
+    private string SaveStateText =>
+        _saving   ? "שומר…" :
+        IsDirty   ? "שינויים שלא נשמרו" :
+                    "כל השינויים נשמרו";
 
-    private static string StatusClass(string s) => s switch
-    {
-        FormStatuses.Open   => "fm-status-open",
-        FormStatuses.Closed => "fm-status-closed",
-        _                   => "fm-status-draft"
-    };
+    private string SaveStateSlug =>
+        _saving ? "saving" : IsDirty ? "dirty" : "saved";
 
-    // datetime-local <input> wants 'yyyy-MM-ddTHH:mm' with no timezone suffix.
-    private static string FormatLocalForInput(string? raw)
+    private string SettingsSummary
     {
-        if (string.IsNullOrWhiteSpace(raw)) return "";
-        return DateTime.TryParse(raw, out var dt)
-            ? dt.ToLocalTime().ToString("yyyy-MM-ddTHH:mm")
-            : "";
+        get
+        {
+            if (_form is null) return "";
+
+            string window = (_opensDate.Length == 0 && _closesDate.Length == 0)
+                ? "ללא חלון הגשה"
+                : $"{Pretty(_opensDate)} – {Pretty(_closesDate)}";
+
+            var parts = new List<string>
+            {
+                window,
+                CycleLabel,
+                _form.IsOpen ? "פתוח להגשה" : "סגור להגשה"
+            };
+
+            if (_form.AllowEditAfterSubmit) parts.Add("עריכה לאחר הגשה");
+
+            return string.Join(" · ", parts);
+        }
     }
 
-    private static string? ParseLocalInput(string? raw)
+    private static string Pretty(string isoDate) =>
+        DateTime.TryParse(isoDate, out var d) ? d.ToString("dd.MM.yyyy") : "—";
+
+    /// <summary>
+    /// True when the admin has set the form Open with an opening date still in
+    /// the future — the one case where the stored status and the visible chip
+    /// legitimately differ, so it is explained rather than left to puzzle over.
+    /// </summary>
+    private bool _scheduledHint =>
+        _form is not null &&
+        string.Equals(_form.Status, FormStatuses.Open, StringComparison.Ordinal) &&
+        CurrentDisplayStatus == FormDisplayStatus.Scheduled;
+
+    /// <summary>Where a student answers this form. The route comes from
+    /// StudentFormLinks so this editor's copy action and the Assignments
+    /// workspace's header action cannot point at different addresses; the
+    /// branch itself is unchanged.</summary>
+    private string StudentUrl =>
+        StudentFormLinks.For(FormId, _form?.IsAssignmentForm == true);
+
+    private string OpenFormLabel =>
+        CurrentDisplayStatus == FormDisplayStatus.Open ? "פתיחת הטופס" : "תצוגה מקדימה";
+
+    // ── Settings edits ───────────────────────────────────────────────────────
+
+    private void MarkSettingsDirty() { _settingsDirty = true; _toast = ""; }
+
+    private void SetName(string v)         { if (_form is null) return; _form.Name = v; MarkSettingsDirty(); }
+    private void SetInstructions(string v) { if (_form is null) return; _form.Instructions = v; MarkSettingsDirty(); }
+    private void SetStatus(string v)       { if (_form is null) return; _form.Status = v; MarkSettingsDirty(); }
+    private void SetIsOpen(bool v)         { if (_form is null) return; _form.IsOpen = v; MarkSettingsDirty(); }
+    private void SetAllowEdit(bool v)      { if (_form is null) return; _form.AllowEditAfterSubmit = v; MarkSettingsDirty(); }
+
+    private void SetOpens(string? v)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        return DateTime.TryParse(raw, out var dt)
-            ? dt.ToString("yyyy-MM-ddTHH:mm:ss")
-            : null;
+        if (_form is null) return;
+        _opensDate    = v ?? "";
+        _form.OpensAt = string.IsNullOrWhiteSpace(_opensDate) ? null : _opensDate;
+        MarkSettingsDirty();
     }
+
+    private void SetCloses(string? v)
+    {
+        if (_form is null) return;
+        _closesDate    = v ?? "";
+        _form.ClosesAt = string.IsNullOrWhiteSpace(_closesDate) ? null : _closesDate;
+        MarkSettingsDirty();
+    }
+
+    private static string ToDateInput(string? iso) =>
+        DateTime.TryParse(iso, out var d) ? d.ToString("yyyy-MM-dd") : "";
+
+    private void ToggleSettings() => _settingsOpen = !_settingsOpen;
+
+    // ── Structure edits ──────────────────────────────────────────────────────
+
+    private void MarkStructureDirty() { _structureDirty = true; _toast = ""; }
+
+    private void ToggleExpand(int key) => _expandedKey = _expandedKey == key ? 0 : key;
+
+    private void AddBlock()
+    {
+        var b = new EditableBlock
+        {
+            Key       = _nextKey++,
+            Id        = 0,
+            BlockType = FormBlockTypes.OpenText,
+            Title     = ""
+        };
+        _blocks.Add(b);
+        _expandedKey = b.Key;   // a new question opens straight into its editor
+        MarkStructureDirty();
+    }
+
+    private void RemoveBlock(int key)
+    {
+        var b = _blocks.FirstOrDefault(x => x.Key == key);
+        if (b is null || b.IsSystem) return;   // system blocks have no delete path
+        _blocks.Remove(b);
+        if (_expandedKey == key) _expandedKey = 0;
+        MarkStructureDirty();
+    }
+
+    private void MoveBlock(int index, int delta)
+    {
+        int target = index + delta;
+        if (target < 0 || target >= _blocks.Count) return;
+
+        (_blocks[index], _blocks[target]) = (_blocks[target], _blocks[index]);
+        MarkStructureDirty();
+    }
+
+    private void SetBlockTitle(EditableBlock b, string v)  { b.Title = v; MarkStructureDirty(); }
+    private void SetBlockHelper(EditableBlock b, string v) { b.HelperText = v; MarkStructureDirty(); }
+
+    private void SetRequired(EditableBlock b, bool v)      { b.IsRequired = v; MarkStructureDirty(); }
+    private void SetScale(EditableBlock b, int scale)      { b.RatingScale = scale == 10 ? 10 : 5; MarkStructureDirty(); }
+    private void SetMinLabel(EditableBlock b, string v)    { b.MinLabel = v; MarkStructureDirty(); }
+    private void SetMaxLabel(EditableBlock b, string v)    { b.MaxLabel = v; MarkStructureDirty(); }
+
+    private void SetBlockType(EditableBlock b, string type)
+    {
+        if (b.IsSystem || b.BlockType == type) return;
+
+        b.BlockType = type;
+
+        // Turning a block INTO a choice gives it two empty rows to fill, so the
+        // admin is never looking at a choice question with nothing to choose.
+        if (FormBlockTypes.HasOptions(type) && b.Options.Count == 0)
+        {
+            b.Options.Add(new EditableOption { Key = _nextKey++ });
+            b.Options.Add(new EditableOption { Key = _nextKey++ });
+        }
+
+        // An information block cannot be required; clear it rather than send a
+        // flag the server would drop anyway.
+        if (FormBlockTypes.IsInformational(type)) b.IsRequired = false;
+
+        MarkStructureDirty();
+    }
+
+    private void AddOption(EditableBlock b)
+    {
+        b.Options.Add(new EditableOption { Key = _nextKey++ });
+        MarkStructureDirty();
+    }
+
+    private void RemoveOption(EditableBlock b, EditableOption opt)
+    {
+        b.Options.Remove(opt);
+        MarkStructureDirty();
+    }
+
+    private void MoveOption(EditableBlock b, int index, int delta)
+    {
+        int target = index + delta;
+        if (target < 0 || target >= b.Options.Count) return;
+
+        (b.Options[index], b.Options[target]) = (b.Options[target], b.Options[index]);
+        MarkStructureDirty();
+    }
+
+    private void SetOptionLabel(EditableBlock b, EditableOption opt, string v)
+    {
+        opt.Label = v;
+
+        // For a free (non-protected) option the machine value tracks the label
+        // until the row is first saved, so a new option never persists an empty
+        // value. Once it has an Id the stored value is left alone — rewriting
+        // it would invalidate answers already recorded against it.
+        if (!b.ValuesAreProtected && opt.Id == 0) opt.Value = v;
+
+        MarkStructureDirty();
+    }
+
+    // ── Save ─────────────────────────────────────────────────────────────────
+
+    private async Task SaveAll()
+    {
+        if (_form is null || _saving || !IsDirty) return;
+
+        _error  = "";
+        _toast  = "";
+        _saving = true;
+        StateHasChanged();
+
+        // Client-side guards first, so an invalid form never reaches the API.
+        if (string.IsNullOrWhiteSpace(_form.Name))
+        {
+            Fail("שם הטופס חובה");
+            return;
+        }
+
+        if (_blocks.Any(b => string.IsNullOrWhiteSpace(b.Title)))
+        {
+            Fail("לכל שאלה בטופס חייבת להיות כותרת");
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_opensDate) && !string.IsNullOrWhiteSpace(_closesDate) &&
+            DateTime.TryParse(_opensDate, out var o) && DateTime.TryParse(_closesDate, out var c) && o >= c)
+        {
+            Fail("תאריך הפתיחה חייב להיות לפני תאריך הסגירה");
+            return;
+        }
+
+        // Settings first: if the structure save then fails, the admin has not
+        // lost the settings edit as well.
+        if (_settingsDirty)
+        {
+            var settingsError = await FormsService.UpdateFormDetailedAsync(FormId, new SaveFormRequest
+            {
+                AcademicYearId       = _form.AcademicYearId,
+                Name                 = _form.Name.Trim(),
+                FormType             = _form.FormType,
+                Instructions         = _form.Instructions ?? "",
+                IsOpen               = _form.IsOpen,
+                OpensAt              = string.IsNullOrWhiteSpace(_opensDate) ? null : _opensDate,
+                ClosesAt             = string.IsNullOrWhiteSpace(_closesDate) ? null : _closesDate,
+                AllowEditAfterSubmit = _form.AllowEditAfterSubmit,
+                Status               = _form.Status
+            });
+
+            if (settingsError is not null)
+            {
+                Fail(settingsError);
+                return;
+            }
+
+            _settingsDirty = false;
+        }
+
+        if (_structureDirty)
+        {
+            var payload = new SaveFormStructureRequest
+            {
+                Blocks = _blocks.Select(b => new SaveStructureBlockDto
+                {
+                    Id          = b.Id,
+                    BlockType   = b.BlockType,
+                    Title       = b.Title.Trim(),
+                    HelperText  = b.HelperText ?? "",
+                    IsRequired  = b.IsRequired,
+                    RatingScale = b.RatingScale,
+                    MinLabel    = b.MinLabel ?? "",
+                    MaxLabel    = b.MaxLabel ?? "",
+                    Options     = FormBlockTypes.HasOptions(b.BlockType) && !b.OptionsAreSystemSupplied
+                        ? b.Options
+                            .Where(o => !string.IsNullOrWhiteSpace(o.Label))
+                            .Select(o => new SaveStructureOptionDto
+                            {
+                                Id          = o.Id,
+                                OptionValue = o.Value,
+                                OptionLabel = o.Label.Trim()
+                            })
+                            .ToList()
+                        : new List<SaveStructureOptionDto>()
+                }).ToList()
+            };
+
+            var (saved, structureError) = await FormsService.SaveStructureAsync(FormId, payload);
+
+            if (saved is null)
+            {
+                Fail(structureError ?? "שגיאה בשמירת השאלות");
+                return;
+            }
+
+            // Rebind to what the server actually stored: new blocks get their
+            // real Ids and SortOrder comes back authoritative.
+            _form = saved;
+            RebindFrom(saved);
+        }
+
+        _saving = false;
+        _toast  = "הטופס נשמר";
+        StateHasChanged();
+    }
+
+    private void Fail(string message)
+    {
+        _error  = message;
+        _saving = false;
+        StateHasChanged();
+    }
+
+    // ── Header actions ───────────────────────────────────────────────────────
+
+
+    private void GoToSubmissions()
+    {
+        if (_form is null) return;
+
+        // Same split as the list: the assignment form's submissions are team
+        // rows with their own screen; everything else has a per-form view.
+        Nav.NavigateTo(_form.IsAssignmentForm ? "/assignments" : $"/management/forms/{FormId}/submissions");
+    }
+
+    private async Task CopyLink()
+    {
+        var url = Nav.ToAbsoluteUri(StudentUrl).ToString();
+
+        bool ok;
+        try   { ok = await JS.InvokeAsync<bool>("gradify.copyToClipboard", url); }
+        catch { ok = false; }
+
+        _toast = ok ? "הקישור לטופס הועתק" : "לא ניתן להעתיק את הקישור";
+        StateHasChanged();
+    }
+
+    private void CloseAllPopovers() { /* reserved: no page-level popovers open today */ }
 }

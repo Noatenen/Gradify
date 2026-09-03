@@ -26,6 +26,23 @@ public interface IFormsManagementService
     /// server's Hebrew message is surfaced so the modal can show it directly.
     /// </summary>
     Task<(int? NewFormId, string? Error)> DuplicateFormAsync(int formId, DuplicateFormRequest req);
+
+    /// <summary>
+    /// Saves the whole question list in one request and returns the form as it
+    /// now stands, so the editor rebinds to server truth (real Ids for newly
+    /// added blocks, server-assigned SortOrder) instead of trusting its own
+    /// optimistic copy. Error is null on success.
+    /// </summary>
+    Task<(FormDetailDto? Form, string? Error)> SaveStructureAsync(int formId, SaveFormStructureRequest req);
+
+    Task<List<FormSubmissionListItemDto>?> GetSubmissionsAsync(int formId);
+    Task<FormSubmissionDetailDto?>         GetSubmissionAsync(int submissionId);
+
+    /// <summary>Create that surfaces the server's message (409 on a duplicate type).</summary>
+    Task<(int? NewFormId, string? Error)> CreateFormDetailedAsync(SaveFormRequest req);
+
+    /// <summary>Update that surfaces the server's validation message.</summary>
+    Task<string?> UpdateFormDetailedAsync(int id, SaveFormRequest req);
 }
 
 public class FormsManagementService : IFormsManagementService
@@ -169,6 +186,71 @@ public class FormsManagementService : IFormsManagementService
                               : err.Trim('"'));
         }
         catch { return (null, "שגיאת תקשורת"); }
+    }
+
+    public async Task<(FormDetailDto? Form, string? Error)> SaveStructureAsync(
+        int formId, SaveFormStructureRequest req)
+    {
+        try
+        {
+            var res = await _http.PutAsJsonAsync($"api/forms/{formId}/structure", req);
+            if (res.IsSuccessStatusCode)
+                return (await res.Content.ReadFromJsonAsync<FormDetailDto>(), null);
+
+            return (null, await ReadErrorAsync(res, "שגיאה בשמירת השאלות"));
+        }
+        catch { return (null, "שגיאת תקשורת"); }
+    }
+
+    public async Task<List<FormSubmissionListItemDto>?> GetSubmissionsAsync(int formId)
+    {
+        try { return await _http.GetFromJsonAsync<List<FormSubmissionListItemDto>>($"api/forms/{formId}/submissions"); }
+        catch { return null; }
+    }
+
+    public async Task<FormSubmissionDetailDto?> GetSubmissionAsync(int submissionId)
+    {
+        try { return await _http.GetFromJsonAsync<FormSubmissionDetailDto>($"api/forms/submissions/{submissionId}"); }
+        catch { return null; }
+    }
+
+    public async Task<(int? NewFormId, string? Error)> CreateFormDetailedAsync(SaveFormRequest req)
+    {
+        try
+        {
+            var res = await _http.PostAsJsonAsync("api/forms", req);
+            if (res.IsSuccessStatusCode)
+            {
+                var body = await res.Content.ReadFromJsonAsync<IdResponse>();
+                return (body?.Id, null);
+            }
+            return (null, await ReadErrorAsync(res, "שגיאה ביצירת הטופס"));
+        }
+        catch { return (null, "שגיאת תקשורת"); }
+    }
+
+    public async Task<string?> UpdateFormDetailedAsync(int id, SaveFormRequest req)
+    {
+        try
+        {
+            var res = await _http.PutAsJsonAsync($"api/forms/{id}", req);
+            return res.IsSuccessStatusCode ? null : await ReadErrorAsync(res, "שגיאה בשמירת ההגדרות");
+        }
+        catch { return "שגיאת תקשורת"; }
+    }
+
+    /// <summary>
+    /// The API returns its errors as a bare JSON string, so the quotes have to
+    /// come off before the message reaches a toast.
+    /// </summary>
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage res, string fallback)
+    {
+        try
+        {
+            var body = (await res.Content.ReadAsStringAsync()).Trim().Trim('"');
+            return string.IsNullOrWhiteSpace(body) ? fallback : body;
+        }
+        catch { return fallback; }
     }
 
     private sealed class IdResponse { public int Id { get; set; } }
