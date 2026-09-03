@@ -3,12 +3,6 @@
     Route:  /management/pending-approval-settings  — reached from the ניהול
             hub (group "הגדרות").
 
-    Visual source:
-        Client/Pages/Management/Milestones/MilestonesManagement.razor
-        Client/Pages/Management/Cycles/CycleDetailPage.razor
-    — the finished Admin screens. Same header rhythm, strip, card
-    border/radius, switch-row recipe, form controls and button language.
-
     WHAT THIS PAGE IS
     ─────────────────
     Operational configuration for the pending mentor-approvals queue —
@@ -20,17 +14,30 @@
     page is config-only, which is why its one navigational action opens that
     queue rather than duplicating it.
 
-    WHAT CHANGED IN THIS PASS — PRESENTATION ONLY
-    ─────────────────────────────────────────────
-    • The eight sections became compact Motiva cards: a small heading pair
-      instead of an icon-and-title header, and setting rows at control
-      height instead of stacked blocks.
-    • Hand-rolled switches became MToggle; the radios and recipient chips
-      keep their native inputs (and therefore their keyboard semantics)
-      under a Motiva skin.
-    • Save / discard moved into the page header, replacing the sticky bottom
-      bar — one action row, at the top, like every other Admin screen.
-    Every field, threshold rule, request and payload is untouched.
+    WHY ACCORDIONS
+    ──────────────
+    Twenty-odd settings across eight groups. The previous pass packed them
+    into balanced columns so the page fit in roughly one screen — which is
+    the wrong goal for a configuration workspace: everything was visible and
+    nothing was findable, because eight groups competing at equal weight
+    give a reader no order to follow.
+
+    Now it is ONE COLUMN of collapsed groups. Scrolling is expected. Each
+    head states its group, a one-line description, and a compact summary of
+    what that group is currently set to — so the closed state still answers
+    "what is this configured as?" without being opened. Only סף תגובה starts
+    open, because the three thresholds are what every other group refers to.
+
+    Multiple sections may be open at once: MAccordionItem leaves Open to the
+    caller, and an exclusive accordion would force an admin comparing
+    escalation rules with the thresholds that trigger them to keep losing one
+    of them.
+
+    PRESENTATION ONLY
+    ─────────────────
+    Every field, threshold rule, frequency value, recipient flag, override
+    flag, automation flag, scenario calculation, request and payload is
+    exactly as it was. The DTO is untouched.
 *@
 
 @page "/management/pending-approval-settings"
@@ -46,21 +53,34 @@
     @* ══ Header ═══════════════════════════════════════════════════════════ *@
     <header class="pas-head">
         <div class="pas-head-main">
-            <button type="button" class="pas-crumb" @onclick="@(() => Nav.NavigateTo("/management"))">
-                ניהול
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="m15 18-6-6 6-6" />
-                </svg>
-            </button>
+            <MAdminBack />
 
             <div class="pas-head-line">
                 <h1 class="pas-h1">הגדרות אישורי מנחה</h1>
-                <p class="pas-subtitle">כללי תזכורת, אסקלציה ואוטומציות לתור אישורי המנחה</p>
+                <MInfoTip Text="כללי תזכורת, אסקלציה ואוטומציות. ההגדרות חלות על כל ההגשות הממתינות לאישור מנחה." />
             </div>
         </div>
 
         <div class="pas-head-actions">
+            @if (!_loading && !_loadError && _dto is not null)
+            {
+                @* Small metadata, not a section of its own. *@
+                <span class="pas-meta">
+                    @if (_dto.UpdatedAt.HasValue)
+                    {
+                        <span>עודכן @_dto.UpdatedAt.IsraelFormat()</span>
+                        @if (!string.IsNullOrWhiteSpace(_dto.UpdatedByName))
+                        {
+                            <span class="pas-meta-by">· @_dto.UpdatedByName</span>
+                        }
+                    }
+                    else
+                    {
+                        <span class="pas-meta-by">טרם נשמר</span>
+                    }
+                </span>
+            }
+
             <button type="button" class="pas-btn-secondary"
                     @onclick="@(() => Nav.NavigateTo("/management/pending-mentor-approvals"))"
                     title="מעבר לתור המבצעי">
@@ -93,382 +113,406 @@
     }
     else
     {
-        @* ══ Info strip ═══════════════════════════════════════════════════ *@
-        <div class="pas-strip">
-            <div class="pas-strip-copy">
-                <span class="pas-strip-glyph" aria-hidden="true">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="9" /><path d="M12 16v-4" /><path d="M12 8h.01" />
-                    </svg>
-                </span>
-                <p class="pas-strip-text">
-                    ההגדרות חלות על כל ההגשות הממתינות לאישור מנחה. התרחיש בתחתית הדף מציג
-                    את ההשפעה המשולבת שלהן.
-                </p>
-            </div>
-
-            <span class="pas-meta">
-                @if (_dto.UpdatedAt.HasValue)
-                {
-                    <span>עודכן לאחרונה: @_dto.UpdatedAt.IsraelFormat()</span>
-                    @if (!string.IsNullOrWhiteSpace(_dto.UpdatedByName))
-                    {
-                        <span class="pas-meta-by">· ע״י @_dto.UpdatedByName</span>
-                    }
-                }
-                else
-                {
-                    <span class="pas-meta-by">טרם נשמר</span>
-                }
-            </span>
-        </div>
-
         @if (!string.IsNullOrEmpty(_toast))
         {
             <div class="pas-toast @(_toastError ? "pas-toast--err" : "pas-toast--ok")" role="status">@_toast</div>
         }
 
-        @* The seven setting cards pack into balanced columns rather than a
-           grid: their heights differ by several rows of toggles, and a grid
-           would leave a column-wide hole beside the shortest card. *@
-        <div class="pas-columns">
+        @* ══ One column of collapsed groups ═══════════════════════════════ *@
+        <div class="pas-sections">
 
             @* 1 ── Response-time rules ───────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">סף תגובה</h2>
-                    <p class="pas-card-desc">
-                        לאחר כמה ימים ללא תגובה מהמנחה המערכת תגיב, בכל אחת משלוש רמות החומרה.
-                    </p>
-                </div>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecThresholds)"
+                            OnToggle="@(() => Toggle(SecThresholds))"
+                            Primary="סף תגובה"
+                            Secondary="לאחר כמה ימים ללא תגובה מהמנחה המערכת מגיבה">
+                <Status>
+                    <span class="pas-tag">@_dto.WarningAfterDays · @_dto.EscalationAfterDays · @_dto.CriticalAfterDays ימים</span>
+                </Status>
+                <ChildContent>
+                    <div class="pas-days">
+                        <label class="pas-day">
+                            <span class="pas-day-label">תזכורת</span>
+                            <span class="pas-day-input">
+                                <input type="number" min="1" max="120" class="pas-input" @bind="_dto.WarningAfterDays" />
+                                <span class="pas-day-suffix">ימים</span>
+                            </span>
+                            <span class="pas-day-hint">תזכורת ראשונה למנחה</span>
+                        </label>
+                        <label class="pas-day">
+                            <span class="pas-day-label">אסקלציה</span>
+                            <span class="pas-day-input">
+                                <input type="number" min="1" max="120" class="pas-input" @bind="_dto.EscalationAfterDays" />
+                                <span class="pas-day-suffix">ימים</span>
+                            </span>
+                            <span class="pas-day-hint">הסלמה אוטומטית למרצה או רכז</span>
+                        </label>
+                        <label class="pas-day">
+                            <span class="pas-day-label">קריטי</span>
+                            <span class="pas-day-input">
+                                <input type="number" min="1" max="120" class="pas-input" @bind="_dto.CriticalAfterDays" />
+                                <span class="pas-day-suffix">ימים</span>
+                            </span>
+                            <span class="pas-day-hint">סימון הפרויקט בסיכון</span>
+                        </label>
+                    </div>
 
-                <div class="pas-days">
-                    <label class="pas-day">
-                        <span class="pas-day-label">תזכורת</span>
-                        <span class="pas-day-input">
-                            <input type="number" min="1" max="120" class="pas-input" @bind="_dto.WarningAfterDays" />
-                            <span class="pas-day-suffix">ימים</span>
-                        </span>
-                        <span class="pas-day-hint">תזכורת ראשונה למנחה</span>
-                    </label>
-                    <label class="pas-day">
-                        <span class="pas-day-label">אסקלציה</span>
-                        <span class="pas-day-input">
-                            <input type="number" min="1" max="120" class="pas-input" @bind="_dto.EscalationAfterDays" />
-                            <span class="pas-day-suffix">ימים</span>
-                        </span>
-                        <span class="pas-day-hint">הסלמה אוטומטית למרצה או רכז</span>
-                    </label>
-                    <label class="pas-day">
-                        <span class="pas-day-label">קריטי</span>
-                        <span class="pas-day-input">
-                            <input type="number" min="1" max="120" class="pas-input" @bind="_dto.CriticalAfterDays" />
-                            <span class="pas-day-suffix">ימים</span>
-                        </span>
-                        <span class="pas-day-hint">סימון הפרויקט בסיכון</span>
-                    </label>
-                </div>
-
-                @* The one genuine validation failure on this page — and the
-                   only thing that blocks the save button. *@
-                @if (!ThresholdsAreOrdered)
-                {
-                    <p class="pas-error">
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" />
-                        </svg>
-                        הספים חייבים להיות בסדר עולה: תזכורת &lt; אסקלציה &lt; קריטי.
-                    </p>
-                }
-            </section>
+                    @* The one genuine validation failure on this page — and the
+                       only thing that blocks the save button. *@
+                    @if (!ThresholdsAreOrdered)
+                    {
+                        <p class="pas-error">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" />
+                            </svg>
+                            הספים חייבים להיות בסדר עולה: תזכורת &lt; אסקלציה &lt; קריטי.
+                        </p>
+                    }
+                </ChildContent>
+            </MAccordionItem>
 
             @* 2 ── Reminder channels ─────────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">ערוצי תזכורת</h2>
-                    <p class="pas-card-desc">באילו ערוצים תישלחנה התזכורות.</p>
-                </div>
-
-                <div class="pas-rows">
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">אימייל</span>
-                            <span class="pas-row-note">שליחה לכתובות המייל הרשומות במערכת</span>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecChannels)"
+                            OnToggle="@(() => Toggle(SecChannels))"
+                            Primary="ערוצי תזכורת"
+                            Secondary="באילו ערוצים תישלחנה התזכורות">
+                <Status><span class="pas-tag">@ChannelSummary</span></Status>
+                <ChildContent>
+                    <div class="pas-rows">
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">אימייל</span>
+                                <span class="pas-row-note">שליחה לכתובות המייל הרשומות במערכת</span>
+                            </div>
+                            <MToggle Checked="_dto.ChannelEmail"
+                                     CheckedChanged="@(v => _dto.ChannelEmail = v)"
+                                     AriaLabel="ערוץ אימייל" />
                         </div>
-                        <MToggle Checked="_dto.ChannelEmail"
-                                 CheckedChanged="@(v => _dto.ChannelEmail = v)"
-                                 AriaLabel="ערוץ אימייל" />
-                    </div>
-
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">התראה בתוך המערכת</span>
-                            <span class="pas-row-note">פעמון ההתראות בכל ממשק</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">התראה בתוך המערכת</span>
+                                <span class="pas-row-note">פעמון ההתראות בכל ממשק</span>
+                            </div>
+                            <MToggle Checked="_dto.ChannelInSystem"
+                                     CheckedChanged="@(v => _dto.ChannelInSystem = v)"
+                                     AriaLabel="התראה בתוך המערכת" />
                         </div>
-                        <MToggle Checked="_dto.ChannelInSystem"
-                                 CheckedChanged="@(v => _dto.ChannelInSystem = v)"
-                                 AriaLabel="התראה בתוך המערכת" />
-                    </div>
-
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">
-                                Slack
-                                <span class="pas-soon">בקרוב</span>
-                            </span>
-                            <span class="pas-row-note">פעיל לפי האינטגרציה הכללית — נשמר אך טרם נשלח</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">
+                                    Slack
+                                    <span class="pas-soon">בקרוב</span>
+                                </span>
+                                <span class="pas-row-note">פעיל לפי האינטגרציה הכללית — נשמר אך טרם נשלח</span>
+                            </div>
+                            <MToggle Checked="_dto.ChannelSlack"
+                                     CheckedChanged="@(v => _dto.ChannelSlack = v)"
+                                     AriaLabel="ערוץ Slack" />
                         </div>
-                        <MToggle Checked="_dto.ChannelSlack"
-                                 CheckedChanged="@(v => _dto.ChannelSlack = v)"
-                                 AriaLabel="ערוץ Slack" />
                     </div>
-                </div>
-            </section>
+                </ChildContent>
+            </MAccordionItem>
 
             @* 3 ── Reminder frequency ────────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">תדירות תזכורת</h2>
-                    <p class="pas-card-desc">קצב חזרת התזכורת אם עדיין לא טופלה.</p>
-                </div>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecFrequency)"
+                            OnToggle="@(() => Toggle(SecFrequency))"
+                            Primary="תדירות תזכורת"
+                            Secondary="קצב חזרת התזכורת אם עדיין לא טופלה">
+                <Status><span class="pas-tag">@ReminderFrequencies.Label(_dto.ReminderFrequency)</span></Status>
+                <ChildContent>
+                    @* Native radios under a Motiva skin — the keyboard semantics
+                       of a radio group are kept, not re-implemented. *@
+                    <div class="pas-choices">
+                        @foreach (var f in ReminderFrequencies.All)
+                        {
+                            <label class="pas-choice @(IsFrequency(f) ? "pas-choice--on" : "")">
+                                <input type="radio" name="freq" value="@f"
+                                       checked="@IsFrequency(f)"
+                                       @onchange="@(() => _dto.ReminderFrequency = f)" />
+                                <span class="pas-choice-label">@ReminderFrequencies.Label(f)</span>
+                            </label>
+                        }
+                    </div>
 
-                @* Native radios under a Motiva skin — the keyboard semantics
-                   of a radio group are kept, not re-implemented. *@
-                <div class="pas-choices">
-                    @foreach (var f in ReminderFrequencies.All)
+                    @if (_dto.ReminderFrequency == ReminderFrequencies.EveryNDays)
                     {
-                        <label class="pas-choice @(IsFrequency(f) ? "pas-choice--on" : "")">
-                            <input type="radio" name="freq" value="@f"
-                                   checked="@IsFrequency(f)"
-                                   @onchange="@(() => _dto.ReminderFrequency = f)" />
-                            <span class="pas-choice-label">@ReminderFrequencies.Label(f)</span>
+                        <label class="pas-inline">
+                            <span class="pas-inline-label">כל</span>
+                            <span class="pas-day-input pas-day-input--narrow">
+                                <input type="number" min="1" max="30" class="pas-input" @bind="_dto.ReminderIntervalDays" />
+                                <span class="pas-day-suffix">ימים</span>
+                            </span>
                         </label>
                     }
-                </div>
-
-                @if (_dto.ReminderFrequency == ReminderFrequencies.EveryNDays)
-                {
-                    <label class="pas-inline">
-                        <span class="pas-inline-label">כל</span>
-                        <span class="pas-day-input pas-day-input--narrow">
-                            <input type="number" min="1" max="30" class="pas-input" @bind="_dto.ReminderIntervalDays" />
-                            <span class="pas-day-suffix">ימים</span>
-                        </span>
-                    </label>
-                }
-            </section>
+                </ChildContent>
+            </MAccordionItem>
 
             @* 4 ── Recipients ────────────────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">מקבלי התזכורת</h2>
-                    <p class="pas-card-desc">ניתן לבחור יותר מנמען אחד.</p>
-                </div>
-
-                <div class="pas-choices">
-                    <label class="pas-choice @(_dto.RecipientMentor ? "pas-choice--on" : "")">
-                        <input type="checkbox" @bind="_dto.RecipientMentor" />
-                        <span class="pas-choice-label">מנחה</span>
-                    </label>
-                    <label class="pas-choice @(_dto.RecipientLecturer ? "pas-choice--on" : "")">
-                        <input type="checkbox" @bind="_dto.RecipientLecturer" />
-                        <span class="pas-choice-label">מרצה</span>
-                    </label>
-                    <label class="pas-choice @(_dto.RecipientCoordinator ? "pas-choice--on" : "")">
-                        <input type="checkbox" @bind="_dto.RecipientCoordinator" />
-                        <span class="pas-choice-label">רכז קורס</span>
-                    </label>
-                    <label class="pas-choice @(_dto.RecipientTeam ? "pas-choice--on" : "")">
-                        <input type="checkbox" @bind="_dto.RecipientTeam" />
-                        <span class="pas-choice-label">כל הצוות (סטודנטים)</span>
-                    </label>
-                </div>
-            </section>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecRecipients)"
+                            OnToggle="@(() => Toggle(SecRecipients))"
+                            Primary="מקבלי התזכורת"
+                            Secondary="מי מקבל את התזכורות — ניתן לבחור יותר מנמען אחד">
+                <Status><span class="pas-tag">@RecipientSummary</span></Status>
+                <ChildContent>
+                    <div class="pas-choices">
+                        <label class="pas-choice @(_dto.RecipientMentor ? "pas-choice--on" : "")">
+                            <input type="checkbox" @bind="_dto.RecipientMentor" />
+                            <span class="pas-choice-label">מנחה</span>
+                        </label>
+                        <label class="pas-choice @(_dto.RecipientLecturer ? "pas-choice--on" : "")">
+                            <input type="checkbox" @bind="_dto.RecipientLecturer" />
+                            <span class="pas-choice-label">מרצה</span>
+                        </label>
+                        <label class="pas-choice @(_dto.RecipientCoordinator ? "pas-choice--on" : "")">
+                            <input type="checkbox" @bind="_dto.RecipientCoordinator" />
+                            <span class="pas-choice-label">רכז קורס</span>
+                        </label>
+                        <label class="pas-choice @(_dto.RecipientTeam ? "pas-choice--on" : "")">
+                            <input type="checkbox" @bind="_dto.RecipientTeam" />
+                            <span class="pas-choice-label">כל הצוות (סטודנטים)</span>
+                        </label>
+                    </div>
+                </ChildContent>
+            </MAccordionItem>
 
             @* 5 ── Escalation rules ──────────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">כללי אסקלציה</h2>
-                    <p class="pas-card-desc">
-                        פעולות שיופעלו כשעוברים את סף האסקלציה (@_dto.EscalationAfterDays ימים).
-                    </p>
-                </div>
-
-                <div class="pas-rows">
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">הודעה אוטומטית למרצה</span>
-                            <span class="pas-row-note">שליחת התראה למרצים ולמנהלים בעת חריגה</span>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecEscalation)"
+                            OnToggle="@(() => Toggle(SecEscalation))"
+                            Primary="כללי אסקלציה"
+                            Secondary="@($"מה קורה לאחר חציית סף האסקלציה ({_dto.EscalationAfterDays} ימים)")">
+                <Status><span class="pas-tag">@EnabledTag(EscalationEnabled, 4)</span></Status>
+                <ChildContent>
+                    <div class="pas-rows">
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">הודעה אוטומטית למרצה</span>
+                                <span class="pas-row-note">שליחת התראה למרצים ולמנהלים בעת חריגה</span>
+                            </div>
+                            <MToggle Checked="_dto.EscalateNotifyLecturer"
+                                     CheckedChanged="@(v => _dto.EscalateNotifyLecturer = v)"
+                                     AriaLabel="הודעה אוטומטית למרצה" />
                         </div>
-                        <MToggle Checked="_dto.EscalateNotifyLecturer"
-                                 CheckedChanged="@(v => _dto.EscalateNotifyLecturer = v)"
-                                 AriaLabel="הודעה אוטומטית למרצה" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">הודעה אוטומטית לרכז הקורס</span>
-                            <span class="pas-row-note">שליחת התראה לרכזים אם מוגדרים</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">הודעה אוטומטית לרכז הקורס</span>
+                                <span class="pas-row-note">שליחת התראה לרכזים אם מוגדרים</span>
+                            </div>
+                            <MToggle Checked="_dto.EscalateNotifyCoordinator"
+                                     CheckedChanged="@(v => _dto.EscalateNotifyCoordinator = v)"
+                                     AriaLabel="הודעה אוטומטית לרכז הקורס" />
                         </div>
-                        <MToggle Checked="_dto.EscalateNotifyCoordinator"
-                                 CheckedChanged="@(v => _dto.EscalateNotifyCoordinator = v)"
-                                 AriaLabel="הודעה אוטומטית לרכז הקורס" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">סימון הפרויקט כבסיכון</span>
-                            <span class="pas-row-note">מעדכן את בריאות הפרויקט אוטומטית</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">סימון הפרויקט כבסיכון</span>
+                                <span class="pas-row-note">מעדכן את בריאות הפרויקט אוטומטית</span>
+                            </div>
+                            <MToggle Checked="_dto.MarkProjectAtRisk"
+                                     CheckedChanged="@(v => _dto.MarkProjectAtRisk = v)"
+                                     AriaLabel="סימון הפרויקט כבסיכון" />
                         </div>
-                        <MToggle Checked="_dto.MarkProjectAtRisk"
-                                 CheckedChanged="@(v => _dto.MarkProjectAtRisk = v)"
-                                 AriaLabel="סימון הפרויקט כבסיכון" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">הצגה בדשבורד הניהולי</span>
-                            <span class="pas-row-note">הצגת הבקשה התקועה ברשימה הניהולית</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">הצגה בדשבורד הניהולי</span>
+                                <span class="pas-row-note">הצגת הבקשה התקועה ברשימה הניהולית</span>
+                            </div>
+                            <MToggle Checked="_dto.ShowInManagementDashboard"
+                                     CheckedChanged="@(v => _dto.ShowInManagementDashboard = v)"
+                                     AriaLabel="הצגה בדשבורד הניהולי" />
                         </div>
-                        <MToggle Checked="_dto.ShowInManagementDashboard"
-                                 CheckedChanged="@(v => _dto.ShowInManagementDashboard = v)"
-                                 AriaLabel="הצגה בדשבורד הניהולי" />
                     </div>
-                </div>
-            </section>
+                </ChildContent>
+            </MAccordionItem>
 
             @* 6 ── Lecturer overrides ────────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">הרשאות עקיפה למרצה</h2>
-                    <p class="pas-card-desc">מתי המרצה רשאי לפעול בעצמו, ללא תגובת מנחה.</p>
-                </div>
-
-                <div class="pas-rows">
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">אישור הגשה ללא תגובת מנחה</span>
-                            <span class="pas-row-note">המרצה רשאי לאשר הגשה גם אם המנחה לא הגיב</span>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecOverrides)"
+                            OnToggle="@(() => Toggle(SecOverrides))"
+                            Primary="הרשאות עקיפה למרצה"
+                            Secondary="מתי המרצה רשאי לפעול בעצמו, ללא תגובת מנחה">
+                <Status><span class="pas-tag">@EnabledTag(OverridesEnabled, 4)</span></Status>
+                <ChildContent>
+                    <div class="pas-rows">
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">אישור הגשה ללא תגובת מנחה</span>
+                                <span class="pas-row-note">המרצה רשאי לאשר הגשה גם אם המנחה לא הגיב</span>
+                            </div>
+                            <MToggle Checked="_dto.LecturerCanApproveWithoutMentor"
+                                     CheckedChanged="@(v => _dto.LecturerCanApproveWithoutMentor = v)"
+                                     AriaLabel="אישור הגשה ללא תגובת מנחה" />
                         </div>
-                        <MToggle Checked="_dto.LecturerCanApproveWithoutMentor"
-                                 CheckedChanged="@(v => _dto.LecturerCanApproveWithoutMentor = v)"
-                                 AriaLabel="אישור הגשה ללא תגובת מנחה" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">דחיית הגשה ללא תגובת מנחה</span>
-                            <span class="pas-row-note">המרצה רשאי לדחות הגשה גם אם המנחה לא הגיב</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">דחיית הגשה ללא תגובת מנחה</span>
+                                <span class="pas-row-note">המרצה רשאי לדחות הגשה גם אם המנחה לא הגיב</span>
+                            </div>
+                            <MToggle Checked="_dto.LecturerCanRejectWithoutMentor"
+                                     CheckedChanged="@(v => _dto.LecturerCanRejectWithoutMentor = v)"
+                                     AriaLabel="דחיית הגשה ללא תגובת מנחה" />
                         </div>
-                        <MToggle Checked="_dto.LecturerCanRejectWithoutMentor"
-                                 CheckedChanged="@(v => _dto.LecturerCanRejectWithoutMentor = v)"
-                                 AriaLabel="דחיית הגשה ללא תגובת מנחה" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">פתיחה מחדש של הגשות</span>
-                            <span class="pas-row-note">החזרת הגשה שכבר אושרה לסטטוס פעיל</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">פתיחה מחדש של הגשות</span>
+                                <span class="pas-row-note">החזרת הגשה שכבר אושרה לסטטוס פעיל</span>
+                            </div>
+                            <MToggle Checked="_dto.LecturerCanReopenSubmissions"
+                                     CheckedChanged="@(v => _dto.LecturerCanReopenSubmissions = v)"
+                                     AriaLabel="פתיחה מחדש של הגשות" />
                         </div>
-                        <MToggle Checked="_dto.LecturerCanReopenSubmissions"
-                                 CheckedChanged="@(v => _dto.LecturerCanReopenSubmissions = v)"
-                                 AriaLabel="פתיחה מחדש של הגשות" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">קידום אבן דרך באכיפה</span>
-                            <span class="pas-row-note">העברת אבן דרך לסטטוס הבא גם אם נותרו משימות פתוחות</span>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">קידום אבן דרך באכיפה</span>
+                                <span class="pas-row-note">העברת אבן דרך לסטטוס הבא גם אם נותרו משימות פתוחות</span>
+                            </div>
+                            <MToggle Checked="_dto.LecturerCanForceMilestone"
+                                     CheckedChanged="@(v => _dto.LecturerCanForceMilestone = v)"
+                                     AriaLabel="קידום אבן דרך באכיפה" />
                         </div>
-                        <MToggle Checked="_dto.LecturerCanForceMilestone"
-                                 CheckedChanged="@(v => _dto.LecturerCanForceMilestone = v)"
-                                 AriaLabel="קידום אבן דרך באכיפה" />
                     </div>
-                </div>
-            </section>
+                </ChildContent>
+            </MAccordionItem>
 
             @* 7 ── Automation rules ──────────────────────────────────────── *@
-            <section class="pas-card">
-                <div class="pas-card-head">
-                    <h2 class="pas-card-title">אוטומציות</h2>
-                    <p class="pas-card-desc">כיבוי והפעלה של פעולות אוטומטיות במערכת.</p>
-                </div>
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecAutomation)"
+                            OnToggle="@(() => Toggle(SecAutomation))"
+                            Primary="אוטומציות"
+                            Secondary="פעולות אוטומטיות שהמערכת מבצעת ברקע">
+                <Status><span class="pas-tag">@EnabledTag(AutomationEnabled, 4)</span></Status>
+                <ChildContent>
+                    <div class="pas-rows">
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">אסקלציה אוטומטית</span>
+                                <span class="pas-row-note">הפעלת ההסלמה אוטומטית בחציית הסף</span>
+                            </div>
+                            <MToggle Checked="_dto.AutoEscalation"
+                                     CheckedChanged="@(v => _dto.AutoEscalation = v)"
+                                     AriaLabel="אסקלציה אוטומטית" />
+                        </div>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">עדכון אוטומטי של בריאות הפרויקט</span>
+                                <span class="pas-row-note">מעדכן את סטטוס הפרויקט (תקין / סיכון) אוטומטית</span>
+                            </div>
+                            <MToggle Checked="_dto.AutoProjectHealthUpdates"
+                                     CheckedChanged="@(v => _dto.AutoProjectHealthUpdates = v)"
+                                     AriaLabel="עדכון אוטומטי של בריאות הפרויקט" />
+                        </div>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">תזמון אוטומטי של תזכורות</span>
+                                <span class="pas-row-note">מנוע הרקע מתזמן תזכורות לפי ההגדרות</span>
+                            </div>
+                            <MToggle Checked="_dto.AutoReminderScheduling"
+                                     CheckedChanged="@(v => _dto.AutoReminderScheduling = v)"
+                                     AriaLabel="תזמון אוטומטי של תזכורות" />
+                        </div>
+                        <div class="pas-row">
+                            <div class="pas-row-copy">
+                                <span class="pas-row-title">ניקוי אוטומטי של התראות ישנות</span>
+                                <span class="pas-row-note">התראות שטופלו יוסרו אוטומטית לאחר זמן</span>
+                            </div>
+                            <MToggle Checked="_dto.AutoNotificationCleanup"
+                                     CheckedChanged="@(v => _dto.AutoNotificationCleanup = v)"
+                                     AriaLabel="ניקוי אוטומטי של התראות ישנות" />
+                        </div>
+                    </div>
+                </ChildContent>
+            </MAccordionItem>
 
-                <div class="pas-rows">
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">אסקלציה אוטומטית</span>
-                            <span class="pas-row-note">הפעלת ההסלמה אוטומטית בחציית הסף</span>
-                        </div>
-                        <MToggle Checked="_dto.AutoEscalation"
-                                 CheckedChanged="@(v => _dto.AutoEscalation = v)"
-                                 AriaLabel="אסקלציה אוטומטית" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">עדכון אוטומטי של בריאות הפרויקט</span>
-                            <span class="pas-row-note">מעדכן את סטטוס הפרויקט (תקין / סיכון) אוטומטית</span>
-                        </div>
-                        <MToggle Checked="_dto.AutoProjectHealthUpdates"
-                                 CheckedChanged="@(v => _dto.AutoProjectHealthUpdates = v)"
-                                 AriaLabel="עדכון אוטומטי של בריאות הפרויקט" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">תזמון אוטומטי של תזכורות</span>
-                            <span class="pas-row-note">מנוע הרקע מתזמן תזכורות לפי ההגדרות</span>
-                        </div>
-                        <MToggle Checked="_dto.AutoReminderScheduling"
-                                 CheckedChanged="@(v => _dto.AutoReminderScheduling = v)"
-                                 AriaLabel="תזמון אוטומטי של תזכורות" />
-                    </div>
-                    <div class="pas-row">
-                        <div class="pas-row-copy">
-                            <span class="pas-row-title">ניקוי אוטומטי של התראות ישנות</span>
-                            <span class="pas-row-note">התראות שטופלו יוסרו אוטומטית לאחר זמן</span>
-                        </div>
-                        <MToggle Checked="_dto.AutoNotificationCleanup"
-                                 CheckedChanged="@(v => _dto.AutoNotificationCleanup = v)"
-                                 AriaLabel="ניקוי אוטומטי של התראות ישנות" />
-                    </div>
-                </div>
-            </section>
-
+            @* 8 ── Preview / simulation timeline ─────────────────────────── *@
+            <MAccordionItem Class="pas-acc"
+                            Open="@IsOpen(SecScenario)"
+                            OnToggle="@(() => Toggle(SecScenario))"
+                            Primary="תרחיש לדוגמה"
+                            Secondary="מה יקרה אם המנחה יתעלם מהגשה — לפי ההגדרות הנוכחיות">
+                <ChildContent>
+                    <ol class="pas-timeline">
+                        <li class="pas-tl">
+                            <span class="pas-tl-tag">יום 0</span>
+                            <span class="pas-tl-text">הסטודנט שולח הגשה — ההגשה ממתינה לאישור מנחה.</span>
+                        </li>
+                        <li class="pas-tl">
+                            <span class="pas-tl-tag">יום @_dto.WarningAfterDays</span>
+                            <span class="pas-tl-text">
+                                תזכורת נשלחת אל @RecipientSummary דרך @ChannelSummary
+                                (@ReminderFrequencies.Label(_dto.ReminderFrequency)@FrequencyExtra).
+                            </span>
+                        </li>
+                        <li class="pas-tl">
+                            <span class="pas-tl-tag">יום @_dto.EscalationAfterDays</span>
+                            <span class="pas-tl-text">הסלמה אוטומטית: @EscalationSummary.</span>
+                        </li>
+                        @* The only rose on the page: this is the rung at which the
+                           product actually declares the project at risk. *@
+                        <li class="pas-tl pas-tl--critical">
+                            <span class="pas-tl-tag">יום @_dto.CriticalAfterDays</span>
+                            <span class="pas-tl-text">@CriticalSummary</span>
+                        </li>
+                    </ol>
+                </ChildContent>
+            </MAccordionItem>
         </div>
-
-        @* 8 ── Preview / simulation timeline ─────────────────────────────── *@
-        @* Outside the columns: it is a reading of every other card, so it
-           spans the full canvas underneath them. *@
-        <section class="pas-card pas-card--wide">
-            <div class="pas-card-head">
-                <h2 class="pas-card-title">תרחיש לדוגמה</h2>
-                <p class="pas-card-desc">מה יקרה אם המנחה יתעלם מהגשה — לפי ההגדרות הנוכחיות.</p>
-            </div>
-
-            <ol class="pas-timeline">
-                <li class="pas-tl">
-                    <span class="pas-tl-tag">יום 0</span>
-                    <span class="pas-tl-text">הסטודנט שולח הגשה — ההגשה ממתינה לאישור מנחה.</span>
-                </li>
-                <li class="pas-tl">
-                    <span class="pas-tl-tag">יום @_dto.WarningAfterDays</span>
-                    <span class="pas-tl-text">
-                        תזכורת נשלחת אל @RecipientSummary דרך @ChannelSummary
-                        (@ReminderFrequencies.Label(_dto.ReminderFrequency)@FrequencyExtra).
-                    </span>
-                </li>
-                <li class="pas-tl">
-                    <span class="pas-tl-tag">יום @_dto.EscalationAfterDays</span>
-                    <span class="pas-tl-text">הסלמה אוטומטית: @EscalationSummary.</span>
-                </li>
-                @* The only rose on the page: this is the rung at which the
-                   product actually declares the project at risk. *@
-                <li class="pas-tl pas-tl--critical">
-                    <span class="pas-tl-tag">יום @_dto.CriticalAfterDays</span>
-                    <span class="pas-tl-text">@CriticalSummary</span>
-                </li>
-            </ol>
-        </section>
     }
 </div>
 
 @code {
+    // ── Accordion state ──────────────────────────────────────────────────
+    // Keys, not indices, so reordering the sections cannot silently change
+    // which one starts open. MAccordionItem leaves Open to the caller, so a
+    // set (not a single value) is what allows several open at once.
+    private const string SecThresholds = "thresholds";
+    private const string SecChannels   = "channels";
+    private const string SecFrequency  = "frequency";
+    private const string SecRecipients = "recipients";
+    private const string SecEscalation = "escalation";
+    private const string SecOverrides  = "overrides";
+    private const string SecAutomation = "automation";
+    private const string SecScenario   = "scenario";
+
+    // Only the thresholds start open: every other group is described in terms
+    // of them ("after the escalation threshold", "day N"), so they are the
+    // one thing worth reading first.
+    private readonly HashSet<string> _open = new() { SecThresholds };
+
+    private bool IsOpen(string key) => _open.Contains(key);
+
+    private void Toggle(string key)
+    {
+        if (!_open.Add(key)) _open.Remove(key);
+    }
+
+    // ── Closed-state summaries ───────────────────────────────────────────
+    // What a collapsed group is currently set to, so the closed state still
+    // answers "how is this configured?".
+    private int EscalationEnabled =>
+        (_dto?.EscalateNotifyLecturer    == true ? 1 : 0)
+        + (_dto?.EscalateNotifyCoordinator == true ? 1 : 0)
+        + (_dto?.MarkProjectAtRisk         == true ? 1 : 0)
+        + (_dto?.ShowInManagementDashboard == true ? 1 : 0);
+
+    private int OverridesEnabled =>
+        (_dto?.LecturerCanApproveWithoutMentor == true ? 1 : 0)
+        + (_dto?.LecturerCanRejectWithoutMentor == true ? 1 : 0)
+        + (_dto?.LecturerCanReopenSubmissions   == true ? 1 : 0)
+        + (_dto?.LecturerCanForceMilestone      == true ? 1 : 0);
+
+    private int AutomationEnabled =>
+        (_dto?.AutoEscalation           == true ? 1 : 0)
+        + (_dto?.AutoProjectHealthUpdates == true ? 1 : 0)
+        + (_dto?.AutoReminderScheduling   == true ? 1 : 0)
+        + (_dto?.AutoNotificationCleanup  == true ? 1 : 0);
+
+    private static string EnabledTag(int on, int total) =>
+        on == 0 ? "כבוי" : $"{on} מתוך {total}";
+
     private PendingApprovalSettingsDto? _dto;
     private bool   _loading    = true;
     private bool   _loadError;

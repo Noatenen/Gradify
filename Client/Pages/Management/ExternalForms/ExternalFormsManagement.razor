@@ -1,3 +1,34 @@
+@*
+    ── טפסים חיצוניים (Admin external-form links) ────────────────────────────
+    Route:  /management/external-forms
+    Parent: /management/integrations — this screen is reached ONLY from the
+            "אינטגרציות חיצוניות" section of that page, so the back arrow
+            names it. Sending a nested screen straight to /management would
+            skip the level the user actually came from.
+
+    Visual source:
+        Client/Pages/Management/Integrations/IntegrationsManagement.razor
+        Client/Pages/Management/Forms/FormsManagement.razor
+    — the finished Admin screens. Same header rhythm (MAdminBack + h1 +
+    MInfoTip, no permanent subtitle), the same list toolbar that carries the
+    filter and the create action, the same tag / status / button language.
+
+    WHAT IS REAL HERE
+    ─────────────────
+    Every row is a row of ExternalForms via GET /api/external-forms. The forms
+    themselves live in the Innovation Team's systems; this page stores a
+    pointer (IframeUrl) plus label and lifecycle metadata, nothing more. No
+    field on the card is derived or invented — name, description, type, cycle,
+    active flag and URL are all persisted columns.
+
+    THIS PASS WAS PRESENTATION ONLY
+    ───────────────────────────────
+    Routes, endpoints, the save/toggle/delete calls, the cycle filter's
+    semantics ("" = all, "0" = global, otherwise an AcademicYearId) and the
+    two-stage load (a years failure is a warning, a forms failure is an error)
+    are unchanged from the legacy version of this file.
+*@
+
 @page "/management/external-forms"
 @layout AppLayout
 @attribute [Authorize(Roles = $"{Roles.Admin},{Roles.Staff}")]
@@ -6,139 +37,298 @@
 @inject HttpClient Http
 @inject NavigationManager Nav
 
-@*
-    External Forms management — admin/lecturer screen for managing the
-    Innovation-Team external form links (URL + label metadata only).
-    The forms themselves live in the Innovation Team's systems; this page
-    only stores pointers + lifecycle flags.
-*@
+@* ══ EDITOR MODAL ════════════════════════════════════════════════════════ *@
+@* MModal rather than the page's own overlay: one dialog shell across
+   Management, and it already owns the scrim, the escape key and the focus
+   trap this page used to go without. *@
+<MModal IsOpen="_editor is not null"
+        Title="@(_editorId is null ? "טופס חדש" : "עריכת טופס")"
+        Size="MModal.ModalSize.Medium"
+        OnClose="CloseEditor">
+    <ChildContent>
+        @if (_editor is not null)
+        {
+            <div class="exf-form">
+                @if (!string.IsNullOrWhiteSpace(_editorError))
+                {
+                    <div class="exf-form-error" role="alert">@_editorError</div>
+                }
 
-<div class="exf-page" dir="rtl">
+                <label class="exf-field">
+                    <span class="exf-label">שם הטופס <span class="exf-req">*</span></span>
+                    <input class="exf-input" @bind="_editor.Name" maxlength="160"
+                           placeholder="לדוגמה: בקשה לצוות חדשנות" />
+                </label>
 
-    <!-- Top bar -->
-    <div class="exf-topbar">
-        <div class="exf-topbar-start">
-            <button class="exf-back-btn"
-                    @onclick="@(() => Nav.NavigateTo("/management"))"
-                    title="חזרה לניהול">
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-            </button>
-            <div>
-                <div class="exf-breadcrumb">ניהול</div>
-                <h1 class="exf-title">טפסים חיצוניים (צוות חדשנות)</h1>
+                <label class="exf-field">
+                    <span class="exf-label">תיאור קצר</span>
+                    <textarea class="exf-textarea" rows="2" @bind="_editor.Description"
+                              placeholder="תיאור שיוצג לסטודנטים"></textarea>
+                </label>
+
+                <label class="exf-field">
+                    <span class="exf-label">קטגוריה / סוג</span>
+                    <input class="exf-input" @bind="_editor.FormType"
+                           placeholder="לדוגמה: InnovationRequest" />
+                </label>
+
+                <label class="exf-field">
+                    <span class="exf-label">קישור לטופס חיצוני <span class="exf-req">*</span></span>
+                    @* Isolated, not merely dir="ltr": a Latin URL inside a
+                       Hebrew page reorders the line around it otherwise. *@
+                    <input class="exf-input exf-input--ltr" dir="ltr"
+                           @bind="_editor.IframeUrl" placeholder="https://…" />
+                    <span class="exf-hint">הטופס נפתח לסטודנטים בלשונית חדשה במערכת של צוות החדשנות</span>
+                </label>
+
+                <label class="exf-field">
+                    <span class="exf-label">מחזור אקדמי</span>
+                    <select class="exf-input" @bind="_editorYearStr">
+                        <option value="">ללא מחזור (גלובלי)</option>
+                        @foreach (var y in _years)
+                        {
+                            <option value="@y.Id">@y.Name @(y.IsCurrent ? "(נוכחי)" : "")</option>
+                        }
+                    </select>
+                </label>
+
+                <div class="exf-switch-row">
+                    <span class="exf-switch-copy">
+                        <span class="exf-switch-title">טופס פעיל</span>
+                        <span class="exf-switch-note">כשהטופס פעיל הוא מוצג לסטודנטים</span>
+                    </span>
+                    <MToggle Checked="_editor.IsActive"
+                             CheckedChanged="@(v => _editor.IsActive = v)"
+                             AriaLabel="טופס פעיל" />
+                </div>
+            </div>
+        }
+    </ChildContent>
+    <FooterContent>
+        <button type="button" class="exf-btn-ghost" @onclick="CloseEditor" disabled="@_saving">ביטול</button>
+        <button type="button" class="exf-btn-primary motiva-cta" @onclick="SaveEditor" disabled="@_saving">
+            @if (_saving)
+            {
+                <span class="exf-spinner" aria-hidden="true"></span>
+            }
+            @(_saving ? "שומר…" : "שמירה")
+        </button>
+    </FooterContent>
+</MModal>
+
+@{
+    // Materialized once per render so the count and the rows read the same list.
+    var rows = Filtered;
+}
+
+<div class="exf-page" dir="rtl" @onclick="CloseMenus">
+
+    @* ══ Header ═══════════════════════════════════════════════════════════ *@
+    <header class="exf-head">
+        <div class="exf-head-main">
+            <MAdminBack Href="/management/integrations" Label="אינטגרציות" />
+
+            <div class="exf-head-line">
+                <h1 class="exf-h1">טפסים חיצוניים</h1>
+                <MInfoTip Text="קישורים לטפסים שמנוהלים במערכות צוות החדשנות — המערכת שומרת את הקישור ואת מצב הפרסום בלבד" />
             </div>
         </div>
-        <div class="exf-topbar-end">
-            <button class="exf-btn exf-btn-primary" @onclick="OpenNew">
-                <span class="oi oi-plus" aria-hidden="true"></span>
-                טופס חדש
-            </button>
-        </div>
-    </div>
+    </header>
 
-    @if (_loading)
+    @if (!string.IsNullOrEmpty(_toast))
     {
-        <div class="exf-state">טוען טפסים…</div>
+        <div class="exf-toast @(_toastError ? "exf-toast--error" : "")" role="status">@_toast</div>
     }
-    else if (_loadError)
+
+    @if (_loadError)
     {
-        <div class="exf-state exf-state-error">
-            <span class="oi oi-warning" aria-hidden="true"></span>
-            שגיאה בטעינת הטפסים. נסו לרענן את הדף.
-            @if (!string.IsNullOrWhiteSpace(_loadWarning))
-            {
-                <div class="exf-debug">@_loadWarning</div>
-            }
+        @* An error, not an empty list — the two must not look alike. *@
+        <div class="exf-state exf-state--error" role="alert">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" />
+            </svg>
+            <span>שגיאה בטעינת הטפסים.</span>
+            <button type="button" class="exf-retry" @onclick="LoadAsync">ניסיון חוזר</button>
         </div>
     }
     else
     {
-        <!-- Non-fatal warning (e.g. academic years failed to load) -->
-        @if (!string.IsNullOrEmpty(_loadWarning))
+        @* Non-fatal: the forms loaded but the cycle list did not, so the
+           filter and the editor's cycle picker are empty. Said once, quietly. *@
+        @if (!_loading && !string.IsNullOrEmpty(_loadWarning))
         {
-            <div class="exf-toast exf-toast-error">@_loadWarning</div>
+            <div class="exf-note" role="status">@_loadWarning</div>
         }
 
-        <!-- Filter -->
-        <div class="exf-filters">
-            <label class="exf-filter-label">סינון לפי מחזור:</label>
-            <select class="exf-filter-select" @bind="_yearFilter">
-                <option value="">כל המחזורים</option>
-                <option value="0">ללא מחזור (גלובלי)</option>
-                @foreach (var y in _years)
+        @* ══ Toolbar ══════════════════════════════════════════════════════
+           The cycle filter and "טופס חדש" both act on THIS list, so they sit
+           on the list's own control row immediately above it rather than
+           floating up in the page header. *@
+        <div class="exf-toolbar" @onclick:stopPropagation="true">
+            <div class="exf-filter">
+                <button type="button"
+                        class="exf-filter-btn @(_yearFilter.Length > 0 ? "exf-filter-btn--on" : "")"
+                        @onclick="ToggleFilterMenu"
+                        aria-haspopup="listbox" aria-expanded="@(_filterOpen ? "true" : "false")">
+                    <span class="exf-filter-name">מחזור</span>
+                    <span class="exf-filter-value">@YearFilterLabel</span>
+                    <svg class="exf-filter-chev @(_filterOpen ? "exf-filter-chev--open" : "")"
+                         width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </button>
+
+                @if (_filterOpen)
                 {
-                    <option value="@y.Id">@y.Name</option>
+                    <div class="exf-menu exf-menu--filter" role="listbox" aria-label="מחזור">
+                        @foreach (var o in YearFilterOptions)
+                        {
+                            var val = o.Value;
+                            var selected = val == _yearFilter;
+                            <button type="button"
+                                    class="exf-menu-item @(selected ? "exf-menu-item--on" : "")"
+                                    role="option" aria-selected="@(selected ? "true" : "false")"
+                                    @onclick="@(() => PickYearFilter(val))">
+                                <span class="exf-menu-item-label">@o.Label</span>
+                                @if (selected)
+                                {
+                                    <svg class="exf-menu-check" width="12" height="12" viewBox="0 0 24 24"
+                                         fill="none" stroke="currentColor" stroke-width="2.6"
+                                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="m5 12.5 4.5 4.5L19 7" />
+                                    </svg>
+                                }
+                            </button>
+                        }
+                    </div>
                 }
-            </select>
+            </div>
+
+            @if (_yearFilter.Length > 0)
+            {
+                <button type="button" class="exf-clear" @onclick="ClearFilter">ניקוי סינון</button>
+            }
+
+            <div class="exf-toolbar-end">
+                @if (!_loading)
+                {
+                    <span class="exf-result">@ResultLine(rows.Count)</span>
+                }
+
+                <button type="button" class="exf-btn-primary motiva-cta" @onclick="OpenNew">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14" />
+                    </svg>
+                    טופס חדש
+                </button>
+            </div>
         </div>
 
-        @if (!string.IsNullOrEmpty(_toast))
+        @* ══ List ═════════════════════════════════════════════════════════ *@
+        @if (_loading)
         {
-            <div class="exf-toast @(_toastError ? "exf-toast-error" : "")">@_toast</div>
+            <MLoadingState Label="טוען טפסים…" />
         }
-
-        @if (_forms.Count == 0)
+        else if (rows.Count == 0)
         {
-            <div class="exf-state">לא הוגדרו טפסים חיצוניים. לחצו "טופס חדש" כדי להתחיל.</div>
-        }
-        else if (Filtered.Count == 0)
-        {
-            <div class="exf-state">לא נמצאו טפסים תואמים לסינון הנוכחי.</div>
+            @* Two different emptinesses. "No forms at all" invites the first
+               one; "the filter matched nothing" offers the way out of it. *@
+            <MEmptyState Title="@(_forms.Count == 0 ? "אין טפסים חיצוניים" : "אין טפסים תואמים")"
+                         Description="@(_forms.Count == 0
+                             ? "טופס חיצוני הוא קישור לטופס שמנוהל אצל צוות החדשנות. הוסיפו את הראשון כדי שיוצג לסטודנטים."
+                             : "לא נמצאו טפסים במחזור שנבחר.")"
+                         Live="@(_forms.Count > 0)">
+                <Action>
+                    @if (_forms.Count == 0)
+                    {
+                        <button type="button" class="exf-btn-primary motiva-cta" @onclick="OpenNew">
+                            יצירת טופס ראשון
+                        </button>
+                    }
+                    else
+                    {
+                        <button type="button" class="exf-btn-ghost" @onclick="ClearFilter">ניקוי סינון</button>
+                    }
+                </Action>
+            </MEmptyState>
         }
         else
         {
             <div class="exf-list">
-                @foreach (var f in Filtered)
+                @foreach (var f in rows)
                 {
-                    <article class="exf-card @(f.IsActive ? "" : "exf-card-inactive")">
-                        <div class="exf-card-head">
-                            <div class="exf-card-head-main">
-                                <h2 class="exf-card-title">@f.Name</h2>
-                                @if (!string.IsNullOrWhiteSpace(f.FormType))
-                                {
-                                    <span class="exf-type-pill">@f.FormType</span>
-                                }
-                                @if (f.AcademicYearId is not null && !string.IsNullOrWhiteSpace(f.AcademicYearName))
-                                {
-                                    <span class="exf-year-pill">מחזור @f.AcademicYearName</span>
-                                }
-                                else
-                                {
-                                    <span class="exf-year-pill exf-year-pill-global">גלובלי</span>
-                                }
-                            </div>
-                            <span class="exf-status @(f.IsActive ? "exf-status-active" : "exf-status-inactive")">
+                    <article class="exf-item @(f.IsActive ? "" : "exf-item--off")">
+
+                        @* Row 1 — identity: what this form is, and whether it
+                           is live. *@
+                        <div class="exf-item-head">
+                            <button type="button" class="exf-name" @onclick="@(() => OpenEdit(f))">
+                                <span class="exf-name-text">@f.Name</span>
+                            </button>
+
+                            @if (!string.IsNullOrWhiteSpace(f.FormType))
+                            {
+                                <span class="exf-tag exf-tag--type">@f.FormType</span>
+                            }
+
+                            @if (f.AcademicYearId is not null && !string.IsNullOrWhiteSpace(f.AcademicYearName))
+                            {
+                                <span class="exf-tag">מחזור @f.AcademicYearName</span>
+                            }
+                            else
+                            {
+                                <span class="exf-tag exf-tag--global">גלובלי</span>
+                            }
+
+                            <span class="exf-status @(f.IsActive ? "exf-status--on" : "exf-status--off")">
+                                <span class="exf-status-dot" aria-hidden="true"></span>
                                 @(f.IsActive ? "פעיל" : "מושבת")
                             </span>
                         </div>
 
                         @if (!string.IsNullOrWhiteSpace(f.Description))
                         {
-                            <p class="exf-card-desc">@f.Description</p>
+                            <p class="exf-item-desc">@f.Description</p>
                         }
 
-                        <div class="exf-card-url">
-                            <span class="oi oi-link-intact" aria-hidden="true"></span>
-                            <a href="@f.IframeUrl" target="_blank" rel="noopener" dir="ltr">@f.IframeUrl</a>
-                        </div>
+                        @* Row 2 — the pointer and the actions on it. The URL is
+                           the card's quietest line by design: it is an address,
+                           not the form's identity. It ellipses on screen and
+                           carries the full value in title=, and the anchor
+                           still opens the real thing. *@
+                        <div class="exf-item-foot">
+                            <a class="exf-url" href="@f.IframeUrl" target="_blank" rel="noopener"
+                               dir="ltr" title="@f.IframeUrl">
+                                <svg class="exf-url-ico" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                     stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                                    <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                                </svg>
+                                <span class="exf-url-text">@f.IframeUrl</span>
+                            </a>
 
-                        <div class="exf-card-actions">
-                            <button class="exf-btn exf-btn-secondary" @onclick="@(() => OpenEdit(f))">
-                                <span class="oi oi-pencil" aria-hidden="true"></span>
-                                עריכה
-                            </button>
-                            <button class="exf-btn exf-btn-secondary"
-                                    disabled="@_busyIds.Contains(f.Id)"
-                                    @onclick="@(() => ToggleActive(f))">
-                                <span class="oi @(f.IsActive ? "oi-circle-x" : "oi-circle-check")" aria-hidden="true"></span>
-                                @(f.IsActive ? "השבת" : "הפעל")
-                            </button>
-                            <button class="exf-btn exf-btn-danger"
-                                    disabled="@_busyIds.Contains(f.Id)"
-                                    @onclick="@(() => Delete(f))">
-                                <span class="oi oi-trash" aria-hidden="true"></span>
-                                מחיקה
-                            </button>
+                            <div class="exf-item-actions">
+                                <button type="button" class="exf-btn-secondary exf-btn-secondary--sm"
+                                        @onclick="@(() => OpenEdit(f))">עריכה</button>
+
+                                @* Enable/disable is a lifecycle switch, not a
+                                   destruction — neutral, same weight as edit. *@
+                                <button type="button" class="exf-btn-secondary exf-btn-secondary--sm"
+                                        disabled="@_busyIds.Contains(f.Id)"
+                                        @onclick="@(() => ToggleActive(f))">
+                                    @(f.IsActive ? "השבתה" : "הפעלה")
+                                </button>
+
+                                @* The only destructive control on the page, and
+                                   the only rose. *@
+                                <button type="button" class="exf-btn-danger exf-btn-danger--sm"
+                                        disabled="@_busyIds.Contains(f.Id)"
+                                        @onclick="@(() => Delete(f))">מחיקה</button>
+                            </div>
                         </div>
                     </article>
                 }
@@ -146,75 +336,6 @@
         }
     }
 </div>
-
-<!-- ── Editor modal ─────────────────────────────────────────────────────── -->
-@if (_editor is not null)
-{
-    <div class="exf-overlay" @onclick="CloseEditor">
-        <div class="exf-modal" dir="rtl" @onclick:stopPropagation="true">
-            <div class="exf-modal-head">
-                <h2 class="exf-modal-title">@(_editorId is null ? "טופס חדש" : "עריכת טופס")</h2>
-                <button class="exf-modal-close" @onclick="CloseEditor" title="סגירה">
-                    <span class="oi oi-x" aria-hidden="true"></span>
-                </button>
-            </div>
-
-            <div class="exf-modal-body">
-                @if (!string.IsNullOrWhiteSpace(_editorError))
-                {
-                    <div class="exf-form-error">@_editorError</div>
-                }
-
-                <div class="exf-field">
-                    <label>שם הטופס *</label>
-                    <input @bind="_editor.Name" placeholder="לדוגמה: בקשה לצוות חדשנות" />
-                </div>
-
-                <div class="exf-field">
-                    <label>תיאור קצר</label>
-                    <textarea rows="2" @bind="_editor.Description"
-                              placeholder="תיאור שיוצג לסטודנטים"></textarea>
-                </div>
-
-                <div class="exf-field">
-                    <label>קטגוריה / סוג</label>
-                    <input @bind="_editor.FormType" placeholder="לדוגמה: InnovationRequest" />
-                </div>
-
-                <div class="exf-field">
-                    <label>קישור לטופס חיצוני *</label>
-                    <input @bind="_editor.IframeUrl" placeholder="https://…" dir="ltr" />
-                    <small class="exf-field-hint">הטופס נפתח לסטודנטים בלשונית חדשה במערכת של צוות החדשנות</small>
-                </div>
-
-                <div class="exf-field">
-                    <label>מחזור אקדמי</label>
-                    <select @bind="_editorYearStr">
-                        <option value="">ללא מחזור (גלובלי)</option>
-                        @foreach (var y in _years)
-                        {
-                            <option value="@y.Id">@y.Name @(y.IsCurrent ? "(נוכחי)" : "")</option>
-                        }
-                    </select>
-                </div>
-
-                <div class="exf-field exf-field-row">
-                    <label class="exf-checkbox">
-                        <input type="checkbox" @bind="_editor.IsActive" />
-                        <span>טופס פעיל (מוצג לסטודנטים)</span>
-                    </label>
-                </div>
-            </div>
-
-            <div class="exf-modal-foot">
-                <button class="exf-btn exf-btn-secondary" @onclick="CloseEditor">ביטול</button>
-                <button class="exf-btn exf-btn-primary" disabled="@_saving" @onclick="SaveEditor">
-                    @(_saving ? "שומר…" : "שמירה")
-                </button>
-            </div>
-        </div>
-    </div>
-}
 
 @code {
     private List<ExternalFormDto> _forms = new();
@@ -226,6 +347,7 @@
     private string _loadWarning = "";
 
     private string _yearFilter = "";
+    private bool   _filterOpen = false;
 
     private string _toast = "";
     private bool   _toastError = false;
@@ -238,11 +360,17 @@
     private string _editorError = "";
     private bool _saving = false;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
     {
         // Load the two lists independently — a failure on the years list
         // (different controller / different auth) must not break the page.
         // Only a failure on the primary forms list is a real error.
+        _loading     = true;
+        _loadError   = false;
+        _loadWarning = "";
+
         try
         {
             var forms = await Http.GetFromJsonAsync<List<ExternalFormDto>>("api/external-forms");
@@ -261,16 +389,20 @@
             var years = await Http.GetFromJsonAsync<List<AcademicYearDto>>("api/management/academic-years");
             _years = years ?? new();
         }
-        catch (Exception ex)
+        catch
         {
             // Forms list still renders; the year filter and the year picker
             // in the editor just won't be populated.
             _years = new();
-            _loadWarning = "טעינת רשימת המחזורים נכשלה: " + ex.Message;
+            _loadWarning = "טעינת רשימת המחזורים נכשלה — סינון לפי מחזור אינו זמין כרגע.";
         }
 
         _loading = false;
     }
+
+    // ── Filter ───────────────────────────────────────────────────────────────
+    // Unchanged semantics: "" = every form, "0" = the global ones (no cycle),
+    // anything else = an AcademicYearId.
 
     private List<ExternalFormDto> Filtered
     {
@@ -284,8 +416,58 @@
         }
     }
 
+    private sealed record FilterOption(string Value, string Label);
+
+    private List<FilterOption> YearFilterOptions
+    {
+        get
+        {
+            // "גלובלי" rather than the editor's fuller "ללא מחזור (גלובלי)":
+            // this label is also what the PILL prints beside its own "מחזור"
+            // caption, where the long form reads "מחזור · ללא מחזור (גלובלי)".
+            // It is the same word the card's own tag uses for these forms, so
+            // the filter and the list speak one vocabulary.
+            var list = new List<FilterOption>
+            {
+                new("",  "כל המחזורים"),
+                new("0", "גלובלי"),
+            };
+            list.AddRange(_years.Select(y => new FilterOption(y.Id.ToString(), y.Name)));
+            return list;
+        }
+    }
+
+    private string YearFilterLabel =>
+        YearFilterOptions.FirstOrDefault(o => o.Value == _yearFilter)?.Label ?? "כל המחזורים";
+
+    private void ToggleFilterMenu() => _filterOpen = !_filterOpen;
+
+    private void PickYearFilter(string value)
+    {
+        _yearFilter = value;
+        _filterOpen = false;
+    }
+
+    private void ClearFilter()
+    {
+        _yearFilter = "";
+        _filterOpen = false;
+    }
+
+    private void CloseMenus() => _filterOpen = false;
+
+    private static string ResultLine(int n) => n switch
+    {
+        0 => "אין תוצאות",
+        1 => "טופס אחד",
+        _ => $"{n} טפסים",
+    };
+
+    // ── Editor ───────────────────────────────────────────────────────────────
+
     private void OpenNew()
     {
+        _filterOpen = false;
         _editorId = null;
         _editor = new ExternalFormSaveRequest { IsActive = true };
         // Default to the current academic cycle so admins don't have to
@@ -298,6 +480,7 @@
 
     private void OpenEdit(ExternalFormDto f)
     {
+        _filterOpen = false;
         _editorId = f.Id;
         _editor = new ExternalFormSaveRequest
         {
