@@ -13,6 +13,12 @@ builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.
 
 // Dashboard, Tasks, Milestones & shared project context (cached per session)
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+
+// The single answer to "where is this student in the journey" — see
+// StudentStageService. Scoped, so one resolution is shared across the guards
+// that ask for it during a navigation.
+builder.Services.AddScoped<IStudentStageService, StudentStageService>();
+
 builder.Services.AddScoped<ITasksService, TasksService>();
 builder.Services.AddScoped<IMilestonesService, MilestonesService>();
 builder.Services.AddScoped<IProjectContextService, ProjectContextService>();

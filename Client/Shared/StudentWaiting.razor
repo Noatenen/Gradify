@@ -1,0 +1,118 @@
+@namespace AuthWithAdmin.Client.Shared
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject NavigationManager Nav
+
+@*
+    ── ממתינים לשיבוץ — the state between submitting and being assigned ──────
+
+    WHY IT EXISTS. Before it, a team that had submitted its form was sent back
+    to the catalogue on every login, with the ranking controls live and nothing
+    saying the decision was already made. The screen invited an act that was
+    already complete, and the only way to find out was to submit again.
+
+    WHAT IT SHOWS. The three projects they ranked, when they sent it, and one
+    sentence about what happens next. Nothing editable, nothing to decide.
+
+    EDITING IS THE ADMIN'S CALL, NOT THIS COMPONENT'S. Whether a submitted team
+    may reopen its form is `AllowEditAfterSubmit` on the assignment form, and
+    the server enforces it in FormsRepository.EvaluateGate — a submit against a
+    locked form is rejected with ClosedReason 'edit-locked'. So the edit action
+    is drawn ONLY when the gate this page was handed says CanSubmit, and when it
+    does not, the gate's own message is shown instead of a button that would
+    fail. Nothing here assumes an answer either way.
+*@
+
+<div class="swt-wrap" dir="rtl">
+    <div class="swt-card">
+
+        <div class="swt-head">
+            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="הטופס הוגש" />
+            <h1 class="swt-title">ממתינים לשיבוץ</h1>
+            <p class="swt-lead">
+                טופס השיבוץ של הצוות התקבל. צוות הקורס יבחן את ההעדפות של כל הצוותים
+                ויקבע את השיבוץ — ההודעה תגיע אליכם כאן במערכת.
+            </p>
+
+            @if (!string.IsNullOrWhiteSpace(Submission?.SubmittedAt))
+            {
+                <span class="swt-stamp">הוגש @Stamp</span>
+            }
+        </div>
+
+        <section class="swt-section">
+            <header class="swt-section-head">
+                <h2 class="swt-section-title">העדפות שהוגשו</h2>
+            </header>
+
+            @if (Ranked.Count == 0)
+            {
+                <p class="swt-quiet">לא נמצאו העדפות בטופס שהוגש.</p>
+            }
+            else
+            {
+                <ol class="swt-prefs">
+                    @foreach (var (pref, title) in Ranked)
+                    {
+                        <li class="swt-pref">
+                            <span class="swt-rank">#@pref.Priority</span>
+                            <span class="swt-pref-name">@title</span>
+                        </li>
+                    }
+                </ol>
+            }
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(Submission?.Notes))
+        {
+            <section class="swt-section">
+                <header class="swt-section-head">
+                    <h2 class="swt-section-title">הערות הצוות</h2>
+                </header>
+                <p class="swt-note">@Submission!.Notes</p>
+            </section>
+        }
+
+        @* The only control on the surface, and only when the form actually
+           allows it. *@
+        <div class="swt-foot">
+            @if (FormStatus?.CanSubmit == true)
+            {
+                <button type="button" class="swt-edit motiva-cta"
+                        @onclick='() => Nav.NavigateTo("/" + PageRoutes.StudentAssignment)'>
+                    עריכת הטופס שהוגש
+                </button>
+            }
+            else
+            {
+                <p class="swt-locked">
+                    @(string.IsNullOrWhiteSpace(FormStatus?.ClosedMessage)
+                        ? "הטופס נעול לעריכה לאחר ההגשה."
+                        : FormStatus!.ClosedMessage)
+                </p>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public ExistingAssignmentDto?   Submission { get; set; }
+    [Parameter] public AssignmentFormStatusDto? FormStatus { get; set; }
+
+    /// <summary>The catalogue rows, used only to name the ranked projects. The
+    /// submission stores ProjectIds; the titles live here, and passing them in
+    /// avoids a second fetch on a page that has already loaded them.</summary>
+    [Parameter] public List<StudentCatalogProjectDto> Projects { get; set; } = new();
+
+    private List<(ProjectPreferenceDto Pref, string Title)> Ranked =>
+        (Submission?.Preferences ?? new())
+            .OrderBy(p => p.Priority)
+            .Select(p => (p, Projects.FirstOrDefault(x => x.Id == p.ProjectId)?.Title
+                             ?? $"פרויקט #{p.ProjectId}"))
+            .ToList();
+
+    private string Stamp =>
+        DateTime.TryParse(Submission?.SubmittedAt, out var dt)
+            ? $"{dt:dd.MM.yyyy} · {dt:HH:mm}"
+            : Submission?.SubmittedAt ?? "";
+}

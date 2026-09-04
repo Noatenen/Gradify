@@ -5,350 +5,63 @@
 @inject HttpClient Http
 @inject NavigationManager Nav
 @attribute [Authorize(Roles = Roles.Student)]
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Shared
+@inject IStudentStageService StageSvc
 
 @*
     ── Project catalog (קטלוג פרויקטים) ─────────────────────────────────────
-    Migrated to the finalized Motiva student experience. Data, filters,
-    favourites and every API call (api/student/catalog, api/student/favorites)
-    are untouched — this pass changes the surfaces the student sees:
+    The student's route. Everything the student SEES lives in
+    StudentCatalogBoard; this page owns the three things that are true only for
+    a signed-in student and must not be true for anyone previewing the screen:
 
-      hand-rolled header      -> MPageHeader / Compact, with the "לבחירת
-                                 שיבוצים" CTA in its Actions slot
-      hand-rolled search box  -> MSearchField, the same field /learning uses
-      .sc-card divs           -> MCard Interactive
-      hand-rolled pills       -> MStatusBadge (teal = פנוי, neutral = תפוס)
-      hand-rolled state boxes -> MLoadingState / MEmptyState
-      hand-rolled modal       -> MModal (Escape + backdrop close come with it)
+      • the data          — api/student/catalog, Student-only
+      • the favourites    — POST/DELETE api/student/favorites/{id}
+      • the stage gate    — a team that has already submitted gets StudentWaiting
+                            instead of an editable catalogue
 
-    Favourite stars stay ★/☆ text: they are the affordance students already
-    know here, and the Master has no star glyph to replace them with.
+    NOTHING IS CHOSEN HERE
+    ──────────────────────
+    The catalogue is browse-only. Ranking moved into the assignment form, and
+    the sessionStorage store that used to carry three ids between the two
+    screens is gone with it — see StudentCatalogBoard and StudentAssignmentPage
+    for why one screen owning the decision is the point.
+
+    Nothing about the browse surface changed when it was extracted: same
+    toolbar, same rail, same cards, same quick view, same scoped stylesheet
+    (moved with the markup it styles). See StudentCatalogBoard for why the
+    lecturer's preview renders that component rather than a copy of it.
 *@
 
-<div class="sc-header-bleed">
-    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
-                 Class="sc-header"
-                 Title="קטלוג פרויקטים"
-                 Subtitle="עיינו בפרויקטים הזמינים, סמנו מועדפים, ולאחר מכן הגישו טופס שיבוץ">
-        <Actions>
-            <a class="sc-assignment-btn motiva-cta" href="/@PageRoutes.StudentAssignment">
-                <span>לבחירת שיבוצים</span>
-                <span class="sc-arrow" aria-hidden="true">←</span>
-            </a>
-        </Actions>
-        <ChildContent>
-            @if (!_loadError)
-            {
-                <div class="sc-toolbar">
-                    <MSearchField @bind-Value="_search"
-                                  MaxWidth="420px"
-                                  Placeholder="חיפוש לפי שם, תיאור, סוג, ארגון…"
-                                  AriaLabel="חיפוש בקטלוג הפרויקטים" />
-
-                    <label class="sc-filter">
-                        <span class="sc-filter-label">סוג</span>
-                        <MSelectField Options="@TypeFilterOptions"
-                                      @bind-Value="_typeFilter"
-                                      Class="sc-filter-select" />
-                    </label>
-
-                    <button type="button"
-                            class="sc-fav-toggle @(_showFavoritesOnly ? "sc-fav-toggle--active" : "")"
-                            @onclick="ToggleFavoritesFilter"
-                            aria-pressed="@_showFavoritesOnly"
-                            title="@(_showFavoritesOnly ? "הצג הכל" : "המועדפים שלי")">
-                        <span class="sc-star-icon" aria-hidden="true">★</span>
-                        @(_showFavoritesOnly ? "הכל" : "המועדפים שלי")
-                        @if (_favoriteCount > 0)
-                        {
-                            <span class="sc-fav-count">@_favoriteCount</span>
-                        }
-                    </button>
-
-                    <span class="sc-count" role="status" aria-live="polite">@_filtered.Count פרויקטים</span>
-                </div>
-            }
-        </ChildContent>
-    </MPageHeader>
-</div>
-
-<div class="sc-body">
-
-    @if (_loading)
-    {
-        <MLoadingState Label="טוענת פרויקטים…" />
-    }
-    else if (_loadError)
-    {
-        <MEmptyState Live="true"
-                     Title="שגיאה בטעינת הקטלוג"
-                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב." />
-    }
-    else if (!_projects.Any())
-    {
-        <MEmptyState Title="לא נמצאו פרויקטים זמינים כרגע"
-                     Description="כשצוות הקורס יפרסם פרויקטים לבחירה, הם יופיעו כאן." />
-    }
-    else if (_filtered.Count == 0)
-    {
-        @if (_showFavoritesOnly)
-        {
-            <MEmptyState Live="true"
-                         Title="טרם סימנת פרויקטים כמועדפים"
-                         Description="אפשר לסמן פרויקט בכוכב כדי לשמור אותו לרשימה הזו." />
-        }
-        else
-        {
-            <MEmptyState Live="true"
-                         Title="לא נמצאו פרויקטים התואמים את החיפוש"
-                         Description="אפשר לנסות מונח אחר או לנקות את הסינון." />
-        }
-    }
-    else
-    {
-        <div class="sc-grid">
-            @foreach (var p in _filtered)
-            {
-                var project = p;
-                bool isFav = _favoriteIds.Contains(project.Id);
-
-                <MCard
-                       Padding="MCard.CardPadding.Medium"
-                       Interactive="true"
-                       Class="sc-card"
-                       OnClick="@(() => OpenModal(project))">
-
-                    <div class="sc-card-head">
-                        <span class="sc-card-num">#@project.ProjectNumber</span>
-                        <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@project.ProjectType" />
-                        @if (project.Availability == "Taken")
-                        {
-                            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="תפוס" />
-                        }
-                        else
-                        {
-                            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="פנוי" />
-                        }
-                        <button type="button"
-                                class="sc-fav-btn @(isFav ? "sc-fav-btn--active" : "")"
-                                @onclick:stopPropagation="true"
-                                @onclick="() => ToggleFavorite(project)"
-                                title="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")"
-                                aria-label="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")">
-                            @(isFav ? "★" : "☆")
-                        </button>
-                    </div>
-
-                    <h3 class="sc-card-title">@project.Title</h3>
-
-                    @if (!string.IsNullOrWhiteSpace(project.Description))
-                    {
-                        <p class="sc-card-desc">@Truncate(project.Description, 100)</p>
-                    }
-
-                    @if (!string.IsNullOrWhiteSpace(project.OrganizationName))
-                    {
-                        <div class="sc-card-org">
-                            <span class="oi oi-building" aria-hidden="true"></span>
-                            @project.OrganizationName
-                        </div>
-                    }
-
-                    <div class="sc-card-footer">
-                        <span class="sc-card-open-hint">לחצו לפרטים נוספים</span>
-                    </div>
-
-                </MCard>
-            }
-        </div>
-    }
-
-</div>
-
-@* ── Project details ─────────────────────────────────────────────────────
-   MModal brings the overlay, Escape and backdrop-close behaviour that the
-   hand-rolled dialog here did not have. Its own header renders the title;
-   the chips row and the favourite toggle sit at the top of the body, where
-   MModal's header has no slot for them. *@
-<MModal IsOpen="_modalProject is not null"
-        Title="@(_modalProject?.Title)"
-        Size="MModal.ModalSize.Large"
-        Class="sc-modal"
-        OnClose="CloseModal">
-    <ChildContent>
-        @if (_modalProject is not null)
-        {
-            var mp = _modalProject;
-            bool isFav      = _favoriteIds.Contains(mp.Id);
-            bool hasOrg     = !string.IsNullOrWhiteSpace(mp.OrganizationName);
-            bool hasContact = !string.IsNullOrWhiteSpace(mp.ContactPerson);
-            bool hasMentors = !string.IsNullOrWhiteSpace(mp.Mentors);
-
-            <div class="sc-modal-meta">
-                <span class="sc-modal-num">#@mp.ProjectNumber</span>
-                <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@mp.ProjectType" />
-                @if (!string.IsNullOrWhiteSpace(mp.ProjectTopic))
-                {
-                    <MStatusBadge Variant="MStatusBadge.BadgeVariant.Violet" Text="@mp.ProjectTopic" />
-                }
-                @if (mp.Availability == "Taken")
-                {
-                    <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="תפוס" />
-                }
-                else
-                {
-                    <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="פנוי" />
-                }
-                <button type="button"
-                        class="sc-modal-fav @(isFav ? "sc-modal-fav--active" : "")"
-                        @onclick="() => ToggleFavorite(mp)"
-                        title="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")"
-                        aria-label="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")">
-                    @(isFav ? "★" : "☆")
-                </button>
-            </div>
-
-            @if (!string.IsNullOrWhiteSpace(mp.Description))
-            {
-                <section class="sc-modal-section">
-                    <MSectionHeading Text="תיאור הפרויקט" />
-                    <p class="sc-modal-text">@mp.Description</p>
-                </section>
-            }
-
-            @if (!string.IsNullOrWhiteSpace(mp.Contents))
-            {
-                <section class="sc-modal-section">
-                    <MSectionHeading Text="תוכן הפרויקט" />
-                    <p class="sc-modal-text">@mp.Contents</p>
-                </section>
-            }
-
-            @if (!string.IsNullOrWhiteSpace(mp.Goals))
-            {
-                <section class="sc-modal-section">
-                    <MSectionHeading Text="מטרות" />
-                    <p class="sc-modal-text">@mp.Goals</p>
-                </section>
-            }
-
-            @if (!string.IsNullOrWhiteSpace(mp.TargetAudience))
-            {
-                <section class="sc-modal-section">
-                    <MSectionHeading Text="קהל יעד" />
-                    <p class="sc-modal-text">@mp.TargetAudience</p>
-                </section>
-            }
-
-            @if (hasOrg || hasContact || hasMentors
-                 || !string.IsNullOrWhiteSpace(mp.ContactEmail)
-                 || !string.IsNullOrWhiteSpace(mp.ContactPhone))
-            {
-                <section class="sc-modal-section">
-                    <MSectionHeading Text="ארגון ואיש קשר" />
-                    <div class="sc-modal-info-grid">
-                        @if (hasOrg)
-                        {
-                            <div class="sc-modal-info-row">
-                                <span class="sc-modal-info-label">ארגון</span>
-                                <span class="sc-modal-info-val">
-                                    @mp.OrganizationName
-                                    @if (!string.IsNullOrWhiteSpace(mp.OrganizationType))
-                                    {
-                                        <span class="sc-modal-info-sub">(@mp.OrganizationType)</span>
-                                    }
-                                </span>
-                            </div>
-                        }
-                        @if (hasContact)
-                        {
-                            <div class="sc-modal-info-row">
-                                <span class="sc-modal-info-label">איש קשר</span>
-                                <span class="sc-modal-info-val">
-                                    @mp.ContactPerson
-                                    @if (!string.IsNullOrWhiteSpace(mp.ContactRole))
-                                    {
-                                        <span class="sc-modal-info-sub">— @mp.ContactRole</span>
-                                    }
-                                </span>
-                            </div>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(mp.ContactEmail))
-                        {
-                            <div class="sc-modal-info-row">
-                                <span class="sc-modal-info-label">אימייל</span>
-                                <a class="sc-modal-info-val sc-modal-link" href="mailto:@mp.ContactEmail">
-                                    @mp.ContactEmail
-                                </a>
-                            </div>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(mp.ContactPhone))
-                        {
-                            <div class="sc-modal-info-row">
-                                <span class="sc-modal-info-label">טלפון</span>
-                                <span class="sc-modal-info-val">@mp.ContactPhone</span>
-                            </div>
-                        }
-                        @if (hasMentors)
-                        {
-                            <div class="sc-modal-info-row">
-                                <span class="sc-modal-info-label">מנחים</span>
-                                <span class="sc-modal-info-val">@mp.Mentors</span>
-                            </div>
-                        }
-                    </div>
-                </section>
-            }
-        }
-    </ChildContent>
-    <FooterContent>
-        @if (_modalProject is not null)
-        {
-            var mp = _modalProject;
-            <button type="button"
-                    class="sc-modal-fav-btn @(_favoriteIds.Contains(mp.Id) ? "sc-modal-fav-btn--active" : "")"
-                    @onclick="() => ToggleFavorite(mp)">
-                @(_favoriteIds.Contains(mp.Id) ? "★ במועדפים" : "☆ הוסף למועדפים")
-            </button>
-        }
-        <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="CloseModal">סגירה</MButton>
-    </FooterContent>
-</MModal>
+@if (_stage == StudentStage.AwaitingAssignment)
+{
+    @* A team that has already submitted must not be handed an editable
+       catalogue as though nothing happened. Rendered INSTEAD of the browse
+       surface — not redirected to, because a redirect between two student
+       routes that both guard on the same stage is how a loop starts. *@
+    <StudentWaiting Submission="StageSvc.Submission"
+                    FormStatus="StageSvc.FormStatus"
+                    Projects="_projects" />
+}
+else
+{
+    <StudentCatalogBoard Projects="_projects"
+                         FavoriteIds="_favoriteIds"
+                         OnToggleFavorite="ToggleFavorite"
+                         Loading="_loading"
+                         LoadError="_loadError"
+                         OnContinue="GoToAssignment" />
+}
 
 @code {
 
-    private List<StudentCatalogProjectDto> _projects     = new();
-    private readonly HashSet<int>          _favoriteIds  = new();
-    private StudentCatalogProjectDto?      _modalProject = null;
-    private bool   _loading           = true;
-    private bool   _loadError         = false;
-    private string _search            = "";
-    private string _typeFilter        = "";
-    private bool   _showFavoritesOnly = false;
+    private List<StudentCatalogProjectDto> _projects    = new();
+    private readonly HashSet<int>          _favoriteIds = new();
 
-    private List<string> _projectTypes => _projects
-        .Select(p => p.ProjectType)
-        .Distinct()
-        .OrderBy(t => t)
-        .ToList();
+    private bool _loading   = true;
+    private bool _loadError = false;
 
-    private IReadOnlyList<MSelect.Option> TypeFilterOptions =>
-        new[] { new MSelect.Option("", "הכל") }
-        .Concat(_projectTypes.Select(t => new MSelect.Option(t, t)))
-        .ToList();
-
-    private int _favoriteCount => _favoriteIds.Count;
-
-    private List<StudentCatalogProjectDto> _filtered => _projects
-        .Where(p =>
-            (!_showFavoritesOnly || _favoriteIds.Contains(p.Id)) &&
-            (string.IsNullOrWhiteSpace(_search) ||
-             p.Title.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
-             (p.Description ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
-             p.ProjectType.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
-             (p.OrganizationName ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
-             (p.ProjectTopic ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)) &&
-            (string.IsNullOrWhiteSpace(_typeFilter) || p.ProjectType == _typeFilter))
-        .ToList();
+    private StudentStage _stage = StudentStage.NeedsPreferences;
 
     protected override async Task OnInitializedAsync()
     {
@@ -358,6 +71,8 @@
             _projects = result ?? new();
             foreach (var p in _projects.Where(p => p.IsFavorite))
                 _favoriteIds.Add(p.Id);
+
+            _stage = await StageSvc.ResolveAsync();
         }
         catch
         {
@@ -369,10 +84,7 @@
         }
     }
 
-    private void OpenModal(StudentCatalogProjectDto project) => _modalProject = project;
-    private void CloseModal()                                  => _modalProject = null;
-
-    private void ToggleFavoritesFilter() => _showFavoritesOnly = !_showFavoritesOnly;
+    private void GoToAssignment() => Nav.NavigateTo("/" + PageRoutes.StudentAssignment);
 
     private async Task ToggleFavorite(StudentCatalogProjectDto project)
     {
@@ -394,11 +106,5 @@
             if (wasFavorite) _favoriteIds.Add(project.Id);
             else             _favoriteIds.Remove(project.Id);
         }
-    }
-
-    private static string Truncate(string text, int max)
-    {
-        if (string.IsNullOrEmpty(text) || text.Length <= max) return text;
-        return text[..max] + "…";
     }
 }

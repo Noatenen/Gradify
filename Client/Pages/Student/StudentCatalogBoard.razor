@@ -1,0 +1,365 @@
+@namespace AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Shared
+
+@*
+    ── קטלוג פרויקטים — the browse-and-rank surface ─────────────────────────
+
+    WHAT THIS IS
+    ────────────
+    Where a student LEARNS ABOUT the projects: the toolbar (search, type
+    filter, favourites), the card grid, and the ProjectQuickView that opens over
+    it. One component, rendered by two hosts — /student/catalog itself and the
+    lecturer's StudentFormPreviewModal.
+
+    BROWSING ONLY — NOTHING IS CHOSEN HERE
+    ──────────────────────────────────────
+    This screen used to carry the ranking too: a persistent העדפות הצוות rail
+    with three slots, a rank button on every card, and a "3 מתוך 3" counter,
+    all writing to a sessionStorage-backed selection that the assignment form
+    then read back.
+
+    That split one decision across two screens and two stores. A student ranked
+    on the catalogue, and the form — the thing that actually submits — could
+    only report what it found; arriving at the form without that stored state
+    (a new device, a cleared session, a direct link) left a form that could not
+    be completed at all. Choosing is now entirely the form's, and this screen
+    has one job: help a student decide what to choose. Nothing here is
+    persisted, and nothing here is read by anything downstream.
+
+    WHY IT WAS EXTRACTED
+    ────────────────────
+    The preview has to show the student's catalogue, and the only honest way to
+    show it is to render it. A lecturer-side copy of this markup would be
+    accurate on the day it was written and would drift from the next card,
+    filter or empty state onward — and the drift would be invisible, because the
+    only person who could notice is the one being shown the wrong thing. Same
+    reasoning as StudentAssignmentPage.Preview; this is the other half of the
+    same flow.
+
+    WHAT THE HOST OWNS, AND WHY
+    ───────────────────────────
+    This component fetches nothing and persists nothing. Projects, favourites
+    and the selection service are all handed in, because they are exactly the
+    three things the two hosts must do differently:
+
+      • the student page reads api/student/catalog; the preview reads the
+        admin's own api/catalog and maps it (see StudentFormPreviewData)
+      • the student page POSTs a favourite; the preview toggles a HashSet
+      • the student page ranks into storage; the preview ranks into memory
+
+    Everything else — every class, every control, every state — is shared, which
+    is the point.
+*@
+
+@{
+    // The toolbar is defined once and placed twice: inside MPageHeader for the
+    // student page (where the finished design puts it) and as a plain strip in
+    // the preview, which has no page header to sit in. A second copy of these
+    // four controls is exactly the kind of small duplication that ends with the
+    // two surfaces filtering differently.
+    RenderFragment toolbar =
+        @<div class="sc-toolbar">
+            <MSearchField @bind-Value="_search"
+                          MaxWidth="420px"
+                          Placeholder="חיפוש לפי שם, תיאור, סוג, ארגון…"
+                          AriaLabel="חיפוש בקטלוג הפרויקטים" />
+
+            <label class="sc-filter">
+                <span class="sc-filter-label">סוג</span>
+                <MSelectField Options="@TypeFilterOptions"
+                              @bind-Value="_typeFilter"
+                              Class="sc-filter-select" />
+            </label>
+
+            <button type="button"
+                    class="sc-fav-toggle @(_showFavoritesOnly ? "sc-fav-toggle--active" : "")"
+                    @onclick="ToggleFavoritesFilter"
+                    aria-pressed="@_showFavoritesOnly"
+                    title="@(_showFavoritesOnly ? "הצג הכל" : "המועדפים שלי")">
+                <span class="sc-star-icon" aria-hidden="true">★</span>
+                @(_showFavoritesOnly ? "הכל" : "המועדפים שלי")
+                @if (FavoriteIds.Count > 0)
+                {
+                    <span class="sc-fav-count">@FavoriteIds.Count</span>
+                }
+            </button>
+
+            <span class="sc-count" role="status" aria-live="polite">@Filtered.Count פרויקטים</span>
+        </div>;
+}
+
+@if (ShowPageHeader)
+{
+    <div class="sc-header-bleed">
+        <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                     Class="sc-header"
+                     Title="קטלוג פרויקטים"
+                     Subtitle="עיינו בפרויקטים הזמינים, סמנו מועדפים, ולאחר מכן הגישו טופס שיבוץ">
+            <Actions>
+                @* The way out. It names the FORM rather than "לבחירת שיבוצים",
+                   because choosing is what happens after this screen now, not
+                   on it. Raised as an intent so the same control can navigate
+                   for a student and switch the view for the lecturer. *@
+                <button type="button" class="sc-assignment-btn motiva-cta"
+                        @onclick="() => OnContinue.InvokeAsync()">
+                    <span>@ContinueLabel</span>
+                    <span class="sc-arrow" aria-hidden="true">←</span>
+                </button>
+            </Actions>
+            <ChildContent>
+                @if (!LoadError)
+                {
+                    @toolbar
+                }
+            </ChildContent>
+        </MPageHeader>
+    </div>
+}
+else if (!LoadError)
+{
+    @* No page header in the preview: the modal already carries the heading, and
+       a second large title under it is the hierarchy this surface does not need.
+       The toolbar still comes first, because it does on the student's screen —
+       and the CTA comes with it, because "what does the way out of this screen
+       look like" is part of what a preview is opened to answer. *@
+    <div class="sc-toolbar-bare">
+        @toolbar
+        <button type="button" class="sc-assignment-btn motiva-cta"
+                @onclick="() => OnContinue.InvokeAsync()">
+            <span>@ContinueLabel</span>
+            <span class="sc-arrow" aria-hidden="true">←</span>
+        </button>
+    </div>
+}
+
+<div class="sc-body sc-body--picking">
+
+    <div class="sc-results">
+
+    @if (Loading)
+    {
+        <MLoadingState Label="טוענת פרויקטים…" />
+    }
+    else if (LoadError)
+    {
+        <MEmptyState Live="true"
+                     Title="שגיאה בטעינת הקטלוג"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב." />
+    }
+    else if (!Projects.Any())
+    {
+        <MEmptyState Title="לא נמצאו פרויקטים זמינים כרגע"
+                     Description="כשצוות הקורס יפרסם פרויקטים לבחירה, הם יופיעו כאן." />
+    }
+    else if (Filtered.Count == 0)
+    {
+        @if (_showFavoritesOnly)
+        {
+            <MEmptyState Live="true"
+                         Title="טרם סימנת פרויקטים כמועדפים"
+                         Description="אפשר לסמן פרויקט בכוכב כדי לשמור אותו לרשימה הזו." />
+        }
+        else
+        {
+            <MEmptyState Live="true"
+                         Title="לא נמצאו פרויקטים התואמים את החיפוש"
+                         Description="אפשר לנסות מונח אחר או לנקות את הסינון." />
+        }
+    }
+    else
+    {
+        <div class="sc-grid">
+            @foreach (var p in Filtered)
+            {
+                var project = p;
+                bool isFav = FavoriteIds.Contains(project.Id);
+
+                <MCard
+                       Padding="MCard.CardPadding.Medium"
+                       Interactive="true"
+                       Class="sc-card"
+                       OnClick="@(() => OpenModal(project))">
+
+                    <div class="sc-card-head">
+                        <span class="sc-card-num">#@project.ProjectNumber</span>
+                        <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@project.ProjectType" />
+                        @if (project.Availability == "Taken")
+                        {
+                            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="תפוס" />
+                        }
+                        else
+                        {
+                            <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="פנוי" />
+                        }
+                        <button type="button"
+                                class="sc-fav-btn @(isFav ? "sc-fav-btn--active" : "")"
+                                @onclick:stopPropagation="true"
+                                @onclick="() => OnToggleFavorite.InvokeAsync(project)"
+                                title="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")"
+                                aria-label="@(isFav ? "הסר ממועדפים" : "הוסף למועדפים")">
+                            @(isFav ? "★" : "☆")
+                        </button>
+                    </div>
+
+                    <h3 class="sc-card-title">@project.Title</h3>
+
+                    @if (!string.IsNullOrWhiteSpace(project.Description))
+                    {
+                        <p class="sc-card-desc">@Truncate(project.Description, 100)</p>
+                    }
+
+                    @if (!string.IsNullOrWhiteSpace(project.OrganizationName))
+                    {
+                        <div class="sc-card-org">
+                            <span class="oi oi-building" aria-hidden="true"></span>
+                            @project.OrganizationName
+                        </div>
+                    }
+
+                    @* No act on a card any more beyond opening it. A card that
+                       offered "בחירה כהעדפה #1" was the ranking living on the
+                       wrong screen; reading is the whole job here. *@
+                    <div class="sc-card-footer sc-card-footer--read">
+                        <span class="sc-card-open-hint">לחצו לפרטים</span>
+                    </div>
+
+                </MCard>
+            }
+        </div>
+    }
+
+    </div>
+</div>
+
+@* ── Project details ─────────────────────────────────────────────────────
+   The SAME component the lecturer's assignment flow uses, in its student
+   reading. It is handed the record this component was given, so the
+   staff-only CatalogController is never called — see ProjectQuickView.Detail.
+
+   It carries no action: there is no student-facing full-project page to link
+   to, and choosing is not this screen's to offer. The panel exists so that
+   reading about a project never costs the student their place in the
+   catalogue. *@
+<ProjectQuickView ProjectId="@(_modalProject?.Id)"
+                  Detail="@QuickViewDetail"
+                  Audience="ProjectQuickView.Reader.Student"
+                  HeldBy="@(_modalProject?.Availability == "Taken" ? "צוות אחר" : null)"
+                  Mentors="@MentorNames"
+                  OnClose="CloseModal">
+    <ExtraFacts>
+        @if (_modalProject is { } mp)
+        {
+            @if (!string.IsNullOrWhiteSpace(mp.ProjectTopic))
+            {
+                <div class="pqv-fact">
+                    <dt class="pqv-fact-k">נושא</dt>
+                    <dd class="pqv-fact-v">@mp.ProjectTopic</dd>
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(mp.Contents))
+            {
+                <div class="pqv-fact">
+                    <dt class="pqv-fact-k">תוכן הפרויקט</dt>
+                    <dd class="pqv-fact-v">@mp.Contents</dd>
+                </div>
+            }
+        }
+    </ExtraFacts>
+</ProjectQuickView>
+
+@code {
+    /// <summary>The catalogue to browse. Handed in rather than fetched: the two
+    /// hosts read two different endpoints (see the header comment).</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<StudentCatalogProjectDto> Projects { get; set; } = new List<StudentCatalogProjectDto>();
+
+    [Parameter] public HashSet<int> FavoriteIds { get; set; } = new();
+
+    /// <summary>Raised with the project whose star was pressed. The host decides
+    /// whether that means a request or only a set.</summary>
+    [Parameter] public EventCallback<StudentCatalogProjectDto> OnToggleFavorite { get; set; }
+
+    [Parameter] public bool Loading   { get; set; }
+    [Parameter] public bool LoadError { get; set; }
+
+    /// <summary>The way on to the assignment form. Navigation on the student
+    /// page, a view switch in the preview — the control and its wording are the
+    /// same one either way.</summary>
+    [Parameter] public EventCallback OnContinue { get; set; }
+
+    private const string ContinueLabel = "להמשך לטופס השיבוץ";
+
+    /// <summary>The קטלוג פרויקטים page header. Off in the preview, which has
+    /// its own heading and must not stack a second one under it.</summary>
+    [Parameter] public bool ShowPageHeader { get; set; } = true;
+
+    // ── Filter state ─────────────────────────────────────────────────────────
+    // Local to the surface, exactly as it was on the page: a filter is a way of
+    // looking, not something either host needs to know about.
+
+    private StudentCatalogProjectDto? _modalProject;
+    private string _search            = "";
+    private string _typeFilter        = "";
+    private bool   _showFavoritesOnly = false;
+
+    private List<string> ProjectTypes => Projects
+        .Select(p => p.ProjectType)
+        .Distinct()
+        .OrderBy(t => t)
+        .ToList();
+
+    private IReadOnlyList<MSelect.Option> TypeFilterOptions =>
+        new[] { new MSelect.Option("", "הכל") }
+        .Concat(ProjectTypes.Select(t => new MSelect.Option(t, t)))
+        .ToList();
+
+    private List<StudentCatalogProjectDto> Filtered => Projects
+        .Where(p =>
+            (!_showFavoritesOnly || FavoriteIds.Contains(p.Id)) &&
+            (string.IsNullOrWhiteSpace(_search) ||
+             p.Title.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+             (p.Description ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+             p.ProjectType.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+             (p.OrganizationName ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+             (p.ProjectTopic ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(_typeFilter) || p.ProjectType == _typeFilter))
+        .ToList();
+
+    /// <summary>The student record mapped onto the shape ProjectQuickView
+    /// renders. A pure projection — no request is made, which is the whole
+    /// reason the student path is safe: CatalogController is
+    /// [Authorize(Admin,Staff)] and is never reached from here. InternalNotes
+    /// is deliberately not mapped; the student DTO has no such field.</summary>
+    private CatalogProjectDetailDto? QuickViewDetail =>
+        _modalProject is not { } p ? null : new CatalogProjectDetailDto
+        {
+            Id               = p.Id,
+            ProjectNumber    = p.ProjectNumber,
+            Title            = p.Title,
+            Description      = p.Description,
+            ProjectType      = p.ProjectType,
+            OrganizationName = p.OrganizationName,
+            ContactPerson    = p.ContactPerson,
+            Goals            = p.Goals,
+            TargetAudience   = p.TargetAudience,
+            Status           = p.Availability
+        };
+
+    private List<string> MentorNames =>
+        string.IsNullOrWhiteSpace(_modalProject?.Mentors)
+            ? new List<string>()
+            : _modalProject!.Mentors.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(m => m.Trim()).Where(m => m.Length > 0).ToList();
+
+    private void OpenModal(StudentCatalogProjectDto project) => _modalProject = project;
+    private void CloseModal()                                => _modalProject = null;
+
+    private void ToggleFavoritesFilter() => _showFavoritesOnly = !_showFavoritesOnly;
+
+    private static string Truncate(string text, int max)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= max) return text;
+        return text[..max] + "…";
+    }
+}

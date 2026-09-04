@@ -105,6 +105,20 @@ public class AssignmentCatalogItemDto
     public string  ProjectType  { get; set; } = "";
     public string  Availability { get; set; } = "Available";
     public string? Description  { get; set; }
+
+    /// <summary>The proposing organisation. Metadata on a selector row and one
+    /// of the fields its search matches — a student who remembers "the מתנ״סים
+    /// one" and not its number needs that to be findable.</summary>
+    public string? OrganizationName { get; set; }
+
+    /// <summary>Starred by THIS student in the catalogue.
+    ///
+    /// <para>Read from the same <c>StudentProjectFavorites</c> rows the
+    /// catalogue's own star writes, so the two screens can never disagree about
+    /// what is a favourite. It is per USER, not per team: two teammates who
+    /// starred different projects each see their own list, which is what the
+    /// table has always stored.</para></summary>
+    public bool    IsFavorite   { get; set; }
 }
 
 public class ExistingAssignmentDto

@@ -79,9 +79,20 @@ public class AssignmentController : ControllerBase
         var availRows = (await _db.GetRecordsAsync<StudentRow>(availSql, new { UserId = authUserId }))?.ToList() ?? new();
 
         // Project catalog — only truly unassigned projects
+        // OrganizationName and IsFavorite ride along because the assignment
+        // form is where the three projects are CHOSEN now, so its selector has
+        // to carry enough to choose by — and the favourites it shows first must
+        // be the ones the student starred in the catalogue, not a second list.
+        // Same StudentProjectFavorites table and the same EXISTS the student
+        // catalogue query uses; there is exactly one source.
         const string catalogSql = @"
             SELECT p.Id, p.ProjectNumber, p.Title, pt.Name AS ProjectType,
                    p.Description,
+                   p.OrganizationName,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM StudentProjectFavorites f
+                       WHERE  f.UserId = @UserId AND f.ProjectId = p.Id
+                   ) THEN 1 ELSE 0 END AS IsFavorite,
                    'Available' AS Availability
             FROM   Projects p
             JOIN   ProjectTypes pt ON p.ProjectTypeId = pt.Id
@@ -92,7 +103,7 @@ public class AssignmentController : ControllerBase
                    )
             ORDER  BY p.ProjectNumber";
 
-        var catalogRows = (await _db.GetRecordsAsync<CatalogRow>(catalogSql, null))?.ToList() ?? new();
+        var catalogRows = (await _db.GetRecordsAsync<CatalogRow>(catalogSql, new { UserId = authUserId }))?.ToList() ?? new();
 
         // Existing submission for the team (if any)
         ExistingAssignmentDto? existing = null;
@@ -163,9 +174,11 @@ public class AssignmentController : ControllerBase
                 Id            = r.Id,
                 ProjectNumber = r.ProjectNumber,
                 Title         = r.Title,
-                ProjectType   = r.ProjectType,
-                Availability  = r.Availability,
-                Description   = r.Description
+                ProjectType      = r.ProjectType,
+                Availability     = r.Availability,
+                Description      = r.Description,
+                OrganizationName = r.OrganizationName,
+                IsFavorite       = r.IsFavorite
             }).ToList(),
             ExistingSubmission = existing,
             FormStatus         = formStatus,
@@ -349,7 +362,7 @@ public class AssignmentController : ControllerBase
     private sealed class TeamRow       { public int TeamId { get; set; } public int UserId { get; set; } public string FullName { get; set; } = ""; }
     private sealed class StrengthRow   { public int UserId { get; set; } public string Strength { get; set; } = ""; }
     private sealed class StudentRow    { public int Id { get; set; } public string FullName { get; set; } = ""; }
-    private sealed class CatalogRow    { public int Id { get; set; } public int ProjectNumber { get; set; } public string Title { get; set; } = ""; public string ProjectType { get; set; } = ""; public string Availability { get; set; } = ""; public string? Description { get; set; } }
+    private sealed class CatalogRow    { public int Id { get; set; } public int ProjectNumber { get; set; } public string Title { get; set; } = ""; public string ProjectType { get; set; } = ""; public string Availability { get; set; } = ""; public string? Description { get; set; } public string? OrganizationName { get; set; } public bool IsFavorite { get; set; } }
     private sealed class SubmissionRow { public bool HasOwnProject { get; set; } public string? OwnProjectDescription { get; set; } public string? Notes { get; set; } public string SubmittedAt { get; set; } = ""; }
     private sealed class PrefRow       { public int Priority { get; set; } public int ProjectId { get; set; } }
     private sealed class TeamIdRow     { public int TeamId { get; set; } }

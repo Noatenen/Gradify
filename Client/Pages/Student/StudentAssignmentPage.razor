@@ -6,6 +6,8 @@
 @inject IAssignmentService AssignmentSvc
 @inject NavigationManager Nav
 @attribute [Authorize(Roles = Roles.Student)]
+@using AuthWithAdmin.Client.Services
+@inject IStudentStageService StageSvc
 
 @*
     ── Assignment form (טופס בחירת פרויקט) ──────────────────────────────────
@@ -16,23 +18,53 @@
     per-section readiness pills, MToggle for the own-project switch,
     MSearchField for partner search, and MLoadingState / MEmptyState for
     the loading, error and gate-closed states.
+
+    PREVIEW MODE
+    ────────────
+    Rendered as a CHILD COMPONENT (not routed) by StudentFormPreviewModal, so
+    an admin can answer "what will students actually see when they fill this
+    form?" without a student account, a team, or a route they cannot reach.
+
+    That is why the preview is a parameter on THIS component rather than a
+    second screen: a lecturer-side copy of this markup would answer the
+    question on the day it was written and drift from it afterwards, which is
+    the one thing a preview must never do. There is one form. The preview
+    renders it with a supplied context instead of a fetched one.
+
+    Preview changes exactly three things and nothing else:
+      • the context comes from PreviewContext instead of IAssignmentService,
+        and the answers from PreviewAnswers through the same
+        PopulateFromSubmission the real page hydrates with;
+      • the two controls that would navigate the admin off their own screen —
+        חזרה לקטלוג and שינוי הבחירה בקטלוג — stop navigating;
+      • submit is disabled and HandleSubmit returns before doing anything.
+    Every section, every validation hint and every piece of styling below is
+    the student's.
 *@
 
-<div class="sap-header-bleed">
-    <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
-                 Class="sap-header"
-                 Title="טופס בחירת פרויקט"
-                 Subtitle="העדפות שיבוץ לפרויקט הגמר">
-        <Actions>
-            <button type="button"
-                    class="sap-back-btn"
-                    @onclick='() => Nav.NavigateTo("/" + PageRoutes.StudentCatalog)'>
-                <span class="oi oi-chevron-right" aria-hidden="true"></span>
-                חזרה לקטלוג
-            </button>
-        </Actions>
-    </MPageHeader>
-</div>
+@* The ROUTE's header — the page's identity and its way back to the catalogue.
+   Suppressed in the preview: the modal already carries a heading, and a second
+   large title stacked under it is hierarchy the surface does not need. What it
+   said about this screen now lives in the preview's info tip, so nothing is
+   lost — only the duplication. *@
+@if (!Preview)
+{
+    <div class="sap-header-bleed">
+        <MPageHeader Variant="MPageHeader.HeaderVariant.Compact"
+                     Class="sap-header"
+                     Title="טופס בחירת פרויקט"
+                     Subtitle="העדפות שיבוץ לפרויקט הגמר">
+            <Actions>
+                <button type="button"
+                        class="sap-back-btn"
+                        @onclick='() => Nav.NavigateTo("/" + PageRoutes.StudentCatalog)'>
+                    <span class="oi oi-chevron-right" aria-hidden="true"></span>
+                    חזרה לקטלוג
+                </button>
+            </Actions>
+        </MPageHeader>
+    </div>
+}
 
 <div class="sap-page" dir="rtl">
 
@@ -231,11 +263,10 @@
                 <div class="sap-section-head">
                     <span class="sap-section-num">1</span>
                     <div>
-                        <h2 class="sap-section-title">צוות</h2>
-                        <p class="sap-section-sub">
-                            @if (_ctx.HasTeam) { <span>חברי הצוות שלך</span> }
-                            else               { <span>בחרי שותפה אחת לצוות (חובה)</span> }
-                        </p>
+                        <h2 class="sap-section-title">
+                            צוות
+                            <MInfoTip Text="@(_ctx.HasTeam ? "חברי הצוות שלך, כפי שאושרו ברישום." : "בחרי שותפה אחת לצוות. הטופס מוגש עבור שתיכן.")" />
+                        </h2>
                     </div>
                     @if (_ctx.HasTeam || _selectedPartnerIds.Count == 1)
                     {
@@ -331,8 +362,8 @@
                         <h2 class="sap-section-title">
                             @StrengthsTitle
                             @if (StrengthsRequired) { <span class="sap-req" aria-label="שדה חובה">*</span> }
+                            <MInfoTip Text="@StrengthsHelp" />
                         </h2>
-                        <p class="sap-section-sub">@StrengthsHelp</p>
                     </div>
                 </div>
                 <div class="sap-strengths-grid-outer">
@@ -363,46 +394,65 @@
                 </div>
             </MCard>
 
-            <!-- ═══ SECTION 3 — Project preferences ═══ -->
+            @* ═══ SECTION 3 — Project preferences ═══
+               WHERE THE CHOOSING HAPPENS. It used to be a read-only review of
+               three projects ranked on the catalogue and carried here in
+               sessionStorage — which meant the screen that submits could not
+               produce its own answer, and a student arriving without that store
+               (new device, cleared session, direct link) met a form they could
+               not complete. The three slots are real controls now, and the
+               catalogue is where you go to read about the options, not to
+               choose them. *@
             <MCard Padding="MCard.CardPadding.Large" Class="sap-section">
                 <div class="sap-section-head">
                     <span class="sap-section-num">3</span>
-                    @* Wording is the admin's; the three catalog-backed slots
-                       below are not — they are the domain invariant the server
-                       enforces on submit. *@
                     <div>
                         <h2 class="sap-section-title">
                             @PreferencesTitle
                             <span class="sap-req" aria-label="שדה חובה">*</span>
+                            <MInfoTip Text="@PreferencesHelp" />
                         </h2>
-                        <p class="sap-section-sub">@PreferencesHelp</p>
                     </div>
-                    @if (_preferences.Count == 3)
+                    @if (_preferences.Count == RequiredPreferences)
                     { <MStatusBadge Variant="MStatusBadge.BadgeVariant.Teal" Text="מלא" /> }
                     else
-                    { <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@($"{_preferences.Count} / 3 נבחרו")" /> }
+                    { <MStatusBadge Variant="MStatusBadge.BadgeVariant.Neutral" Text="@($"{_preferences.Count} / {RequiredPreferences} נבחרו")" /> }
                 </div>
+
                 <div class="sap-prefs-list">
-                    @for (int i = 1; i <= 3; i++)
+                    @for (int i = 1; i <= RequiredPreferences; i++)
                     {
-                        int priority   = i;
-                        int currentVal = GetPreference(priority);
-                        var chosen     = currentVal > 0 ? _ctx.Catalog.FirstOrDefault(p => p.Id == currentVal) : null;
+                        int priority = i;
+                        var chosenId = GetPreference(priority);
+                        var chosen   = chosenId > 0 ? _ctx.Catalog.FirstOrDefault(p => p.Id == chosenId) : null;
+
                         <div class="sap-pref-block">
-                            <div class="sap-pref-header">
-                                <span class="sap-pref-num">@priority</span>
-                                <span class="sap-pref-label">
-                                    @(priority == 1 ? "עדיפות ראשונה" : priority == 2 ? "עדיפות שנייה" : "עדיפות שלישית")
-                                </span>
+                            <span class="sap-pref-num">@priority</span>
+
+                            <div class="sap-pref-pick">
+                                @* Favourites first, then everything else;
+                                   each row carries a blurb and its type and
+                                   organisation; a project taken by another
+                                   rank is offered greyed rather than hidden.
+                                   All of it is CatalogOptionsFor — the closed
+                                   control stays "#4 — title" either way. *@
+                                <MSelectField Options="@CatalogOptionsFor(priority)"
+                                              Value="@chosenId.ToString()"
+                                              ValueChanged="@(v => SetPreference(priority, ParseInt(v)))"
+                                              Searchable="true"
+                                              SearchPlaceholder="חיפוש לפי מספר, שם, תיאור או ארגון"
+                                              Placeholder="בחירת פרויקט"
+                                              AriaLabel="@($"פרויקט בעדיפות {priority}")"
+                                              Class="sap-pref-select" />
+
+                                @if (chosen is not null)
+                                {
+                                    <button type="button" class="sap-pref-view"
+                                            @onclick="() => _detailProjectId = chosen.Id">
+                                        צפייה בפרויקט
+                                    </button>
+                                }
                             </div>
-                            <MSelectField Options="@CatalogOptionsFor(priority)"
-                                          Value="@currentVal.ToString()"
-                                          ValueChanged="@(v => SetPreference(priority, ParseInt(v)))"
-                                          Class="sap-pref-select" />
-                            @if (chosen is not null && !string.IsNullOrWhiteSpace(chosen.Description))
-                            {
-                                <p class="sap-pref-desc">@Truncate(chosen.Description, 120)</p>
-                            }
                         </div>
                     }
                 </div>
@@ -413,8 +463,10 @@
                 <div class="sap-section-head">
                     <span class="sap-section-num">4</span>
                     <div>
-                        <h2 class="sap-section-title">פרויקט עצמאי</h2>
-                        <p class="sap-section-sub">האם יש לכם רעיון לפרויקט משלכן? (אופציונלי)</p>
+                        <h2 class="sap-section-title">
+                            פרויקט עצמאי
+                            <MInfoTip Text="אם יש לכן רעיון לפרויקט משלכן, תארו אותו כאן. אופציונלי — אפשר גם לבחור רק מהקטלוג." />
+                        </h2>
                     </div>
                 </div>
                 <div class="sap-own-toggle">
@@ -439,8 +491,8 @@
                         <h2 class="sap-section-title">
                             @NotesTitle
                             @if (NotesRequired) { <span class="sap-req" aria-label="שדה חובה">*</span> }
+                            <MInfoTip Text="@NotesHelp" />
                         </h2>
-                        <p class="sap-section-sub">@NotesHelp</p>
                     </div>
                 </div>
                 <textarea class="sap-textarea"
@@ -463,8 +515,10 @@
                     <div class="sap-section-head">
                         <span class="sap-section-num">6</span>
                         <div>
-                            <h2 class="sap-section-title">שאלות נוספות</h2>
-                            <p class="sap-section-sub">שאלות שהוגדרו על ידי צוות הקורס</p>
+                            <h2 class="sap-section-title">
+                                שאלות נוספות
+                                <MInfoTip Text="שאלות שהוגדרו על ידי צוות הקורס." />
+                            </h2>
                         </div>
                     </div>
 
@@ -490,17 +544,22 @@
                             else
                             {
                                 <div class="sap-extra-q">
+                                    @* The admin's own helper text goes to a tip
+                                       for the same reason the section subtitles
+                                       did: a form of six questions each with a
+                                       paragraph under it is a wall, and the
+                                       paragraph is read once. *@
                                     <p class="sap-extra-q-title">
                                         <span>@block.Title</span>
                                         @if (block.IsRequired)
                                         {
                                             <span class="sap-req" aria-label="שאלת חובה">*</span>
                                         }
+                                        @if (!string.IsNullOrWhiteSpace(block.HelperText))
+                                        {
+                                            <MInfoTip Text="@block.HelperText" />
+                                        }
                                     </p>
-                                    @if (!string.IsNullOrWhiteSpace(block.HelperText))
-                                    {
-                                        <p class="sap-extra-q-help">@block.HelperText</p>
-                                    }
 
                                     @if (block.BlockType == FormBlockTypes.SingleChoice)
                                     {
@@ -583,7 +642,8 @@
                     <span class="sap-error-msg">⚠ @_submitError</span>
                 }
                 <button class="sap-submit-btn motiva-cta" @onclick="HandleSubmit"
-                        disabled="@(_submitting || !CanSubmit)">
+                        disabled="@(Preview || _submitting || !CanSubmit)"
+                        title="@(Preview ? PreviewDisabledHint : null)">
                     @if (_submitting)
                     {
                         <div class="sap-btn-spinner"></div>
@@ -602,7 +662,81 @@
 
 </div>
 
+@* ── Project details, over the form ──────────────────────────────────────
+   The SAME component the catalogue and the lecturer's assignment flow use.
+   A student ranking three projects must be able to check one without losing
+   the form they are half-way through, which is exactly what this panel is
+   for — and it is handed the record the context already carries, so nothing
+   is fetched and the staff-only CatalogController is never reached. *@
+<ProjectQuickView ProjectId="_detailProjectId"
+                  Detail="@DetailOf(_detailProjectId)"
+                  Audience="ProjectQuickView.Reader.Student"
+                  OnClose="() => _detailProjectId = null" />
+
 @code {
+
+    // ── Preview mode ─────────────────────────────────────────────────────────
+
+    /// <summary>Renders this form for an ADMIN to look at rather than for a
+    /// student to submit. Set only by StudentFormPreviewModal.
+    ///
+    /// <para>It is deliberately narrow: it does not change a single section, a
+    /// single label or a single rule below. It swaps where the context comes
+    /// from, stops the two controls that navigate, and refuses to submit. The
+    /// inputs stay live on purpose — a preview you cannot tick a box in cannot
+    /// answer what a radio group or a rating scale actually looks like when a
+    /// student uses it, and nothing typed into it goes anywhere: the state is
+    /// this component's own and dies with the modal.</para></summary>
+    [Parameter] public bool Preview { get; set; }
+
+    /// <summary>The context the preview renders instead of one fetched from
+    /// IAssignmentService. Ignored unless <see cref="Preview"/> is true.</summary>
+    [Parameter] public AssignmentContextDto? PreviewContext { get; set; }
+
+    /// <summary>The sample answers the preview opens with, hydrated through the
+    /// SAME PopulateFromSubmission the real page uses to reopen a submission —
+    /// so the preview cannot fill the form by a path the student's own form
+    /// does not have.
+    ///
+    /// <para>It carries NO preferences. Choosing three projects is what this
+    /// screen is for, and pre-filling them would hide the one thing a lecturer
+    /// most needs to look at; the reader picks them here, from the real
+    /// catalogue, exactly as a student does.</para></summary>
+    [Parameter] public ExistingAssignmentDto? PreviewAnswers { get; set; }
+
+    private const string PreviewDisabledHint =
+        "תצוגה מקדימה — הפעולה מושבתת. שום דבר אינו נשמר ואין הגשה.";
+
+    /// <summary>How many projects a team ranks. The server's matcher scores
+    /// exactly three (30/20/10), so this is the model's number rather than a
+    /// layout choice. It used to live on PreferenceSelection, which existed
+    /// only to carry catalogue rankings here and is gone.</summary>
+    private const int RequiredPreferences = 3;
+
+    /// <summary>The project whose details are open over the form, or null.
+    /// Holds an id and nothing else, so opening and closing it cannot disturb a
+    /// single answer underneath.</summary>
+    private int? _detailProjectId;
+
+    /// <summary>The context's catalogue row mapped onto the shape
+    /// ProjectQuickView renders. A pure projection — no request is made, and
+    /// the student DTO has no InternalNotes to leak.</summary>
+    private CatalogProjectDetailDto? DetailOf(int? projectId)
+    {
+        if (projectId is not int id) return null;
+        var p = _ctx?.Catalog.FirstOrDefault(c => c.Id == id);
+        if (p is null) return null;
+
+        return new CatalogProjectDetailDto
+        {
+            Id            = p.Id,
+            ProjectNumber = p.ProjectNumber,
+            Title         = p.Title,
+            Description   = p.Description,
+            ProjectType   = p.ProjectType,
+            Status        = p.Availability
+        };
+    }
 
     private static int    ParseInt(string? s) => int.TryParse(s, out var v) ? v : 0;
     private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max] + "…";
@@ -758,17 +892,77 @@
     private AssignmentCatalogItemDto? FindProject(int id) =>
         _ctx?.Catalog.FirstOrDefault(p => p.Id == id);
 
+    /// <summary>The catalogue, as options for ONE rank.
+    ///
+    /// <para><b>Favourites first.</b> The projects this student starred in the
+    /// catalogue lead the list under their own heading, with the star still on
+    /// the row. That is the payoff for browsing: the reading a student did on
+    /// the other screen arrives here as a shortlist instead of being something
+    /// they have to remember. They are NOT repeated under כל הפרויקטים — one
+    /// project is one row.</para>
+    ///
+    /// <para><b>Enough to choose by.</b> A row carries the title, a clamped
+    /// blurb and a quiet line of type · organisation, because the whole reason
+    /// this list is long is that its rows used to be indistinguishable. It
+    /// stops there: the full record is one click away behind צפייה בפרויקט,
+    /// and a menu of cards is a menu you cannot compare down.</para>
+    ///
+    /// <para>A project already held by another rank is offered DISABLED rather
+    /// than removed: a student scanning for the project they just put first
+    /// should find it where they expect it, greyed and explaining itself, not
+    /// discover that the list silently got shorter. It is also the duplicate
+    /// rule stated where the choosing happens — the server rejects a repeated
+    /// ProjectId, and three ranks are three different projects. The star stays
+    /// on those rows too.</para>
+    ///
+    /// <para>The empty option is what makes a rank clearable: picking it calls
+    /// SetPreference with 0, which removes the slot rather than storing a
+    /// zero.</para></summary>
     private IReadOnlyList<MSelect.Option> CatalogOptionsFor(int priority)
     {
         var options = new List<MSelect.Option> { new MSelect.Option("0", "— בחירה —") };
         if (_ctx is null) return options;
-        foreach (var p in _ctx.Catalog)
+
+        MSelect.Option Row(AssignmentCatalogItemDto p, string? group)
         {
-            bool usedElsewhere = _preferences.Any(kv => kv.Key != priority && kv.Value == p.Id);
-            options.Add(new MSelect.Option(p.Id.ToString(), $"#{p.ProjectNumber} — {p.Title}", usedElsewhere));
+            var used  = _preferences.Any(kv => kv.Key != priority && kv.Value == p.Id);
+            var label = $"#{p.ProjectNumber} — {p.Title}";
+
+            return new MSelect.Option(p.Id.ToString(),
+                                      used ? $"{label} (כבר נבחר)" : label,
+                                      used)
+            {
+                Description = Truncate(p.Description ?? "", 130),
+                Meta        = MetaLine(p),
+                Favorite    = p.IsFavorite,
+                Group       = group
+            };
         }
+
+        // Ordered, not filtered: two passes over the same list, and every
+        // project appears in exactly one of them.
+        options.AddRange(_ctx.Catalog.Where(p =>  p.IsFavorite).Select(p => Row(p, "מועדפים")));
+        options.AddRange(_ctx.Catalog.Where(p => !p.IsFavorite).Select(p => Row(p, "כל הפרויקטים")));
+
         return options;
     }
+
+    /// <summary>Type · organisation, whichever exist. Metadata, so it is
+    /// allowed to be absent rather than printing an empty separator.</summary>
+    private static string MetaLine(AssignmentCatalogItemDto p)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(p.ProjectType))      parts.Add(ProjectTypeLabel(p.ProjectType));
+        if (!string.IsNullOrWhiteSpace(p.OrganizationName)) parts.Add(p.OrganizationName!);
+        return string.Join(" · ", parts);
+    }
+
+    private static string ProjectTypeLabel(string type) => type switch
+    {
+        "Technological"  => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => type
+    };
 
     // ── State ────────────────────────────────────────────────────────────────
 
@@ -822,15 +1016,39 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // A preview never reaches the network. Not "reaches it and discards the
+        // answer" — the three services this page injects are not called at all,
+        // so there is no request to get wrong and no student state to disturb.
+        if (Preview)
+        {
+            _ctx      = PreviewContext;
+            _loading  = false;
+            _editMode = true;
+
+            if (_ctx is not null)
+            {
+                if (PreviewAnswers is not null) PopulateFromSubmission(PreviewAnswers);
+
+                foreach (var m in _ctx.TeamMembers)
+                    _strengths[m.UserId] = new HashSet<string>(m.Strengths);
+            }
+
+            return;
+        }
+
         _ctx     = await AssignmentSvc.GetContextAsync();
         _loading = false;
 
         if (_ctx?.ExistingSubmission is { } ex)
         {
-            // Already submitted → open in summary view
+            // Already submitted → open in summary view.
             _editMode = false;
             PopulateFromSubmission(ex);
         }
+        // Nothing submitted → three empty slots. There is no stored selection
+        // to reconcile any more and nothing to inherit: this page is where the
+        // three projects are chosen, so arriving with an empty form is the
+        // normal case rather than a state to recover from.
 
         if (_ctx?.HasTeam == true)
             foreach (var m in _ctx.TeamMembers)
@@ -898,17 +1116,31 @@
         if (!_strengths[userId].Remove(strength)) _strengths[userId].Add(strength);
     }
 
-    private int  GetPreference(int priority) => _preferences.TryGetValue(priority, out var id) ? id : 0;
+    private int GetPreference(int priority) => _preferences.TryGetValue(priority, out var id) ? id : 0;
+
+    /// <summary>Sets one slot. Duplicates are prevented at the SOURCE — a
+    /// project already held by another slot is offered disabled, see
+    /// CatalogOptionsFor — but the same rule is enforced here too, because a
+    /// disabled option is a statement about a control and this is a statement
+    /// about the model: the server rejects a duplicated ProjectId, and the
+    /// three ranks are three different projects by definition.</summary>
     private void SetPreference(int priority, int projectId)
     {
-        if (projectId == 0) _preferences.Remove(priority);
-        else                _preferences[priority] = projectId;
+        if (projectId == 0) { _preferences.Remove(priority); return; }
+        if (_preferences.Any(kv => kv.Key != priority && kv.Value == projectId)) return;
+
+        _preferences[priority] = projectId;
     }
 
     // ── Submit ───────────────────────────────────────────────────────────────
 
     private async Task HandleSubmit()
     {
+        // The button is already disabled; this is the guard that matters. It
+        // sits above every validation branch, so no path through this method
+        // can reach SubmitAsync while the form is being previewed.
+        if (Preview) return;
+
         _submitError = "";
 
         if (!TeamReady)  { _submitError = "יש לבחור שותפה אחת לצוות לפני ההגשה";          return; }
@@ -943,6 +1175,11 @@
 
         if (res.Ok)
         {
+            //  The team is AwaitingAssignment from now on, so the cached stage
+            //  goes. There is no draft store to clear beside it: the answers
+            //  lived in this component and the submission is now the record.
+            StageSvc.Invalidate();
+
             // Reload context so summary has fresh data (team members + strengths + preferences)
             _ctx           = await AssignmentSvc.GetContextAsync();
             _justSubmitted = true;

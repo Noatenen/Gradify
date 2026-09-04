@@ -13,6 +13,18 @@
     IT IS NOT A GLOBAL REPLACEMENT. It is introduced for the user-import
     mapping step; the app's other native selects are untouched.
 
+    RICH OPTIONS AND SEARCH ARE OPT-IN
+    Option carries three optional extras — Description, Meta and Favorite — and
+    the component takes a Searchable flag and Group headers. Every one of them
+    is additive: an Option built as `new(value, label)` renders exactly the row
+    it always did, and the 25 existing callers are untouched.
+
+    They exist because the student assignment form now CHOOSES three projects
+    out of a hundred and eleven. A row of "#4 — title" cannot be chosen between
+    without opening each one, and a hundred rows cannot be found in without
+    typing. The alternative was a second select component for one screen, which
+    is how two controls that mean the same thing start drifting apart.
+
     THE CALLER OWNS `Open`
     Same contract as MAccordionItem, and for the same reason: a screen with
     many of these needs "one open at a time" and outside-click-to-close, and
@@ -84,13 +96,50 @@
              aria-label="@AriaLabel"
              @onclick:stopPropagation="true">
 
-            @for (var i = 0; i < Options.Count; i++)
+            @if (Searchable)
+            {
+                @*  Sticky, because the point of searching a hundred rows is to
+                    keep narrowing while looking at what is left. Keys are
+                    forwarded to the same handler the trigger uses, so ↓ ↑ Enter
+                    Escape behave identically whether focus is here or there. *@
+                <div class="m-sel-search">
+                    <input type="text"
+                           class="m-sel-search-input"
+                           placeholder="@SearchPlaceholder"
+                           aria-label="@SearchPlaceholder"
+                           value="@_query"
+                           @oninput="OnQueryInput"
+                           @onkeydown="HandleKeyDownAsync"
+                           @onkeydown:stopPropagation="true" />
+                </div>
+            }
+
+            @if (Visible.Count == 0)
+            {
+                <div class="m-sel-empty">לא נמצאו תוצאות</div>
+            }
+
+            @{ string? lastGroup = null; }
+
+            @for (var i = 0; i < Visible.Count; i++)
             {
                 var index    = i;
-                var option   = Options[i];
+                var option   = Visible[i];
                 var selected = option.Value == Value;
 
-                <div class="m-sel-opt @(selected ? "m-sel-opt--on" : "") @(index == _active ? "m-sel-opt--active" : "") @(option.Disabled ? "m-sel-opt--off" : "")"
+                @*  A header whenever the group changes. Rendered inline rather
+                    than as a separate list so a filtered result never leaves a
+                    heading standing over nothing. *@
+                @if (option.Group != lastGroup)
+                {
+                    lastGroup = option.Group;
+                    if (!string.IsNullOrWhiteSpace(option.Group))
+                    {
+                        <div class="m-sel-group" role="presentation">@option.Group</div>
+                    }
+                }
+
+                <div class="m-sel-opt @(selected ? "m-sel-opt--on" : "") @(index == _active ? "m-sel-opt--active" : "") @(option.Disabled ? "m-sel-opt--off" : "") @(option.Description is null ? "" : "m-sel-opt--rich")"
                      id="@OptionId(index)"
                      role="option"
                      aria-selected="@(selected ? "true" : "false")"
@@ -99,7 +148,29 @@
                      @onclick="() => PickAsync(index)"
                      @onmousemove="() => _active = index">
 
-                    <span class="m-sel-opt-label">@option.Label</span>
+                    <span class="m-sel-opt-body">
+                        <span class="m-sel-opt-line">
+                            @*  The star stays on a disabled row: "already taken
+                                by another rank" and "one of my favourites" are
+                                two different facts and hiding the second one
+                                when the first is true loses information the
+                                reader is using to choose. *@
+                            @if (option.Favorite)
+                            {
+                                <span class="m-sel-opt-star" aria-label="מועדף">★</span>
+                            }
+                            <span class="m-sel-opt-label">@option.Label</span>
+                        </span>
+
+                        @if (!string.IsNullOrWhiteSpace(option.Description))
+                        {
+                            <span class="m-sel-opt-desc">@option.Description</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(option.Meta))
+                        {
+                            <span class="m-sel-opt-meta">@option.Meta</span>
+                        }
+                    </span>
 
                     @*  A check at the row end, not a filled row — the same
                         "selected = weight + violet check" treatment the
@@ -122,8 +193,31 @@
 @code {
     /// <summary>One choice. <paramref name="Disabled"/> is here for callers that
     /// must SHOW an unavailable choice; a caller that would rather withhold it
-    /// simply leaves it out of <see cref="Options"/>.</summary>
-    public sealed record Option(string Value, string Label, bool Disabled = false);
+    /// simply leaves it out of <see cref="Options"/>.
+    ///
+    /// <para>The four members below are OPTIONAL and additive. Left unset, the
+    /// row is the single-line row this control has always drawn — which is why
+    /// no existing caller had to change when they were introduced.</para></summary>
+    public sealed record Option(string Value, string Label, bool Disabled = false)
+    {
+        /// <summary>A line under the label. Truncate before passing it in: the
+        /// row clamps to two lines, and a control is not a card.</summary>
+        public string? Description { get; init; }
+
+        /// <summary>A third, quieter line — type, domain, organisation. Also
+        /// searched.</summary>
+        public string? Meta        { get; init; }
+
+        /// <summary>Draws a star on the row. Shown on a DISABLED row too:
+        /// "unavailable" and "one of mine" are two different facts.</summary>
+        public bool    Favorite    { get; init; }
+
+        /// <summary>Heading this option sits under. A header is drawn whenever
+        /// it changes between consecutive VISIBLE rows, so the caller controls
+        /// grouping purely by the order it supplies — and a filter can never
+        /// leave a heading standing over nothing.</summary>
+        public string? Group       { get; init; }
+    }
 
     [Parameter, EditorRequired] public IReadOnlyList<Option> Options { get; set; } = Array.Empty<Option>();
 
@@ -141,12 +235,49 @@
     /// dialog needs. A caller inside a modal wires this to its own close.</summary>
     [Parameter] public EventCallback OnDismiss { get; set; }
 
+    /// <summary>Puts a filter box at the top of the menu. Worth it past a
+    /// couple of dozen options and noise below that.</summary>
+    [Parameter] public bool Searchable { get; set; }
+
+    [Parameter] public string SearchPlaceholder { get; set; } = "חיפוש…";
+
     [Parameter] public string? AriaLabel { get; set; }
     [Parameter] public string Placeholder { get; set; } = "בחירה";
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public string? Class { get; set; }
 
     private readonly string _listId = $"m-sel-{Guid.NewGuid():N}";
+
+    private string _query = "";
+
+    /// <summary>The rows actually on screen. EVERYTHING downstream — the
+    /// keyboard highlight, aria-activedescendant, Enter — indexes into this and
+    /// not into <see cref="Options"/>, or typing a filter would silently
+    /// re-point the highlight at a different project.</summary>
+    private IReadOnlyList<Option> Visible
+    {
+        get
+        {
+            if (!Searchable || string.IsNullOrWhiteSpace(_query)) return Options;
+
+            var needle = _query.Trim();
+
+            bool Has(string? h) =>
+                !string.IsNullOrEmpty(h) && h.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+            return Options
+                .Where(o => Has(o.Label) || Has(o.Description) || Has(o.Meta))
+                .ToList();
+        }
+    }
+
+    private void OnQueryInput(ChangeEventArgs e)
+    {
+        _query  = e.Value?.ToString() ?? "";
+        // A highlight left pointing at row 7 of a list that is now two rows
+        // long is worse than no highlight at all.
+        _active = FirstEnabledFrom(0, +1);
+    }
 
     /// <summary>Keyboard highlight. -1 = nothing highlighted yet.</summary>
     private int _active = -1;
@@ -166,7 +297,7 @@
     private string OptionId(int index) => $"{_listId}-o{index}";
 
     private string? ActiveDescendant =>
-        Open && _active >= 0 && _active < Options.Count ? OptionId(_active) : null;
+        Open && _active >= 0 && _active < Visible.Count ? OptionId(_active) : null;
 
     /// <summary>Set on the closed→open transition so the menu can be scrolled
     /// into view once, after the render that created it.</summary>
@@ -178,10 +309,13 @@
         // previous open left off.
         if (Open && !_wasOpen)
         {
-            _active = FirstEnabledFrom(SelectedIndex, +1, fallbackToSelected: true);
+            // Every open starts clean: no leftover filter from last time, and
+            // the highlight on the current selection.
+            _query      = "";
+            _active     = FirstEnabledFrom(SelectedIndex, +1, fallbackToSelected: true);
             _justOpened = true;
         }
-        if (!Open) _active = -1;
+        if (!Open) { _active = -1; _query = ""; }
         _wasOpen = Open;
     }
 
@@ -201,12 +335,14 @@
         catch { /* Scrolling is a courtesy; the menu is usable without it. */ }
     }
 
+    /// <summary>Index of the current value WITHIN the visible list.</summary>
     private int SelectedIndex
     {
         get
         {
-            for (var i = 0; i < Options.Count; i++)
-                if (Options[i].Value == Value) return i;
+            var visible = Visible;
+            for (var i = 0; i < visible.Count; i++)
+                if (visible[i].Value == Value) return i;
             return -1;
         }
     }
@@ -226,8 +362,9 @@
 
     private async Task PickAsync(int index)
     {
-        if (index < 0 || index >= Options.Count) return;
-        var option = Options[index];
+        var visible = Visible;
+        if (index < 0 || index >= visible.Count) return;
+        var option = visible[index];
         if (option.Disabled) return;
 
         if (option.Value != Value && ValueChanged.HasDelegate)
@@ -242,14 +379,16 @@
     /// counting.</summary>
     private int FirstEnabledFrom(int from, int step, bool fallbackToSelected = false)
     {
-        for (var i = from; i >= 0 && i < Options.Count; i += step)
-            if (!Options[i].Disabled) return i;
+        var visible = Visible;
+
+        for (var i = from; i >= 0 && i < visible.Count; i += step)
+            if (!visible[i].Disabled) return i;
 
         if (fallbackToSelected)
-            for (var i = 0; i < Options.Count; i++)
-                if (!Options[i].Disabled) return i;
+            for (var i = 0; i < visible.Count; i++)
+                if (!visible[i].Disabled) return i;
 
-        return from >= 0 && from < Options.Count ? from : -1;
+        return from >= 0 && from < visible.Count ? from : -1;
     }
 
     private async Task HandleKeyDownAsync(KeyboardEventArgs e)
@@ -294,7 +433,7 @@
                 break;
 
             case "End":
-                _active = FirstEnabledFrom(Options.Count - 1, -1);
+                _active = FirstEnabledFrom(Visible.Count - 1, -1);
                 break;
 
             case "Enter":
