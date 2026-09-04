@@ -1,0 +1,311 @@
+@namespace AuthWithAdmin.Client.Shared
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Pages.Assignments
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject ICatalogService Catalog
+
+@*
+    ── Project quick view — inspect a project without leaving the decision ───
+
+    THE RULE IT SERVES. The same one the mentor experience established and
+    המשימות שלי adopted: A CLICK FROM A WORKING SURFACE INSPECTS IN PLACE; ONLY
+    THE CTA INSIDE THE PANEL NAVIGATES. A lecturer arbitrating between five
+    teams and six projects has to be able to ask "what IS project #5?" without
+    losing the queue, the team and the half-made decision behind it.
+
+    WHY IT IS NOT MentorProjectQuickView. That panel inspects a MentorProjectCard
+    — stage, milestone, pending reviews, open requests — which is a supervised
+    project mid-flight. Nothing in it applies to a catalogue row nobody has been
+    assigned to yet, and its CTAs go to mentor routes. What the two share is the
+    SHELL, and they share it properly: MModal's QuickView variant owns the
+    centred popup, the 480px cap, the header lead row and the ruled footer, so
+    this file supplies facts and one button and nothing about the box.
+
+    IT OWNS NO PROJECT DATA. Everything below one of two sources, both existing:
+    ICatalogService.GetProjectDetailAsync for the record (description, source,
+    goals, notes — the fields /management/catalog already reads), and the
+    caller for the two facts the catalogue cannot know, because they belong to
+    the assignment board rather than to the project: how many teams asked for
+    it, and who holds it right now.
+
+    IT DECIDES NOTHING. No score, no recommendation, no assign control. This
+    answers "what is this project", and the surface underneath — which is still
+    open, still scrolled where it was — answers "should this team get it".
+*@
+
+<MModal IsOpen="@(ProjectId is not null)"
+        Variant="MModal.ModalVariant.QuickView"
+        AriaLabelledBy="@_titleId"
+        OnClose="OnClose">
+
+    <HeaderContent>
+        @if (_detail is not null)
+        {
+            <span class="pqv-num">#@_detail.ProjectNumber</span>
+
+            @if (!string.IsNullOrWhiteSpace(_detail.ProjectType))
+            {
+                <span class="pqv-type">@ProjectTypeLabel(_detail.ProjectType)</span>
+            }
+
+            <MStatusBadge Variant="@AvailabilityVariant" Text="@AvailabilityText" />
+        }
+    </HeaderContent>
+
+    <ChildContent>
+        @if (_loading)
+        {
+            <p class="pqv-quiet" role="status">טוען את פרטי הפרויקט…</p>
+        }
+        else if (_detail is null)
+        {
+            <p class="pqv-quiet" role="alert">לא ניתן לטעון את פרטי הפרויקט.</p>
+        }
+        else
+        {
+            <h2 class="pqv-title" id="@_titleId">@_detail.Title</h2>
+
+            @if (!string.IsNullOrWhiteSpace(_detail.Description))
+            {
+                @* Trimmed, not scrolled. A quick view that needs its own
+                   scrollbar has stopped being quick; the CTA is one click away
+                   for anyone who wants the whole thing. *@
+                <p class="pqv-desc">@Shorten(_detail.Description!, 260)</p>
+            }
+
+            <dl class="pqv-facts">
+
+                @* Demand and availability come from the CALLER — they are facts
+                   about the cohort and the board, which the catalogue endpoint
+                   has no view of. Same numbers the queue and the workspace
+                   show, from the same counters, so nothing can disagree. *@
+                <div class="pqv-fact">
+                    <dt class="pqv-fact-k">ביקוש</dt>
+                    <dd class="pqv-fact-v">
+                        @if (Demand.Teams <= 0)
+                        {
+                            <span class="pqv-quiet">אף צוות לא דירג את הפרויקט</span>
+                        }
+                        else
+                        {
+                            <span>@Demand.Teams ביקשו</span>
+                            @if (Demand.FirstChoice > 0)
+                            {
+                                <span class="pqv-fact-note">· @Demand.FirstChoice בעדיפות ראשונה</span>
+                            }
+                        }
+                    </dd>
+                </div>
+
+                <div class="pqv-fact">
+                    <dt class="pqv-fact-k">זמינות</dt>
+                    <dd class="pqv-fact-v">
+                        @if (HeldBy is { Length: > 0 })
+                        {
+                            <span class="pqv-taken">משובץ ל@HeldBy</span>
+                        }
+                        else
+                        {
+                            <span class="pqv-free">פנוי לשיבוץ</span>
+                        }
+                    </dd>
+                </div>
+
+                @if (Mentors.Count > 0)
+                {
+                    <div class="pqv-fact">
+                        <dt class="pqv-fact-k">@(Mentors.Count == 1 ? "מנחה" : "מנחים")</dt>
+                        <dd class="pqv-fact-v pqv-fact-tags">
+                            @foreach (var mentor in Mentors)
+                            {
+                                <span class="pqv-tag">@mentor</span>
+                            }
+                        </dd>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_detail.OrganizationName))
+                {
+                    <div class="pqv-fact">
+                        <dt class="pqv-fact-k">ארגון מציע</dt>
+                        <dd class="pqv-fact-v">
+                            @_detail.OrganizationName
+                            @if (!string.IsNullOrWhiteSpace(_detail.ContactPerson))
+                            {
+                                <span class="pqv-fact-note">· @_detail.ContactPerson</span>
+                            }
+                        </dd>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_detail.TargetAudience))
+                {
+                    <div class="pqv-fact">
+                        <dt class="pqv-fact-k">קהל יעד</dt>
+                        <dd class="pqv-fact-v">@Shorten(_detail.TargetAudience!, 120)</dd>
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_detail.Goals))
+                {
+                    <div class="pqv-fact">
+                        <dt class="pqv-fact-k">מטרות</dt>
+                        <dd class="pqv-fact-v">@Shorten(_detail.Goals!, 160)</dd>
+                    </div>
+                }
+
+                @* Facts only one audience has. The student catalogue's DTO
+                   carries תוכן הפרויקט and נושא, which the staff catalogue
+                   record has no column for — rather than drop them or widen a
+                   shared DTO for one caller, the caller appends them. *@
+                @ExtraFacts
+
+                @* Internal notes are the lecturer's own margin — a constraint,
+                   a caveat, a "only for a team with X". Shown because this
+                   panel exists to inform a decision, and hidden from nobody who
+                   can already read them on /management/catalog. *@
+                @if (Audience == Reader.Staff && !string.IsNullOrWhiteSpace(_detail.InternalNotes))
+                {
+                    <div class="pqv-fact">
+                        <dt class="pqv-fact-k">הערות פנימיות</dt>
+                        <dd class="pqv-fact-v pqv-fact-note-block">@Shorten(_detail.InternalNotes!, 200)</dd>
+                    </div>
+                }
+            </dl>
+        }
+    </ChildContent>
+
+    @* The one way out of the panel that is not "back to what I was doing". *@
+    <FooterContent>
+        @if (_detail is not null && Audience == Reader.Student)
+        {
+            @StudentAction
+        }
+        else if (_detail is not null)
+        {
+            <a class="pqv-go motiva-cta" href="@FullProjectHref">
+                לפרטי הפרויקט המלאים
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 6l-6 6 6 6"></path>
+                </svg>
+            </a>
+        }
+    </FooterContent>
+</MModal>
+
+@code {
+    /// <summary>The project to inspect. Null closes the panel — the same
+    /// "the value IS the open state" contract the mentor's quick view uses, so
+    /// a host holds one nullable field and nothing else.</summary>
+    [Parameter] public int? ProjectId { get; set; }
+
+    /// <summary>How contested the project is, counted by the host over the same
+    /// submitted forms the queue counts. Passed in rather than fetched: the
+    /// catalogue endpoint does not know about preferences, and a second count
+    /// could disagree with the one on the surface underneath.</summary>
+    [Parameter] public ProjectDemand Demand { get; set; } = ProjectDemand.None;
+
+    /// <summary>The team currently holding the project, or null when it is
+    /// free. Read from the live board by the host.</summary>
+    [Parameter] public string? HeldBy { get; set; }
+
+    [Parameter] public List<string> Mentors { get; set; } = new();
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Who is reading. <c>Staff</c> may fetch the catalogue record and
+    /// see internal notes; <c>Student</c> may do neither.</summary>
+    public enum Reader { Staff, Student }
+
+    [Parameter] public Reader Audience { get; set; } = Reader.Staff;
+
+    /// <summary>An already-loaded record supplied by the caller. When present
+    /// the component does NOT fetch — which is what makes the student path
+    /// possible at all: CatalogController is [Authorize(Admin,Staff)], so a
+    /// student calling it gets a 403, and hiding fields after a failed request
+    /// would be security theatre over an empty body. The student catalogue
+    /// already holds everything shown here in its own authorized DTO, so it
+    /// hands that down and no staff endpoint is ever touched.</summary>
+    [Parameter] public CatalogProjectDetailDto? Detail { get; set; }
+
+    /// <summary>Rendered at the end of the footer for a student — the ranking
+    /// action, because there is no student-facing full-project route to send
+    /// them to and inventing one would be worse than offering the act they
+    /// actually came to perform.</summary>
+    [Parameter] public RenderFragment? StudentAction { get; set; }
+
+    /// <summary>Extra <c>.pqv-fact</c> rows appended by the caller, for facts
+    /// that exist in one audience's data and not the other's.</summary>
+    [Parameter] public RenderFragment? ExtraFacts { get; set; }
+
+    private readonly string _titleId = $"pqv-title-{Guid.NewGuid():N}";
+
+    private CatalogProjectDetailDto? _detail;
+    private bool _loading;
+    private int? _loadedFor;
+
+    /// <summary>Fetched when the id CHANGES, not on every render: the host
+    /// re-renders this panel whenever anything behind it moves, and refetching
+    /// on each of those would flicker the body of a panel the reader is in the
+    /// middle of.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        //  A caller-supplied record short-circuits everything, and is re-read on
+        //  every parameter set rather than cached by id: the student catalogue
+        //  owns that object and may hand down a fresher one.
+        if (Detail is not null)
+        {
+            _detail    = Detail;
+            _loadedFor = ProjectId;
+            _loading   = false;
+            return;
+        }
+
+        if (ProjectId == _loadedFor) return;
+
+        _loadedFor = ProjectId;
+        _detail    = null;
+
+        if (ProjectId is null) { _loading = false; return; }
+
+        //  Reached only for Staff. A student never arrives here because the
+        //  branch above returns first — the guard is the supplied Detail, not a
+        //  role check that could be forgotten at a call site.
+        if (Audience != Reader.Staff) { _loading = false; return; }
+
+        _loading = true;
+        _detail  = await Catalog.GetProjectDetailAsync(ProjectId.Value);
+        _loading = false;
+    }
+
+    /// <summary>The catalogue screen, deep-linked to this project — the same
+    /// route the Management hub uses. This is the ONLY navigation the panel
+    /// offers, and it is on the explicit action.</summary>
+    private string FullProjectHref => $"/management/catalog?project={ProjectId}";
+
+    private string AvailabilityText => HeldBy is { Length: > 0 } ? "משובץ" : "פנוי";
+
+    private MStatusBadge.BadgeVariant AvailabilityVariant =>
+        HeldBy is { Length: > 0 }
+            ? MStatusBadge.BadgeVariant.Teal
+            : MStatusBadge.BadgeVariant.Violet;
+
+    private static string ProjectTypeLabel(string type) => type switch
+    {
+        "Technological"  => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => type
+    };
+
+    /// <summary>Cuts at a word boundary so a trimmed line never ends mid-word,
+    /// and only when there is genuinely more to cut.</summary>
+    private static string Shorten(string text, int max)
+    {
+        var clean = text.Trim();
+        if (clean.Length <= max) return clean;
+
+        var cut = clean.LastIndexOf(' ', Math.Min(max, clean.Length - 1));
+        return clean[..(cut > max / 2 ? cut : max)].TrimEnd() + "…";
+    }
+}

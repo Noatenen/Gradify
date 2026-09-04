@@ -1,785 +1,1581 @@
 @page "/assignments"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Admin)]
-@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Assignments
+@using AuthWithAdmin.Client.Pages.Management.Forms
 @inject IAssignmentManagementService AssignmentManagementService
+@inject NavigationManager Nav
+@implements IDisposable
 
-<div class="ap-page">
-    @*  HEADER ACTION, NOT A CONTENT CARD.
-        Handing the assignment form to a cohort is a top-level act of this
-        workspace, so it sits beside the page's identity rather than as an
-        object in the list below it. It used to be a tile-shaped block on the
-        Management hub, which said it was a management DESTINATION; it is an
-        action, and this is the screen the action belongs to.
+@*
+    ── שיבוצים (Assignment work queue) ──────────────────────────────────────
+    Route: /assignments — reached from the ניהול hub and from the assignment
+    form's own editor.
 
-        The route is StudentFormLinks.AssignmentForm — the same constant the
-        form editor's copy action reads, so the two surfaces cannot hand out
-        different addresses. MCopyLinkAction resolves it against the app's own
-        base URI, so no hostname is written down here.
+    WHAT THIS SCREEN IS
+    ───────────────────
+    The lecturer's WORK QUEUE. It answers one question:
 
-        This is the ONLY change to this page. /assignments keeps its legacy
-        build until its own redesign; nothing else here was touched. *@
-    <div class="ap-header">
-        <div class="ap-header-text">
-            <h1 class="ap-title">שיבוצים</h1>
-            <p class="ap-sub">סקירת הגשות, התאמות מומלצות ושיבוץ ידני של צוותים ומנטורים</p>
+        "Which teams still need an assignment, and what should I do with them?"
+
+    Two views of the same cohort, switched by the shared segmented pill group:
+
+      • ממתינים לשיבוץ  — the DEFAULT. One compact card per team with no
+                           assignment yet: who they are, what they ranked, what
+                           the system currently recommends, how contested it is,
+                           and the one button that opens the decision.
+      • שיבוצים קיימים  — the monitoring table over what is already decided:
+                           team, project, mentors, status, publish state.
+
+    WHAT REPLACED WHAT — AND WHY
+    ────────────────────────────
+    • The primary mode was called "טפסים שהוגשו" and listed every submitted
+      form. Submitted forms are the SOURCE DATA, not the task: a settled team
+      sat in the same list as a waiting one, and the screen could not say what
+      was left to do. The primary view is now the teams that need a decision,
+      and its count is the size of the job.
+
+    • The deep work happened in an expandable detail row INSIDE the queue —
+      a three-panel workspace unfolding between two table rows. Scanning ten
+      teams and deciding about one need opposite densities, and a table row
+      could serve neither. The decision moved to TeamAssignmentWorkspace, a
+      focused modal for exactly one team.
+
+    • Reading a team's submitted form required opening that same workspace, so
+      "what did they ask for?" could only be answered through the machinery for
+      "where should they go?". Reading is now AssignmentFormModal, which owns
+      no actions at all beyond the one that hands the team to the workspace.
+
+    • שיבוצים קיימים was pivoted to the PROJECT and carried a demand column and
+      the recommendation engine's vocabulary. It is a monitoring view: it is
+      pivoted to the team, and it answers only "what is assigned, and what state
+      is it in".
+
+    RECOMMENDATIONS ARE DERIVED, NEVER STORED
+    ─────────────────────────────────────────
+    Every recommendation on this screen comes from AssignmentRecommender, which
+    is handed the live board on each call. Assign, move or unassign anyone and
+    every other team's recommendation re-answers itself on the next render —
+    a #1 that goes to somebody else drops out and the #2 takes over; free it
+    again and the #1 comes back. Nothing is memoised across a mutation.
+
+    WHAT DID NOT CHANGE
+    ───────────────────
+    Every business rule. Assign, force-move (with its conflict confirmation),
+    unassign, add/remove mentor under MaxMentorsPerProject, and publish all call
+    exactly the same IAssignmentManagementService methods with the same
+    arguments and the same outcome handling as before. No DTO, service, endpoint
+    or table was touched.
+
+    DEEP LINKS
+    ──────────
+    ?team={id}            → opens that team's decision workspace
+    ?team={id}&view=form  → opens that team's submitted form
+    So any screen in the product can send a lecturer to "this team's form" or
+    "this team's assignment" without inventing a second route, and without ever
+    dumping them on a table to find the row themselves.
+
+    DEMO DATA
+    ─────────
+    When the API returns nothing to show (or is unreachable), the page fills
+    itself from AssignmentsDemoData and says so, in the open, with a chip on the
+    mode bar. In that state actions mutate the in-memory copy instead of posting
+    invented ids to the server — see PerformAssign / PerformUnassign / the
+    mentor and publish handlers, which branch on _demo before any HTTP call.
+*@
+
+<div class="ap-page" dir="rtl" @onclick="CloseAllMenus">
+
+    @* ══ Header — identity and the page-level acts ════════════════════════ *@
+    <header class="ap-head">
+        <div class="ap-head-main">
+            <MAdminBack />
+
+            <div class="ap-head-title">
+                <h1 class="ap-h1">שיבוצים</h1>
+                <MInfoTip Text="הצוותים הממתינים להחלטת שיבוץ, ההמלצה הנוכחית של המערכת עבור כל אחד מהם, והשיבוצים שכבר נקבעו" />
+                @if (!_loading)
+                {
+                    <MSummaryTag Metrics="SummaryMetrics" />
+                }
+            </div>
         </div>
 
-        <MCopyLinkAction Route="@StudentFormLinks.AssignmentForm"
-                         Label="קישור לטופס השיבוצים לסטודנטים"
-                         ButtonLabel="העתקת קישור לטופס הסטודנטים"
-                         Class="ap-header-action" />
+        <div class="ap-head-actions" @onclick:stopPropagation="true">
+            <MCopyLinkAction Route="@StudentFormLinks.AssignmentForm"
+                             Label="טופס השיבוצים לסטודנטים"
+                             ButtonLabel="העתקת קישור"
+                             Class="ap-copy" />
+
+            @* Beside the link that HANDS the form to students, the control that
+               shows what they will get. Copying an address you have never seen
+               the other end of is the gap this fills — /student/assignment is
+               Student-only, so an admin cannot simply follow their own link. *@
+            <button type="button" class="ap-btn-ghost" @onclick="OpenStudentPreview">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                    <circle cx="12" cy="12" r="3" />
+                </svg>
+                תצוגה מקדימה של טופס הסטודנט
+            </button>
+
+            <button type="button"
+                    class="ap-btn-primary motiva-cta"
+                    disabled="@(!CanPublish)"
+                    title="@PublishHint"
+                    @onclick="OpenPublishConfirm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 16V4" />
+                    <path d="m7 9 5-5 5 5" />
+                    <path d="M20 16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2" />
+                </svg>
+                פרסום שיבוצים
+            </button>
+        </div>
+    </header>
+
+    @* ══ Mode bar — the compact segmented switch, and where things stand ══ *@
+    <div class="ap-modebar" @onclick:stopPropagation="true">
+        <div class="ap-modes">
+            <MFilterTabs Tabs="ModeTabs"
+                         ActiveKey="@_mode"
+                         OnSelect="SwitchMode"
+                         AriaLabel="מצב תצוגה בשיבוצים" />
+        </div>
+
+        <div class="ap-modebar-end">
+            @if (_demo)
+            {
+                <button type="button" class="ap-demo" title="@DemoHint" @onclick="ToggleDemo">
+                    <span class="ap-demo-dot" aria-hidden="true"></span>
+                    @DemoCohort.Submissions.Count טפסי הדגמה
+                    <span class="ap-demo-off">הצגת הנתונים האמיתיים</span>
+                </button>
+            }
+            else if (!_loading && !DemoCohort.IsEmpty)
+            {
+                <button type="button" class="ap-demo-on" title="@DemoOffHint" @onclick="ToggleDemo">
+                    הצגת נתוני הדגמה
+                </button>
+            }
+
+            @if (!_loading && _board is not null)
+            {
+                <span class="ap-pubstate @PublishStateClass">
+                    <span class="ap-dot" aria-hidden="true"></span>
+                    @PublishStateText
+                </span>
+            }
+        </div>
     </div>
 
-    <div class="ap-tabs" role="tablist">
-        <button class="ap-tab @(_view == "submissions" ? "ap-tab-active" : "")"
-                @onclick='() => SwitchView("submissions")' role="tab">
-            <span class="oi oi-document" aria-hidden="true"></span>
-            הגשות
-        </button>
-        <button class="ap-tab @(_view == "board" ? "ap-tab-active" : "")"
-                @onclick='() => SwitchView("board")' role="tab">
-            <span class="oi oi-target" aria-hidden="true"></span>
-            שיבוץ ידני
-        </button>
-    </div>
-
-    @if (_view == "submissions")
+    @if (!string.IsNullOrWhiteSpace(_actionMessage))
     {
-        @if (_subsLoading)
+        <div class="ap-toast @(_actionError ? "ap-toast--error" : "")" role="status">
+            @_actionMessage
+            <button type="button" class="ap-toast-x" @onclick="() => _actionMessage = null" aria-label="סגירה">×</button>
+        </div>
+    }
+
+    @if (_loadFailed && !_demo)
+    {
+        <div class="ap-toast ap-toast--error" role="alert">שגיאה בטעינת נתוני השיבוצים. נסו לרענן את הדף.</div>
+    }
+
+    @* ══════════════════════════════════════════════════════════════════════
+         VIEW 1 — ממתינים לשיבוץ (the work queue)
+
+         A card list, not a table. The five things a lecturer reads while
+         triaging — who, what they asked for, what we suggest, how contested
+         it is, whether it is free — do not sit in five comparable columns;
+         two of them are lists and one is a sentence. A table forced them into
+         cells and then needed an expandable row to say anything real.
+       ══════════════════════════════════════════════════════════════════════ *@
+    @if (_mode == ModePending)
+    {
+        var waiting = VisibleWaitingTeams();
+
+        <div class="ap-toolbar" @onclick:stopPropagation="true">
+            <MSearchField Value="@_search"
+                          ValueChanged="OnSearchChanged"
+                          Placeholder="חיפוש לפי צוות, סטודנט או פרויקט"
+                          AriaLabel="חיפוש בצוותים הממתינים לשיבוץ"
+                          Class="ap-search" />
+
+            @if (_search != "")
+            {
+                <button type="button" class="ap-clear" @onclick="ClearSearch">ניקוי חיפוש</button>
+            }
+
+            @if (!_loading)
+            {
+                <span class="ap-result">@waiting.Count(r => !r.IsSample) מתוך @WaitingCount צוותים</span>
+            }
+        </div>
+
+        @if (_loading)
         {
-            <div class="ap-state ap-state-loading">טוען הגשות…</div>
-        }
-        else if (_subsError)
-        {
-            <div class="ap-state ap-state-error">
-                <span class="ap-state-icon oi oi-warning" aria-hidden="true"></span>
-                שגיאה בטעינת ההגשות. נסו לרענן את הדף.
+            <div class="ap-loading" role="status">
+                <span class="ap-spinner" aria-hidden="true"></span>
+                טוען צוותים ממתינים…
             </div>
         }
-        else if (_submissions.Count == 0)
+        else if (waiting.Count == 0)
         {
-            <div class="ap-state ap-state-empty">
-                <span class="ap-state-icon">📭</span>
-                <div class="ap-state-title">אין עדיין טפסים שהוגשו</div>
-                <div class="ap-state-sub">ברגע שצוותים יגישו את טופס השיבוצים, הם יופיעו כאן</div>
-            </div>
+            @if (WaitingCount == 0 && RealTeamRows.Count > 0)
+            {
+                <MEmptyState Title="כל הצוותים שובצו"
+                             Description="לא נותרו צוותים הממתינים להחלטת שיבוץ. השיבוצים שנקבעו מוצגים בלשונית שיבוצים קיימים."
+                             Live="true" />
+            }
+            else if (RealTeamRows.Count == 0)
+            {
+                <MEmptyState Title="טרם הוגשו טפסי שיבוץ"
+                             Description="כאשר צוותים יגישו את טופס השיבוץ הם יופיעו כאן, עם ההמלצה של המערכת עבור כל אחד מהם."
+                             Live="true" />
+            }
+            else
+            {
+                <MEmptyState Title="לא נמצאו צוותים"
+                             Description="נסו לשנות את החיפוש"
+                             Live="true" />
+            }
         }
         else
         {
-            <div class="ap-summary">סה"כ הגשות: <strong>@_submissions.Count</strong></div>
-            <div class="ap-list">
-                @foreach (var sub in _submissions)
+            <ul class="ap-queue">
+                @foreach (var row in waiting)
                 {
-                    <article class="ap-card">
-                        <header class="ap-card-head">
-                            <div class="ap-card-head-main">
-                                <h2 class="ap-card-title">@sub.TeamName</h2>
-                                @if (!string.IsNullOrWhiteSpace(sub.AcademicYear))
-                                {
-                                    <span class="ap-card-year">מחזור @sub.AcademicYear</span>
-                                }
-                            </div>
-                            <div class="ap-card-head-meta">
-                                <span class="ap-meta-label">תאריך הגשה</span>
-                                <span class="ap-meta-value">@FormatDate(sub.SubmittedAt)</span>
-                            </div>
-                        </header>
+                    var rec     = RecommendationFor(row);
+                    var primary = rec.Primary;
+                    var busy    = _busyTeamIds.Contains(row.TeamId);
 
-                        <section class="ap-card-section">
-                            <div class="ap-section-title">חברי הצוות</div>
-                            @if (sub.Members.Count == 0)
+                    @* The card IS the way in. A lecturer scanning ten teams
+                       should not have to land on a button to inspect one, so
+                       the whole card opens the decision workspace. The two
+                       explicit buttons stay: they are the keyboard path, and
+                       טופס שיבוץ is the one act the card click cannot mean. *@
+                    <li class="ap-q ap-q--clickable @(row.IsSample ? "ap-q--sample" : "")"
+                        @onclick="() => OpenWorkspace(row.TeamId)">
+
+                        @* ── Who ────────────────────────────────────────── *@
+                        <div class="ap-q-team">
+                            <span class="ap-avatar" aria-hidden="true">@Initials(row.TeamName)</span>
+                            <span class="ap-identity">
+                                <span class="ap-nameline">
+                                    <span class="ap-name" title="@row.TeamName">@row.TeamName</span>
+                                    @* The marking sits ON the identity, not on the
+                                       card's edge: whatever else the eye takes from
+                                       this row, it cannot read the names without
+                                       reading what they are. *@
+                                    @if (row.IsSample)
+                                    {
+                                        <span class="ap-sample" title="@AssignmentSampleForm.Hint">@AssignmentSampleForm.Label</span>
+                                    }
+                                </span>
+                                <span class="ap-sub" title="@row.MembersLine">
+                                    @if (row.Members.Count == 0)
+                                    {
+                                        <span class="ap-none">אין חברי צוות פעילים</span>
+                                    }
+                                    else
+                                    {
+                                        @row.MembersLine
+                                    }
+                                </span>
+                            </span>
+                        </div>
+
+                        @* ── What they asked for ────────────────────────── *@
+                        <div class="ap-q-block">
+                            <span class="ap-q-label">העדפות</span>
+
+                            @if (row.HasOwnProject && row.Preferences.Count == 0)
                             {
-                                <div class="ap-empty-line">לא נמצאו חברי צוות פעילים</div>
+                                <span class="ap-pref ap-pref--own">פרויקט עצמאי</span>
+                            }
+                            else if (row.Preferences.Count == 0)
+                            {
+                                <span class="ap-none">לא דורגו העדפות</span>
                             }
                             else
                             {
-                                <ul class="ap-members">
-                                    @foreach (var m in sub.Members)
+                                <ol class="ap-q-prefs">
+                                    @if (row.HasOwnProject)
                                     {
-                                        <li class="ap-member">
-                                            <div class="ap-member-name">@m.FullName</div>
-                                            @if (!string.IsNullOrWhiteSpace(m.Email))
-                                            {
-                                                <div class="ap-member-email">@m.Email</div>
-                                            }
-                                            @if (m.Strengths.Count > 0)
-                                            {
-                                                <div class="ap-member-strengths">
-                                                    @foreach (var s in m.Strengths)
-                                                    {
-                                                        <span class="ap-chip">
-                                                            <span class="ap-chip-icon">@StrengthIcon(s)</span>
-                                                            @StrengthLabel(s)
-                                                        </span>
-                                                    }
-                                                </div>
-                                            }
-                                        </li>
+                                        <li><span class="ap-pref ap-pref--own">פרויקט עצמאי</span></li>
                                     }
-                                </ul>
-                            }
-                        </section>
-
-                        <section class="ap-card-section">
-                            <div class="ap-section-title">העדפות פרויקטים</div>
-                            @if (sub.HasOwnProject)
-                            {
-                                <div class="ap-own-project">
-                                    <span class="ap-own-badge">פרויקט עצמאי</span>
-                                    @if (!string.IsNullOrWhiteSpace(sub.OwnProjectDescription))
+                                    @foreach (var pref in row.Preferences.OrderBy(p => p.Priority).Take(3))
                                     {
-                                        <p class="ap-own-text">@sub.OwnProjectDescription</p>
-                                    }
-                                </div>
-                            }
-                            @if (sub.Preferences.Count == 0 && !sub.HasOwnProject)
-                            {
-                                <div class="ap-empty-line">לא דורגו העדפות</div>
-                            }
-                            else if (sub.Preferences.Count > 0)
-                            {
-                                <ol class="ap-prefs">
-                                    @foreach (var pref in sub.Preferences.OrderBy(p => p.Priority))
-                                    {
-                                        <li class="ap-pref">
+                                        var takenBy = TeamOnProject(pref.ProjectId);
+                                        <li class="ap-q-pref">
                                             <span class="ap-pref-rank">@pref.Priority</span>
-                                            <div class="ap-pref-body">
-                                                <div class="ap-pref-title">
-                                                    <span class="ap-pref-num">#@pref.ProjectNumber</span>
-                                                    @pref.ProjectTitle
-                                                </div>
-                                                @if (!string.IsNullOrWhiteSpace(pref.ProjectType))
-                                                {
-                                                    <span class="ap-pref-type">@pref.ProjectType</span>
-                                                }
-                                            </div>
+                                            <span class="ap-q-pref-name" title="@pref.ProjectTitle">@pref.ProjectTitle</span>
+                                            @* The conflict signal, at the scanning
+                                               level. Without it the queue's headline
+                                               recommendation can silently disagree
+                                               with the team's first choice and the
+                                               lecturer has no idea why. *@
+                                            @if (takenBy is not null)
+                                            {
+                                                <span class="ap-q-taken">תפוס</span>
+                                            }
                                         </li>
                                     }
                                 </ol>
                             }
-                        </section>
+                        </div>
 
-                        @if (!string.IsNullOrWhiteSpace(sub.Notes))
-                        {
-                            <section class="ap-card-section">
-                                <div class="ap-section-title">הערות</div>
-                                <p class="ap-notes">@sub.Notes</p>
-                            </section>
-                        }
-                    </article>
+                        @* ── What to do about it ────────────────────────── *@
+                        <div class="ap-q-block ap-q-block--rec">
+                            <span class="ap-q-label">המלצה נוכחית</span>
+
+                            @if (primary is null)
+                            {
+                                <span class="ap-none">אין פרויקט פנוי להמליץ עליו</span>
+                            }
+                            else
+                            {
+                                <div class="ap-q-rec">
+                                    <span class="ap-q-rec-name" title="@primary.ProjectName">@primary.ProjectName</span>
+                                    <span class="ap-score @ScoreClass(primary.Score)">התאמה @primary.Score</span>
+                                </div>
+
+                                <div class="ap-q-rec-meta">
+                                    @if (primary.Source == AssignmentOptionSource.Preference)
+                                    {
+                                        <span class="ap-q-rank">העדפה #@primary.PreferenceRank</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="ap-q-rank ap-q-rank--ext">מחוץ להעדפות</span>
+                                    }
+
+                                    @* Demand is decision support, not an alarm: the
+                                       shared neutral meter, never rose. *@
+                                    <MDemandBadge Teams="primary.Demand.Teams"
+                                                  FirstChoice="primary.Demand.FirstChoice"
+                                                  Size="MDemandBadge.DemandSize.Full" />
+                                </div>
+                            }
+                        </div>
+
+                        @* ── The two ways in ────────────────────────────── *@
+                        <div class="ap-q-act" @onclick:stopPropagation="true">
+                            <button type="button" class="ap-btn-row motiva-cta"
+                                    disabled="@busy"
+                                    @onclick="() => OpenWorkspace(row.TeamId)">
+                                בדיקת שיבוץ
+                            </button>
+
+                            <button type="button" class="ap-btn-row ap-btn-row--ghost"
+                                    @onclick="() => OpenForm(row.TeamId)">
+                                טופס שיבוץ
+                            </button>
+                        </div>
+                    </li>
                 }
-            </div>
+            </ul>
         }
     }
-    else if (_view == "board")
+
+    @* ══════════════════════════════════════════════════════════════════════
+         VIEW 2 — שיבוצים קיימים (monitoring)
+
+         What is already assigned and what state it is in. Deliberately
+         free of preferences, match scores and recommendations: those belong
+         to the decision, and the decision has been made.
+       ══════════════════════════════════════════════════════════════════════ *@
+    else
     {
-        @if (_boardLoading)
-        {
-            <div class="ap-state ap-state-loading">טוען לוח שיבוצים…</div>
-        }
-        else if (_boardError)
-        {
-            <div class="ap-state ap-state-error">
-                <span class="ap-state-icon oi oi-warning" aria-hidden="true"></span>
-                שגיאה בטעינת הלוח. נסו לרענן את הדף.
-            </div>
-        }
-        else if (_board is null)
-        {
-            <div class="ap-state ap-state-empty">לא נטענו נתונים.</div>
-        }
-        else
-        {
-            <!-- Publish strip -->
-            <div class="ap-publish-strip">
-                <div class="ap-publish-info">
-                    <div class="ap-publish-title">
-                        מצב פרסום
-                        @if (!string.IsNullOrWhiteSpace(_board.AcademicYearName))
-                        {
-                            <span class="ap-publish-year">· מחזור @_board.AcademicYearName</span>
-                        }
-                    </div>
-                    <div class="ap-publish-status">
-                        @if (_board.AssignmentsPublished && !_board.HasUnpublishedDrafts)
-                        {
-                            <span class="ap-status ap-status-published">פורסם</span>
-                            @if (!string.IsNullOrWhiteSpace(_board.PublishedAt))
-                            {
-                                <span class="ap-publish-meta">בתאריך @FormatDate(_board.PublishedAt)</span>
-                            }
-                        }
-                        else if (_board.AssignmentsPublished && _board.HasUnpublishedDrafts)
-                        {
-                            <span class="ap-status ap-status-published">פורסם</span>
-                            <span class="ap-status ap-status-draft">קיימים שיבוצים חדשים בטיוטה</span>
-                        }
-                        else if (_board.HasUnpublishedDrafts)
-                        {
-                            <span class="ap-status ap-status-unpublished">עדיין לא פורסם לסטודנטים</span>
-                        }
-                        else
-                        {
-                            <span class="ap-status ap-status-neutral">אין שיבוצים לפרסם</span>
-                        }
-                    </div>
-                </div>
-                <button class="ap-btn ap-btn-publish"
-                        disabled="@(_publishBusy || !_board.HasUnpublishedDrafts)"
-                        @onclick="OpenPublishConfirm">
-                    <span class="oi oi-cloud-upload" aria-hidden="true"></span>
-                    פרסם שיבוצים
+        var projectRows = VisibleProjects();
+
+        <div class="ap-toolbar" @onclick:stopPropagation="true">
+            <MSearchField Value="@_search"
+                          ValueChanged="OnSearchChanged"
+                          Placeholder="חיפוש לפי פרויקט, צוות או מנחה"
+                          AriaLabel="חיפוש בשיבוצים קיימים"
+                          Class="ap-search" />
+
+            <div class="ap-filter">
+                <button type="button"
+                        class="ap-filter-btn @(_projectFilter != "assigned" ? "ap-filter-btn--on" : "")"
+                        @onclick="@(() => ToggleFilter("project"))"
+                        aria-haspopup="listbox" aria-expanded="@(_openFilter == "project" ? "true" : "false")">
+                    <span class="ap-filter-name">מצב</span>
+                    <span class="ap-filter-value">@ProjectFilterLabel(_projectFilter)</span>
+                    <svg class="ap-chev @(_openFilter == "project" ? "ap-chev--open" : "")"
+                         width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
                 </button>
+
+                @if (_openFilter == "project")
+                {
+                    <div class="ap-menu ap-menu--filter" role="listbox" aria-label="מצב">
+                        @foreach (var opt in ProjectFilterOptions)
+                        {
+                            var val = opt;
+                            <button type="button"
+                                    class="ap-menu-item @(_projectFilter == val ? "ap-menu-item--on" : "")"
+                                    role="option" aria-selected="@(_projectFilter == val ? "true" : "false")"
+                                    @onclick="@(() => PickProjectFilter(val))">
+                                <span class="ap-menu-item-label">@ProjectFilterLabel(val)</span>
+                                @if (_projectFilter == val)
+                                {
+                                    <svg class="ap-menu-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                         stroke="currentColor" stroke-width="2.6" stroke-linecap="round"
+                                         stroke-linejoin="round" aria-hidden="true">
+                                        <path d="m5 12.5 4.5 4.5L19 7" />
+                                    </svg>
+                                }
+                            </button>
+                        }
+                    </div>
+                }
             </div>
 
-            @if (!string.IsNullOrWhiteSpace(_actionMessage))
+            @if (_search != "" || _projectFilter != "assigned")
             {
-                <div class="ap-action-toast @(_actionError ? "ap-action-toast-error" : "")">
-                    @_actionMessage
-                </div>
+                <button type="button" class="ap-clear" @onclick="ClearProjectFilters">איפוס סינון</button>
             }
 
-            <div class="ap-board">
-                <!-- ════ Unassigned teams ════ -->
-                <section class="ap-board-col">
-                    <div class="ap-board-col-head">
-                        <h2 class="ap-board-col-title">צוותים לא משובצים</h2>
-                        <span class="ap-board-col-count">@_board.UnassignedTeams.Count</span>
-                    </div>
+            @if (!_loading)
+            {
+                <span class="ap-result">@projectRows.Count מתוך @AllProjects.Count פרויקטים</span>
+            }
+        </div>
 
-                    @if (_board.UnassignedTeams.Count == 0)
-                    {
-                        <div class="ap-empty-block">כל הצוותים שהגישו טפסים כבר שובצו</div>
-                    }
-                    else
-                    {
-                        @foreach (var team in _board.UnassignedTeams)
-                        {
-                            <article class="ap-team-card">
-                                <header class="ap-team-card-head">
-                                    <h3 class="ap-team-card-title">@team.TeamName</h3>
-                                    <div class="ap-team-card-headside">
-                                        <span class="ap-status ap-status-unassigned">טרם שובץ</span>
-                                        <span class="ap-team-card-count">@team.Members.Count חברים</span>
-                                    </div>
-                                </header>
+        <MDataTable TItem="AssignmentBoardProjectDto"
+                    Items="projectRows"
+                    Loading="_loading"
+                    LoadingText="טוען שיבוצים…"
+                    ColumnCount="6"
+                    MinWidth="920px"
+                    Class="ap-table">
 
-                                @if (team.Members.Count > 0)
-                                {
-                                    <div class="ap-team-members">
-                                        @foreach (var m in team.Members)
-                                        {
-                                            <div class="ap-team-member">
-                                                <div class="ap-team-member-name">@m.FullName</div>
-                                                @if (m.Strengths.Count > 0)
-                                                {
-                                                    <div class="ap-mini-chips">
-                                                        @foreach (var s in m.Strengths)
-                                                        {
-                                                            <span class="ap-mini-chip">@StrengthIcon(s) @StrengthLabel(s)</span>
-                                                        }
-                                                    </div>
-                                                }
-                                            </div>
-                                        }
-                                    </div>
-                                }
+            @* Team and project carry the row; the three state columns are sized
+               to their own content and stop growing with the viewport. *@
+            <Columns>
+                <col class="ap-col-team" />
+                <col class="ap-col-project" />
+                <col class="ap-col-mentors" />
+                <col class="ap-col-status" />
+                <col class="ap-col-pub" />
+                <col class="ap-col-kebab" />
+            </Columns>
 
-                                @if (team.Preferences.Count > 0)
-                                {
-                                    <div class="ap-team-section">
-                                        <div class="ap-team-section-title">העדפות שהוגשו</div>
-                                        <ol class="ap-mini-prefs">
-                                            @foreach (var pref in team.Preferences)
-                                            {
-                                                <li>
-                                                    <span class="ap-mini-rank">@pref.Priority</span>
-                                                    <span>#@pref.ProjectNumber @pref.ProjectTitle</span>
-                                                </li>
-                                            }
-                                        </ol>
-                                    </div>
-                                }
+            <HeaderContent>
+                <th scope="col">צוות</th>
+                <th scope="col">פרויקט</th>
+                <th scope="col">מנחה</th>
+                <th scope="col">סטטוס</th>
+                <th scope="col">פרסום</th>
+                <th scope="col"><span class="ap-sr">פעולות</span></th>
+            </HeaderContent>
 
-                                @if (team.TopRecommendations.Count > 0)
-                                {
-                                    <div class="ap-team-section">
-                                        <div class="ap-team-section-title">פרויקטים מומלצים</div>
-                                        <ul class="ap-mini-recs">
-                                            @foreach (var rec in team.TopRecommendations)
-                                            {
-                                                <li class="ap-mini-rec">
-                                                    <div class="ap-mini-rec-main">
-                                                        <span class="ap-mini-rec-title">#@FindProjectNumber(rec.ProjectId) @rec.ProjectName</span>
-                                                        <span class="ap-rec-label @LabelClass(rec.TotalMatchScore)">@rec.RecommendationLabel</span>
-                                                    </div>
-                                                    <div class="ap-mini-rec-meta">
-                                                        ציון התאמה: <strong>@rec.TotalMatchScore</strong>
-                                                        <span class="ap-mini-rec-sep">·</span>
-                                                        העדפה: @rec.PreferenceScore
-                                                        <span class="ap-mini-rec-sep">·</span>
-                                                        כישורים: @rec.SkillScore
-                                                    </div>
-                                                </li>
-                                            }
-                                        </ul>
-                                    </div>
-                                }
-                            </article>
-                        }
-                    }
-                </section>
+            <EmptyContent>
+                <MEmptyState Title="לא נמצאו שיבוצים"
+                             Description="נסו לשנות את החיפוש או הסינון"
+                             Live="true" />
+            </EmptyContent>
 
-                <!-- ════ Projects ════ -->
-                <section class="ap-board-col">
-                    <div class="ap-board-col-head">
-                        <h2 class="ap-board-col-title">פרויקטים</h2>
-                        <span class="ap-board-col-count">@_board.Projects.Count</span>
-                    </div>
+            <RowTemplate Context="proj">
+                @{
+                    var menuOpen     = _openProjectMenu == proj.ProjectId;
+                    var mentorOpen   = _openMentorMenu == proj.ProjectId;
+                    var busy         = _busyProjectIds.Contains(proj.ProjectId);
+                    var canAddMentor = proj.Mentors.Count < MaxMentors;
+                    var memberLine   = string.Join(" · ", proj.AssignedMembers.Select(m => m.FullName));
 
-                    @if (_board.Projects.Count == 0)
-                    {
-                        <div class="ap-empty-block">אין פרויקטים זמינים במחזור הנוכחי</div>
-                    }
-                    else
-                    {
-                        @foreach (var proj in _board.Projects)
-                        {
-                            <article class="ap-project-card">
-                                <header class="ap-project-card-head">
-                                    <div class="ap-project-card-head-main">
-                                        <h3 class="ap-project-card-title">
-                                            <span class="ap-project-num">#@proj.ProjectNumber</span>
-                                            @proj.ProjectName
-                                        </h3>
-                                        <div class="ap-project-card-badges">
-                                            @if (!string.IsNullOrWhiteSpace(proj.ProjectType))
-                                            {
-                                                <span class="ap-pref-type">@proj.ProjectType</span>
-                                            }
-                                            <span class="ap-demand-badge" title="ציון ביקוש">
-                                                ביקוש: <strong>@proj.DemandScore</strong>
-                                            </span>
-                                            @{
-                                                var (badgeClass, badgeText) = ProjectStatusBadge(proj);
-                                            }
-                                            <span class="ap-status @badgeClass">@badgeText</span>
-                                        </div>
-                                    </div>
-                                </header>
+                    // The row opens the assignment it describes — but only when
+                    // this screen actually holds that team. A synced project can
+                    // name a team from another cycle, and a row that offers to
+                    // open something and then does nothing is worse than a row
+                    // that never offered. Same guard gates the menu items below,
+                    // which used to be dead on exactly these rows.
+                    var openTeamId = OpenableTeamId(proj);
+                }
 
-                                <!-- Mentors row (multiple, max 2) -->
-                                <div class="ap-mentor-block">
-                                    <div class="ap-mentor-block-head">
-                                        <span class="ap-mentor-label">מנטורים</span>
-                                        <span class="ap-mentor-count">@proj.Mentors.Count / @_board.MaxMentorsPerProject</span>
-                                    </div>
+                <tr class="@(menuOpen || mentorOpen ? "m-dt-row-active" : "") @(openTeamId is null ? "" : "ap-row--clickable")"
+                    @onclick="@(() => OpenAssignmentRow(openTeamId))">
 
-                                    <div class="ap-mentor-chips">
-                                        @if (proj.Mentors.Count == 0)
-                                        {
-                                            <span class="ap-empty-line">אין מנטורים משובצים</span>
-                                        }
-                                        else
-                                        {
-                                            @foreach (var mentor in proj.Mentors)
-                                            {
-                                                <span class="ap-mentor-chip">
-                                                    <span class="ap-mentor-chip-icon oi oi-person" aria-hidden="true"></span>
-                                                    @mentor.FullName
-                                                    <button class="ap-mentor-chip-x"
-                                                            title="הסרת מנטור"
-                                                            disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
-                                                            @onclick="@(() => RemoveMentor(proj, mentor))">×</button>
-                                                </span>
-                                            }
-                                        }
-                                    </div>
+                    @* The team leads the row: this view is read team-first —
+                       "where did Team_16 end up" — not catalogue-first. *@
+                    <td class="ap-cell-team">
+                      @if (openTeamId is not null)
+                      {
+                          @* The same act as the row click, as a real control:
+                             the row is a mouse convenience and cannot be
+                             tabbed to, and a <tr> given a button role would
+                             cost the table its semantics. *@
+                          <button type="button" class="ap-cellflex ap-rowlink"
+                                  title="@($"פרטי השיבוץ של {AssignedTeamLabel(proj)}")"
+                                  @onclick="@(() => OpenWorkspace(openTeamId.Value))"
+                                  @onclick:stopPropagation="true">
+                              <span class="ap-avatar" aria-hidden="true">@Initials(AssignedTeamLabel(proj))</span>
+                              <span class="ap-identity">
+                                  <span class="ap-name ap-name--link" title="@AssignedTeamLabel(proj)">@AssignedTeamLabel(proj)</span>
+                                  @if (proj.AssignedMembers.Count > 0)
+                                  {
+                                      <span class="ap-sub" title="@memberLine">@memberLine</span>
+                                  }
+                              </span>
+                          </button>
+                      }
+                      else
+                      {
+                        <div class="ap-cellflex">
+                          @if (proj.AssignedTeamId.HasValue)
+                          {
+                              <span class="ap-avatar" aria-hidden="true">@Initials(AssignedTeamLabel(proj))</span>
+                              <span class="ap-identity">
+                                  <span class="ap-name" title="@AssignedTeamLabel(proj)">@AssignedTeamLabel(proj)</span>
+                                  @if (proj.AssignedMembers.Count > 0)
+                                  {
+                                      <span class="ap-sub" title="@memberLine">@memberLine</span>
+                                  }
+                                  else if (string.IsNullOrWhiteSpace(proj.AssignedTeamName))
+                                  {
+                                      <span class="ap-sub">הצוות אינו במחזור הנוכחי</span>
+                                  }
+                              </span>
+                          }
+                          else
+                          {
+                              <span class="ap-none">טרם שובץ צוות</span>
+                          }
+                        </div>
+                      }
+                    </td>
 
-                                    @if (proj.Mentors.Count < _board.MaxMentorsPerProject)
+                    <td class="ap-cell-project">
+                      <div class="ap-cellflex">
+                        <span class="ap-num">#@proj.ProjectNumber</span>
+                        <span class="ap-identity">
+                            <span class="ap-name" title="@proj.ProjectName">@proj.ProjectName</span>
+                            @if (!string.IsNullOrWhiteSpace(proj.ProjectType))
+                            {
+                                <span class="ap-sub"><span class="ap-type">@ProjectTypeLabel(proj.ProjectType)</span></span>
+                            }
+                        </span>
+                      </div>
+                    </td>
+
+                    <td class="ap-cell-mentors" @onclick:stopPropagation="true">
+                        <div class="ap-mentors">
+                            @foreach (var mentor in proj.Mentors)
+                            {
+                                <span class="ap-mentor">
+                                    @mentor.FullName
+                                    <button type="button" class="ap-mentor-x"
+                                            disabled="@busy"
+                                            title="@($"הסרת {mentor.FullName}")"
+                                            aria-label="@($"הסרת {mentor.FullName}")"
+                                            @onclick="@(() => RemoveMentor(proj, mentor))">×</button>
+                                </span>
+                            }
+
+                            @if (proj.Mentors.Count == 0)
+                            {
+                                <span class="ap-none">אין מנחה</span>
+                            }
+
+                            @if (canAddMentor)
+                            {
+                                <div class="ap-filter">
+                                    <button type="button" class="ap-mentor-add"
+                                            disabled="@busy"
+                                            @onclick="@(() => ToggleMentorMenu(proj.ProjectId))"
+                                            aria-haspopup="listbox" aria-expanded="@(mentorOpen ? "true" : "false")"
+                                            title="@($"הוספת מנחה ({proj.Mentors.Count}/{MaxMentors})")">
+                                        + מנחה
+                                    </button>
+
+                                    @if (mentorOpen)
                                     {
-                                        <div class="ap-mentor-add-row">
-                                            <MSelectField Options="@AvailableMentorOptionsFor(proj)"
-                                                          Value="@(_mentorAddDraft.TryGetValue(proj.ProjectId, out var mid) ? mid.ToString() : "")"
-                                                          ValueChanged="@(v => OnMentorAddSelect(proj.ProjectId, v))"
-                                                          Class="ap-mentor-select" />
-                                            <button class="ap-btn ap-btn-secondary"
-                                                    disabled="@(!_mentorAddDraft.ContainsKey(proj.ProjectId) || _busyProjectIds.Contains(proj.ProjectId))"
-                                                    @onclick="@(() => AddMentor(proj))">
-                                                הוסף מנטור
-                                            </button>
+                                        <div class="ap-menu ap-menu--filter" role="listbox" aria-label="בחירת מנחה">
+                                            @{ var available = AvailableMentorsFor(proj).ToList(); }
+                                            @if (available.Count == 0)
+                                            {
+                                                <div class="ap-menu-empty">כל המנחים כבר משויכים</div>
+                                            }
+                                            @foreach (var mentor in available)
+                                            {
+                                                var m = mentor;
+                                                <button type="button" class="ap-menu-item" role="option" aria-selected="false"
+                                                        @onclick="@(() => AddMentor(proj, m))">
+                                                    <span class="ap-menu-item-label">@m.FullName</span>
+                                                </button>
+                                            }
                                         </div>
                                     }
                                 </div>
+                            }
+                        </div>
+                    </td>
 
-                                <!-- Currently assigned team -->
-                                <div class="ap-assigned-row">
+                    <td>
+                        @if (proj.AssignedTeamId.HasValue)
+                        {
+                            <span class="ap-state ap-state--live"><span class="ap-dot" aria-hidden="true"></span>משובץ</span>
+                        }
+                        else
+                        {
+                            <span class="ap-state ap-state--none"><span class="ap-dot" aria-hidden="true"></span>טרם שובץ</span>
+                        }
+                    </td>
+
+                    @* Publish is its own axis, not a third value of status: an
+                       assignment can be settled and unpublished at the same
+                       time, and the page's one primary act is publishing. *@
+                    <td>
+                        @if (!proj.AssignedTeamId.HasValue)
+                        {
+                            <span class="ap-none">—</span>
+                        }
+                        else if (proj.IsDraft)
+                        {
+                            <span class="ap-state ap-state--draft"><span class="ap-dot" aria-hidden="true"></span>טיוטה</span>
+                        }
+                        else
+                        {
+                            <span class="ap-state ap-state--live"><span class="ap-dot" aria-hidden="true"></span>פורסם</span>
+                        }
+                    </td>
+
+                    <td class="ap-cell-act" @onclick:stopPropagation="true">
+                        <div class="ap-actions">
+                            <button type="button"
+                                    class="ap-kebab @(menuOpen ? "ap-kebab--on" : "")"
+                                    @onclick="@(() => ToggleProjectMenu(proj.ProjectId))"
+                                    aria-haspopup="true" aria-expanded="@(menuOpen ? "true" : "false")"
+                                    title="פעולות" aria-label="@($"פעולות עבור {proj.ProjectName}")">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <circle cx="12" cy="5" r="1.7" />
+                                    <circle cx="12" cy="12" r="1.7" />
+                                    <circle cx="12" cy="19" r="1.7" />
+                                </svg>
+                            </button>
+
+                            @if (menuOpen)
+                            {
+                                @* SECONDARY acts only. Opening the assignment is
+                                   the row's job now, so what stays here is what
+                                   the row click cannot mean: read the form
+                                   instead of the assignment, and undo it.
+                                   Each item still goes exactly where its name
+                                   says — neither one navigates. *@
+                                <div class="ap-menu ap-menu--row" role="menu">
+                                    @if (openTeamId is not null)
+                                    {
+                                        <button type="button" class="ap-menu-item" role="menuitem"
+                                                @onclick="@(() => OpenForm(openTeamId.Value))">
+                                            <span class="ap-menu-item-label">הצג טופס שיבוץ</span>
+                                        </button>
+                                        <button type="button" class="ap-menu-item" role="menuitem"
+                                                @onclick="@(() => OpenReassign(openTeamId.Value))">
+                                            <span class="ap-menu-item-label">שינוי שיבוץ</span>
+                                        </button>
+                                    }
+
                                     @if (proj.AssignedTeamId.HasValue)
                                     {
-                                        <div class="ap-assigned-info">
-                                            <div class="ap-assigned-title">
-                                                <span class="oi oi-people" aria-hidden="true"></span>
-                                                שובץ: @proj.AssignedTeamName
-                                            </div>
-                                            @if (proj.AssignedMembers.Count > 0)
-                                            {
-                                                <div class="ap-assigned-members">
-                                                    @string.Join(", ", proj.AssignedMembers.Select(m => m.FullName))
-                                                </div>
-                                            }
-                                        </div>
-                                        <button class="ap-btn ap-btn-danger"
-                                                disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
-                                                @onclick="@(() => UnassignTeam(proj))">
-                                            הסר שיבוץ
+                                        <button type="button" class="ap-menu-item ap-menu-item--danger" role="menuitem"
+                                                disabled="@busy"
+                                                @onclick="@(() => UnassignProject(proj.ProjectId))">
+                                            <span class="ap-menu-item-label">הסרת השיבוץ</span>
                                         </button>
                                     }
                                     else
                                     {
-                                        <div class="ap-assigned-empty">לא שובץ צוות</div>
+                                        <button type="button" class="ap-menu-item" role="menuitem"
+                                                @onclick="GoToQueue">
+                                            <span class="ap-menu-item-label">מעבר לצוותים הממתינים</span>
+                                        </button>
                                     }
                                 </div>
-
-                                <!-- Recommendations -->
-                                <div class="ap-recs">
-                                    <div class="ap-recs-title">צוותים מומלצים</div>
-                                    @if (proj.Recommendations.Count == 0)
-                                    {
-                                        <div class="ap-empty-line">אין נתונים מספיקים להמלצה</div>
-                                    }
-                                    else
-                                    {
-                                        <ul class="ap-recs-list">
-                                            @foreach (var rec in proj.Recommendations)
-                                            {
-                                                bool isCurrent = rec.TeamId == proj.AssignedTeamId;
-                                                _teamAssignedTo.TryGetValue(rec.TeamId, out var elsewhere);
-                                                bool isElsewhere = !isCurrent && elsewhere is not null;
-
-                                                <li class="ap-rec-row @(isCurrent ? "ap-rec-row-current" : "") @(isElsewhere ? "ap-rec-row-elsewhere" : "")">
-                                                    <div class="ap-rec-main">
-                                                        <div class="ap-rec-team">@rec.TeamName</div>
-                                                        <div class="ap-rec-detail">
-                                                            ציון: <strong>@rec.TotalMatchScore</strong>
-                                                            <span class="ap-mini-rec-sep">·</span>
-                                                            העדפה: @rec.PreferenceScore
-                                                            <span class="ap-mini-rec-sep">·</span>
-                                                            כישורים: @rec.SkillScore
-                                                            @if (rec.PreferenceRank.HasValue)
-                                                            {
-                                                                <span class="ap-rec-rank">דורג #@rec.PreferenceRank</span>
-                                                            }
-                                                        </div>
-                                                        @if (isElsewhere)
-                                                        {
-                                                            <div class="ap-rec-elsewhere">
-                                                                כבר שובץ לפרויקט: <strong>@elsewhere</strong>
-                                                            </div>
-                                                        }
-                                                    </div>
-                                                    <div class="ap-rec-side">
-                                                        <span class="ap-rec-label @LabelClass(rec.TotalMatchScore)">@rec.RecommendationLabel</span>
-                                                        @if (isCurrent)
-                                                        {
-                                                            <span class="ap-rec-current-label">משובץ</span>
-                                                        }
-                                                        else if (isElsewhere)
-                                                        {
-                                                            <button class="ap-btn ap-btn-warning"
-                                                                    disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
-                                                                    @onclick="@(() => OpenMoveConfirm(rec.TeamId, rec.TeamName, proj.ProjectId, proj.ProjectName, elsewhere!))">
-                                                                העבר צוות
-                                                            </button>
-                                                        }
-                                                        else
-                                                        {
-                                                            <button class="ap-btn ap-btn-primary"
-                                                                    disabled="@(_busyProjectIds.Contains(proj.ProjectId))"
-                                                                    @onclick="@(() => AssignTeam(rec.TeamId, proj.ProjectId))">
-                                                                שבץ צוות
-                                                            </button>
-                                                        }
-                                                    </div>
-                                                </li>
-                                            }
-                                        </ul>
-                                    }
-                                </div>
-                            </article>
-                        }
-                    }
-                </section>
-            </div>
-        }
+                            }
+                        </div>
+                    </td>
+                </tr>
+            </RowTemplate>
+        </MDataTable>
     }
 </div>
 
-<!-- ── Move-team confirmation modal ─────────────────────────────────── -->
-@if (_moveConfirm is not null)
-{
-    <div class="ap-modal-backdrop" @onclick="CloseMoveConfirm"></div>
-    <div class="ap-modal" dir="rtl" role="dialog" aria-modal="true">
-        <h2 class="ap-modal-title">העברת שיבוץ</h2>
-        <p class="ap-modal-body">
-            הצוות <strong>@_moveConfirm.TeamName</strong> כבר שובץ לפרויקט
-            <strong>@_moveConfirm.FromProjectName</strong>.
-        </p>
-        <p class="ap-modal-body">
-            האם להעביר אותו לפרויקט <strong>@_moveConfirm.ToProjectName</strong>?
-        </p>
-        <div class="ap-modal-actions">
-            <button class="ap-btn ap-btn-secondary" @onclick="CloseMoveConfirm">בטל</button>
-            <button class="ap-btn ap-btn-warning"
-                    disabled="@(_busyProjectIds.Contains(_moveConfirm.ToProjectId))"
-                    @onclick="ConfirmMove">העבר צוות</button>
-        </div>
-    </div>
-}
+@* ── טופס שיבוץ — the submitted form, read-only ───────────────────────────
+   One instance for the whole page: every entry point that means "show me
+   what this team submitted" sets _formTeamId and lands here. *@
+<AssignmentFormModal IsOpen="@(_formTeam is not null)"
+                     Team="_formTeam"
+                     Demand="DemandFor"
+                     Holder="TeamOnProject"
+                     OnClose="CloseForm"
+                     OnGoToWorkspace="FormToWorkspace"
+                     OnInspectProject="InspectProject" />
 
-<!-- ── Publish confirmation modal ───────────────────────────────────── -->
-@if (_showPublishConfirm)
-{
-    <div class="ap-modal-backdrop" @onclick="ClosePublishConfirm"></div>
-    <div class="ap-modal" dir="rtl" role="dialog" aria-modal="true">
-        <h2 class="ap-modal-title">פרסום שיבוצים</h2>
-        <p class="ap-modal-body">
-            האם לפרסם את כל השיבוצים לסטודנטים?
-        </p>
-        <p class="ap-modal-note">
-            לאחר הפרסום, כל הסטודנטים שמשוייכים לפרויקטים יראו את השיבוץ שלהם בלוח הבקרה.
-        </p>
-        <div class="ap-modal-actions">
-            <button class="ap-btn ap-btn-secondary" @onclick="ClosePublishConfirm">בטל</button>
-            <button class="ap-btn ap-btn-primary"
-                    disabled="@_publishBusy"
-                    @onclick="ConfirmPublish">פרסם שיבוצים</button>
-        </div>
-    </div>
-}
+@* ── בדיקת שיבוץ — the decision workspace for one team ────────────────────
+   Holder and Demand are passed as functions, not as computed lists, so the
+   workspace re-derives its recommendation from live board state on every
+   render instead of holding a snapshot taken when it opened. *@
+<TeamAssignmentWorkspace IsOpen="@(_workspaceTeam is not null)"
+                         Team="_workspaceTeam"
+                         Assignment="@AssignmentOf(_workspaceTeam)"
+                         Cohort="Cohort"
+                         Holder="TeamOnProject"
+                         Demand="DemandFor"
+                         Busy="@WorkspaceBusy"
+                         OnAssign="AssignFromWorkspace"
+                         OnTakeover="TakeoverFromWorkspace"
+                         OnUnassign="UnassignProject"
+                         OnClose="CloseWorkspace"
+                         OnViewForm="WorkspaceToForm"
+                         Decide="_workspaceDecide"
+                         OnChangeAssignment="StartReassign"
+                         OnBackToDetails="BackToAssignmentDetails"
+                         OnInspectProject="InspectProject" />
+
+@* ── Project quick view ───────────────────────────────────────────────────
+   Rendered AFTER both assignment surfaces, so it paints over whichever one is
+   open. Neither is closed or reset: the form and the workspace are addressed
+   by team id and keep their own state, so dismissing this returns the reader
+   to exactly the modal, the scroll position and the half-made decision they
+   left. *@
+<ProjectQuickView ProjectId="_inspectProjectId"
+                  Demand="@(_inspectProjectId is int ip ? DemandFor(ip) : ProjectDemand.None)"
+                  HeldBy="@(_inspectProjectId is int hp ? TeamOnProject(hp) : null)"
+                  Mentors="@MentorsOf(_inspectProjectId)"
+                  OnClose="CloseProjectInspection" />
+
+@* ── תצוגה מקדימה של טופס הסטודנט ─────────────────────────────────────────
+   The student's WHOLE choosing flow as they will meet it — catalogue, ranking,
+   then the form — distinct from AssignmentFormModal above, which reads one
+   team's SUBMITTED answers. It loads its own catalogue and form; nothing on
+   this page is passed to it but the cycle. *@
+<StudentFormPreviewModal IsOpen="_studentPreviewOpen"
+                         AcademicYearId="@_board?.AcademicYearId"
+                         OnClose="CloseStudentPreview" />
+
+@* ── Move / takeover confirmation ─────────────────────────────────────────
+   Unchanged semantics: this is the only path that sends force:true. *@
+<MConfirmDialog IsOpen="@(_moveConfirm is not null)"
+                Title="@(_moveConfirm?.DisplacedTeam is not null ? "החלפת צוות בפרויקט" : "העברת שיבוץ")"
+                ConfirmText="@(_moveConfirm?.DisplacedTeam is not null ? "החלף צוות" : "העבר צוות")"
+                CancelText="ביטול"
+                Tone="MConfirmDialog.ConfirmTone.Danger"
+                Busy="@_moveBusy"
+                BusyText="מעביר…"
+                OnConfirm="ConfirmMove"
+                OnCancel="CloseMoveConfirm">
+    @if (_moveConfirm is not null)
+    {
+        @* Two different acts share this dialog, and they must not read alike.
+           A MOVE costs nobody anything. A TAKEOVER ends another team's
+           assignment, and the server will do it without a second word once
+           this is confirmed — so the team that loses the project is named
+           here, in the sentence, rather than left for the lecturer to
+           discover afterwards on the board. *@
+        @if (_moveConfirm.DisplacedTeam is not null)
+        {
+            <p>
+                הפרויקט <strong>@_moveConfirm.ToProjectName</strong> משובץ כעת ל<strong>@_moveConfirm.DisplacedTeam</strong>.
+            </p>
+            <p>
+                שיבוץ <strong>@_moveConfirm.TeamName</strong> לפרויקט הזה יסיר את השיבוץ של
+                <strong>@_moveConfirm.DisplacedTeam</strong>, והוא יחזור להמתין לשיבוץ.
+            </p>
+        }
+        else
+        {
+            <p>
+                הצוות <strong>@_moveConfirm.TeamName</strong> משובץ כעת לפרויקט
+                <strong>@_moveConfirm.FromProjectName</strong>.
+            </p>
+            <p>להעביר אותו לפרויקט <strong>@_moveConfirm.ToProjectName</strong>?</p>
+        }
+    }
+</MConfirmDialog>
+
+@* ── Publish confirmation ─────────────────────────────────────────────── *@
+<MConfirmDialog IsOpen="_showPublishConfirm"
+                Title="פרסום שיבוצים"
+                ShowIcon="false"
+                ConfirmText="פרסם שיבוצים"
+                CancelText="ביטול"
+                Busy="@_publishBusy"
+                BusyText="מפרסם…"
+                OnConfirm="ConfirmPublish"
+                OnCancel="ClosePublishConfirm">
+    <p>לפרסם את כל השיבוצים לסטודנטים?</p>
+    <p>לאחר הפרסום כל סטודנט שמשויך לפרויקט יראה את השיבוץ שלו בלוח הבקרה.</p>
+</MConfirmDialog>
+
 
 @code {
-    private string _view = "submissions";
+    // ─────────────────────────────────────────────────────────────────────
+    //  Modes
+    // ─────────────────────────────────────────────────────────────────────
 
-    // Submissions tab
-    private List<AssignmentSubmissionListItemDto> _submissions = new();
-    private bool _subsLoading = true;
-    private bool _subsError;
-    private bool _subsLoaded;
+    private const string ModePending  = "pending";
+    private const string ModeAssigned = "assigned";
 
-    // Board tab
-    private AssignmentBoardDto? _board;
-    private bool _boardLoading;
-    private bool _boardError;
-    private bool _boardLoaded;
+    /// <summary>The queue is the job. Submitted forms are the source data
+    /// behind it, not a mode of their own — hence this default.</summary>
+    private string _mode = ModePending;
 
-    // Per-project mentor add selection (UserId pending add)
-    private readonly Dictionary<int, int> _mentorAddDraft = new();
-    private readonly HashSet<int>         _busyProjectIds = new();
+    private IReadOnlyList<MFilterTabs.Tab> ModeTabs => new[]
+    {
+        new MFilterTabs.Tab(ModePending,  "ממתינים לשיבוץ", WaitingCount),
+        new MFilterTabs.Tab(ModeAssigned, "שיבוצים קיימים", AssignedCount)
+    };
 
-    // Lookup: TeamId → name of the project it's currently assigned to (for "elsewhere" badge)
-    private Dictionary<int, string> _teamAssignedTo = new();
+    private void SwitchMode(string mode)
+    {
+        if (_mode == mode) return;
+        _mode = mode;
+        _search = "";
+        CloseAllMenus();
+    }
 
-    // Toast
-    private string? _actionMessage;
-    private bool    _actionError;
+    private void GoToQueue()
+    {
+        CloseAllMenus();
+        _mode = ModePending;
+        _search = "";
+    }
 
-    // Modals
-    private MoveConfirmState? _moveConfirm;
-    private bool _showPublishConfirm;
-    private bool _publishBusy;
+    // ─────────────────────────────────────────────────────────────────────
+    //  Data
+    // ─────────────────────────────────────────────────────────────────────
+
+    // The board is ALWAYS the one the API returned. Demo mode adds submitted
+    // FORMS on top of it — it never substitutes a fabricated board — so demand,
+    // availability and every recommendation on the screen are derived against
+    // real projects whichever mode is on. See AssignmentsDemoData.
+    private List<AssignmentSubmissionListItemDto> _liveSubmissions = new();
+    private AssignmentBoardDto?                   _liveBoard;
+
+    private AssignmentsDemoData.Cohort? _demoCohort;
+
+    /// <summary>Built once per board. Resolving it needs the catalogue, so it
+    /// cannot exist before the first load.</summary>
+    private AssignmentsDemoData.Cohort DemoCohort =>
+        _demoCohort ??= AssignmentsDemoData.Build(_liveBoard);
+
+    private List<AssignmentSubmissionListItemDto> _submissions =>
+        _demo
+            ? _liveSubmissions.Concat(DemoCohort.Submissions).ToList()
+            : _liveSubmissions;
+
+    private AssignmentBoardDto? _board => _liveBoard;
+
+    private bool _loading = true;
+    private bool _loadFailed;
+
+    /// <summary>True while the screen is showing <see cref="AssignmentsDemoData"/>.
+    /// Every mutating handler branches on it BEFORE reaching the service, so no
+    /// invented id is ever posted to the server.
+    ///
+    /// <para>It turns itself on when the PRIMARY workspace would be empty — no
+    /// submitted form and no team waiting on the board — because that is the
+    /// state in which the screen cannot be judged. It is never silent: the mode
+    /// bar carries a chip saying so, and that chip is the switch back. A board
+    /// full of projects with nothing submitted against them still counts as
+    /// empty here, which is exactly the local-dev case.</para></summary>
+    private bool _demo;
+
+    private const string DemoHint =
+        "מוצגים כאן טפסי שיבוץ לדוגמה בנוסף לנתונים האמיתיים, לצורך בחינת המסך. הפרויקטים, הביקוש וההמלצות אמיתיים; פעולות במצב זה אינן נשמרות בשרת. לחצו כדי לחזור לנתונים האמיתיים בלבד.";
+
+    private const string DemoOffHint =
+        "הוספת טפסי שיבוץ לדוגמה מעל הנתונים האמיתיים, לצורך בחינת תור הממתינים. שום דבר אינו נשמר בשרת.";
+
+    /// <summary>Turning demo mode ON only adds forms. Turning it OFF re-fetches,
+    /// which is the whole restore story: demo actions mutate the in-memory board
+    /// (that is what makes assigning a demo team change what the next one is
+    /// offered), and re-reading the API is a cheaper and more trustworthy way
+    /// back to the truth than unwinding those edits by hand.</summary>
+    private async Task ToggleDemo()
+    {
+        _demo = !_demo;
+        _actionMessage   = null;
+        _formTeamId      = null;
+        _workspaceTeamId = null;
+        _workspaceDecide = false;
+        CloseAllMenus();
+        InvalidateRows();
+
+        if (!_demo) await LoadAsync();
+    }
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadSubmissions();
+        Nav.LocationChanged += OnLocationChanged;
+        await LoadAsync();
+        ApplyQuery();
     }
 
-    private async Task SwitchView(string view)
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
-        _view = view;
-        if (view == "submissions" && !_subsLoaded) await LoadSubmissions();
-        else if (view == "board" && !_boardLoaded)  await LoadBoard();
+        ApplyQuery();
+        StateHasChanged();
     }
 
-    private async Task LoadSubmissions()
+    /// <summary>Deep links. <c>?team={id}</c> opens the decision workspace,
+    /// <c>?team={id}&amp;view=form</c> opens the submitted form — so any screen
+    /// in the product can name a team's form or a team's assignment without
+    /// inventing a route, and without dropping the lecturer on a table to hunt
+    /// for the row.</summary>
+    private void ApplyQuery()
     {
-        _subsLoading = true; _subsError = false;
-        var data = await AssignmentManagementService.GetSubmissionsAsync();
-        if (data is null) _subsError = true;
-        else _submissions = data;
-        _subsLoading = false; _subsLoaded = true;
+        var query = Nav.ToAbsoluteUri(Nav.Uri).Query;
+
+        if (!int.TryParse(QueryValue(query, "team"), out var teamId)) return;
+
+        // A deep link is only honoured for a team the screen actually has.
+        if (AllTeamRows.All(r => r.TeamId != teamId)) return;
+
+        var wantsForm = string.Equals(QueryValue(query, "view"), "form", StringComparison.OrdinalIgnoreCase);
+
+        if (wantsForm) { _formTeamId = teamId; _workspaceTeamId = null; }
+        else           { _workspaceTeamId = teamId; _formTeamId = null; _workspaceDecide = false; }
     }
 
-    private async Task LoadBoard()
+    /// <summary>One key out of a "?a=1&amp;b=2" string. Hand-rolled rather than
+    /// pulled from WebUtilities: two optional keys do not justify a dependency
+    /// this project does not otherwise take.</summary>
+    private static string? QueryValue(string query, string key)
     {
-        _boardLoading = true; _boardError = false;
-        var data = await AssignmentManagementService.GetAssignmentBoardAsync();
-        if (data is null) _boardError = true;
-        else { _board = data; RebuildAssignmentLookup(); _mentorAddDraft.Clear(); }
-        _boardLoading = false; _boardLoaded = true;
-    }
-
-    private async Task ReloadBoard(string successMessage)
-    {
-        var data = await AssignmentManagementService.GetAssignmentBoardAsync();
-        if (data is not null)
+        foreach (var pair in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
-            _board = data;
-            RebuildAssignmentLookup();
-            _mentorAddDraft.Clear();
-            _actionError = false;
-            _actionMessage = successMessage;
+            var eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            if (!string.Equals(Uri.UnescapeDataString(pair[..eq]), key, StringComparison.OrdinalIgnoreCase)) continue;
+            return Uri.UnescapeDataString(pair[(eq + 1)..]);
         }
-        else
-        {
-            _actionError = true;
-            _actionMessage = "שגיאה בטעינה מחודשת של הלוח";
-        }
+        return null;
     }
 
-    private void RebuildAssignmentLookup()
+    private async Task LoadAsync()
     {
-        _teamAssignedTo = _board?.Projects
-            .Where(p => p.AssignedTeamId.HasValue)
-            .ToDictionary(p => p.AssignedTeamId!.Value, p => p.ProjectName)
-            ?? new Dictionary<int, string>();
+        _loading = true;
+        _loadFailed = false;
+        _demo = false;
+
+        var subsTask  = AssignmentManagementService.GetSubmissionsAsync();
+        var boardTask = AssignmentManagementService.GetAssignmentBoardAsync();
+
+        var subs  = await subsTask;
+        var board = await boardTask;
+
+        _liveSubmissions = subs ?? new List<AssignmentSubmissionListItemDto>();
+        _liveBoard       = board;
+        _demoCohort      = null;   // resolved against the catalogue — rebuild it
+        _loadFailed      = subs is null && board is null;
+
+        // Nothing for the workspace to work on → fill the screen rather than
+        // present an empty one. The chip on the mode bar says so and switches
+        // back. See AssignmentsDemoData for why this is not a seed.
+        // InvalidateRows BEFORE reading the join: the cache was populated by the
+        // first (loading) render, when both data sets were still empty, and
+        // nothing else here would drop it.
+        InvalidateRows();
+
+        _demo = _liveSubmissions.Count == 0
+                && (_liveBoard?.UnassignedTeams.Count ?? 0) == 0
+                && !DemoCohort.IsEmpty;
+
+        if (_demo)
+        {
+            _loadFailed = false;
+            InvalidateRows();
+        }
+
+        _loading = false;
     }
 
-    private async Task AssignTeam(int teamId, int projectId)
+    /// <summary>Re-reads both endpoints after a successful mutation. In demo mode
+    /// there is nothing to re-read — the in-memory board IS the state — so it
+    /// only reports.</summary>
+    private async Task ReloadAsync(string message)
     {
-        _busyProjectIds.Add(projectId);
-        var res = await AssignmentManagementService.AssignTeamAsync(teamId, projectId, force: false);
-        _busyProjectIds.Remove(projectId);
+        if (!_demo)
+        {
+            var subs  = await AssignmentManagementService.GetSubmissionsAsync();
+            var board = await AssignmentManagementService.GetAssignmentBoardAsync();
 
-        if (res.Outcome == AssignTeamOutcome.Success)
-        {
-            await ReloadBoard("הצוות שובץ לפרויקט (טיוטה)");
-        }
-        else if (res.Outcome == AssignTeamOutcome.Conflict && res.Conflict is not null)
-        {
-            // Should not normally occur from the standard "שבץ" path, but handle defensively.
-            var team = FindTeamName(teamId);
-            var dest = _board?.Projects.FirstOrDefault(p => p.ProjectId == projectId);
-            _moveConfirm = new MoveConfirmState
+            if (board is null)
             {
-                TeamId            = teamId,
-                TeamName          = team,
-                FromProjectName   = res.Conflict.ProjectName,
-                ToProjectId       = projectId,
-                ToProjectName     = dest?.ProjectName ?? ""
+                Toast("שגיאה בטעינה מחודשת של הנתונים", error: true);
+                return;
+            }
+
+            if (subs is not null) _liveSubmissions = subs;
+            _liveBoard = board;
+        }
+
+        Toast(message, error: false);
+    }
+
+    private void Toast(string message, bool error)
+    {
+        _actionMessage = message;
+        _actionError   = error;
+    }
+
+    private string? _actionMessage;
+    private bool    _actionError;
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Header summary + publish state
+    // ─────────────────────────────────────────────────────────────────────
+
+    private int MaxMentors => _board?.MaxMentorsPerProject ?? 2;
+
+    private List<AssignmentBoardProjectDto> AllProjects =>
+        _board?.Projects ?? new List<AssignmentBoardProjectDto>();
+
+    private int AssignedCount => AllProjects.Count(p => p.AssignedTeamId.HasValue);
+
+    /// <summary>Every row EXCEPT the inspection sample. This is the cohort the
+    /// screen is actually about: the tab badge, the header summary, the result
+    /// line and the cohort's rivalry are all counted over it, so a sample row on
+    /// screen never moves a number the lecturer is reading the job by.</summary>
+    private List<AssignmentTeamView> RealTeamRows =>
+        AllTeamRows.Where(r => !r.IsSample).ToList();
+
+    private int WaitingCount => AllTeamRows.Count(r => r.IsWaiting && !r.IsSample);
+
+    private IReadOnlyList<MSummaryTag.Metric> SummaryMetrics
+    {
+        get
+        {
+            var rows = RealTeamRows;
+            var list = new List<MSummaryTag.Metric>
+            {
+                new(rows.Count(r => r.IsWaiting).ToString(), "ממתינים"),
+                new(rows.Count(r => !r.IsWaiting).ToString(), "שובצו"),
+                new(rows.Count.ToString(), "צוותים")
             };
-        }
-        else
-        {
-            _actionError = true;
-            _actionMessage = "השיבוץ נכשל. נסו שוב.";
+
+            if (!string.IsNullOrWhiteSpace(_board?.AcademicYearName))
+                list.Add(new MSummaryTag.Metric("מחזור", _board!.AcademicYearName));
+
+            return list;
         }
     }
 
-    private void OpenMoveConfirm(int teamId, string teamName, int toProjectId, string toProjectName, string fromProjectName)
+    private bool CanPublish => !_publishBusy && _board is not null && _board.HasUnpublishedDrafts;
+
+    private string PublishHint => _board is null
+        ? "אין נתונים"
+        : _board.HasUnpublishedDrafts
+            ? "פרסום כל השיבוצים שבטיוטה לסטודנטים"
+            : "אין שיבוצים חדשים לפרסום";
+
+    private string PublishStateClass => _board switch
     {
-        _moveConfirm = new MoveConfirmState
+        null                                                   => "ap-pubstate--none",
+        { HasUnpublishedDrafts: true }                         => "ap-pubstate--draft",
+        { AssignmentsPublished: true }                         => "ap-pubstate--live",
+        _                                                      => "ap-pubstate--none"
+    };
+
+    private string PublishStateText
+    {
+        get
         {
-            TeamId          = teamId,
-            TeamName        = teamName,
-            FromProjectName = fromProjectName,
-            ToProjectId     = toProjectId,
-            ToProjectName   = toProjectName
+            if (_board is null) return "אין נתונים";
+
+            var drafts = AllProjects.Count(p => p.AssignedTeamId.HasValue && p.IsDraft);
+
+            if (_board.HasUnpublishedDrafts)
+                return drafts > 0 ? $"{drafts} שיבוצים בטיוטה — טרם פורסמו" : "קיימים שיבוצים שטרם פורסמו";
+
+            if (_board.AssignmentsPublished)
+                return string.IsNullOrWhiteSpace(_board.PublishedAt)
+                    ? "כל השיבוצים פורסמו"
+                    : $"פורסם ב־{FormatDate(_board.PublishedAt!)}";
+
+            return "אין שיבוצים לפרסום";
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  The joined team row
+    // ─────────────────────────────────────────────────────────────────────
+
+    private List<AssignmentTeamView> AllTeamRows => _teamRowCache ??= BuildTeamRows();
+    private List<AssignmentTeamView>? _teamRowCache;
+
+    /// <summary>Anything that changes the board invalidates the join — and the
+    /// demand counts with it, since they are read off the same submissions.
+    /// The recommendations hang off the same three caches, which is what makes
+    /// them re-derive after every assign, move and unassign.</summary>
+    private void InvalidateRows()
+    {
+        _teamRowCache = null;
+        _demandCache  = null;
+        _holderCache  = null;
+        _cohortCache  = null;
+    }
+
+    private List<AssignmentTeamView> BuildTeamRows()
+    {
+        var rows = _submissions.Select(s => new AssignmentTeamView
+        {
+            TeamId                = s.TeamId,
+            TeamName              = s.TeamName,
+            AcademicYear          = s.AcademicYear,
+            SubmittedAt           = s.SubmittedAt,
+            HasSubmission         = true,
+            HasOwnProject         = s.HasOwnProject,
+            OwnProjectDescription = s.OwnProjectDescription,
+            Notes                 = s.Notes,
+            Members               = s.Members,
+            Preferences           = s.Preferences
+        }).ToList();
+
+        if (_board is not null)
+        {
+            // A team can exist on the board without a submission row (its form
+            // was withdrawn, or the two endpoints disagree). It still needs a
+            // row, or it becomes invisible on the only screen that can assign it.
+            var known = rows.Select(r => r.TeamId).ToHashSet();
+            foreach (var t in _board.UnassignedTeams.Where(t => !known.Contains(t.TeamId)))
+            {
+                rows.Add(new AssignmentTeamView
+                {
+                    TeamId        = t.TeamId,
+                    TeamName      = t.TeamName,
+                    AcademicYear  = _board.AcademicYearName,
+                    HasSubmission = false,
+                    Members       = t.Members.Select(m => new AssignmentSubmissionMemberDto
+                    {
+                        UserId    = m.UserId,
+                        FullName  = m.FullName,
+                        Strengths = m.Strengths
+                    }).ToList(),
+                    Preferences = t.Preferences
+                });
+            }
+
+            // Match data arrives from both directions: TopRecommendations on an
+            // unassigned team, and Recommendations on every project. Merged per
+            // (team, project) so an assigned team is not left without scores.
+            var matches = new Dictionary<int, Dictionary<int, TeamProjectMatchDto>>();
+
+            void Collect(TeamProjectMatchDto m)
+            {
+                if (!matches.TryGetValue(m.TeamId, out var byProject))
+                    matches[m.TeamId] = byProject = new Dictionary<int, TeamProjectMatchDto>();
+                byProject[m.ProjectId] = m;
+            }
+
+            foreach (var t in _board.UnassignedTeams)
+                foreach (var m in t.TopRecommendations) Collect(m);
+            foreach (var p in _board.Projects)
+                foreach (var m in p.Recommendations) Collect(m);
+
+            var assignment = _board.Projects
+                .Where(p => p.AssignedTeamId.HasValue)
+                .ToDictionary(p => p.AssignedTeamId!.Value, p => p);
+
+            // A demo team has no board rows at all — the matcher never saw it.
+            // Its scores come from the cohort, built the way the server builds
+            // them, so a demo score and a real one land in the same bands.
+            if (_demo)
+                foreach (var demoRows in DemoCohort.Matches.Values)
+                    foreach (var m in demoRows) Collect(m);
+
+            foreach (var row in rows)
+            {
+                if (matches.TryGetValue(row.TeamId, out var byProject))
+                    row.Matches = byProject.Values
+                        .OrderByDescending(m => m.TotalMatchScore)
+                        .ThenBy(m => m.ProjectName)
+                        .ToList();
+
+                if (assignment.TryGetValue(row.TeamId, out var proj))
+                {
+                    row.AssignedProjectId   = proj.ProjectId;
+                    row.AssignedProjectName = proj.ProjectName;
+                    row.AssignedIsDraft     = proj.IsDraft;
+                }
+            }
+        }
+
+        // The inspection row, added AFTER every real join so nothing above can
+        // reach it and nothing about it can reach a real row. It carries its own
+        // preferences and its own scores; the board's match maps never mention
+        // it. See AssignmentSampleForm for what it is and what it may not touch.
+        var sample = AssignmentSampleForm.Build(_liveBoard, _liveSubmissions);
+        if (sample is not null) rows.Add(sample);
+
+        // Waiting first — they are the ones with work left on them — then
+        // oldest submission first, so nobody waits behind a newer form.
+        return rows
+            .OrderBy(r => r.IsWaiting ? 0 : 1)
+            .ThenBy(r => r.SubmittedAt)
+            .ThenBy(r => r.TeamName)
+            .ToList();
+    }
+
+    /// <summary>The queue: teams with no assignment yet, narrowed by the search
+    /// box. A settled team is not in it at all — that is what makes the tab's
+    /// count the size of the remaining job.</summary>
+    private List<AssignmentTeamView> VisibleWaitingTeams()
+    {
+        IEnumerable<AssignmentTeamView> q = AllTeamRows.Where(r => r.IsWaiting);
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            var needle = _search.Trim();
+            q = q.Where(r =>
+                Has(r.TeamName, needle) ||
+                r.Members.Any(m => Has(m.FullName, needle) || Has(m.Email, needle)) ||
+                r.Preferences.Any(p => Has(p.ProjectTitle, needle)));
+        }
+
+        // The sample leads the queue. It is there to be opened, and hunting for
+        // it down a real cohort is the one thing an inspection row must not cost.
+        // Its badge is what keeps that position from reading as urgency.
+        return q.OrderBy(r => r.IsSample ? 0 : 1).ToList();
+    }
+
+    /// <summary>Every still-waiting team's score on every project they ranked.
+    /// Cached beside the rows it is derived from, so it drops with them on the
+    /// next mutation — which is what makes "who else wants this" re-answer
+    /// itself after every assign, move and unassign rather than going stale.</summary>
+    private CohortClaims Cohort => _cohortCache ??= new CohortClaims(RealTeamRows);
+    private CohortClaims? _cohortCache;
+
+    /// <summary>The one recommendation function on the screen. Both the queue
+    /// card and the workspace read it, so the headline suggestion and the
+    /// primary recommendation inside the workspace can never disagree — and
+    /// both now see the same cohort.</summary>
+    private AssignmentRecommendation RecommendationFor(AssignmentTeamView row) =>
+        AssignmentRecommender.Build(row, TeamOnProject, DemandFor, Cohort);
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  View 2 — projects
+    // ─────────────────────────────────────────────────────────────────────
+
+    private List<AssignmentBoardProjectDto> VisibleProjects()
+    {
+        IEnumerable<AssignmentBoardProjectDto> q = AllProjects;
+
+        q = _projectFilter switch
+        {
+            "assigned"   => q.Where(p => p.AssignedTeamId.HasValue),
+            "unassigned" => q.Where(p => !p.AssignedTeamId.HasValue),
+            "draft"      => q.Where(p => p.AssignedTeamId.HasValue && p.IsDraft),
+            _            => q
         };
-    }
 
-    private void CloseMoveConfirm() => _moveConfirm = null;
-
-    private async Task ConfirmMove()
-    {
-        if (_moveConfirm is null) return;
-        var state = _moveConfirm;
-        _moveConfirm = null;
-
-        _busyProjectIds.Add(state.ToProjectId);
-        var res = await AssignmentManagementService.AssignTeamAsync(state.TeamId, state.ToProjectId, force: true);
-        _busyProjectIds.Remove(state.ToProjectId);
-
-        if (res.Outcome == AssignTeamOutcome.Success)
+        if (!string.IsNullOrWhiteSpace(_search))
         {
-            await ReloadBoard($"הצוות הועבר ל{state.ToProjectName}");
+            var needle = _search.Trim();
+            q = q.Where(p =>
+                Has(p.ProjectName, needle) ||
+                Has(p.AssignedTeamName, needle) ||
+                p.ProjectNumber.ToString().Contains(needle) ||
+                p.Mentors.Any(m => Has(m.FullName, needle)) ||
+                p.AssignedMembers.Any(m => Has(m.FullName, needle)));
         }
-        else
-        {
-            _actionError = true;
-            _actionMessage = "ההעברה נכשלה. נסו שוב.";
-        }
+
+        // Assigned first, then by team name — this view is read team-first.
+        return q.OrderBy(p => p.AssignedTeamId.HasValue ? 0 : 1)
+                .ThenBy(p => AssignedTeamLabel(p))
+                .ThenBy(p => p.ProjectNumber)
+                .ToList();
     }
 
-    private async Task UnassignTeam(AssignmentBoardProjectDto proj)
+    private static bool Has(string? haystack, string needle) =>
+        !string.IsNullOrEmpty(haystack) &&
+        haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Toolbar state
+    // ─────────────────────────────────────────────────────────────────────
+
+    private string _search        = "";
+    private string _projectFilter = "assigned";
+
+    private static readonly string[] ProjectFilterOptions = { "assigned", "draft", "unassigned", "" };
+
+    private static string ProjectFilterLabel(string v) => v switch
     {
-        _busyProjectIds.Add(proj.ProjectId);
-        var ok = await AssignmentManagementService.UnassignTeamAsync(proj.ProjectId);
-        _busyProjectIds.Remove(proj.ProjectId);
-        if (ok) await ReloadBoard("השיבוץ הוסר");
-        else { _actionError = true; _actionMessage = "הסרת השיבוץ נכשלה."; }
-    }
+        "assigned"   => "משובצים",
+        "draft"      => "בטיוטה",
+        "unassigned" => "פנויים",
+        _            => "הכל"
+    };
 
-    private void OnMentorAddSelect(int projectId, string? value)
+    private void OnSearchChanged(string value)
     {
-        if (string.IsNullOrEmpty(value)) _mentorAddDraft.Remove(projectId);
-        else if (int.TryParse(value, out var id)) _mentorAddDraft[projectId] = id;
+        _search = value ?? "";
+        CloseAllMenus();
     }
 
-    private async Task AddMentor(AssignmentBoardProjectDto proj)
+    private void ClearSearch() => OnSearchChanged("");
+
+    private void PickProjectFilter(string value) { _projectFilter = value; _openFilter = null; }
+
+    private void ClearProjectFilters() { _search = ""; _projectFilter = "assigned"; }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Open/closed UI state
+    // ─────────────────────────────────────────────────────────────────────
+
+    private string? _openFilter;
+    private int?    _openProjectMenu;
+    private int?    _openMentorMenu;
+
+    private void ToggleFilter(string key)
     {
-        if (!_mentorAddDraft.TryGetValue(proj.ProjectId, out var mentorId)) return;
-
-        _busyProjectIds.Add(proj.ProjectId);
-        var res = await AssignmentManagementService.AssignMentorAsync(proj.ProjectId, mentorId);
-        _busyProjectIds.Remove(proj.ProjectId);
-
-        switch (res.Outcome)
-        {
-            case AssignMentorOutcome.Success:
-                await ReloadBoard("המנטור נוסף לפרויקט");
-                break;
-            case AssignMentorOutcome.AlreadyAssigned:
-                _actionError = true;
-                _actionMessage = "המנטור כבר משוייך לפרויקט";
-                break;
-            case AssignMentorOutcome.LimitReached:
-                _actionError = true;
-                _actionMessage = $"מספר המנטורים המקסימלי לפרויקט הוא {_board?.MaxMentorsPerProject ?? 2}";
-                break;
-            case AssignMentorOutcome.NotMentor:
-                _actionError = true;
-                _actionMessage = "המשתמש שנבחר אינו מנטור פעיל";
-                break;
-            default:
-                _actionError = true;
-                _actionMessage = "הוספת המנטור נכשלה.";
-                break;
-        }
+        _openFilter = _openFilter == key ? null : key;
+        _openProjectMenu = _openMentorMenu = null;
     }
 
-    private async Task RemoveMentor(AssignmentBoardProjectDto proj, AssignmentBoardMentorDto mentor)
+    private void ToggleProjectMenu(int projectId)
     {
-        _busyProjectIds.Add(proj.ProjectId);
-        var ok = await AssignmentManagementService.RemoveMentorAsync(proj.ProjectId, mentor.UserId);
-        _busyProjectIds.Remove(proj.ProjectId);
-        if (ok) await ReloadBoard($"המנטור {mentor.FullName} הוסר");
-        else { _actionError = true; _actionMessage = "הסרת המנטור נכשלה."; }
+        _openProjectMenu = _openProjectMenu == projectId ? null : projectId;
+        _openFilter = null; _openMentorMenu = null;
     }
 
-    private void OpenPublishConfirm() => _showPublishConfirm = true;
-    private void ClosePublishConfirm() => _showPublishConfirm = false;
-
-    private async Task ConfirmPublish()
+    private void ToggleMentorMenu(int projectId)
     {
-        if (_board is null) return;
-        _publishBusy = true;
-        var ok = await AssignmentManagementService.PublishAsync(_board.AcademicYearId);
-        _publishBusy = false;
-        _showPublishConfirm = false;
-        if (ok) await ReloadBoard("השיבוצים פורסמו לסטודנטים");
-        else { _actionError = true; _actionMessage = "הפרסום נכשל."; }
+        _openMentorMenu = _openMentorMenu == projectId ? null : projectId;
+        _openFilter = null; _openProjectMenu = null;
     }
+
+    private void CloseAllMenus()
+    {
+        _openFilter      = null;
+        _openProjectMenu = null;
+        _openMentorMenu  = null;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  The two focused surfaces
+    //
+    //  Both are addressed by TEAM ID rather than by a captured object, so a
+    //  reload that rebuilds every row leaves the open surface pointing at the
+    //  same team with fresh data instead of at a stale copy.
+    // ─────────────────────────────────────────────────────────────────────
+
+    private int? _formTeamId;
+    private int? _workspaceTeamId;
+
+    private AssignmentTeamView? _formTeam =>
+        _formTeamId is null ? null : AllTeamRows.FirstOrDefault(r => r.TeamId == _formTeamId);
+
+    private AssignmentTeamView? _workspaceTeam =>
+        _workspaceTeamId is null ? null : AllTeamRows.FirstOrDefault(r => r.TeamId == _workspaceTeamId);
+
+    private bool WorkspaceBusy =>
+        _moveBusy ||
+        (_workspaceTeamId is not null && _busyTeamIds.Contains(_workspaceTeamId.Value)) ||
+        (_workspaceTeam?.AssignedProjectId is int pid && _busyProjectIds.Contains(pid));
+
+    /// <summary>The team a project row can open, or null when this screen does
+    /// not hold it. Both surfaces that offer to open a row — the row click and
+    /// the menu — ask this, so neither can offer a move the other refuses.
+    ///
+    /// <para>A synced project can carry an <c>AssignedTeamId</c> from another
+    /// cycle, which the joined team list has no row for. Those rows used to
+    /// carry two menu items that silently did nothing.</para></summary>
+    private int? OpenableTeamId(AssignmentBoardProjectDto p) =>
+        p.AssignedTeamId is int id && AllTeamRows.Any(r => r.TeamId == id) ? id : null;
+
+    private void OpenAssignmentRow(int? teamId)
+    {
+        if (teamId is not null) OpenWorkspace(teamId.Value);
+    }
+
+    /// <summary>The board row behind a team's current assignment. Mentors and
+    /// publish state live on the PROJECT, not on the joined team view, and the
+    /// workspace needs them to describe an assignment rather than only a
+    /// decision.</summary>
+    private AssignmentBoardProjectDto? AssignmentOf(AssignmentTeamView? team) =>
+        team?.AssignedProjectId is int pid
+            ? AllProjects.FirstOrDefault(p => p.ProjectId == pid)
+            : null;
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Project inspection
+    //
+    //  A THIRD surface that deliberately does not disturb the other two. It
+    //  holds only an id, so nothing about the open form or workspace is torn
+    //  down when it opens or closes.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>תצוגה מקדימה של טופס הסטודנט. Page-level, like the publish
+    /// dialog: it is about the FORM, not about any row in the queue.</summary>
+    private bool _studentPreviewOpen;
+
+    private void OpenStudentPreview()
+    {
+        CloseAllMenus();
+        _studentPreviewOpen = true;
+    }
+
+    private void CloseStudentPreview() => _studentPreviewOpen = false;
+
+    private int? _inspectProjectId;
+
+    private void InspectProject(int projectId) => _inspectProjectId = projectId;
+
+    private void CloseProjectInspection() => _inspectProjectId = null;
+
+    /// <summary>The mentors on a project, from the board the page already
+    /// holds — the quick view does not fetch them a second time.</summary>
+    private List<string> MentorsOf(int? projectId) =>
+        projectId is int id
+            ? AllProjects.FirstOrDefault(p => p.ProjectId == id)?.Mentors.Select(m => m.FullName).ToList()
+              ?? new List<string>()
+            : new List<string>();
+
+    private void OpenForm(int teamId)
+    {
+        CloseAllMenus();
+        _workspaceTeamId = null;
+        _formTeamId      = teamId;
+    }
+
+    private void CloseForm() => _formTeamId = null;
+
+    /// <summary>True while the workspace is showing the DECISION rather than the
+    /// details of an existing assignment. A waiting team ignores it — there is
+    /// nothing to describe — so this only ever distinguishes "what is this
+    /// assignment" from "replace it".</summary>
+    private bool _workspaceDecide;
+
+    /// <summary>The default way in: an assigned team opens on its assignment, a
+    /// waiting team on its decision.</summary>
+    private void OpenWorkspace(int teamId)
+    {
+        CloseAllMenus();
+        _formTeamId      = null;
+        _workspaceDecide = false;
+        _workspaceTeamId = teamId;
+    }
+
+    /// <summary>שינוי שיבוץ, from the row menu. Same surface, opened past the
+    /// details on purpose: the act named on the control is the act it performs.</summary>
+    private void OpenReassign(int teamId)
+    {
+        CloseAllMenus();
+        _formTeamId      = null;
+        _workspaceDecide = true;
+        _workspaceTeamId = teamId;
+    }
+
+    /// <summary>שינוי שיבוץ, from inside the details. The recommendation is
+    /// rebuilt from the live board on the next render — which is the whole
+    /// reason this does not simply unfold the accordion over data that was
+    /// current when the modal opened.</summary>
+    private void StartReassign() => _workspaceDecide = true;
+
+    private void BackToAssignmentDetails() => _workspaceDecide = false;
+
+    private void CloseWorkspace()
+    {
+        _workspaceTeamId = null;
+        _workspaceDecide = false;
+    }
+
+    /// <summary>עבור לשיבוץ הצוות — reading hands off to deciding, on the same
+    /// team. The two are separate deliberate steps and this is the only bridge
+    /// between them.</summary>
+    private void FormToWorkspace()
+    {
+        var id = _formTeamId;
+        _formTeamId = null;
+        if (id is null) return;
+        _workspaceDecide = false;
+        _workspaceTeamId = id;
+    }
+
+    private void WorkspaceToForm()
+    {
+        var id = _workspaceTeamId;
+        _workspaceTeamId = null;
+        if (id is not null) _formTeamId = id;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Lookups
+    // ─────────────────────────────────────────────────────────────────────
+
+    private readonly HashSet<int> _busyProjectIds = new();
+    private readonly HashSet<int> _busyTeamIds    = new();
+
+    /// <summary>Who currently holds a project, or null if it is free. Backed by
+    /// a lookup rather than a scan: it is asked once per option per open
+    /// surface, and the real board carries over a hundred projects.</summary>
+    private string? TeamOnProject(int projectId) =>
+        (_holderCache ??= BuildHolders()).TryGetValue(projectId, out var name) ? name : null;
+
+    private Dictionary<int, string>? _holderCache;
+
+    private Dictionary<int, string> BuildHolders() =>
+        AllProjects.Where(p => p.AssignedTeamId.HasValue)
+                   .ToDictionary(p => p.ProjectId, AssignedTeamLabel);
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Demand — how many teams asked for a project
+    // ─────────────────────────────────────────────────────────────────────
+
+    private Dictionary<int, ProjectDemand>? _demandCache;
+
+    private ProjectDemand DemandFor(int projectId) =>
+        (_demandCache ??= BuildDemand()).TryGetValue(projectId, out var d) ? d : ProjectDemand.None;
+
+    /// <summary>Counted over the submissions spine, so it describes exactly the
+    /// forms this screen is showing. A team is counted once per project however
+    /// its form is shaped. See <see cref="ProjectDemand"/> for why this is not
+    /// the board's weighted DemandScore.</summary>
+    private Dictionary<int, ProjectDemand> BuildDemand()
+    {
+        var teams = new Dictionary<int, HashSet<int>>();
+        var first = new Dictionary<int, HashSet<int>>();
+
+        foreach (var sub in _submissions)
+            foreach (var pref in sub.Preferences)
+            {
+                if (!teams.TryGetValue(pref.ProjectId, out var all))
+                    teams[pref.ProjectId] = all = new HashSet<int>();
+                all.Add(sub.TeamId);
+
+                if (pref.Priority != 1) continue;
+                if (!first.TryGetValue(pref.ProjectId, out var tops))
+                    first[pref.ProjectId] = tops = new HashSet<int>();
+                tops.Add(sub.TeamId);
+            }
+
+        return teams.ToDictionary(
+            kv => kv.Key,
+            kv => new ProjectDemand(kv.Value.Count,
+                                    first.TryGetValue(kv.Key, out var f) ? f.Count : 0));
+    }
+
+    /// <summary>A synced project can point at a team id the board's team lookup
+    /// does not carry — an Airtable row belonging to another cycle — and the
+    /// server then returns <c>AssignedTeamName = null</c> for it. Naming the id
+    /// is the honest reading of that state; an empty cell just reads as a broken
+    /// page, and inventing a name would be worse than either.</summary>
+    private static string AssignedTeamLabel(AssignmentBoardProjectDto p) =>
+        !string.IsNullOrWhiteSpace(p.AssignedTeamName) ? p.AssignedTeamName!
+        : p.AssignedTeamId.HasValue                    ? $"צוות #{p.AssignedTeamId}"
+        :                                                "";
 
     private IEnumerable<AssignmentBoardMentorDto> AvailableMentorsFor(AssignmentBoardProjectDto proj)
     {
@@ -788,67 +1584,441 @@
         return _board.Mentors.Where(m => !existing.Contains(m.UserId));
     }
 
-    private IReadOnlyList<MSelect.Option> AvailableMentorOptionsFor(AssignmentBoardProjectDto proj)
+    // ─────────────────────────────────────────────────────────────────────
+    //  Actions — identical rules to the previous build
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>The workspace raises a project id; the team is whichever one the
+    /// workspace is open on. Everything after that is the unchanged handler.</summary>
+    private async Task AssignFromWorkspace(int projectId)
     {
-        var options = new List<MSelect.Option> { new MSelect.Option("", "— בחר מנטור להוספה —") };
-        foreach (var mentor in AvailableMentorsFor(proj))
-            options.Add(new MSelect.Option(mentor.UserId.ToString(), mentor.FullName));
-        return options;
+        if (_workspaceTeamId is null) return;
+        await AssignTeam(_workspaceTeamId.Value, projectId);
     }
 
-    private string FindTeamName(int teamId)
+    /// <summary>The only path to a displacement. The workspace closes as the
+    /// confirmation opens: the dialog names the team that loses the project and
+    /// the team that gains it, which is the whole decision, and two stacked
+    /// overlays would bury it.</summary>
+    private void TakeoverFromWorkspace(AssignmentOption option)
     {
-        var t = _board?.UnassignedTeams.FirstOrDefault(u => u.TeamId == teamId);
-        if (t is not null) return t.TeamName;
-        var p = _board?.Projects.FirstOrDefault(p => p.AssignedTeamId == teamId);
-        return p?.AssignedTeamName ?? "צוות";
+        var row = _workspaceTeam;
+        if (row is null || option.TakenBy is null) return;
+
+        _workspaceTeamId = null;
+        _moveConfirm = new MoveConfirmState
+        {
+            TeamId          = row.TeamId,
+            TeamName        = row.TeamName,
+            FromProjectName = row.AssignedProjectName ?? "—",
+            ToProjectId     = option.ProjectId,
+            ToProjectName   = option.ProjectName,
+            DisplacedTeam   = option.TakenBy
+        };
     }
 
-    private int FindProjectNumber(int projectId)
+    /// <summary>The inspection row may be READ everywhere and ASSIGNED nowhere.
+    /// Guarded here rather than by disabling the buttons, because the whole point
+    /// of the sample is that the real controls are exercised: the workspace opens
+    /// with its real actions live, and the refusal happens at the last moment
+    /// before the call — which is also the only place a new mutation path would
+    /// have to pass through. Unlike demo mode it does not even mutate the
+    /// in-memory board: a sample that could occupy a project would move
+    /// "0 assigned" and "0 published", which is exactly the baseline it must
+    /// leave alone.</summary>
+    private bool RefuseSampleMutation(int teamId)
     {
-        if (_board is null) return 0;
-        return _board.Projects.FirstOrDefault(x => x.ProjectId == projectId)?.ProjectNumber ?? 0;
+        if (!AssignmentSampleForm.IsSampleTeam(teamId)) return false;
+        Toast($"{AssignmentSampleForm.Label} — לא בוצע שיבוץ. השורה הזו קיימת לבדיקת המסך בלבד.", error: false);
+        return true;
     }
 
-    private static (string cls, string text) ProjectStatusBadge(AssignmentBoardProjectDto proj)
+    private async Task AssignTeam(int teamId, int projectId)
     {
-        if (!proj.AssignedTeamId.HasValue) return ("ap-status-unassigned", "טרם שובץ");
-        if (proj.IsDraft)                  return ("ap-status-draft",      "שובץ כטיוטה");
-        return ("ap-status-published", "פורסם");
+        CloseAllMenus();
+
+        if (RefuseSampleMutation(teamId))
+        {
+            _workspaceTeamId = null;
+            return;
+        }
+
+        _busyTeamIds.Add(teamId);
+        _busyProjectIds.Add(projectId);
+
+        try
+        {
+            if (_demo)
+            {
+                DemoAssign(teamId, projectId);
+                InvalidateRows();
+                _workspaceTeamId = null;
+                Toast("מצב הדגמה — הצוות שובץ בתצוגה בלבד", error: false);
+                return;
+            }
+
+            var res = await AssignmentManagementService.AssignTeamAsync(teamId, projectId, force: false);
+
+            if (res.Outcome == AssignTeamOutcome.Success)
+            {
+                await ReloadAsync("הצוות שובץ לפרויקט (טיוטה)");
+                InvalidateRows();
+                // The decision has been taken: the team has left the queue and
+                // belongs to שיבוצים קיימים now. Leaving the workspace open over
+                // a team it can no longer decide anything about is the state
+                // that made the old expanded row confusing.
+                _workspaceTeamId = null;
+            }
+            else if (res.Outcome == AssignTeamOutcome.Conflict && res.Conflict is not null)
+            {
+                // The team is already on another project. Same confirmation as
+                // before; force:true is sent only from ConfirmMove.
+                var dest = AllProjects.FirstOrDefault(p => p.ProjectId == projectId);
+                _workspaceTeamId = null;
+                _moveConfirm = new MoveConfirmState
+                {
+                    TeamId          = teamId,
+                    TeamName        = TeamName(teamId),
+                    FromProjectName = res.Conflict.ProjectName,
+                    ToProjectId     = projectId,
+                    ToProjectName   = dest?.ProjectName ?? ""
+                };
+            }
+            else
+            {
+                Toast("השיבוץ נכשל. נסו שוב.", error: true);
+            }
+        }
+        finally
+        {
+            _busyTeamIds.Remove(teamId);
+            _busyProjectIds.Remove(projectId);
+        }
     }
 
-    private static string LabelClass(int total) =>
-        total >= 40 ? "ap-rec-label-high" :
-        total >= 25 ? "ap-rec-label-mid"  :
-                      "ap-rec-label-low";
+    private void CloseMoveConfirm() => _moveConfirm = null;
+
+    private async Task ConfirmMove()
+    {
+        if (_moveConfirm is null) return;
+        var state = _moveConfirm;
+
+        if (RefuseSampleMutation(state.TeamId))
+        {
+            _moveConfirm = null;
+            return;
+        }
+
+        _moveBusy = true;
+        _busyProjectIds.Add(state.ToProjectId);
+
+        try
+        {
+            if (_demo)
+            {
+                DemoAssign(state.TeamId, state.ToProjectId);
+                InvalidateRows();
+                Toast("מצב הדגמה — ההעברה בוצעה בתצוגה בלבד", error: false);
+                return;
+            }
+
+            var res = await AssignmentManagementService.AssignTeamAsync(state.TeamId, state.ToProjectId, force: true);
+
+            if (res.Outcome == AssignTeamOutcome.Success)
+            {
+                await ReloadAsync($"הצוות הועבר ל{state.ToProjectName}");
+                InvalidateRows();
+            }
+            else
+            {
+                Toast("ההעברה נכשלה. נסו שוב.", error: true);
+            }
+        }
+        finally
+        {
+            _busyProjectIds.Remove(state.ToProjectId);
+            _moveBusy = false;
+            _moveConfirm = null;
+        }
+    }
+
+    private async Task UnassignProject(int projectId)
+    {
+        CloseAllMenus();
+        _busyProjectIds.Add(projectId);
+
+        try
+        {
+            if (_demo)
+            {
+                DemoUnassign(projectId);
+                InvalidateRows();
+                Toast("מצב הדגמה — השיבוץ הוסר בתצוגה בלבד", error: false);
+                return;
+            }
+
+            var ok = await AssignmentManagementService.UnassignTeamAsync(projectId);
+            if (ok)
+            {
+                await ReloadAsync("השיבוץ הוסר");
+                InvalidateRows();
+            }
+            else
+            {
+                Toast("הסרת השיבוץ נכשלה.", error: true);
+            }
+        }
+        finally
+        {
+            _busyProjectIds.Remove(projectId);
+        }
+    }
+
+    private async Task AddMentor(AssignmentBoardProjectDto proj, AssignmentBoardMentorDto mentor)
+    {
+        CloseAllMenus();
+        _busyProjectIds.Add(proj.ProjectId);
+
+        try
+        {
+            if (_demo)
+            {
+                if (proj.Mentors.Count < MaxMentors) proj.Mentors.Add(mentor);
+                Toast("מצב הדגמה — המנחה נוסף בתצוגה בלבד", error: false);
+                return;
+            }
+
+            var res = await AssignmentManagementService.AssignMentorAsync(proj.ProjectId, mentor.UserId);
+
+            switch (res.Outcome)
+            {
+                case AssignMentorOutcome.Success:
+                    await ReloadAsync("המנחה נוסף לפרויקט");
+                    InvalidateRows();
+                    break;
+                case AssignMentorOutcome.AlreadyAssigned:
+                    Toast("המנחה כבר משויך לפרויקט", error: true);
+                    break;
+                case AssignMentorOutcome.LimitReached:
+                    Toast($"מספר המנחים המקסימלי לפרויקט הוא {MaxMentors}", error: true);
+                    break;
+                case AssignMentorOutcome.NotMentor:
+                    Toast("המשתמש שנבחר אינו מנחה פעיל", error: true);
+                    break;
+                default:
+                    Toast("הוספת המנחה נכשלה.", error: true);
+                    break;
+            }
+        }
+        finally
+        {
+            _busyProjectIds.Remove(proj.ProjectId);
+        }
+    }
+
+    private async Task RemoveMentor(AssignmentBoardProjectDto proj, AssignmentBoardMentorDto mentor)
+    {
+        CloseAllMenus();
+        _busyProjectIds.Add(proj.ProjectId);
+
+        try
+        {
+            if (_demo)
+            {
+                proj.Mentors.RemoveAll(m => m.UserId == mentor.UserId);
+                Toast("מצב הדגמה — המנחה הוסר בתצוגה בלבד", error: false);
+                return;
+            }
+
+            var ok = await AssignmentManagementService.RemoveMentorAsync(proj.ProjectId, mentor.UserId);
+            if (ok)
+            {
+                await ReloadAsync($"המנחה {mentor.FullName} הוסר");
+                InvalidateRows();
+            }
+            else
+            {
+                Toast("הסרת המנחה נכשלה.", error: true);
+            }
+        }
+        finally
+        {
+            _busyProjectIds.Remove(proj.ProjectId);
+        }
+    }
+
+    private bool _showPublishConfirm;
+    private bool _publishBusy;
+    private bool _moveBusy;
+
+    private void OpenPublishConfirm()
+    {
+        CloseAllMenus();
+        _showPublishConfirm = true;
+    }
+
+    private void ClosePublishConfirm() => _showPublishConfirm = false;
+
+    private async Task ConfirmPublish()
+    {
+        if (_board is null) return;
+
+        _publishBusy = true;
+        try
+        {
+            if (_demo)
+            {
+                DemoPublish();
+                InvalidateRows();
+                Toast("מצב הדגמה — הפרסום בוצע בתצוגה בלבד", error: false);
+                return;
+            }
+
+            var ok = await AssignmentManagementService.PublishAsync(_board.AcademicYearId);
+            if (ok)
+            {
+                await ReloadAsync("השיבוצים פורסמו לסטודנטים");
+                InvalidateRows();
+            }
+            else
+            {
+                Toast("הפרסום נכשל.", error: true);
+            }
+        }
+        finally
+        {
+            _publishBusy = false;
+            _showPublishConfirm = false;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Demo-mode mutations — in-memory only, never posted
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void DemoAssign(int teamId, int projectId)
+    {
+        if (_board is null) return;
+
+        // A team sits on exactly one project, so moving means clearing the old
+        // one first — the same invariant the server enforces.
+        foreach (var p in _board.Projects.Where(p => p.AssignedTeamId == teamId))
+        {
+            p.AssignedTeamId   = null;
+            p.AssignedTeamName = null;
+            p.AssignedMembers  = new List<AssignmentBoardTeamMemberDto>();
+            p.IsDraft          = false;
+        }
+
+        var target = _board.Projects.FirstOrDefault(p => p.ProjectId == projectId);
+        if (target is null) return;
+
+        // Whoever was on the target goes back to the unassigned pool.
+        if (target.AssignedTeamId.HasValue) DemoReturnToPool(target);
+
+        var row = AllTeamRows.FirstOrDefault(r => r.TeamId == teamId);
+        target.AssignedTeamId   = teamId;
+        target.AssignedTeamName = row?.TeamName ?? TeamName(teamId);
+        target.AssignedMembers  = (row?.Members ?? new List<AssignmentSubmissionMemberDto>())
+            .Select(m => new AssignmentBoardTeamMemberDto
+            {
+                UserId    = m.UserId,
+                FullName  = m.FullName,
+                Strengths = m.Strengths
+            }).ToList();
+        target.IsDraft = true;
+
+        _board.UnassignedTeams.RemoveAll(t => t.TeamId == teamId);
+        _board.HasUnpublishedDrafts = true;
+    }
+
+    private void DemoUnassign(int projectId)
+    {
+        var proj = _board?.Projects.FirstOrDefault(p => p.ProjectId == projectId);
+        if (proj?.AssignedTeamId is null) return;
+
+        DemoReturnToPool(proj);
+        proj.AssignedTeamId   = null;
+        proj.AssignedTeamName = null;
+        proj.AssignedMembers  = new List<AssignmentBoardTeamMemberDto>();
+        proj.IsDraft          = false;
+
+        if (_board is not null)
+            _board.HasUnpublishedDrafts = _board.Projects.Any(p => p.AssignedTeamId.HasValue && p.IsDraft);
+    }
+
+    private void DemoReturnToPool(AssignmentBoardProjectDto proj)
+    {
+        if (_board is null || proj.AssignedTeamId is null) return;
+        var teamId = proj.AssignedTeamId.Value;
+        if (_board.UnassignedTeams.Any(t => t.TeamId == teamId)) return;
+
+        var row = AllTeamRows.FirstOrDefault(r => r.TeamId == teamId);
+
+        _board.UnassignedTeams.Add(new AssignmentBoardTeamDto
+        {
+            TeamId         = teamId,
+            TeamName       = proj.AssignedTeamName ?? row?.TeamName ?? "צוות",
+            AcademicYearId = _board.AcademicYearId,
+            Members        = proj.AssignedMembers,
+            Preferences    = row?.Preferences ?? new List<AssignmentSubmissionPreferenceDto>(),
+            TopRecommendations = (row?.Matches ?? new List<TeamProjectMatchDto>()).Take(3).ToList()
+        });
+    }
+
+    private void DemoPublish()
+    {
+        if (_board is null) return;
+        foreach (var p in _board.Projects) p.IsDraft = false;
+        _board.AssignmentsPublished = true;
+        _board.HasUnpublishedDrafts = false;
+        _board.PublishedAt          = DateTime.Now.ToString("s");
+    }
+
+    private string TeamName(int teamId) =>
+        AllTeamRows.FirstOrDefault(r => r.TeamId == teamId)?.TeamName
+        ?? AllProjects.FirstOrDefault(p => p.AssignedTeamId == teamId)?.AssignedTeamName
+        ?? "צוות";
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Formatting
+    // ─────────────────────────────────────────────────────────────────────
+
+    private sealed class MoveConfirmState
+    {
+        public int     TeamId          { get; init; }
+        public string  TeamName        { get; init; } = "";
+        public string  FromProjectName { get; init; } = "";
+        public int     ToProjectId     { get; init; }
+        public string  ToProjectName   { get; init; } = "";
+        public string? DisplacedTeam   { get; init; }
+    }
+
+    private MoveConfirmState? _moveConfirm;
 
     private static string FormatDate(string raw) =>
         DateTime.TryParse(raw, out var dt) ? dt.IsraelFormat() : raw;
 
-    private static string StrengthLabel(string s) => s switch
+    /// <summary>Same three bands the previous build used (40 / 25), so a score
+    /// that read as "high" yesterday still does.</summary>
+    private static string ScoreClass(int total) =>
+        total >= 40 ? "ap-score--high" :
+        total >= 25 ? "ap-score--mid"  :
+                      "ap-score--low";
+
+    private static string ProjectTypeLabel(string type) => type switch
     {
-        "Design"            => "עיצוב",
-        "Content"           => "תוכן",
-        "Technology"        => "טכנולוגיה",
-        "ProjectManagement" => "ניהול פרויקט",
-        _                   => s
+        "Technological"  => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => type
     };
 
-    private static string StrengthIcon(string s) => s switch
+    private static string Initials(string name)
     {
-        "Design"            => "🎨",
-        "Content"           => "✍",
-        "Technology"        => "💻",
-        "ProjectManagement" => "📋",
-        _                   => "•"
-    };
-
-    private sealed class MoveConfirmState
-    {
-        public int    TeamId          { get; set; }
-        public string TeamName        { get; set; } = "";
-        public string FromProjectName { get; set; } = "";
-        public int    ToProjectId     { get; set; }
-        public string ToProjectName   { get; set; } = "";
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 1
+            ? parts[0][..System.Math.Min(2, parts[0].Length)]
+            : $"{parts[0][0]}{parts[^1][0]}";
     }
 }

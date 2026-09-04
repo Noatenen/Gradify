@@ -1,0 +1,271 @@
+@namespace AuthWithAdmin.Client.Pages.Management.Forms
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Pages.Student
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IFormsManagementService FormsService
+@inject ICatalogService CatalogService
+
+@*
+    ── תצוגה מקדימה של טופס הסטודנט ─────────────────────────────────────────
+
+    WHAT IT ANSWERS
+    ───────────────
+    "What will students actually see when they fill this form?" — the WHOLE
+    flow, before anyone has filled it, and without the admin needing a student
+    account, a team, or routes their role cannot reach.
+
+    TWO SCREENS, AND A VIEW SWITCH — NOT A WIZARD
+    ─────────────────────────────────────────────
+    The student's flow spans two screens: /student/catalog (browse and read
+    about the projects — nothing is chosen there) and /student/assignment (rank
+    three, answer the rest, submit). The preview opens on the CATALOGUE, because
+    that is where a student starts.
+
+    NOTHING TRAVELS BETWEEN THEM. The two views are two screens, not two halves
+    of one form: the catalogue has no selection to hand over, and the reader
+    picks their three projects in the form itself, from the same catalogue a
+    student picks from. Each view keeps its own state while the modal is open —
+    both stay mounted, hidden rather than torn down — so glancing at the
+    catalogue never costs the answers already typed into the form.
+
+    Moving between them is a DROPDOWN — תצוגת סטודנט — and deliberately not a
+    stepper. A numbered 1 → 2 strip with a 3/3 counter turned the preview into a
+    flow of its own: it implied progress the reader has to make, an order they
+    have to follow, and a completion state that is theirs rather than the
+    student's. None of that is true. The reader is switching which student
+    SCREEN they are looking at, the way they would switch a tab — either is
+    valid at any moment, and neither is a step toward anything.
+
+    The switch exists because a modal has no URL; students move between these
+    two screens by route, and neither screen knows the switch exists. The
+    catalogue's own CTA (להמשך לטופס השיבוץ) still shows, and inside the preview
+    it changes the view rather than navigating — the same act the student takes,
+    with the only outcome this surface can have.
+
+    NOT THE SAME QUESTION AS טופס שיבוץ
+    ───────────────────────────────────
+    טופס שיבוץ (AssignmentFormModal) reads ONE team's SUBMITTED answers. This
+    reads the empty flow as configured. Two different objects, deliberately two
+    different surfaces and two different names.
+
+    HOW IT AVOIDS BEING A SECOND DESIGN
+    ───────────────────────────────────
+    Both steps are the student's own components, rendered:
+
+      קטלוג  → StudentCatalogBoard, the surface /student/catalog draws, with its
+               real toolbar, cards and ProjectQuickView
+      טופס   → StudentAssignmentPage itself, with Preview="true" — including its
+               real three-slot project chooser
+
+    A lecturer-side rebuild of either would be correct on the day it was written
+    and wrong from the next change onward — and invisibly so, because the only
+    person who could catch it is the one being shown the wrong thing.
+
+    WHAT IT CANNOT DO
+    ─────────────────
+    The form's chosen projects live in StudentAssignmentPage's own state and die
+    with the modal; there is no preference store to touch any more, on the
+    client or the server. Favourites toggle a local set and POST nothing. The
+    form never calls IAssignmentService, and submit is disabled and guarded. The
+    only requests this surface makes are GETs the admin already makes on these
+    screens: api/forms(/{id}) and api/catalog.
+*@
+
+<MModal IsOpen="IsOpen"
+        Size="MModal.ModalSize.Wide"
+        OnClose="OnClose"
+        AriaLabelledBy="@_headingId"
+        Class="sfp-modal">
+
+    <HeaderContent>
+        <div class="sfp-head">
+            <div class="sfp-head-top">
+                <h2 class="sfp-title" id="@_headingId">תצוגה מקדימה של טופס הסטודנט</h2>
+                <span class="sfp-badge">@StudentFormPreviewData.Label</span>
+
+                @* What used to be a paragraph under the heading. Same words,
+                   no second block of type between the reader and the screen
+                   they opened this to look at. *@
+                <MInfoTip Text="@InfoText" />
+            </div>
+
+            @* ── Which student screen is being looked at ─────────────────
+               A label and a select, sized to its longest option and nothing
+               more. It sits under the heading rather than beside the content
+               because it is about the whole surface, and it stays quiet
+               because the thing worth looking at is underneath it. *@
+            <div class="sfp-view">
+                <span class="sfp-view-label" id="@_viewLabelId">תצוגת סטודנט</span>
+                <MSelectField Options="@ViewOptions"
+                              Value="@_view"
+                              ValueChanged="SetView"
+                              AriaLabel="תצוגת סטודנט"
+                              Class="sfp-view-select" />
+            </div>
+        </div>
+    </HeaderContent>
+
+    <ChildContent>
+        @if (_loading)
+        {
+            <MLoadingState Label="טוען את הטופס…" />
+        }
+        else if (_form is null && _catalog.Count == 0)
+        {
+            <MEmptyState Title="לא נמצא טופס שיבוץ להצגה"
+                         Description="יש ליצור טופס שיבוץ למחזור הנוכחי לפני שניתן להציג תצוגה מקדימה."
+                         Live="true" />
+        }
+        else
+        {
+            @* The student's own token scope. `motiva-final` is already inherited
+               from the admin shell — Lecturer and Student wear the same finished
+               values — but the role hook is stated explicitly so that the day a
+               genuine student-only rule appears, the preview gets it too.
+
+               --motiva-content-padding-inline is zeroed because the student
+               surfaces deliberately bleed to the page gutters, and inside a
+               modal those gutters are not the page's. *@
+            @* Both mounted, one hidden. An @if would tear the other view down,
+               and a reader who switched to the catalogue to check a project
+               would come back to a form that had forgotten everything they had
+               answered — including the projects they had just ranked. *@
+            <div class="sfp-stage motiva motiva-final motiva-student" dir="rtl">
+                <div hidden="@(_view != ViewCatalogue)">
+                    <StudentCatalogBoard Projects="_catalog"
+                                         FavoriteIds="_favorites"
+                                         OnToggleFavorite="ToggleFavorite"
+                                         ShowPageHeader="false"
+                                         OnContinue="ShowForm" />
+                </div>
+
+                <div hidden="@(_view != ViewForm)">
+                    <StudentAssignmentPage Preview="true"
+                                           PreviewContext="@_preview!.Context"
+                                           PreviewAnswers="@_preview!.Answers" />
+                </div>
+            </div>
+        }
+    </ChildContent>
+</MModal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>The form to preview, as the caller currently holds it.
+    ///
+    /// <para>The form editor passes its LIVE editing state, unsaved edits and
+    /// all — that is the version an admin pressing "preview" wants to look at,
+    /// and re-fetching would show them the version they are trying to change.
+    /// A caller with no form (the Assignments workspace) leaves this null and
+    /// the modal resolves the cycle's assignment form itself.</para></summary>
+    [Parameter] public FormDetailDto? Form { get; set; }
+
+    /// <summary>Narrows the form lookup when <see cref="Form"/> is null. Null
+    /// takes the first assignment form there is.</summary>
+    [Parameter] public int? AcademicYearId { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const string ViewCatalogue = "catalog";
+    private const string ViewForm       = "form";
+
+    /// <summary>The two student screens, named as screens. No ordinal, no
+    /// counter, no "next" — the reader is choosing what to look at, not
+    /// advancing through anything.</summary>
+    private static readonly IReadOnlyList<MSelect.Option> ViewOptions = new[]
+    {
+        new MSelect.Option(ViewCatalogue, "קטלוג הפרויקטים"),
+        new MSelect.Option(ViewForm,      "טופס ההגשה")
+    };
+
+    private readonly string _headingId    = $"sfp-title-{Guid.NewGuid():N}";
+    private readonly string _viewLabelId  = $"sfp-view-{Guid.NewGuid():N}";
+
+    private List<StudentCatalogProjectDto> _catalog   = new();
+    private readonly HashSet<int>          _favorites = new();
+
+    private FormDetailDto? _form;
+    private StudentFormPreviewData.Preview? _preview;
+
+    /// <summary>Opens on the catalogue: that is where a student starts.</summary>
+    private string _view = ViewCatalogue;
+
+    private bool _loading;
+    private bool _opened;
+
+    private string InfoText => string.IsNullOrWhiteSpace(_form?.Name)
+        ? StudentFormPreviewData.Hint
+        : $"{_form!.Name} — {StudentFormPreviewData.Hint}";
+
+    /// <summary>Loaded on the first open and reloaded on every subsequent one,
+    /// so reopening after editing a question shows the edited question. Every
+    /// scrap of preview state — the picks, the favourites, the step — is reset
+    /// with it: a preview is a fresh look at the flow, not a session.</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!IsOpen)
+        {
+            _opened = false;
+            return;
+        }
+
+        if (_opened) return;
+        _opened  = true;
+        _loading = true;
+
+        _favorites.Clear();
+        _view = ViewCatalogue;
+
+        _form    = Form ?? await ResolveAssignmentFormAsync();
+        _catalog = StudentFormPreviewData.ToStudentCatalog(await CatalogService.GetCatalogAsync());
+
+        RebuildPreview();
+        _loading = false;
+    }
+
+    /// <summary>The cycle's assignment form, for a caller that does not hold
+    /// one. Two reads, both already used by the forms screens.</summary>
+    private async Task<FormDetailDto?> ResolveAssignmentFormAsync()
+    {
+        var forms = await FormsService.GetFormsAsync();
+        if (forms is null) return null;
+
+        var row = forms.FirstOrDefault(f =>
+                      string.Equals(f.FormType, "AssignmentForm", StringComparison.OrdinalIgnoreCase) &&
+                      (AcademicYearId is null || f.AcademicYearId == AcademicYearId))
+                  ?? forms.FirstOrDefault(f =>
+                      string.Equals(f.FormType, "AssignmentForm", StringComparison.OrdinalIgnoreCase));
+
+        return row is null ? null : await FormsService.GetFormAsync(row.Id);
+    }
+
+    /// <summary>Built once per open. The form's own three-slot chooser needs
+    /// the WHOLE catalogue to choose from — the same rows the catalogue view
+    /// browses — so there is nothing per-selection to rebuild.</summary>
+    private void RebuildPreview() =>
+        _preview = StudentFormPreviewData.Build(_form, _catalog);
+
+    private void SetView(string view) =>
+        _view = view == ViewForm ? ViewForm : ViewCatalogue;
+
+    private void ShowForm() => SetView(ViewForm);
+
+    /// <summary>A favourite is a person's bookmark, and the person here is
+    /// looking at somebody else's screen — so the star works, shows, filters,
+    /// and posts nothing.
+    ///
+    /// <para>It also writes through to the FORM's copy of the catalogue, which
+    /// is what makes the preview honest about the real behaviour: starring a
+    /// project on the catalogue view moves it to the top of the form's project
+    /// selectors, exactly as a student's StudentProjectFavorites row does. One
+    /// favourite state across both views, as there is for a student.</para></summary>
+    private void ToggleFavorite(StudentCatalogProjectDto project)
+    {
+        var on = !_favorites.Remove(project.Id);
+        if (on) _favorites.Add(project.Id);
+
+        var row = _preview?.Context.Catalog.FirstOrDefault(c => c.Id == project.Id);
+        if (row is not null) row.IsFavorite = on;
+    }
+}

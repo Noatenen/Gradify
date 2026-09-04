@@ -1,0 +1,866 @@
+@namespace AuthWithAdmin.Client.Pages.Assignments
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    ── בדיקת שיבוץ — the decision workspace for ONE team ─────────────────────
+
+    WHAT IT ANSWERS
+    ───────────────
+    "This team is waiting. Where should it go, and why?" — one team, all the
+    context, and every valid move, on one focused surface.
+
+    WHY IT IS NOT AN EXPANDED TABLE ROW
+    ───────────────────────────────────
+    It used to be. The queue row grew a three-column panel with members,
+    preferences and the whole recommendation list inside it, which meant the
+    list of teams waiting and the workspace for deciding about one of them were
+    the same object: scanning ten teams and deciding about one need opposite
+    densities, and the row could serve neither. The queue is a queue now, and
+    this is the room you step into.
+
+    THE THREE SECTIONS ARE THE ARGUMENT
+    ───────────────────────────────────
+      1  הצוות          — who they are and what they told us about themselves
+      2  העדפות הצוות   — what they ASKED for, whole, including the taken ones
+      3  המלצת המערכת   — what to do, and the sentence explaining why
+
+    Section 3 always starts from section 2. See AssignmentRecommender: a
+    submitted preference outranks a project the matcher merely scored highly,
+    and when the top preference is taken the recommendation moves down the
+    team's OWN list before it ever looks outside it. The recommendation is
+    recomputed here on every render from live board state, so assigning,
+    moving or unassigning anyone re-answers it with no extra call.
+
+    WHAT IT DOES NOT OWN
+    ────────────────────
+    Not one business rule. Assign, take over (with its confirmation), unassign
+    and publish stay on the page; this component raises the intent and the page
+    calls exactly the service methods it always did.
+*@
+
+@* FitContent: this surface is READ ACROSS — team, preferences and the
+   system's recommendation side by side — so it takes the height it needs and
+   lets the overlay scroll if the screen is too short, rather than growing a
+   second scrollbar inside the one the overlay already has. See MModal. *@
+<MModal IsOpen="IsOpen"
+        Size="MModal.ModalSize.Wide"
+        FitContent="true"
+        OnClose="OnClose"
+        AriaLabelledBy="@_headingId">
+
+    <HeaderContent>
+        @if (Team is not null)
+        {
+            <div class="taw-head">
+                @* The team's STATE, not the lecturer's current activity. A
+                   header that says "בדיקת שיבוץ" describes what the reader is
+                   doing, which they already know; "ממתין לשיבוץ" describes the
+                   thing being read, which is what a status is for. Drawn with
+                   the shared MStatusBadge so it carries the same weight as
+                   every other state chip in the product. *@
+                <div class="asgn-head-top">
+                    <MStatusBadge Variant="@StatusVariant" Text="@StatusText" />
+
+                    @* The same word, in the same weight, as the queue row this
+                       was opened from. A reader who followed a marked row must
+                       not have to wonder whether the marking survived the
+                       click. *@
+                    @if (Team.IsSample)
+                    {
+                        <span class="asgn-sample" title="@AssignmentSampleForm.Hint">@AssignmentSampleForm.Label</span>
+                    }
+                </div>
+
+                @* The people are the identity here. "צוות אלמוג" is a label the
+                   system generated; a lecturer arbitrating between teams is
+                   thinking about the students, and the two names are the thing
+                   they will recognise on the next screen and in the corridor. *@
+                <div class="asgn-titlerow">
+                    <h2 class="asgn-title" id="@_headingId">@TitleText</h2>
+
+                    @if (Team.HasSubmission && !string.IsNullOrWhiteSpace(Team.SubmittedAt))
+                    {
+                        <span class="asgn-submitted">הוגש @SubmittedStamp</span>
+                    }
+                </div>
+                @if (!Team.HasSubmission || string.IsNullOrWhiteSpace(Team.SubmittedAt))
+                {
+                    <p class="taw-sub"><span class="asgn-quiet">לא נמצאה הגשת טופס</span></p>
+                }
+            </div>
+        }
+    </HeaderContent>
+
+    <ChildContent>
+        @if (Team is not null)
+        {
+            var rec = Recommendation;
+
+            <div class="taw-body" dir="rtl">
+
+                @* ── Where the team stands, and the one move that undoes it ──
+                   A settled team opened from שיבוצים קיימים is not a decision
+                   waiting to be made; it is a decision that can be revisited.
+                   The bar says which of the two this is before anything else
+                   on the surface argues for a move. *@
+                @* Only an EXISTING assignment earns this strip. For a waiting
+                   team it restated the header's status over an empty grey band
+                   and pushed the first real content below the fold. *@
+                @if (Team.AssignedProjectId.HasValue)
+                {
+                <div class="taw-bar">
+                    <div class="taw-bar-state">
+                        <span class="taw-status @(Team.AssignedIsDraft ? "taw-status--draft" : "taw-status--live")">
+                            <span class="taw-dot" aria-hidden="true"></span>
+                            משובץ ל@(Team.AssignedProjectName)
+                        </span>
+                        <span class="taw-bar-note">
+                            @(Team.AssignedIsDraft ? "טיוטה — טרם פורסם לסטודנטים" : "פורסם לסטודנטים")
+                        </span>
+                    </div>
+
+                    @* In the details view every management act sits together in
+                       one row below; only the decision view, which has no such
+                       row, carries the undo up here. *@
+                    @if (!ShowDetails)
+                    {
+                        <button type="button" class="taw-btn taw-btn--ghost"
+                                disabled="@Busy"
+                                @onclick="() => OnUnassign.InvokeAsync(Team.AssignedProjectId!.Value)">
+                            הסרת השיבוץ
+                        </button>
+                    }
+                </div>
+                }
+
+                @* ── What the assignment IS ──────────────────────────────
+                   A row opened from שיבוצים קיימים is asking "what is this
+                   assignment, and what state is it in" before it asks
+                   anything else. Project, mentor, status and publish are the
+                   four answers, and three of them live on the board project
+                   rather than on the team — which is why the page hands the
+                   row down instead of the workspace inferring it. *@
+                @if (ShowDetails)
+                {
+                    <dl class="taw-facts">
+                        <div class="taw-fact">
+                            <dt class="taw-fact-key">פרויקט</dt>
+                            <dd class="taw-fact-val">
+                                @if (Assignment is not null && Assignment.ProjectNumber > 0)
+                                {
+                                    <span class="taw-fact-num">#@Assignment.ProjectNumber</span>
+                                }
+                                <span class="taw-fact-name">@(Assignment?.ProjectName ?? Team.AssignedProjectName)</span>
+                                @if (!string.IsNullOrWhiteSpace(Assignment?.ProjectType))
+                                {
+                                    <span class="taw-fact-tag">@ProjectTypeLabel(Assignment!.ProjectType)</span>
+                                }
+                            </dd>
+                        </div>
+
+                        <div class="taw-fact">
+                            <dt class="taw-fact-key">מנחה</dt>
+                            <dd class="taw-fact-val">
+                                @* Read-only here on purpose: mentors are added and
+                                   removed inline on the row that owns them, and a
+                                   second picker over the same list is two places to
+                                   keep in step for no new ability. *@
+                                @if (Assignment is null || Assignment.Mentors.Count == 0)
+                                {
+                                    <span class="asgn-quiet">אין מנחה</span>
+                                }
+                                else
+                                {
+                                    @foreach (var mentor in Assignment.Mentors)
+                                    {
+                                        <span class="taw-fact-tag">@mentor.FullName</span>
+                                    }
+                                }
+                            </dd>
+                        </div>
+
+                        <div class="taw-fact">
+                            <dt class="taw-fact-key">סטטוס</dt>
+                            <dd class="taw-fact-val">
+                                <span class="taw-status taw-status--live">
+                                    <span class="taw-dot" aria-hidden="true"></span>
+                                    משובץ
+                                </span>
+                            </dd>
+                        </div>
+
+                        @* Publish is its own axis, not a third value of status:
+                           an assignment can be settled and unpublished at once. *@
+                        <div class="taw-fact">
+                            <dt class="taw-fact-key">פרסום</dt>
+                            <dd class="taw-fact-val">
+                                <span class="taw-status @(Team.AssignedIsDraft ? "taw-status--draft" : "taw-status--live")">
+                                    <span class="taw-dot" aria-hidden="true"></span>
+                                    @(Team.AssignedIsDraft ? "טיוטה" : "פורסם")
+                                </span>
+                            </dd>
+                        </div>
+                    </dl>
+
+                    @TeamPanel
+
+                    @* ── What can be done about it ───────────────────────
+                       Every management act for a settled assignment, in one
+                       row, at the same weight the details above them have.
+                       שינוי שיבוץ does NOT open the fold below it: replacing
+                       an assignment is a decision, and a decision needs live
+                       availability, not the form the team sent in February. *@
+                    <div class="taw-acts">
+                        <button type="button" class="taw-btn taw-btn--cta motiva-cta"
+                                disabled="@Busy"
+                                @onclick="OnChangeAssignment">
+                            שינוי שיבוץ
+                        </button>
+
+                        <button type="button" class="taw-btn taw-btn--ghost"
+                                disabled="@Busy"
+                                @onclick="() => OnUnassign.InvokeAsync(Team.AssignedProjectId!.Value)">
+                            הסרת השיבוץ
+                        </button>
+                    </div>
+
+                    @* ── Secondary once the decision is made ─────────────
+                       What the team asked for and what the matcher thought
+                       are how this assignment came about, not what it IS.
+                       Closed by default and read-only: acting on any of it
+                       means changing the assignment, which is the button
+                       above, on a surface built for it. *@
+                    <MAccordionItem Primary="טופס שהוגש והמלצות"
+                                    Secondary="@FoldSummary"
+                                    Open="_foldOpen"
+                                    OnToggle="() => _foldOpen = !_foldOpen"
+                                    Class="taw-fold">
+                        <div class="taw-fold-body">
+
+                            <section class="taw-fold-sec">
+                                <header class="asgn-panel-head">
+                                    <h3 class="asgn-panel-title">העדפות שהוגשו</h3>
+                                </header>
+
+                                @if (rec.Preferences.Count == 0)
+                                {
+                                    <p class="asgn-quiet">הצוות לא דירג העדפות בטופס</p>
+                                }
+                                else
+                                {
+                                    <ol class="asgn-prefs">
+                                        @foreach (var opt in rec.Preferences)
+                                        {
+                                            <li class="asgn-pref @(opt.IsCurrent ? "asgn-pref--current" : "") @(opt.TakenBy is not null ? "asgn-pref--taken" : "")">
+                                                <span class="asgn-rank">#@opt.PreferenceRank</span>
+
+                                                <div class="asgn-pref-main">
+                                                    <button type="button" class="asgn-pref-name asgn-projlink"
+                                                            title="@($"פרטי {opt.ProjectName}")"
+                                                            @onclick="() => OnInspectProject.InvokeAsync(opt.ProjectId)">
+                                                        @opt.ProjectName
+                                                    </button>
+
+                                                    <div class="asgn-pref-meta">
+                                                        <MDemandBadge Teams="opt.Demand.Teams"
+                                                                      FirstChoice="opt.Demand.FirstChoice"
+                                                                      Size="MDemandBadge.DemandSize.Full" />
+                                                    </div>
+
+                                                    @if (opt.IsCurrent)
+                                                    {
+                                                        <div class="asgn-avail asgn-avail--current">השיבוץ הנוכחי של הצוות</div>
+                                                    }
+                                                    else if (opt.TakenBy is not null)
+                                                    {
+                                                        <div class="asgn-avail asgn-avail--taken">תפוס על ידי @opt.TakenBy</div>
+                                                    }
+                                                    else
+                                                    {
+                                                        <div class="asgn-avail asgn-avail--free">פנוי</div>
+                                                    }
+                                                </div>
+                                            </li>
+                                        }
+                                    </ol>
+                                }
+                            </section>
+
+                            @* The matcher still has an opinion about a settled
+                               team — it is simply not a call to action here.
+                               Stated as the conditional it actually is. *@
+                            <section class="taw-fold-sec">
+                                <header class="asgn-panel-head">
+                                    <h3 class="asgn-panel-title">המלצת המערכת</h3>
+                                </header>
+
+                                @if (rec.Primary is null)
+                                {
+                                    <p class="asgn-quiet">
+                                        אין כרגע פרויקט פנוי אחר להמליץ עליו עבור הצוות.
+                                    </p>
+                                }
+                                else
+                                {
+                                    <div class="taw-fold-rec">
+                                        <p class="taw-fold-lead">אילו השיבוץ היה משתנה כעת, ההמלצה הייתה:</p>
+
+                                        <div class="taw-fold-rec-top">
+                                            @if (rec.Primary!.Source == AssignmentOptionSource.Preference)
+                                            {
+                                                <span class="taw-alt-tag">העדפה #@rec.Primary!.PreferenceRank</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="taw-alt-tag taw-alt-tag--ext">מחוץ להעדפות</span>
+                                            }
+                                            <span class="taw-scoreline">
+                                                <span class="taw-scorelabel">ציון התאמה</span>
+                                                <span class="taw-score @ScoreClass(rec.Primary!.Score)">@rec.Primary!.Score</span>
+                                            </span>
+                                        </div>
+
+                                        <div class="taw-fold-rec-name">@rec.Primary!.ProjectName</div>
+
+                                        <div class="asgn-pref-meta">
+                                            <MDemandBadge Teams="rec.Primary!.Demand.Teams"
+                                                          FirstChoice="rec.Primary!.Demand.FirstChoice"
+                                                          Size="MDemandBadge.DemandSize.Full" />
+                                            <span class="asgn-avail asgn-avail--free">פנוי</span>
+                                        </div>
+
+                                        <p class="taw-why">@rec.Primary!.Reason</p>
+                                    </div>
+                                }
+                            </section>
+                        </div>
+                    </MAccordionItem>
+                }
+                else
+                {
+                <div class="taw-grid">
+
+                    @* ══ 1 — הצוות ═══════════════════════════════════════════ *@
+                    @TeamPanel
+
+                    @* ══ 2 — העדפות הצוות ════════════════════════════════════
+                       Shown WHOLE, in the team's own order, taken ones included.
+                       A blocked preference is the fact that explains why the
+                       recommendation below is not the obvious one. *@
+                    <section class="asgn-panel taw-panel--prefs">
+                        @* No count: three numbered cards below say "three"
+                           more directly than the word does. *@
+                        <header class="asgn-panel-head">
+                            <h3 class="asgn-panel-title">העדפות הצוות</h3>
+                        </header>
+
+                        @if (rec.Preferences.Count == 0)
+                        {
+                            <p class="asgn-quiet">הצוות לא דירג העדפות בטופס</p>
+                        }
+                        else
+                        {
+                            <ol class="asgn-prefs">
+                                @foreach (var opt in rec.Preferences)
+                                {
+                                    <li class="asgn-pref @(opt.IsCurrent ? "asgn-pref--current" : "") @(opt.TakenBy is not null ? "asgn-pref--taken" : "")">
+                                        <span class="asgn-rank">#@opt.PreferenceRank</span>
+
+                                        <div class="asgn-pref-main">
+                                            <button type="button" class="asgn-pref-name asgn-projlink"
+                                                    title="@($"פרטי {opt.ProjectName}")"
+                                                    @onclick="() => OnInspectProject.InvokeAsync(opt.ProjectId)">
+                                                @opt.ProjectName
+                                            </button>
+
+                                            @* What the team asked for, and how contested
+                                               it is — no match score. The score is the
+                                               SYSTEM's reading of this list, so it belongs
+                                               to המלצת המערכת, not to the form. *@
+                                            <div class="asgn-pref-meta">
+                                                <MDemandBadge Teams="opt.Demand.Teams"
+                                                              FirstChoice="opt.Demand.FirstChoice"
+                                                              Size="MDemandBadge.DemandSize.Full" />
+                                            </div>
+
+                                            @* Availability, spelled out. "פנוי" is a
+                                               fact worth stating, not the absence of a
+                                               warning — without it the taken rows are
+                                               the only ones that say anything. *@
+                                            @if (opt.IsCurrent)
+                                            {
+                                                <div class="asgn-avail asgn-avail--current">השיבוץ הנוכחי של הצוות</div>
+                                            }
+                                            else if (opt.TakenBy is not null)
+                                            {
+                                                <div class="asgn-avail asgn-avail--taken">תפוס על ידי @opt.TakenBy</div>
+                                            }
+                                            else
+                                            {
+                                                <div class="asgn-avail asgn-avail--free">פנוי</div>
+                                            }
+                                        </div>
+
+                                        <div class="asgn-pref-act">
+                                            @if (opt.IsCurrent)
+                                            {
+                                                <span class="taw-current-tag">משובץ</span>
+                                            }
+                                            else if (opt.TakenBy is not null)
+                                            {
+                                                @* The only path that ends another team's
+                                                   assignment. Never a default, always
+                                                   named, always through the page's
+                                                   confirmation. *@
+                                                <button type="button" class="taw-btn taw-btn--warn"
+                                                        disabled="@Busy"
+                                                        @onclick="() => OnTakeover.InvokeAsync(opt)">
+                                                    שבץ במקומו
+                                                </button>
+                                            }
+                                            else
+                                            {
+                                                <button type="button" class="taw-btn taw-btn--ghost"
+                                                        disabled="@Busy"
+                                                        @onclick="() => OnAssign.InvokeAsync(opt.ProjectId)">
+                                                    @(Team.AssignedProjectId.HasValue ? "העבר לכאן" : "שבץ")
+                                                </button>
+                                            }
+                                        </div>
+                                    </li>
+                                }
+                            </ol>
+                        }
+                    </section>
+
+                    @* ══ 3 — המלצת המערכת ════════════════════════════════════ *@
+                    <section class="asgn-panel taw-panel--rec">
+                        <header class="asgn-panel-head">
+                            <h3 class="asgn-panel-title">המלצת המערכת</h3>
+                        </header>
+
+                        @if (rec.Primary is null)
+                        {
+                            <p class="asgn-quiet">
+                                אין כרגע פרויקט פנוי להמליץ עליו. ניתן לשבץ במקום צוות אחר מתוך רשימת ההעדפות,
+                                או לשחרר שיבוץ קיים ולנסות שוב.
+                            </p>
+                        }
+                        else
+                        {
+                            var p = rec.Primary!;
+
+                            @* The project leads, then the four facts that argue
+                               for it, one per line. The score is the only place
+                               on this surface where the SYSTEM's own number
+                               appears, so it is named in full — "ציון התאמה",
+                               never a bare "התאמה 68" floating beside a chip. *@
+                            <div class="taw-primary">
+                                <button type="button" class="taw-primary-name asgn-projlink"
+                                        title="@($"פרטי {p.ProjectName}")"
+                                        @onclick="() => OnInspectProject.InvokeAsync(p.ProjectId)">
+                                    @p.ProjectName
+                                </button>
+
+                                <dl class="taw-primary-facts">
+                                    <div class="taw-primary-fact">
+                                        <dt class="taw-sr">מקור ההמלצה</dt>
+                                        <dd class="taw-primary-src">
+                                            @if (p.Source == AssignmentOptionSource.Preference)
+                                            {
+                                                <text>העדפה #@p.PreferenceRank של הצוות</text>
+                                            }
+                                            else
+                                            {
+                                                <text>מחוץ להעדפות שהוגשו</text>
+                                            }
+                                        </dd>
+                                    </div>
+
+                                    <div class="taw-primary-fact">
+                                        <dt class="taw-sr">ציון התאמה</dt>
+                                        <dd class="taw-primary-scoreline">
+                                            <span class="taw-scorelabel">ציון התאמה</span>
+                                            <span class="taw-score @ScoreClass(p.Score)">@p.Score</span>
+                                        </dd>
+                                    </div>
+
+                                    <div class="taw-primary-fact">
+                                        <dt class="taw-sr">ביקוש</dt>
+                                        <dd>
+                                            <MDemandBadge Teams="p.Demand.Teams"
+                                                          FirstChoice="p.Demand.FirstChoice"
+                                                          Size="MDemandBadge.DemandSize.Full" />
+                                        </dd>
+                                    </div>
+
+                                    <div class="taw-primary-fact">
+                                        <dt class="taw-sr">זמינות</dt>
+                                        <dd><span class="asgn-avail asgn-avail--free">פנוי</span></dd>
+                                    </div>
+                                </dl>
+
+                                @* The sentence is the point. A recommendation the
+                                   lecturer cannot argue with is a recommendation
+                                   they cannot trust. *@
+                                <p class="taw-why">@p.Reason</p>
+
+                                @* The contest, once, in full. The lecturer is
+                                   about to hand out a scarce thing; who else is
+                                   waiting for it is the fact most likely to
+                                   change their mind, and it must not depend on
+                                   which team they happened to open first. *@
+                                @if (rec.YieldedTo is { Rival: not null } y)
+                                {
+                                    <p class="taw-contest">
+                                        <strong>@y.ProjectName</strong> הוא העדפה #@y.PreferenceRank של הצוות,
+                                        אך ל<strong>@y.Rival!.TeamName</strong> התאמה גבוהה יותר אליו
+                                        (@y.Rival!.Score מול @y.Score), והוא עדיין ממתין לשיבוץ.
+                                    </p>
+                                }
+                                else if (p.HasStrongerRival)
+                                {
+                                    <p class="taw-contest">
+                                        גם <strong>@p.Rival!.TeamName</strong> ממתין לפרויקט הזה,
+                                        עם התאמה גבוהה יותר (@p.Rival!.Score מול @p.Score).
+                                    </p>
+                                }
+
+                                @* The argument reads top to bottom; the act
+                                   anchors the corner it ends in. *@
+                                <div class="taw-primary-act">
+                                    <button type="button" class="taw-btn taw-btn--cta motiva-cta"
+                                            disabled="@Busy"
+                                            @onclick="() => OnAssign.InvokeAsync(p.ProjectId)">
+                                        שבץ לפרויקט
+                                    </button>
+                                </div>
+                            </div>
+                        }
+
+                        @* The team's OTHER preferences are not repeated here.
+                           They are listed whole, in rank order and with their
+                           own actions, under העדפות הצוות — offering #2 twice
+                           made one project look like two different options.
+                           What is left is genuinely additional: a short, ranked
+                           shortlist from outside the form. *@
+                        @if (rec.Alternatives.Count > 0)
+                        {
+                            <div class="taw-alts">
+                                @* No subtitle. "אפשרויות נוספות" under a panel
+                                   whose every other row is one of the team's
+                                   own preferences already says which list this
+                                   is; the sentence restated it and cost a line
+                                   in a column that has none to spare. *@
+                                <h4 class="taw-alts-title">אפשרויות נוספות</h4>
+                                <ul class="taw-alt-list">
+                                    @foreach (var alt in rec.Alternatives)
+                                    {
+                                        @AlternativeRow(alt)
+                                    }
+                                </ul>
+                            </div>
+                        }
+                    </section>
+                </div>
+                }
+            </div>
+        }
+    </ChildContent>
+
+    @* No סגור here: MModal already draws an X, and two controls that do the
+       same thing make the reader decide which one is meant. *@
+    <FooterContent>
+        @* Reassignment was entered from the details of an existing assignment,
+           so it has somewhere to go back to. A waiting team does not. *@
+        @if (!ShowDetails && Team?.AssignedProjectId.HasValue == true && OnBackToDetails.HasDelegate)
+        {
+            <button type="button" class="taw-btn taw-btn--ghost" @onclick="OnBackToDetails">
+                חזרה לפרטי השיבוץ
+            </button>
+        }
+
+        @if (OnViewForm.HasDelegate)
+        {
+            <button type="button" class="taw-btn taw-btn--ghost" @onclick="OnViewForm">
+                טופס שיבוץ
+            </button>
+        }
+    </FooterContent>
+</MModal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    [Parameter] public AssignmentTeamView? Team { get; set; }
+
+    /// <summary>The board row behind the team's CURRENT assignment, when it has
+    /// one. It carries the mentors, the project number and the project type —
+    /// facts about the assignment that the joined team view does not hold.
+    /// Null for a waiting team, and null-safe for an assigned one whose project
+    /// the board did not return.</summary>
+    [Parameter] public AssignmentBoardProjectDto? Assignment { get; set; }
+
+    /// <summary>Who currently holds a project, or null when it is free. Read on
+    /// every render, which is what makes the recommendation move the moment the
+    /// board does.</summary>
+    [Parameter] public Func<int, string?>? Holder { get; set; }
+
+    [Parameter] public Func<int, ProjectDemand>? Demand { get; set; }
+
+    /// <summary>Who else is still waiting for the same projects. Passed in
+    /// rather than derived here: the page owns the cohort and drops it on every
+    /// mutation, so this surface can never argue from a stale field.</summary>
+    [Parameter] public CohortClaims? Cohort { get; set; }
+
+    /// <summary>True while the page has a call in flight for this team or the
+    /// project it is acting on. Every control here is disabled together — a
+    /// half-live workspace during an assign is worse than a frozen one.</summary>
+    [Parameter] public bool Busy { get; set; }
+
+    /// <summary>Raised with the project id. The page performs the assignment
+    /// with the same guard and the same conflict handling as always.</summary>
+    [Parameter] public EventCallback<int> OnAssign { get; set; }
+
+    /// <summary>Raised for a project another team holds. The page opens its
+    /// takeover confirmation; nothing is displaced from here.</summary>
+    [Parameter] public EventCallback<AssignmentOption> OnTakeover { get; set; }
+
+    [Parameter] public EventCallback<int> OnUnassign { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Back to the read-only submitted form.</summary>
+    [Parameter] public EventCallback OnViewForm { get; set; }
+
+    /// <summary>Skip the details view and open straight into the decision.
+    /// The page sets it for שינוי שיבוץ and clears it on close, so a row click
+    /// always lands on what the assignment IS.</summary>
+    [Parameter] public bool Decide { get; set; }
+
+    /// <summary>Raised by שינוי שיבוץ. The page flips <see cref="Decide"/>
+    /// rather than the component holding the mode, so the two entry points that
+    /// mean "replace this assignment" — the button here and the row menu —
+    /// arrive at exactly the same state.</summary>
+    [Parameter] public EventCallback OnChangeAssignment { get; set; }
+
+    [Parameter] public EventCallback OnBackToDetails { get; set; }
+
+    /// <summary>Raised with a project id when the lecturer clicks a project
+    /// NAME anywhere on this surface. The host opens the quick view over this
+    /// modal; nothing here closes, moves or reloads, so the decision in
+    /// progress is exactly where it was when the panel shuts.</summary>
+    [Parameter] public EventCallback<int> OnInspectProject { get; set; }
+
+    /// <summary>Details is for an assignment that EXISTS. A waiting team has
+    /// nothing to describe, so it always gets the decision.</summary>
+    private bool ShowDetails =>
+        Team?.AssignedProjectId.HasValue == true && !Decide;
+
+    /// <summary>The two students, not the generated team label. Falls back to
+    /// the label only when the board has no active members to name — a row the
+    /// lecturer still has to be able to identify.</summary>
+    private string TitleText =>
+        Team is null                ? ""
+        : Team.Members.Count == 0   ? Team.TeamName
+        : string.Join(" + ", Team.Members.Select(m => m.FullName));
+
+    /// <summary>The team's STATE. Never the lecturer's current activity — the
+    /// reader knows what they are doing; what they need told is what this team
+    /// is.</summary>
+    private string StatusText =>
+        Team?.AssignedProjectId.HasValue != true ? "ממתין לשיבוץ"
+        : Team!.AssignedIsDraft                  ? "משובץ · טיוטה"
+        :                                          "משובץ · פורסם";
+
+    /// <summary>Violet is the canonical rung for focus / in-progress, teal for
+    /// completion — the Master's three semantics, no fourth. Waiting is work
+    /// still open; a published assignment is work closed.</summary>
+    private MStatusBadge.BadgeVariant StatusVariant =>
+        Team?.AssignedProjectId.HasValue != true ? MStatusBadge.BadgeVariant.Violet
+        : Team!.AssignedIsDraft                  ? MStatusBadge.BadgeVariant.Violet
+        :                                          MStatusBadge.BadgeVariant.Teal;
+
+    /// <summary>Enough on the closed fold to say whether opening it is worth
+    /// it — a team that ranked nothing and a team whose three choices are all
+    /// taken are different, and both are invisible behind a bare label.</summary>
+    private string FoldSummary
+    {
+        get
+        {
+            var count = Team?.Preferences.Count ?? 0;
+            return count == 0
+                ? "הצוות לא דירג העדפות בטופס"
+                : $"{count} העדפות שהוגשו · ההמלצה הנוכחית של המערכת";
+        }
+    }
+
+    /// <summary>Closed on every open, and on every switch of team. A fold that
+    /// remembered it was open would put the form back above the assignment for
+    /// the next team, which is the hierarchy this exists to fix.</summary>
+    private bool _foldOpen;
+    private int? _foldTeamId;
+
+    protected override void OnParametersSet()
+    {
+        if (_foldTeamId == Team?.TeamId) return;
+        _foldTeamId = Team?.TeamId;
+        _foldOpen   = false;
+    }
+
+    /// <summary>One alternative. Shared by both groups because the rows are the
+    /// same object — what differs is which heading they sit under, which is the
+    /// whole point of splitting them.</summary>
+    private RenderFragment AlternativeRow(AssignmentOption alt) => @<li class="taw-alt">
+        <div class="taw-alt-main">
+            <button type="button" class="taw-alt-name asgn-projlink"
+                    title="@($"פרטי {alt.ProjectName}")"
+                    @onclick="() => OnInspectProject.InvokeAsync(alt.ProjectId)">
+                @alt.ProjectName
+            </button>
+            <div class="taw-alt-meta">
+                <span class="taw-scoreline">
+                    <span class="taw-scorelabel">ציון התאמה</span>
+                    <span class="taw-score @ScoreClass(alt.Score)">@alt.Score</span>
+                </span>
+                <MDemandBadge Teams="alt.Demand.Teams"
+                              FirstChoice="alt.Demand.FirstChoice"
+                              Size="MDemandBadge.DemandSize.Compact" />
+            </div>
+        </div>
+
+        <button type="button" class="taw-btn taw-btn--ghost"
+                disabled="@Busy"
+                @onclick="() => OnAssign.InvokeAsync(alt.ProjectId)">
+            @(Team?.AssignedProjectId.HasValue == true ? "העבר לכאן" : "שבץ")
+        </button>
+    </li>;
+
+    /// <summary>Who the team is — the same panel in both modes, so it is written
+    /// once. In the decision it is column one of three; in the details it sits
+    /// under the facts.</summary>
+    private RenderFragment TeamPanel => @<section class="asgn-panel taw-panel--team">
+        @if (Team is not null)
+        {
+            <header class="asgn-panel-head">
+                <h3 class="asgn-panel-title">הצוות</h3>
+            </header>
+
+            @if (Team.Members.Count == 0)
+            {
+                <p class="asgn-quiet">לא נמצאו חברי צוות פעילים</p>
+            }
+            else
+            {
+                <ul class="asgn-members">
+                    @foreach (var m in Team.Members)
+                    {
+                        <li class="asgn-member">
+                            <span class="asgn-avatar" aria-hidden="true">@Initials(m.FullName)</span>
+                            <span class="asgn-member-body">
+                                <span class="asgn-member-name">@m.FullName</span>
+                                @if (!string.IsNullOrWhiteSpace(m.Email))
+                                {
+                                    <span class="asgn-member-mail" dir="ltr">@m.Email</span>
+                                }
+                                @if (m.Strengths.Count > 0)
+                                {
+                                    <span class="asgn-strengths">
+                                        @foreach (var st in m.Strengths)
+                                        {
+                                            <span class="asgn-strength">@StrengthIcon(st) @StrengthLabel(st)</span>
+                                        }
+                                    </span>
+                                }
+                            </span>
+                        </li>
+                    }
+                </ul>
+            }
+
+            @if (Team.HasOwnProject)
+            {
+                <div class="asgn-own">
+                    <span class="asgn-own-tag">פרויקט עצמאי</span>
+                    @if (!string.IsNullOrWhiteSpace(Team.OwnProjectDescription))
+                    {
+                        <p class="asgn-own-text">@Team.OwnProjectDescription</p>
+                    }
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(Team.Notes))
+            {
+                <div class="taw-notes">
+                    <span class="taw-notes-label">הערות שהוגשו</span>
+                    <p class="taw-notes-text">@Team.Notes</p>
+                </div>
+            }
+        }
+    </section>;
+
+    private readonly string _headingId = $"asgn-title-{Guid.NewGuid():N}";
+
+    /// <summary>Recomputed on every render rather than cached: the whole point
+    /// is that it answers to current board state.</summary>
+    private AssignmentRecommendation Recommendation =>
+        Team is null
+            ? new AssignmentRecommendation()
+            : AssignmentRecommender.Build(
+                Team,
+                Holder ?? (_ => null),
+                Demand ?? (_ => ProjectDemand.None),
+                Cohort);
+
+    private static string FormatDate(string raw) =>
+        DateTime.TryParse(raw, out var dt) ? dt.IsraelFormat() : raw;
+
+    /// <summary>"19.04.2026 · 12:24". Day first and the clock separated by the
+    /// same middot the rest of the product uses between facts, so the two read
+    /// as two things rather than one long number.</summary>
+    private string SubmittedStamp =>
+        DateTime.TryParse(Team?.SubmittedAt, out var dt)
+            ? $"{dt:dd.MM.yyyy} · {dt:HH:mm}"
+            : Team?.SubmittedAt ?? "";
+
+    private static string ProjectTypeLabel(string type) => type switch
+    {
+        "Technological"  => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => type
+    };
+
+    /// <summary>Same three bands the tables use (40 / 25), so a score that reads
+    /// as "high" in the queue still does here.</summary>
+    private static string ScoreClass(int total) =>
+        total >= 40 ? "taw-score--high" :
+        total >= 25 ? "taw-score--mid"  :
+                      "taw-score--low";
+
+    private static string Initials(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 1
+            ? parts[0][..Math.Min(2, parts[0].Length)]
+            : $"{parts[0][0]}{parts[^1][0]}";
+    }
+
+    private static string StrengthLabel(string s) => s switch
+    {
+        "Design"            => "עיצוב",
+        "Content"           => "תוכן",
+        "Technology"        => "טכנולוגיה",
+        "ProjectManagement" => "ניהול פרויקט",
+        _                   => s
+    };
+
+    private static string StrengthIcon(string s) => s switch
+    {
+        "Design"            => "🎨",
+        "Content"           => "✍",
+        "Technology"        => "💻",
+        "ProjectManagement" => "📋",
+        _                   => "•"
+    };
+}

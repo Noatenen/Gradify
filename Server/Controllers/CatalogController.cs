@@ -37,6 +37,7 @@ public class CatalogController : ControllerBase
             SELECT  p.Id,
                     p.ProjectNumber,
                     p.Title,
+                    p.Description,
                     pt.Name  AS ProjectType,
                     pt.Id    AS ProjectTypeId,
                     p.AcademicYearId,

@@ -1,0 +1,321 @@
+@namespace AuthWithAdmin.Client.Pages.Assignments
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@*
+    ── טופס שיבוץ — the submitted form, and nothing else ─────────────────────
+
+    WHAT IT ANSWERS
+    ───────────────
+    Exactly one question: "what did this team submit?" — the members who signed
+    it, when it was sent, the three projects they ranked, the strengths they
+    declared and the notes they wrote.
+
+    WHAT IT IS NOT
+    ──────────────
+    It is not the assignment workspace. There is no match score, no ranked list
+    of system suggestions, no assign button. Before this component the only way
+    to read a team's form was to open the assignment table and expand a row, so
+    "show me what they asked for" and "decide where they go" were the same act
+    and the same screen — and the answer to the first question arrived buried
+    under the machinery for the second.
+
+    Demand IS shown beside each preference, because "you asked for a project
+    five other teams also asked for" is part of reading the form honestly, not
+    part of the recommendation engine. It stays a neutral meter (see
+    MDemandBadge): a wanted project is not an error.
+
+    THE WAY OUT
+    ───────────
+    עבור לשיבוץ הצוות hands the same team straight to the decision workspace.
+    Reading the form and acting on it stay two deliberate steps, and the second
+    one is never taken by surprise.
+*@
+
+<MModal IsOpen="IsOpen"
+        Size="MModal.ModalSize.Large"
+        OnClose="OnClose"
+        AriaLabelledBy="@_headingId"
+        Class="afm-modal">
+
+    <HeaderContent>
+        @if (Team is not null)
+        {
+            <div class="asgn-head">
+                @* The team's STATE, drawn with the same shared badge the
+                   workspace uses. This viewer never decides anything, but the
+                   reader still needs to know whether the form in front of them
+                   is still awaiting a decision. *@
+                <div class="asgn-head-top">
+                    <MStatusBadge Variant="@StatusVariant" Text="@StatusText" />
+
+                    @* The same word, in the same weight, as the queue row this
+                       was opened from. A reader who followed a marked row must
+                       not have to wonder whether the marking survived the
+                       click. *@
+                    @if (Team.IsSample)
+                    {
+                        <span class="asgn-sample" title="@AssignmentSampleForm.Hint">@AssignmentSampleForm.Label</span>
+                    }
+                </div>
+
+                @* The people, not the generated team label — and the timestamp
+                   beside them rather than on a metadata line of its own. The
+                   cycle is gone: the whole page is already scoped to it. *@
+                <div class="asgn-titlerow">
+                    <h2 class="asgn-title" id="@_headingId">@TitleText</h2>
+
+                    @if (Team.HasSubmission && !string.IsNullOrWhiteSpace(Team.SubmittedAt))
+                    {
+                        <span class="asgn-submitted">הוגש @SubmittedStamp</span>
+                    }
+                </div>
+
+                @if (!Team.HasSubmission || string.IsNullOrWhiteSpace(Team.SubmittedAt))
+                {
+                    <p class="asgn-quiet">לא נמצאה הגשת טופס</p>
+                }
+            </div>
+        }
+    </HeaderContent>
+
+    <ChildContent>
+        @if (Team is not null)
+        {
+            <div class="afm-body" dir="rtl">
+
+                @* ── What they asked for ─────────────────────────────────────
+                   First, because it is the answer to the question this modal
+                   exists to ask. Same card as the workspace draws — WITHOUT the
+                   match score, which is the system's reading of the form and
+                   not part of the form. *@
+                <section class="asgn-panel">
+                    <header class="asgn-panel-head">
+                        <h3 class="asgn-panel-title">העדפות שהוגשו</h3>
+                    </header>
+
+                    @if (Team.HasOwnProject)
+                    {
+                        <div class="asgn-own">
+                            <span class="asgn-own-tag">פרויקט עצמאי</span>
+                            @if (!string.IsNullOrWhiteSpace(Team.OwnProjectDescription))
+                            {
+                                <p class="asgn-own-text">@Team.OwnProjectDescription</p>
+                            }
+                        </div>
+                    }
+
+                    @if (Team.Preferences.Count > 0)
+                    {
+                        <ol class="asgn-prefs">
+                            @foreach (var pref in Team.Preferences.OrderBy(p => p.Priority))
+                            {
+                                var demand = DemandOf(pref.ProjectId);
+                                var taken  = HolderOf(pref.ProjectId);
+
+                                <li class="asgn-pref @(taken is not null ? "asgn-pref--taken" : "")">
+                                    <span class="asgn-rank" aria-label="@($"עדיפות {pref.Priority}")">#@pref.Priority</span>
+
+                                    <div class="asgn-pref-main">
+                                        <button type="button" class="asgn-pref-name asgn-projlink"
+                                                title="@($"פרטי {pref.ProjectTitle}")"
+                                                @onclick="() => OnInspectProject.InvokeAsync(pref.ProjectId)">
+                                            @pref.ProjectTitle
+                                        </button>
+
+                                        <div class="asgn-pref-meta">
+                                            @if (!string.IsNullOrWhiteSpace(pref.ProjectType))
+                                            {
+                                                <span class="asgn-type">@ProjectTypeLabel(pref.ProjectType)</span>
+                                            }
+                                            <MDemandBadge Teams="demand.Teams"
+                                                          FirstChoice="demand.FirstChoice"
+                                                          Size="MDemandBadge.DemandSize.Full" />
+                                        </div>
+
+                                        @* Availability is a fact about the project, not a
+                                           recommendation about it — the same distinction
+                                           that keeps the score out of this viewer. *@
+                                        @if (taken is not null)
+                                        {
+                                            <div class="asgn-avail asgn-avail--taken">תפוס על ידי @taken</div>
+                                        }
+                                        else
+                                        {
+                                            <div class="asgn-avail asgn-avail--free">פנוי</div>
+                                        }
+                                    </div>
+                                </li>
+                            }
+                        </ol>
+                    }
+                    else if (!Team.HasOwnProject)
+                    {
+                        <p class="asgn-quiet">הצוות לא דירג העדפות בטופס</p>
+                    }
+                </section>
+
+                @* ── Who they are ────────────────────────────────────────────
+                   Names and the strengths they declared. No email: it is not
+                   something the team "submitted" about itself in any meaningful
+                   sense, and it pushed the strengths — which ARE — down a line. *@
+                <section class="asgn-panel">
+                    <header class="asgn-panel-head">
+                        <h3 class="asgn-panel-title">חברי הצוות</h3>
+                    </header>
+
+                    @if (Team.Members.Count == 0)
+                    {
+                        <p class="asgn-quiet">לא נמצאו חברי צוות פעילים</p>
+                    }
+                    else
+                    {
+                        <ul class="asgn-members">
+                            @foreach (var m in Team.Members)
+                            {
+                                <li class="asgn-member">
+                                    <span class="asgn-avatar" aria-hidden="true">@Initials(m.FullName)</span>
+                                    <span class="asgn-member-body">
+                                        <span class="asgn-member-name">@m.FullName</span>
+                                        @if (m.Strengths.Count > 0)
+                                        {
+                                            <span class="asgn-strengths">
+                                                @foreach (var st in m.Strengths)
+                                                {
+                                                    <span class="asgn-strength">@StrengthIcon(st) @StrengthLabel(st)</span>
+                                                }
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="asgn-quiet">לא דווחו חוזקות</span>
+                                        }
+                                    </span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                </section>
+
+                @* ── What they wrote ─────────────────────────────────────────  *@
+                @if (!string.IsNullOrWhiteSpace(Team.Notes))
+                {
+                    <section class="asgn-panel">
+                        <header class="asgn-panel-head">
+                            <h3 class="asgn-panel-title">הערות הצוות</h3>
+                        </header>
+                        <p class="asgn-note">@Team.Notes</p>
+                    </section>
+                }
+            </div>
+        }
+    </ChildContent>
+
+    @* No סגור: MModal already draws an X. The one action here is the bridge to
+       the surface that can actually decide something. *@
+    <FooterContent>
+        @if (OnGoToWorkspace.HasDelegate)
+        {
+            <button type="button" class="afm-btn motiva-cta" @onclick="OnGoToWorkspace">
+                עבור לשיבוץ הצוות
+            </button>
+        }
+    </FooterContent>
+</MModal>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>The team whose form is being read. Null renders nothing, so a
+    /// caller can bind the modal unconditionally.</summary>
+    [Parameter] public AssignmentTeamView? Team { get; set; }
+
+    /// <summary>How contested a project is, from the caller's live count over
+    /// the submitted forms. Absent, demand simply is not drawn — the modal never
+    /// computes a number of its own.</summary>
+    [Parameter] public Func<int, ProjectDemand>? Demand { get; set; }
+
+    /// <summary>Who currently holds a project, or null when it is free. Read
+    /// straight from the live board, exactly as the workspace reads it. This is
+    /// availability, not analysis: it says whether the thing the team asked for
+    /// is still there, which is part of reading the form honestly. It is NOT a
+    /// recommendation, and nothing here ranks or scores anything.</summary>
+    [Parameter] public Func<int, string?>? Holder { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised with a project id when a project name is clicked. The
+    /// host opens the quick view OVER this modal — reading what a project is
+    /// must never cost the reader the form they were reading.</summary>
+    [Parameter] public EventCallback<int> OnInspectProject { get; set; }
+
+    /// <summary>Hands this same team to the decision workspace. Not wired means
+    /// no button: a viewer with nowhere to go should not offer to take you
+    /// there.</summary>
+    [Parameter] public EventCallback OnGoToWorkspace { get; set; }
+
+    private readonly string _headingId = $"afm-title-{Guid.NewGuid():N}";
+
+    private ProjectDemand DemandOf(int projectId) =>
+        Demand is null ? ProjectDemand.None : Demand(projectId);
+
+    private string? HolderOf(int projectId) =>
+        Holder is null ? null : Holder(projectId);
+
+    /// <summary>The two students, not the generated team label — the same
+    /// identity the workspace leads with, so moving between the two surfaces
+    /// never feels like moving between two teams.</summary>
+    private string TitleText =>
+        Team is null              ? ""
+        : Team.Members.Count == 0 ? Team.TeamName
+        : string.Join(" + ", Team.Members.Select(m => m.FullName));
+
+    private string StatusText =>
+        Team?.AssignedProjectId.HasValue != true ? "ממתין לשיבוץ"
+        : Team!.AssignedIsDraft                  ? "משובץ · טיוטה"
+        :                                          "משובץ · פורסם";
+
+    private MStatusBadge.BadgeVariant StatusVariant =>
+        Team?.AssignedProjectId.HasValue != true ? MStatusBadge.BadgeVariant.Violet
+        : Team!.AssignedIsDraft                  ? MStatusBadge.BadgeVariant.Violet
+        :                                          MStatusBadge.BadgeVariant.Teal;
+
+    /// <summary>"19.04.2026 · 12:24" — the same stamp the workspace shows.</summary>
+    private string SubmittedStamp =>
+        DateTime.TryParse(Team?.SubmittedAt, out var dt)
+            ? $"{dt:dd.MM.yyyy} · {dt:HH:mm}"
+            : Team?.SubmittedAt ?? "";
+
+    private static string ProjectTypeLabel(string type) => type switch
+    {
+        "Technological" => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _ => type
+    };
+
+    private static string Initials(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 1
+            ? parts[0][..Math.Min(2, parts[0].Length)]
+            : $"{parts[0][0]}{parts[^1][0]}";
+    }
+
+    private static string StrengthLabel(string s) => s switch
+    {
+        "Design"            => "עיצוב",
+        "Content"           => "תוכן",
+        "Technology"        => "טכנולוגיה",
+        "ProjectManagement" => "ניהול פרויקט",
+        _                   => s
+    };
+
+    private static string StrengthIcon(string s) => s switch
+    {
+        "Design"            => "🎨",
+        "Content"           => "✍",
+        "Technology"        => "💻",
+        "ProjectManagement" => "📋",
+        _                   => "•"
+    };
+}

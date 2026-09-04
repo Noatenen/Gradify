@@ -24,6 +24,15 @@ public class CatalogProjectListDto
     public int      Id                      { get; set; }
     public int      ProjectNumber           { get; set; }
     public string   Title                   { get; set; } = "";
+
+    /// <summary>The public-facing blurb, the same column the student catalogue
+    /// shows on a card. Carried on the LIST row (not only on the detail) so a
+    /// surface that renders many projects at once — the lecturer's preview of
+    /// the student catalogue — can show what a student would read without one
+    /// detail request per project. Nothing internal travels with it:
+    /// InternalNotes and Priority stay on the detail DTO.</summary>
+    public string?  Description             { get; set; }
+
     public string   ProjectType             { get; set; } = "";
     public int      ProjectTypeId           { get; set; }
     public int      AcademicYearId          { get; set; }
