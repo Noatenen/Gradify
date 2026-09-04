@@ -61,16 +61,32 @@ done
 echo "       Database, wwwroot, .git, source files: untouched."
 
 # ── 3. dotnet clean ─────────────────────────────────────────────────────
-echo "[3/5] dotnet clean $SLN"
+echo "[3/6] dotnet clean $SLN"
 dotnet clean "$SLN" >/dev/null
 
 # ── 4. Build the solution ───────────────────────────────────────────────
-echo "[4/5] dotnet build $SLN"
+echo "[4/6] dotnet build $SLN"
 dotnet build "$SLN"
 
-# ── 5. Start the Server (plain dotnet run --project) ───────────────────
+# ── 5. Data-integrity warning (never blocks) ────────────────────────────
+# dev-reset itself does not touch the database, but it is the command everyone
+# runs after one that might have. Reporting here is the cheapest place to
+# notice that a Student account lost its team — the state that traps a user
+# between /create-team and an email that already exists.
+if [ -x "$SCRIPT_DIR/db-check-preserved.sh" ]; then
+    echo "[5/6] Checking preserved accounts…"
+    "$SCRIPT_DIR/db-check-preserved.sh" || {
+        echo ""
+        echo "       ^^ A PRESERVED ACCOUNT IS STRANDED. The server will still"
+        echo "          start, but that account is trapped until its team is"
+        echo "          restored from .local/db-backups/."
+        echo ""
+    }
+fi
+
+# ── 6. Start the Server (plain dotnet run --project) ───────────────────
 echo ""
-echo "[5/5] Starting Server"
+echo "[6/6] Starting Server"
 echo ""
 echo "       URLs:  https://localhost:7275"
 echo "              http://localhost:5297"

@@ -7,6 +7,7 @@
 @inject NavigationManager nav
 @inject HttpClient Http
 @inject IRememberedLoginService RememberedLogin
+@inject IStudentStageService StageSvc
 
 <PageTitle>Motiva — התחברות</PageTitle>
 
@@ -213,10 +214,26 @@
 
     protected override async Task OnInitializedAsync()
     {
+        //  An ALREADY-authenticated visitor to /login is not a routing problem to
+        //  solve — they came here on purpose, usually to sign in as somebody
+        //  else. Only an explicit ReturnUrl means "you were going somewhere and
+        //  we interrupted you", and only that is honoured.
+        //
+        //  What used to happen: this called GetRedirectTarget, which resolves the
+        //  StudentStage, which for a student with no team answers "create-team".
+        //  /login therefore bounced to /create-team, whose own login link came
+        //  straight back here — a trap with no way out, and the user could not
+        //  reach the form to sign in as anyone else. Stage routing now runs only
+        //  AFTER a successful authentication, in login() below.
         if (user != null)
         {
-            nav.NavigateTo(await GetRedirectTarget(user), forceLoad: true, replace: true);
-            return;
+            if (ReturnUrlPolicy.Sanitize(ReturnUrl, user) is { } destination)
+            {
+                nav.NavigateTo(destination, forceLoad: true, replace: true);
+                return;
+            }
+
+            //  Otherwise fall through and render the form.
         }
 
         // Restore the FORM, not a session: the address last signed in with and
@@ -253,6 +270,9 @@
             await RememberedLogin.SaveAsync(attemptedEmail, rememberMe);
 
             var loggedInUser = await _Auth.GetUserFromClaimAsync();
+
+            //  AuthenticationService already dropped the previous identity's
+            //  stage; this is the first resolution for the new one.
             nav.NavigateTo(await GetRedirectTarget(loggedInUser), forceLoad: true, replace: true);
         }
         else
@@ -288,16 +308,12 @@
         if (!RoleService.IsStudent(u))
             return RoleService.GetDefaultLandingRoute(u);
 
-        // Students: check whether they have a team but no project yet
-        try
-        {
-            var dashboard = await Http.GetFromJsonAsync<DashboardDto>("api/projects/my-dashboard");
-            if (dashboard is not null && dashboard.HasTeam && dashboard.Project is null)
-                return PageRoutes.StudentCatalog;
-        }
-        catch { /* fall through to dashboard on any error */ }
-
-        return PageRoutes.Dashboard;
+        // Students: one shared resolver decides, so this page, Dashboard and the
+        // student route guards can never disagree about where a student belongs.
+        // Reached only for students — the non-student branch above returns first,
+        // so no lecturer can be routed into a student surface from here.
+        var stage = await StageSvc.ResolveAsync();
+        return StudentStageService.RouteFor(stage);
     }
 
 
