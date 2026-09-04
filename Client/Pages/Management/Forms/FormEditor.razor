@@ -98,16 +98,35 @@
                     </svg>
                 </button>
 
-                @* The assignment form is answered at /student/assignment, every
-                   other form at /forms/{id}. One button, correct destination. *@
-                <a class="fed-action" href="@StudentUrl" target="_blank" rel="noopener">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                        <path d="M15 3h6v6" /><path d="M10 14 21 3" />
-                    </svg>
-                    @OpenFormLabel
-                </a>
+                @* THE ASSIGNMENT FORM CANNOT BE OPENED FROM HERE.
+                   /student/assignment is [Authorize(Roles = Student)], so the
+                   external link below — the only way this editor offered to
+                   look at the form — has never worked for the admin editing it.
+                   The assignment form gets a preview that renders the student
+                   page in place instead; every other form is a generic one the
+                   admin can genuinely open. *@
+                @if (_form.IsAssignmentForm)
+                {
+                    <button type="button" class="fed-action" @onclick="OpenStudentPreview">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                            <circle cx="12" cy="12" r="3" />
+                        </svg>
+                        תצוגה מקדימה של טופס הסטודנט
+                    </button>
+                }
+                else
+                {
+                    <a class="fed-action" href="@StudentUrl" target="_blank" rel="noopener">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <path d="M15 3h6v6" /><path d="M10 14 21 3" />
+                        </svg>
+                        @OpenFormLabel
+                    </a>
+                }
 
                 <button type="button" class="fed-action" @onclick="GoToSubmissions">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -115,7 +134,7 @@
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                         <path d="M14 2v6h6" /><path d="M16 13H8" /><path d="M16 17H8" />
                     </svg>
-                    הגשות <span class="fed-action-count">@_form.SubmissionCount</span>
+                    @(_form.IsAssignmentForm ? "שיבוצים" : "הגשות") <span class="fed-action-count">@_form.SubmissionCount</span>
                 </button>
 
                 <button type="button"
@@ -591,6 +610,15 @@
     </div>
 }
 
+@* ── תצוגה מקדימה של טופס הסטודנט ──────────────────────────────────────────
+   Handed the editor's LIVE form — settings from _form, questions projected
+   from _blocks — so an admin previews the wording they are typing rather than
+   the wording they last saved. *@
+<StudentFormPreviewModal IsOpen="_previewOpen"
+                         Form="@PreviewForm"
+                         AcademicYearId="@_form?.AcademicYearId"
+                         OnClose="CloseStudentPreview" />
+
 @code {
     [Parameter] public int FormId { get; set; }
 
@@ -820,6 +848,74 @@
     /// StudentFormLinks so this editor's copy action and the Assignments
     /// workspace's header action cannot point at different addresses; the
     /// branch itself is unchanged.</summary>
+    // ── Student form preview ─────────────────────────────────────────────────
+
+    private bool _previewOpen;
+
+    private void OpenStudentPreview()
+    {
+        CloseAllPopovers();
+        _previewOpen = true;
+    }
+
+    private void CloseStudentPreview() => _previewOpen = false;
+
+    /// <summary>The form AS IT STANDS IN THE EDITOR, not as it stands on the
+    /// server: settings straight off <c>_form</c>, questions rebuilt from
+    /// <c>_blocks</c> in their current order with their current wording,
+    /// required flags and options.
+    ///
+    /// <para>That is the whole value of previewing from here. An admin who has
+    /// just reworded a question and wants to see how it reads should not have to
+    /// save first — and a preview that re-fetched would show them the sentence
+    /// they are trying to replace. Nothing is written; this is the same
+    /// projection <c>SaveAll</c> makes, stopped one step short of the request.</para></summary>
+    private FormDetailDto? PreviewForm
+    {
+        get
+        {
+            if (_form is null) return null;
+
+            return new FormDetailDto
+            {
+                Id                   = _form.Id,
+                AcademicYearId       = _form.AcademicYearId,
+                AcademicYear         = _form.AcademicYear,
+                Name                 = _form.Name,
+                FormType             = _form.FormType,
+                Instructions         = _form.Instructions,
+                IsOpen               = _form.IsOpen,
+                OpensAt              = _form.OpensAt,
+                ClosesAt             = _form.ClosesAt,
+                AllowEditAfterSubmit = _form.AllowEditAfterSubmit,
+                Status               = _form.Status,
+                SubmissionCount      = _form.SubmissionCount,
+                Blocks = _blocks.Select((b, i) => new FormBlockDto
+                {
+                    Id          = b.Id,
+                    FormId      = _form.Id,
+                    BlockType   = b.BlockType,
+                    BlockKey    = b.BlockKey,
+                    Title       = b.Title,
+                    HelperText  = b.HelperText,
+                    IsRequired  = b.IsRequired,
+                    SortOrder   = i,
+                    RatingScale = b.RatingScale,
+                    MinLabel    = b.MinLabel,
+                    MaxLabel    = b.MaxLabel,
+                    Options     = b.Options.Select((o, oi) => new FormBlockOptionDto
+                    {
+                        Id          = o.Id,
+                        FormBlockId = b.Id,
+                        OptionValue = o.Value,
+                        OptionLabel = o.Label,
+                        SortOrder   = oi
+                    }).ToList()
+                }).ToList()
+            };
+        }
+    }
+
     private string StudentUrl =>
         StudentFormLinks.For(FormId, _form?.IsAssignmentForm == true);
 
@@ -1099,7 +1195,9 @@
         if (_form is null) return;
 
         // Same split as the list: the assignment form's submissions are team
-        // rows with their own screen; everything else has a per-form view.
+        // rows whose screen is the assignment WORK QUEUE (which is why the
+        // action is labelled שיבוצים for it); everything else has a per-form
+        // submissions view.
         Nav.NavigateTo(_form.IsAssignmentForm ? "/assignments" : $"/management/forms/{FormId}/submissions");
     }
 
