@@ -2531,6 +2531,33 @@ public class ProjectsController : ControllerBase
     //  project-scoped from authUserId — cross-team access is structurally impossible.
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // ── GET /api/projects/team-members ───────────────────────────────────────
+    // Returns the active members of the caller's team so the task-creation modal
+    // can populate the "Assigned to" dropdown from any entry point (Tasks page,
+    // Calendar) that does not already have DashboardDto.TeamMembers in scope.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpGet("team-members")]
+    public async Task<IActionResult> GetTeamMembers(int authUserId)
+    {
+        var pt = await GetProjectTeamForUserAsync(authUserId);
+        if (pt is null) return NotFound("לא שויכת לפרויקט פעיל");
+
+        const string sql = @"
+            SELECT  u.Id                                  AS UserId,
+                    u.FirstName || ' ' || u.LastName      AS FullName,
+                    tm.MemberRole
+            FROM    TeamMembers tm
+            JOIN    Users       u  ON tm.UserId = u.Id
+            WHERE   tm.TeamId  = @TeamId
+              AND   tm.IsActive = 1";
+
+        var members = await _db.GetRecordsAsync<TeamMemberDto>(
+            sql, new { pt.TeamId })
+            ?? Enumerable.Empty<TeamMemberDto>();
+
+        return Ok(members);
+    }
+
     // ── GET /api/projects/team-tasks ─────────────────────────────────────────
     // Returns all team tasks (incomplete first, then complete), newest-first within
     // each group. Assignee name is resolved server-side so no extra calls are needed.
