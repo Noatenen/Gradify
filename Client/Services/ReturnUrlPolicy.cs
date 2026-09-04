@@ -104,26 +104,63 @@ public static class ReturnUrlPolicy
     /// real access boundary, and this only prevents a redirect that would
     /// certainly dead-end. Landing an unauthorised user on a page sends them to
     /// PendingPage — "אין לך אישור להשתמש במערכת" — which is alarming and wrong
-    /// for someone who merely followed a stale link, so the two shells with
-    /// unambiguous prefixes are checked here and everything else is allowed
-    /// through.</para>
+    /// for someone who merely followed a stale link.</para>
     ///
-    /// <para>The prefixes mirror the attributes actually on those pages: every
-    /// mentor route is <c>[Authorize(Roles = Mentor, Admin, Staff)]</c> and
-    /// every management route is <c>[Authorize(Roles = Admin, Staff)]</c>.</para>
+    /// <para><b>It used to know about two shells out of five, and the gap was
+    /// reachable.</b> Only <c>management/*</c> and <c>mentor/*</c> were checked,
+    /// so a student who had been bounced off any OTHER role-gated route —
+    /// <c>/projects</c>, <c>/lecturer/tasks</c>, <c>/assignments</c>,
+    /// <c>/resource-files</c>, <c>/project-health</c> — had that path captured
+    /// into <c>?returnUrl=</c>, waved through here after login, and refused by
+    /// the page's own attribute. The result was a signed-in, fully verified
+    /// student staring at "you do not have approval to use the system" on the
+    /// first screen after entering a correct password. Reproduced end to end
+    /// with noa.qa@motiva.local via <c>/Login?returnUrl=%2Fprojects</c>.</para>
+    ///
+    /// <para>The groups below mirror the attributes actually on those pages, so
+    /// a route added to a shell inherits the right answer from its prefix.
+    /// Anything genuinely shared (<c>/dashboard</c>, <c>/tasks</c>,
+    /// <c>/settings</c>, <c>/project</c>, <c>/requests</c>) still falls through
+    /// to "let the route decide" — that default is what keeps this a guard
+    /// against dead ends rather than a second authorization system.</para>
     /// </summary>
     public static bool IsReachableBy(string path, User? user)
     {
         // Compare on the path only — a query string never affects authorization.
         var p = path.Split('?')[0].Split('#')[0].TrimStart('/').ToLowerInvariant();
 
-        if (p.StartsWith("management/") || p == "management" || p == "dashboard/lecturer")
+        // Match a route or anything beneath it: "projects" and "projects/7/overview".
+        bool Shell(string prefix) => p == prefix || p.StartsWith(prefix + "/");
+
+        // ── Lecturer-only: [Authorize(Roles = Admin, Staff)] ────────────────
+        if (Shell("management") || Shell("lecturer") || Shell("admin")
+            || Shell("assignments") || p == "lecturer-submissions"
+            || p == "resource-files" || p == "projects")
             return RoleService.IsAdminOrStaff(user);
 
-        if (p.StartsWith("mentor/") || p == "mentor-requests" || p == "dashboard/mentor")
+        // ── Staff or mentor: [Authorize(Roles = Admin, Staff, Mentor)] ──────
+        // dashboard/lecturer belongs here, not above: OverviewDashboardPage
+        // admits Mentor, and the old rule sent a mentor following a stale
+        // digest link to PendingPage for a page that would have rendered.
+        if (Shell("mentor") || p == "mentor-requests"
+            || p == "dashboard/mentor" || p == "dashboard/lecturer"
+            || p == "milestones-overview" || p == "project-health"
+            || Shell("projects"))
             return RoleService.IsMentor(user) || RoleService.IsAdminOrStaff(user);
 
-        // Student and shared routes: let the route decide.
+        // ── Student-only: [Authorize(Roles = Student)] ──────────────────────
+        // The strict claim, not RoleService.IsStudent: these pages test the
+        // claim itself, so a plain "User" account is a dead end here even
+        // though the looser helper would call it a student.
+        if (Shell("student") || p == "learning" || p == "notifications"
+            || p == "external-requests")
+            return RoleService.HasRole(user, Roles.Student);
+
+        // ── Legacy /MyProjects: [Authorize(Roles = User)] ───────────────────
+        if (p == "myprojects")
+            return RoleService.HasRole(user, Roles.User);
+
+        // Genuinely shared routes: let the route decide.
         return true;
     }
 
