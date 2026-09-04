@@ -9,6 +9,7 @@
 @inject ITaskSubmissionsService SubmissionsService
 @inject NavigationManager Nav
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IStudentStageService StageSvc
 @attribute [Authorize]
 
 @*
@@ -187,10 +188,12 @@ else
 
             await LoadDashboardAsync();
 
-            // Any student without an assigned project → catalog experience.
-            // Covers both: has team but no project, and no team at all.
+            // Any student without an assigned project leaves the dashboard —
+            // but WHERE they go is the shared resolver's call, not this page's.
+            // It distinguishes "no team yet" from "still choosing" from
+            // "already submitted, waiting", which this branch could not.
             if (_data is not null && _data.Project is null)
-                Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
+                await GoToStudentStageAsync();
         }
         catch (Exception)
         {
@@ -327,9 +330,22 @@ else
     {
         await LoadDashboardAsync();
 
-        // Mirror the initial-load behaviour: a student with no assigned project
-        // belongs in the catalog experience, not the empty dashboard state.
+        // Mirror the initial-load behaviour through the same resolver.
         if (_data is not null && _data.Project is null)
-            Nav.NavigateTo("/" + PageRoutes.StudentCatalog);
+            await GoToStudentStageAsync();
+    }
+
+    /// <summary>Sends the student wherever their stage belongs. Re-resolved
+    /// rather than cached here: this runs after a reload, which is exactly when
+    /// the stage may have just changed.</summary>
+    private async Task GoToStudentStageAsync()
+    {
+        StageSvc.Invalidate();
+        var route = StudentStageService.RouteFor(await StageSvc.ResolveAsync());
+
+        // Never navigate to the route we are already on — that is the shape a
+        // redirect loop takes.
+        if (!Nav.Uri.TrimEnd('/').EndsWith("/" + route, StringComparison.OrdinalIgnoreCase))
+            Nav.NavigateTo("/" + route);
     }
 }

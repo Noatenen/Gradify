@@ -4,6 +4,8 @@
 @using Microsoft.AspNetCore.Components.Forms
 @inject HttpClient Http
 @inject NavigationManager Nav
+@using AuthWithAdmin.Client.Services
+@inject IStudentStageService StageSvc
 
 @*
     ── Team registration (יצירת צוות) ──────────────────────────────────────
@@ -34,7 +36,36 @@
             <p class="ct-subtitle">יצירת צוות לפרויקט גמר</p>
         </div>
 
-        @if (_success)
+        @* ══════════════════════════════════════════
+             STRANDED ACCOUNT — the state that used to trap people.
+
+             A signed-in student with no team is sent here, and this form
+             refuses an email that already has an account. So the account
+             could log in, was routed to the one screen that might help, and
+             that screen rejected it: no way out from inside the product.
+
+             The data behind it is a broken relationship (a Users row whose
+             team membership was lost), and only staff can repair that. What
+             this page owes the person is the truth and a way back — never a
+             form that cannot succeed for them.
+             ══════════════════════════════════════════ *@
+        @if (_strandedAccount)
+        {
+            <div class="ct-stranded" role="alert">
+                <h2 class="ct-stranded-title">החשבון שלך כבר קיים במערכת</h2>
+                <p class="ct-stranded-body">
+                    נכנסת עם <strong>@_user!.Email</strong>, אבל החשבון הזה עדיין לא משויך לצוות.
+                    מסך זה מיועד לרישום צוות חדש, ולכן לא ניתן להשתמש בו עם אימייל שכבר רשום.
+                </p>
+                <p class="ct-stranded-body">
+                    כדי לשייך את החשבון לצוות יש לפנות לצוות הקורס.
+                </p>
+                <div class="ct-stranded-acts">
+                    <a class="ct-stranded-link" href="/login">כניסה עם חשבון אחר</a>
+                </div>
+            </div>
+        }
+        else if (_success)
         {
             <!-- ══════════════════════════════════════════
                  SUCCESS STATE
@@ -167,6 +198,56 @@
         };
     }
 
+    /// <summary>Whoever is signed in, if anyone. Anonymous is the normal case
+    /// here — this page exists for people who have no account yet.</summary>
+    [CascadingParameter] private User? _user { get; set; }
+
+    /// <summary>Guards against re-resolving on every cascade tick — the identity
+    /// arrives once, and one answer per arrival is all this needs.</summary>
+    private int? _routedFor;
+
+    /// <summary>
+    /// An authenticated visitor who ALREADY has a team does not belong on a
+    /// registration form. They are sent on to wherever their journey actually
+    /// is — never back to this route, so this cannot loop.
+    ///
+    /// <para>An authenticated visitor with NO team is left alone: they are
+    /// exactly who this form is for, and bouncing them would be the same trap
+    /// from the other side. An anonymous visitor is never touched.</para>
+    ///
+    /// <para><b>Why OnParametersSetAsync and not OnInitializedAsync.</b> App.razor
+    /// fills the cascaded user ASYNCHRONOUSLY — it subscribes to the auth service
+    /// and assigns in the callback — so on a full page load every component's
+    /// OnInitializedAsync runs while that value is still null. A guard placed
+    /// there sees "anonymous" for every visitor and never fires. The identity
+    /// arrives as a parameter change, which is what this overload is for.</para>
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_user is null || _user.Id == _routedFor) return;
+        _routedFor = _user.Id;
+
+        var stage = await StageSvc.ResolveAsync();
+
+        //  Signed in, but with no team: this form can never succeed for them,
+        //  because it will reject the email they just signed in with. Say so
+        //  rather than presenting it. Anonymous visitors are untouched — they
+        //  are who the form is for.
+        if (stage == StudentStage.NoTeam)
+        {
+            _strandedAccount = true;
+            return;
+        }
+
+        var route = StudentStageService.RouteFor(stage);
+        if (!string.Equals(route, "create-team", StringComparison.OrdinalIgnoreCase))
+            Nav.NavigateTo("/" + route, replace: true);
+    }
+
+    /// <summary>An authenticated visitor whose account has no team — shown an
+    /// explanation instead of a form that would refuse their own address.</summary>
+    private bool _strandedAccount;
+
     // ── State ────────────────────────────────────────────────────────────────
 
     private StudentState _s1 = new();
@@ -269,6 +350,11 @@
                 var result = await resp.Content.ReadFromJsonAsync<TeamRegistrationResultDto>();
                 _warning = result?.Warning ?? "";
                 _success = true;
+
+                //  The team that just came into existence is the whole input to
+                //  the stage answer. Anyone still holding "NoTeam" would send the
+                //  next navigation straight back to this form.
+                StageSvc.Invalidate();
             }
             else
             {

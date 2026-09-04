@@ -21,10 +21,18 @@ namespace AuthWithAdmin.Client
 
         public event Action OnAuthenticationStateChanged;
 
-        public AuthenticationService(HttpClient client, AuthenticationStateProvider authStateProvider)
+        /// <summary>Optional so nothing here depends on the student journey
+        /// existing — the auth service predates it and must keep working if it
+        /// is ever removed.</summary>
+        private readonly AuthWithAdmin.Client.Services.IStudentStageService? _studentStage;
+
+        public AuthenticationService(HttpClient client,
+                                     AuthenticationStateProvider authStateProvider,
+                                     AuthWithAdmin.Client.Services.IStudentStageService? studentStage = null)
         {
             _httpClient = client;
             _authStateProvider = authStateProvider;
+            _studentStage = studentStage;
         }
 
         //התנתקות 
@@ -33,6 +41,13 @@ namespace AuthWithAdmin.Client
 
             var get = await _httpClient.GetAsync("api/users/logout");
             await ((AuthStateProvider)_authStateProvider).NotifyUserLogout();
+
+            //  The student journey belongs to an IDENTITY. Held across a sign-out
+            //  it would answer the next person's question with the last person's
+            //  team — and in a WASM app a "scoped" service lives as long as the
+            //  tab, so this cannot be left to DI lifetime.
+            _studentStage?.Invalidate();
+
             OnAuthenticationStateChanged?.Invoke();
 
         }
@@ -49,6 +64,11 @@ namespace AuthWithAdmin.Client
             {
                 string token = await postUser.Content.ReadAsStringAsync();
                 await ((AuthStateProvider)_authStateProvider).NotifyAuthenticationStateChanged(token);
+
+                //  Same reason as Logout: a stage resolved for whoever was signed
+                //  in a moment ago must never be handed to whoever just signed in.
+                _studentStage?.Invalidate();
+
                 OnAuthenticationStateChanged?.Invoke();
                 return true;
             }
