@@ -4,6 +4,7 @@
 @attribute [Authorize]
 @inject IProjectRequestsService RequestsService
 @inject IRequestTypesService    RequestTypesService
+@inject NavigationManager       Nav
 
 @*
     ── בקשות — the student's own request queue ─────────────────────────────
@@ -50,6 +51,60 @@
     אישור / דחייה / החזרה and the mentor's recommendation form have no student
     equivalent and do not appear.
 *@
+
+@*  ══ ROLE GATE — the first thing on the page, and a POSITIVE test ═══════
+
+    /requests carries a bare [Authorize], not [Authorize(Roles = Student)], and
+    it has to: refusing a lecturer outright routes them to NotAllowed →
+    "אין לך אישור להשתמש במערכת", which is the wrong sentence for someone whose
+    account is fine and who simply asked for the wrong one of three queues. So
+    the ROUTE admits everybody and the PAGE decides — see OnParametersSetAsync,
+    which sends a non-student to NavDefinitions.RequestsHomeFor(them).
+
+    THE GATE IS A RENDER GATE, NOT A REDIRECT ALONE. A redirect is a navigation
+    and a navigation takes a render to happen; while it is in flight this
+    component is still mounted and still returning markup. That single frame is
+    the bug that was reported — a lecturer arriving here saw
+    "עדיין לא פתחתם בקשות" with "פתיחת בקשה חדשה" under it, because
+    GET api/project-requests/my is scoped by TeamMembers and a lecturer is in
+    no team, so the student's ZERO state is what an empty answer renders. It
+    was never a permissions failure; the page was answering a question nobody
+    with that role had asked.
+
+    Written as `IsStudentWorkspace` — a POSITIVE claim about a resolved user —
+    rather than as `!IsLecturer`, because the cascaded User is null on every
+    full page load until App.razor's async callback fills it. A negative test
+    is TRUE during that window and would render the student screen to a
+    lecturer for exactly as long as the identity took to arrive.  *@
+@if (!IsStudentWorkspace)
+{
+    <div class="sreq-page rqw-page" dir="rtl">
+
+        <div class="rqw-header">
+            <h1 class="rqw-title">בקשות</h1>
+        </div>
+
+        @if (_noQueueForRole)
+        {
+            @*  The one identity that resolves to no queue at all: an account
+                holding none of the four roles. It cannot be redirected —
+                RequestsHomeFor's fallback is this very route — so it is told
+                so instead of spinning for ever.  *@
+            <MEmptyState Title="אין תור בקשות לחשבון הזה"
+                         Description="החשבון אינו משויך לצוות ואינו מרצה או מנחה, ולכן אין לו רשימת בקשות." />
+        }
+        else
+        {
+            @*  Identity not resolved yet, or resolved and on its way to the
+                role's own queue. Neutral either way — nothing here is a
+                student's.  *@
+            <MLoadingState Label="טוענת בקשות…" />
+        }
+
+    </div>
+}
+else
+{
 
 <NewRequestModal IsOpen="@_showModal"
                  OnClose="CloseModal"
@@ -148,7 +203,7 @@
             <!-- ══ QUEUE — right column ═══════════════════════════════════ -->
             <aside class="rqw-sidebar">
 
-                <div class="sreq-filters">
+                <div class="rqw-filters">
 
                     @*  PRIMARY filter: the three buckets, in the same words the
                         KPI chips above use. הכל is not a fourth pill — three
@@ -237,7 +292,7 @@
                     }
                     @if (visibleItems.Count == 0)
                     {
-                        <p class="sreq-list-empty">אין בקשות תואמות לסינון הנוכחי</p>
+                        <p class="rqw-list-empty">אין בקשות תואמות לסינון הנוכחי</p>
                     }
                     else
                     {
@@ -264,20 +319,20 @@
                                     item that flexes, so a long one ellipses in
                                     place and the chip stays on the same left
                                     edge on every row.  *@
-                                <div class="sreq-row-head">
+                                <div class="rqw-row-head">
                                     @if (req.HasUnread)
                                     {
-                                        <span class="sreq-row-unread" aria-label="עדכון שלא נקרא" role="img"></span>
+                                        <span class="rqw-row-unread" aria-label="עדכון שלא נקרא" role="img"></span>
                                     }
-                                    <span class="sreq-row-title">@req.Title</span>
+                                    <span class="rqw-row-title">@req.Title</span>
                                     @if (NeedsAction(req))
                                     {
-                                        <span class="sreq-row-alert"
+                                        <span class="rqw-row-alert"
                                               role="img"
                                               title="דורש את פעולתך"
                                               aria-label="דורש את פעולתך">!</span>
                                     }
-                                    <span class="sreq-row-type">@TypeLabel(req.RequestType)</span>
+                                    <span class="rqw-row-type">@TypeLabel(req.RequestType)</span>
                                 </div>
 
                                 @*  ── META LINE — where it stands, when it moved ──
@@ -287,13 +342,13 @@
                                     last-touched stamp (bumped on every reply and
                                     every status change), and it is already what
                                     this list is sorted by.  *@
-                                <div class="sreq-row-meta">
+                                <div class="rqw-row-meta">
                                     @if (StateLabel(req) is { } state)
                                     {
-                                        <span class="sreq-row-where">@state</span>
-                                        <span class="sreq-row-sep" aria-hidden="true">·</span>
+                                        <span class="rqw-row-where">@state</span>
+                                        <span class="rqw-row-sep" aria-hidden="true">·</span>
                                     }
-                                    <span class="sreq-row-sub">עודכן @req.UpdatedAt.IsraelFormat("dd.MM.yyyy")</span>
+                                    <span class="rqw-row-sub">עודכן @req.UpdatedAt.IsraelFormat("dd.MM.yyyy")</span>
                                 </div>
 
                             </button>
@@ -355,12 +410,12 @@
                             reader should meet them in anyway. Nothing inside
                             either group is reordered and no badge is restyled.
                         *@
-                        <div class="sreq-ws-head">
-                            <div class="sreq-ws-ident">
-                                <h2 class="sreq-ws-title">@sel.Title</h2>
-                                <p class="sreq-ws-submeta">
-                                    <span class="sreq-meta-strong">@RecipientLabel(sel.RequestType)</span>
-                                    <span class="sreq-meta-sep" aria-hidden="true">·</span>
+                        <div class="rqw-ws-head">
+                            <div class="rqw-ws-ident">
+                                <h2 class="rqw-ws-title">@sel.Title</h2>
+                                <p class="rqw-ws-submeta">
+                                    <span class="rqw-meta-strong">@RecipientLabel(sel.RequestType)</span>
+                                    <span class="rqw-meta-sep" aria-hidden="true">·</span>
                                     @*  WHO OPENED IT — appended to the opening
                                         DATE, not added as its own item, so the
                                         line reads "נפתחה 05.09.2026 על ידי …"
@@ -383,24 +438,24 @@
                                             <span class="sreq-meta-origin">@opener</span>
                                         }
                                     </span>
-                                    <span class="sreq-meta-sep" aria-hidden="true">·</span>
+                                    <span class="rqw-meta-sep" aria-hidden="true">·</span>
                                     <span>עודכנה @sel.UpdatedAt.IsraelFormat("dd.MM.yyyy")</span>
                                 </p>
                             </div>
-                            <div class="sreq-ws-badges">
-                                <span class="sreq-type-pill">@TypeLabel(sel.RequestType)</span>
-                                <span class="sreq-ws-state sreq-ws-state-@suffix">@RequestBuckets.WhereLabel(sel)</span>
+                            <div class="rqw-ws-badges">
+                                <span class="rqw-type-pill">@TypeLabel(sel.RequestType)</span>
+                                <span class="rqw-ws-state rqw-ws-state-@suffix">@RequestBuckets.WhereLabel(sel)</span>
                             </div>
                         </div>
 
                         <!-- ── RECORD BODY ── -->
-                        <div class="sreq-ws-body">
+                        <div class="rqw-ws-body">
 
                             @if (!string.IsNullOrWhiteSpace(sel.Description))
                             {
-                                <div class="sreq-ws-section">
-                                    <p class="sreq-ws-section-label">תיאור הבקשה</p>
-                                    <p class="sreq-desc">@sel.Description</p>
+                                <div class="rqw-ws-section">
+                                    <p class="rqw-ws-section-label">תיאור הבקשה</p>
+                                    <p class="rqw-desc">@sel.Description</p>
                                 </div>
                             }
 
@@ -409,31 +464,31 @@
                                 off the DTO rather than guessed from the text.  *@
                             @if (sel.RequestType == RequestTypes.Extension && sel.Extension is { } ext)
                             {
-                                <div class="sreq-ws-section">
-                                    <p class="sreq-ws-section-label">מועדי הגשה</p>
-                                    <div class="sreq-dates-wrap">
-                                        <div class="sreq-dates" aria-label="מועדי הגשה">
-                                            <div class="sreq-date-col">
-                                                <span class="sreq-date-val">@ExtDate(ext.CurrentDueDate)</span>
-                                                <span class="sreq-date-lbl">מועד נוכחי</span>
+                                <div class="rqw-ws-section">
+                                    <p class="rqw-ws-section-label">מועדי הגשה</p>
+                                    <div class="rqw-dates-wrap">
+                                        <div class="rqw-dates" aria-label="מועדי הגשה">
+                                            <div class="rqw-date-col">
+                                                <span class="rqw-date-val">@ExtDate(ext.CurrentDueDate)</span>
+                                                <span class="rqw-date-lbl">מועד נוכחי</span>
                                             </div>
-                                            <span class="sreq-date-arrow" aria-hidden="true">←</span>
-                                            <div class="sreq-date-col">
-                                                <span class="sreq-date-val sreq-date-val-req">@ExtDate(ext.ApprovedDueDate ?? ext.RequestedDueDate)</span>
-                                                <span class="sreq-date-lbl sreq-date-lbl-req">@(ext.ApprovedDueDate is null ? "מועד מבוקש" : "מועד מאושר")</span>
+                                            <span class="rqw-date-arrow" aria-hidden="true">←</span>
+                                            <div class="rqw-date-col">
+                                                <span class="rqw-date-val rqw-date-val-req">@ExtDate(ext.ApprovedDueDate ?? ext.RequestedDueDate)</span>
+                                                <span class="rqw-date-lbl rqw-date-lbl-req">@(ext.ApprovedDueDate is null ? "מועד מבוקש" : "מועד מאושר")</span>
                                             </div>
                                         </div>
                                     </div>
                                     @if (!string.IsNullOrWhiteSpace(ext.TaskTitle) || !string.IsNullOrWhiteSpace(ext.MilestoneTitle))
                                     {
-                                        <p class="sreq-ext-target">יעד: @(string.IsNullOrWhiteSpace(ext.TaskTitle) ? ext.MilestoneTitle : ext.TaskTitle)</p>
+                                        <p class="rqw-ext-target">יעד: @(string.IsNullOrWhiteSpace(ext.TaskTitle) ? ext.MilestoneTitle : ext.TaskTitle)</p>
                                     }
                                 </div>
                             }
 
                             @if (sel.AttachmentCount > 0)
                             {
-                                <p class="sreq-attach-count">📎 @sel.AttachmentCount @(sel.AttachmentCount == 1 ? "מסמך מצורף" : "מסמכים מצורפים")</p>
+                                <p class="rqw-attach-count">📎 @sel.AttachmentCount @(sel.AttachmentCount == 1 ? "מסמך מצורף" : "מסמכים מצורפים")</p>
                             }
 
                             @*  The academic side's most recent word on the
@@ -455,10 +510,10 @@
                                     }
                                     @if (staffResp.Attachments.Count > 0)
                                     {
-                                        <div class="sreq-files">
+                                        <div class="rqw-files">
                                             @foreach (var att in staffResp.Attachments)
                                             {
-                                                <a class="sreq-file" href="@AttachmentUrl(att)"
+                                                <a class="rqw-file" href="@AttachmentUrl(att)"
                                                    target="_blank" rel="noopener noreferrer">
                                                     📎 @att.OriginalFileName
                                                 </a>
@@ -566,17 +621,17 @@
                                 var timeline  = VisibleEvents(sel);
                                 var histOpen  = _historyOpen.Contains(sel.Id);
                             }
-                            <div class="sreq-ws-footer">
-                                <p class="sreq-ws-footer-note">@FooterNote(sel)</p>
+                            <div class="rqw-ws-footer">
+                                <p class="rqw-ws-footer-note">@FooterNote(sel)</p>
 
                                 @if (timeline.Count > 0)
                                 {
                                     <button type="button"
-                                            class="sreq-hist-btn"
+                                            class="rqw-hist-btn"
                                             aria-expanded="@(histOpen ? "true" : "false")"
                                             @onclick="@(() => ToggleHistory(sel.Id))">
                                         <span>היסטוריה · @timeline.Count @(timeline.Count == 1 ? "עדכון" : "עדכונים")</span>
-                                        <span class="sreq-hist-caret @(histOpen ? "sreq-hist-caret-open" : "")" aria-hidden="true">
+                                        <span class="rqw-hist-caret @(histOpen ? "rqw-hist-caret-open" : "")" aria-hidden="true">
                                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                                  stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                                                 <path d="m6 9 6 6 6-6"/>
@@ -588,19 +643,19 @@
 
                             @if (timeline.Count > 0 && histOpen)
                             {
-                                <div class="sreq-hist-items">
+                                <div class="rqw-hist-items">
                                     @foreach (var evt in timeline)
                                     {
-                                        <div class="sreq-hist-item">
-                                            <span class="sreq-hist-dot" aria-hidden="true"></span>
-                                            <div class="sreq-hist-content">
-                                                <p class="sreq-hist-text">@HistLine(evt)</p>
+                                        <div class="rqw-hist-item">
+                                            <span class="rqw-hist-dot" aria-hidden="true"></span>
+                                            <div class="rqw-hist-content">
+                                                <p class="rqw-hist-text">@HistLine(evt)</p>
                                                 @if (evt.EventType == RequestEventTypes.Comment && evt.Attachments.Count > 0)
                                                 {
-                                                    <div class="sreq-files">
+                                                    <div class="rqw-files">
                                                         @foreach (var att in evt.Attachments)
                                                         {
-                                                            <a class="sreq-file" href="@AttachmentUrl(att)"
+                                                            <a class="rqw-file" href="@AttachmentUrl(att)"
                                                                target="_blank" rel="noopener noreferrer">
                                                                 📎 @att.OriginalFileName
                                                             </a>
@@ -613,7 +668,7 @@
                                 </div>
                             }
 
-                        </div>@* sreq-ws-body *@
+                        </div>@* rqw-ws-body *@
                     </div>@* rqw-card *@
                 }
 
@@ -624,11 +679,40 @@
 
 </div>@* rqw-page *@
 
+}@* end ROLE GATE — student branch *@
+
 @code {
     /// <summary>Deep link a request notification arrives on — it selects that
     /// row and, if it is closed, brings its bucket with it.</summary>
     [SupplyParameterFromQuery(Name = "requestId")]
     public int? DeepLinkRequestId { get; set; }
+
+    /// <summary>WHO this workspace belongs to. Filled by App.razor from an
+    /// async callback, so it is null on the first render of every full page
+    /// load and arrives later as a PARAMETER CHANGE — which is why the guard
+    /// below lives in OnParametersSetAsync and not in OnInitializedAsync,
+    /// where it would see null for every visitor and silently never
+    /// fire.</summary>
+    [CascadingParameter] private User? _user { get; set; }
+
+    /// <summary>The identity whose requests are currently in <c>_requests</c>,
+    /// or null when nothing is loaded. This is the whole of the fix for the
+    /// stale-state half of the bug: every piece of the workspace below is keyed
+    /// to one student, and the only honest thing to do when the id changes is
+    /// throw all of it away rather than repaint a new user's screen with the
+    /// previous one's queue, selection and half-typed replies.</summary>
+    private int? _loadedForUserId;
+
+    /// <summary>An identity that resolves to no request queue at all (an
+    /// account holding none of the four roles). Terminal — it is not redirected
+    /// anywhere, because the fallback route is this page.</summary>
+    private bool _noQueueForRole;
+
+    /// <summary>THE RENDER GATE. Positive, and it needs both halves: a resolved
+    /// user AND a student one. Null (identity not here yet) is not a student,
+    /// so the student markup cannot render for one frame while the cascade
+    /// catches up — which is precisely how a lecturer got the create CTA.</summary>
+    private bool IsStudentWorkspace => _user is not null && RoleService.IsStudent(_user);
 
     private List<StudentOwnRequestDto> _requests = new();
     private bool _isLoading = true;
@@ -661,7 +745,116 @@
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
-    protected override async Task OnInitializedAsync()
+    /// <summary>
+    /// THE ONE PLACE THE IDENTITY IS ANSWERED — role first, then data.
+    ///
+    /// <para><b>Why here and not OnInitializedAsync.</b> App.razor assigns the
+    /// cascaded User from an async event callback rather than before first
+    /// render, so on a full page load OnInitializedAsync runs while it is still
+    /// null. A role check written there sees "anonymous" for everyone and never
+    /// fires — no error, no log. The identity arrives as a parameter change,
+    /// which is this method, and it also RE-ARRIVES here when the signed-in
+    /// user changes inside a live SPA. Both cases are the same code path, which
+    /// is the point.</para>
+    ///
+    /// <para><b>Order matters.</b> Nothing is fetched until the role is known.
+    /// The previous version issued GET api/project-requests/my the instant it
+    /// mounted, for whoever happened to be signed in; that call is scoped by
+    /// TeamMembers, so for a lecturer it returned an empty list and the page
+    /// rendered the student's zero state — the create CTA and all — off a
+    /// perfectly successful response. The request is no longer sent at all for
+    /// a role that has its own queue.</para>
+    ///
+    /// <para><b>The `_loadedForUserId` key, not a bool.</b> A once-only flag
+    /// answers "have we loaded" and cannot answer "for whom", so it lets the
+    /// previous identity's workspace survive a user change. Keying on the id
+    /// makes a change in identity indistinguishable from a first load: reset,
+    /// then load.</para>
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        // Identity not resolved yet. The gate is rendering a neutral loading
+        // state; there is nothing to decide until we know who this is.
+        if (_user is null) return;
+
+        if (!RoleService.IsStudent(_user))
+        {
+            // A lecturer, a mentor or an admin asked for "בקשות" and landed on
+            // the student's queue — from a stale link, a ?returnUrl= carried
+            // through login, or simply the URL that was open when the signed-in
+            // user changed. Send them to the queue that IS theirs, and drop
+            // every trace of the student workspace on the way out so nothing of
+            // it can render if this component is still mounted a frame later.
+            ResetWorkspace();
+            _loadedForUserId = null;
+
+            var home = NavDefinitions.RequestsHomeFor(_user);
+
+            // The fallback answer IS this route (an account with none of the
+            // four roles). Redirecting would be a loop; say so instead.
+            _noQueueForRole = string.Equals(
+                home.Trim('/'),
+                NavDefinitions.StudentRequestsRoute.Trim('/'),
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!_noQueueForRole) Nav.NavigateTo(home, replace: true);
+            return;
+        }
+
+        _noQueueForRole = false;
+
+        // Same student as the loaded workspace — a re-render, a query-string
+        // change or a cascade tick. Nothing to do; re-fetching here would wipe
+        // the reader's selection and drafts on every parameter set.
+        if (_loadedForUserId == _user.Id) return;
+
+        // First load, or a DIFFERENT student. Identical handling on purpose.
+        ResetWorkspace();
+        _loadedForUserId = _user.Id;
+
+        await LoadWorkspaceAsync();
+    }
+
+    /// <summary>
+    /// Everything this screen holds about one student, emptied.
+    ///
+    /// <para>The list is the obvious half. The rest is what made the leak
+    /// visible for longer than a frame: a selected id that names another
+    /// student's request, filter pills left on a bucket, expanded history, the
+    /// per-request reply drafts, their staged attachments and their errors.
+    /// None of it is re-derived from <c>_requests</c>, so none of it goes away
+    /// on its own.</para>
+    ///
+    /// <para><c>_isLoading</c> goes back to true because that is the honest
+    /// state: an identity change means this workspace is about to be fetched,
+    /// not that it is empty.</para>
+    /// </summary>
+    private void ResetWorkspace()
+    {
+        _requests.Clear();
+        _selectedId   = null;
+        _bucketFilter = null;
+        _typeFilter   = null;
+        _typeOpen     = false;
+        _showModal    = false;
+        _loadError    = false;
+        _isLoading    = true;
+
+        _historyOpen.Clear();
+        _replyTexts.Clear();
+        _replyingIds.Clear();
+        _replyErrors.Clear();
+        _replyAttachments.Clear();
+        _replyFileErrors.Clear();
+
+        _typeNames        = new();
+        _typeHandlerRoles = new();
+    }
+
+    /// <summary>The initial fetch: the student's own requests plus the type
+    /// catalogue that names them. Called only from the identity guard above,
+    /// so it can never run for a role that does not own this queue.</summary>
+    private async Task LoadWorkspaceAsync()
     {
         var requestsTask = RequestsService.GetMyRequestsAsync();
         var typesTask    = RequestTypesService.GetActiveAsync();

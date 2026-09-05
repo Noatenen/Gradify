@@ -1,4 +1,4 @@
-using AuthWithAdmin.Client.Models;
+﻿using AuthWithAdmin.Client.Models;
 using AuthWithAdmin.Shared.AuthSharedModels;
 using Microsoft.AspNetCore.Components.Routing;
 
@@ -228,6 +228,37 @@ public static class NavDefinitions
     /// behind the `.motiva` token scope, the `.snav-motiva` rail, and the
     /// decision of where the notification bell is mounted.</summary>
     public static bool IsMotivaShell(User? user) => GetShell(user) != Shell.Staff;
+
+    /// <summary>
+    /// THE ROLE'S OWN REQUESTS QUEUE — one route per shell, stated once.
+    ///
+    /// <para>Three pages answer "בקשות" and they are not interchangeable:
+    /// <c>/requests</c> is the student's own queue and the only screen in the
+    /// product that may OPEN a request, <c>/management/requests</c> is the
+    /// lecturer's decision queue and <c>/mentor-requests</c> the mentor's
+    /// recommendation queue. Every other role-aware route in this shell is
+    /// resolved here rather than at its call site, and this one has to be for
+    /// a stronger reason than symmetry: <c>/requests</c> carries only a bare
+    /// <c>[Authorize]</c> — it cannot carry a role attribute, because refusing
+    /// a lecturer outright lands them on PendingPage — so it is the page
+    /// itself that must send a non-student to the queue that IS theirs.</para>
+    ///
+    /// <para>Returns the student route for the fallback shell as well, so the
+    /// caller must compare before navigating rather than assume the answer is
+    /// somewhere else; <c>StudentRequestsPage</c> does exactly that and
+    /// therefore cannot redirect to itself.</para>
+    /// </summary>
+    public static string RequestsHomeFor(User? user) => GetShell(user) switch
+    {
+        Shell.Mentor   => "/mentor-requests",
+        Shell.Lecturer => "/management/requests",
+        _              => StudentRequestsRoute,
+    };
+
+    /// <summary>The student queue's own route. Named because
+    /// <see cref="RequestsHomeFor"/> returns it as its fallback and the page
+    /// that lives at it has to recognise its own address.</summary>
+    public const string StudentRequestsRoute = "/requests";
 
     // ─────────────────────────────────────────────────────────────────
     /// <summary>
