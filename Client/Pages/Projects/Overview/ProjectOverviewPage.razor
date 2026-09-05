@@ -104,44 +104,11 @@
            RoleService.IsMentor would also answer true for them. *@
         <ProjectWorkspace View="@View"
                           Context="PwContext.Lecturer"
+                          MembersInSubline="true"
                           OnWorkRowClick="OpenKey"
                           OnActivityClick="OpenKey">
 
             <IdentityActions>
-                @* ── The two role-specific controls, unchanged in behaviour ── *@
-
-                @* Manual Moodle status (2026-05-17). Read-only for mentors;
-                   inline-editable for Admin/Staff via the same dropdown and the
-                   same PATCH it has always used. *@
-                @if (CanManageMentors)
-                {
-                    <span class="lpw-moodle lpw-moodle-@MoodleSubmissionStatuses.Bucket(_moodleStatus)">
-                        <span class="oi oi-book" aria-hidden="true"></span>
-                        <span>מודל: @MoodleSubmissionStatuses.Label(_moodleStatus)</span>
-                        <MSelectField Options="@MoodleStatusOptions"
-                                      Value="@(_moodleStatus ?? "")"
-                                      ValueChanged="@(v => OnMoodleStatusChanged(new ChangeEventArgs { Value = v }))"
-                                      Disabled="@_moodleBusy"
-                                      Class="lpw-moodle-select" />
-                    </span>
-                }
-                else if (!string.IsNullOrEmpty(_moodleStatus))
-                {
-                    <span class="lpw-moodle lpw-moodle-@MoodleSubmissionStatuses.Bucket(_moodleStatus)">
-                        <span class="oi oi-book" aria-hidden="true"></span>
-                        מודל: @MoodleSubmissionStatuses.Label(_moodleStatus)
-                    </span>
-                }
-
-                @if (CanManageMentors)
-                {
-                    <button type="button" class="lpw-add-mentor"
-                            title="הוסף מנחה נוסף לפרויקט"
-                            @onclick="OpenAddMentor">
-                        <span class="oi oi-plus" aria-hidden="true"></span>
-                        @(string.IsNullOrWhiteSpace(_data.Header.MentorNames) ? "הוסף מנחה" : "הוסף מנחה נוסף")
-                    </button>
-                }
             </IdentityActions>
         </ProjectWorkspace>
     }
@@ -395,11 +362,6 @@
     </PwDetail>
 }
 
-<!-- Add-mentor modal (lecturer/admin only) — unchanged -->
-<AddMentorModal IsOpen="@_showAddMentor"
-                ProjectId="@ProjectId"
-                OnClose="CloseAddMentor"
-                OnAdded="OnMentorAdded" />
 
 @code {
     [Parameter] public int ProjectId { get; set; }
@@ -416,7 +378,6 @@
     private List<PendingMentorApprovalRowDto> _approvals = new();
 
     private bool   _loading = true;
-    private bool   _showAddMentor;
 
     /// <summary>The request whose detail surface is open, or null. It also
     /// marks the row it came from while the surface covers the page.</summary>
@@ -437,21 +398,11 @@
     private string _subMessage = "";
     private string _subError   = "";
 
-    // Manual Moodle-submission tracking. Loaded alongside the overview;
-    // admins/staff flip the value via the inline dropdown.
-    private string? _moodleStatus;
-    private bool    _moodleBusy;
-
     /// <summary>Mentor-management actions are lecturer/admin only. Plain mentors
     /// view the same page (their own assigned project) but don't get the
     /// add-mentor button or the Moodle dropdown — server-side authorization is
     /// the actual gate; this just keeps the UI honest.</summary>
     private bool CanManageMentors => RoleService.IsAdminOrStaff(_user);
-
-    private static readonly IReadOnlyList<MSelect.Option> MoodleStatusOptions =
-        new[] { new MSelect.Option("", "— לא נמדד —") }
-            .Concat(MoodleSubmissionStatuses.All.Select(s => new MSelect.Option(s, MoodleSubmissionStatuses.Label(s))))
-            .ToList();
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -474,16 +425,6 @@
         _data    = await overviewTask;
         _roadmap = await roadmapTask;
         _approvals = (await approvalTask ?? new()).Where(a => a.ProjectId == ProjectId).ToList();
-
-        // Best-effort: a Moodle failure shouldn't break the workspace, we just
-        // don't show the chip.
-        try
-        {
-            var moodle = await Http.GetFromJsonAsync<ProjectMoodleStatusDto>(
-                $"api/projects/{ProjectId}/moodle-status");
-            _moodleStatus = moodle?.Status;
-        }
-        catch { _moodleStatus = null; }
 
         _loading = false;
     }
@@ -602,11 +543,6 @@
             var reqs  = RequestRows;
             var tasks = TaskRows;
 
-            int stuck    = _approvals.Count;
-            int missing  = subs.Count(r => r.Rank == PwRowRank.Exception);
-            int handedIn = _data!.Tasks.Count(t => t.IsSubmission && t.HasSubmission);
-            int mine     = reqs.Count(r => r.Rank == PwRowRank.Waiting);
-            int openReqs = reqs.Count(r => r.Rank != PwRowRank.Dormant);
             int overdue  = _data.Summary.OverdueTaskCount;
 
             return new[]
@@ -614,19 +550,6 @@
                 new PwSection(SecSubs, "הגשות", "oi-inbox",
                     Rows:        subs,
                     EmptyText:   "אין משימות הגשה בפרויקט זה",
-                    // What the card says INSTEAD of rows when nothing is
-                    // outstanding: the settled position, in one line.
-                    Summary:     stuck > 0
-                                     ? PwCount.Phrase(stuck, "הגשה אחת ממתינה לאישורך", "{0} הגשות ממתינות לאישורך")
-                                     : missing > 0
-                                         ? PwCount.Phrase(missing, "הגשה אחת חסרה", "{0} הגשות חסרות")
-                                         : $"{handedIn} מתוך {subs.Count} הוגשו",
-                    // "ממתינות לאישורך" is this reader's queue, not a
-                    // failure — Attention. A MISSING submission is a genuine
-                    // negative and keeps rose.
-                    SummaryTone: stuck > 0 ? PwTone.Attention
-                                 : missing > 0 ? PwTone.Late
-                                 : PwTone.Quiet,
                     AllHref:     CanManageMentors ? "/lecturer/submissions" : null,
                     AllLabel:    CanManageMentors ? "להגשות ובקרה" : null,
                     MoreLabel:   "לכל ההגשות"),
@@ -634,12 +557,6 @@
                 new PwSection(SecReqs, "בקשות", "oi-envelope-closed",
                     Rows:        reqs,
                     EmptyText:   "אין בקשות פתוחות בפרויקט זה",
-                    Summary:     mine > 0
-                                     ? PwCount.Phrase(mine, "בקשה אחת ממתינה לך", "{0} בקשות ממתינות לך")
-                                     : openReqs > 0
-                                         ? PwCount.Phrase(openReqs, "בקשה אחת פתוחה", "{0} בקשות פתוחות")
-                                         : "אין בקשות פתוחות",
-                    SummaryTone: mine > 0 ? PwTone.Attention : PwTone.Quiet,
                     AllHref:     "/management/requests",
                     AllLabel:    "לכל הבקשות",
                     MoreLabel:   "לכל בקשות הפרויקט"),
@@ -715,7 +632,7 @@
                         : sub?.LatestMentorStatus == "Approved" ? ("נבדק ואושר", PwTone.Done)
                         : sub?.LatestMentorStatus == "Returned" ? ("הוחזר לתיקון", PwTone.Waiting)
                         : t.HasSubmission                       ? ("הוגש", PwTone.Waiting)
-                        : t.IsOverdue                           ? ("טרם הוגש · באיחור", PwTone.Late)
+                        : t.IsOverdue                           ? ("באיחור", PwTone.Late)
                         :                                         ("טרם הוגש", PwTone.Quiet);
 
                     var rank =
@@ -731,8 +648,8 @@
                         // belongs to. The deadline still reaches the row only
                         // when it was missed.
                         Meta:            string.IsNullOrWhiteSpace(t.MilestoneTitle) ? null : t.MilestoneTitle,
-                        Trailing:        t.IsOverdue ? PwDates.DueLabel(t.DueDate) : null,
-                        TrailingLate:    t.IsOverdue,
+                        Trailing:        null,
+                        TrailingLate:    false,
                         State:           state,
                         StateTone:       tone,
                         ActionLabel:     isStuck && canOpen ? "לטיפול" : null,
@@ -1056,32 +973,6 @@
         await ReloadAsync();
         StateHasChanged();
     }
-
-    // ── Moodle + add-mentor (unchanged flows) ───────────────────────────────
-
-    private async Task OnMoodleStatusChanged(ChangeEventArgs e)
-    {
-        if (_moodleBusy) return;
-        var raw = e.Value?.ToString() ?? "";
-        string? next = string.IsNullOrWhiteSpace(raw) ? null : raw;
-
-        _moodleBusy = true;
-        try
-        {
-            var resp = await Http.PatchAsJsonAsync(
-                $"api/projects/{ProjectId}/moodle-status",
-                new SaveProjectMoodleStatusRequest { Status = next });
-
-            if (resp.IsSuccessStatusCode) _moodleStatus = next;
-            // Silent failure — the chip keeps its old value; admin retries.
-        }
-        catch { /* network issue — ignore, chip state unchanged */ }
-        finally { _moodleBusy = false; }
-    }
-
-    private void OpenAddMentor()  => _showAddMentor = true;
-    private void CloseAddMentor() => _showAddMentor = false;
-    private async Task OnMentorAdded() => await ReloadAsync();
 
     // ── Display helpers ─────────────────────────────────────────────────────
 

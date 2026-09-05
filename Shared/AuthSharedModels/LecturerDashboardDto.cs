@@ -85,6 +85,9 @@ public class DashboardProjectRowDto
     public string?   TeamName             { get; set; }
     /// <summary>Comma-separated mentor names ("מנחה א', מנחה ב'") — empty when no mentors are assigned.</summary>
     public string?   MentorNames          { get; set; }
+    /// <summary>True when the requesting user is listed in ProjectMentors for this project.
+    /// Used by the lecturer "צוותים בהנחייתי" filter — never inferred from names or text.</summary>
+    public bool      IsSupervisedByCurrentUser { get; set; }
     public string?   CurrentMilestoneTitle { get; set; }
     public DateTime? CurrentMilestoneDueDate { get; set; }
     public int       OverdueTaskCount     { get; set; }

@@ -123,6 +123,10 @@ public static class PwRequestVocabulary
 {
     public static string StatusLabel(string status, PwRequestViewer viewer) => status switch
     {
+        // New requests show no state badge — the action label already
+        // communicates that this is waiting on the viewer.
+        RequestStatuses.New => "",
+
         // Owner: the assigned mentor — unless this viewer also holds final
         // authority, in which case the server opens the combined decision and
         // the label says so.
@@ -181,6 +185,9 @@ public static class PwRequestVocabulary
     /// </summary>
     public static string? ActionLabel(string status, PwRequestViewer viewer) =>
         !OwnedByViewer(status, viewer) ? null
+        // New requests: the viewer hasn't interacted yet — "waiting for your
+        // response" is more accurate than "to decision" at this stage.
+        : status is RequestStatuses.New ? "ממתינה לתגובתך"
         : viewer.CanDecide             ? "להחלטה"
         : viewer.CanRecommend          ? "להמלצה"
         // Staff-owned non-extension statuses: they owe a reply through their
