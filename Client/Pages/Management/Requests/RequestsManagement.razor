@@ -5,14 +5,22 @@
                     בקשות מרצה 308 חדש.pdf
                     בקשות מרצה 308.png
 
-    LAYOUT
-    ──────
-    Desktop split workspace (RTL throughout):
-      RIGHT — compact request queue panel (sidebar)
-              • segmented status selector  (להחלטתך / בטיפול מנחה / טופלו)
-              • request-type compact dropdown
-              • scrollable request card list
-      LEFT  — large selected-request details and action workspace
+    LAYOUT — the shared request workspace (`rqw-*`,
+    Client/wwwroot/css/motiva-request-workspace.css), the same skeleton and now
+    the same ROW ANATOMY and RECORD HEAD the student and mentor queues draw:
+      RIGHT — the queue, scrolling inside itself with its scrollbar on the
+              physical right edge
+              • the buckets as MFilterTabs  (להחלטתך / בטיפול מנחה / טופלו)
+              • the shared request-type dropdown
+              • rows: title + type chip on one line, state + requester below
+      LEFT  — the selected request's record and the decision workspace
+
+    THE VISUAL PASS CHANGED NO BUCKET, NO COUNT AND NO POST. The tab keys, the
+    BucketOf mapping, StatusClass, RowTimeLabel and every branch of
+    SubmitDecision below are exactly what they were; what moved is which
+    stylesheet paints them. A lecturer still cannot OPEN a request — only a
+    student can, which is why this screen has no create action and must not
+    grow one.
 
     TABS / BUCKETS
     ──────────────
@@ -48,22 +56,25 @@
     <!-- ══════════════════════════════════════════════════════════════
          PAGE HEADER  (full-width, above split)
          ══════════════════════════════════════════════════════════════ -->
-    <div class="lrq-title-row rqw-header">
+    <div class="rqw-header">
 
-        <h1 class="lrq-h1 rqw-title">בקשות</h1>
+        <h1 class="rqw-title">בקשות</h1>
 
     </div>
 
     @if (_loading)
     {
-        <div class="lrq-full-loading" role="status">
-            <span class="lrq-spinner" aria-hidden="true"></span>
-            <span>טוענת בקשות…</span>
-        </div>
+        <MLoadingState Label="טוענת בקשות…" />
     }
     else if (_loadError)
     {
-        <MEmptyState Title="אירעה שגיאה בטעינת הבקשות" Description="נסה לרענן את הדף." />
+        <MEmptyState Live="true"
+                     Title="אירעה שגיאה בטעינת הבקשות"
+                     Description="ייתכן שיש תקלת רשת זמנית. אפשר לנסות שוב.">
+            <Action>
+                <MButton Variant="MButton.ButtonVariant.Secondary" OnClick="ReloadAsync">נסו שוב</MButton>
+            </Action>
+        </MEmptyState>
     }
     else
     {
@@ -72,120 +83,103 @@
              In RTL flex-row: first child (sidebar) → RIGHT edge
                                second child (main)  → fills remaining LEFT space
              ══════════════════════════════════════════════════════════════ -->
-        <div class="lrq-split rqw-split">
+        <div class="rqw-split">
 
             <!-- ── SIDEBAR — right panel ─────────────────────────────── -->
-            <aside class="lrq-sidebar rqw-sidebar">
+            <aside class="rqw-sidebar">
 
-                <!-- 1. Compact segmented status selector -->
-                <div class="lrq-seg" role="tablist" aria-label="סינון לפי סטטוס">
-                    <button type="button"
-                            class="lrq-seg-btn @(_activeTab == "decision" ? "lrq-seg-active" : "")"
-                            role="tab"
-                            aria-selected="@(_activeTab == "decision")"
-                            @onclick='@(() => SetTab("decision"))'>
-                        להחלטתך
-                        @if (DecisionCount > 0)
+                @*  THE QUEUE'S TWO CONTROLS, in the shared filter bar the
+                    student and mentor queues use: the buckets as MFilterTabs —
+                    the finished design's pill track, with the count riding the
+                    tab it belongs to — and the type dropdown under it.
+
+                    This replaced a hand-rolled `.lrq-seg`: a grey track with a
+                    raised white chip, which ran the identical open/select logic
+                    but read as a different control on a screen that is meant to
+                    be the same feature. The tab KEYS are unchanged
+                    ("decision" / "mentor" / "done") and so is SetTab, so no
+                    bucket, count or query moved with the control.  *@
+                <div class="rqw-filters">
+
+                    <MFilterTabs Tabs="@FilterTabs"
+                                 ActiveKey="@_activeTab"
+                                 OnSelect="SetTab"
+                                 AriaLabel="סינון בקשות לפי מצב" />
+
+                    <div class="lrq-type-wrap rqw-type-wrap">
+                        <button type="button"
+                                class="rqw-type-btn @(!string.IsNullOrEmpty(_selectedType) ? "rqw-type-btn-active" : "")"
+                                aria-haspopup="listbox"
+                                aria-expanded="@(_typeMenuOpen ? "true" : "false")"
+                                aria-label="סינון לפי סוג בקשה"
+                                @onclick="ToggleTypeMenu">
+                            <span class="rqw-type-label-text">סוג בקשה</span>
+                            <span class="rqw-type-val-text">@(!string.IsNullOrEmpty(_selectedType) ? TypeLabel(_selectedType) : "הכל")</span>
+                            <span class="rqw-type-caret @(_typeMenuOpen ? "rqw-type-caret-open" : "")" aria-hidden="true">
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" stroke-width="2.5"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m6 9 6 6 6-6"/>
+                                </svg>
+                            </span>
+                        </button>
+
+                        @if (_typeMenuOpen)
                         {
-                            <span class="lrq-seg-badge motiva-count">@DecisionCount</span>
-                        }
-                    </button>
-                    <button type="button"
-                            class="lrq-seg-btn @(_activeTab == "mentor" ? "lrq-seg-active" : "")"
-                            role="tab"
-                            aria-selected="@(_activeTab == "mentor")"
-                            @onclick='@(() => SetTab("mentor"))'>
-                        בטיפול מנחה
-                        @if (MentorCount > 0)
-                        {
-                            <span class="lrq-seg-badge motiva-count">@MentorCount</span>
-                        }
-                    </button>
-                    <button type="button"
-                            class="lrq-seg-btn @(_activeTab == "done" ? "lrq-seg-active" : "")"
-                            role="tab"
-                            aria-selected="@(_activeTab == "done")"
-                            @onclick='@(() => SetTab("done"))'>
-                        טופלו
-                    </button>
-                </div>
-
-                <!-- 2. Request-type dropdown (compact, single row) -->
-                <div class="lrq-type-wrap rqw-type-wrap">
-                    <button type="button"
-                            class="lrq-type-btn rqw-type-btn @(!string.IsNullOrEmpty(_selectedType) ? "lrq-type-btn-active rqw-type-btn-active" : "")"
-                            aria-label="סינון לפי סוג בקשה"
-                            @onclick="ToggleTypeMenu">
-                        <span class="lrq-type-label-text rqw-type-label-text">סוג בקשה</span>
-                        <span class="lrq-type-val-text rqw-type-val-text">@(!string.IsNullOrEmpty(_selectedType) ? TypeLabel(_selectedType) : "הכל")</span>
-                        <span class="lrq-type-caret rqw-type-caret @(_typeMenuOpen ? "lrq-type-caret-open rqw-type-caret-open" : "")" aria-hidden="true">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
-                                 stroke="currentColor" stroke-width="2.5"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <path d="m6 9 6 6 6-6"/>
-                            </svg>
-                        </span>
-                    </button>
-
-                    @if (_typeMenuOpen)
-                    {
-                        <div class="lrq-type-backdrop rqw-type-backdrop" @onclick="CloseTypeMenu"></div>
-                        <div class="lrq-type-panel rqw-type-panel">
-                            <button type="button"
-                                    class="lrq-type-opt rqw-type-opt @(string.IsNullOrEmpty(_selectedType) ? "lrq-type-opt-on rqw-type-opt-on" : "")"
-                                    @onclick='@(() => PickType(""))'>
-                                <span class="lrq-type-opt-label rqw-type-opt-label">הכל</span>
-                                @if (string.IsNullOrEmpty(_selectedType))
-                                {
-                                    <svg class="lrq-type-check rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
-                                         stroke="#6D28F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="m5 12.5 4.5 4.5L19 7"/>
-                                    </svg>
-                                }
-                            </button>
-                            @foreach (var type in AvailableTypes)
-                            {
-                                var t = type;
-                                var on = _selectedType == t;
+                            <div class="rqw-type-backdrop" @onclick="CloseTypeMenu"></div>
+                            <div class="rqw-type-panel" role="listbox" aria-label="סוג בקשה">
                                 <button type="button"
-                                        class="lrq-type-opt rqw-type-opt @(on ? "lrq-type-opt-on rqw-type-opt-on" : "")"
-                                        @onclick='@(() => PickType(t))'>
-                                    <span class="lrq-type-opt-label rqw-type-opt-label">@TypeLabel(t)</span>
-                                    @if (on)
+                                        class="rqw-type-opt @(string.IsNullOrEmpty(_selectedType) ? "rqw-type-opt-on" : "")"
+                                        role="option"
+                                        aria-selected="@(string.IsNullOrEmpty(_selectedType) ? "true" : "false")"
+                                        @onclick='@(() => PickType(""))'>
+                                    <span class="rqw-type-opt-label">הכל</span>
+                                    @if (string.IsNullOrEmpty(_selectedType))
                                     {
-                                        <svg class="lrq-type-check rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
-                                             stroke="#6D28F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                             stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                                             <path d="m5 12.5 4.5 4.5L19 7"/>
                                         </svg>
                                     }
                                 </button>
-                            }
-                        </div>
-                    }
-                </div>
+                                @foreach (var type in AvailableTypes)
+                                {
+                                    var t = type;
+                                    var on = _selectedType == t;
+                                    <button type="button"
+                                            class="rqw-type-opt @(on ? "rqw-type-opt-on" : "")"
+                                            role="option"
+                                            aria-selected="@(on ? "true" : "false")"
+                                            @onclick='@(() => PickType(t))'>
+                                        <span class="rqw-type-opt-label">@TypeLabel(t)</span>
+                                        @if (on)
+                                        {
+                                            <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                 stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="m5 12.5 4.5 4.5L19 7"/>
+                                            </svg>
+                                        }
+                                    </button>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>@* rqw-filters *@
 
-                <!-- 3. Scrollable request list.
-                     .lrq-list is the scroll box and is flipped to LTR so its
-                     scrollbar renders on the RIGHT edge; .lrq-list-inner puts
-                     the content back to RTL, so nothing about the cards moves.
-                     The listbox role rides the inner element, which is the one
-                     that actually owns the options. -->
-                <div class="lrq-list rqw-list">
-                  <div class="lrq-list-inner rqw-list-inner" role="listbox" aria-label="רשימת בקשות">
+                @*  The scrolling queue. `.rqw-list` is the scroll box and is
+                    flipped to LTR so its scrollbar renders on the physical
+                    RIGHT edge; `.rqw-list-inner` puts the content back to RTL,
+                    so nothing about a row moves. The listbox role rides the
+                    inner element, which is the one that actually owns the
+                    options.  *@
+                <div class="rqw-list">
+                  <div class="rqw-list-inner" role="listbox" aria-label="רשימת בקשות">
                     @{
                         var visibleItems = VisibleItems;
                     }
                     @if (visibleItems.Count == 0)
                     {
-                        <div class="lrq-list-empty">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                 stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                                <polyline points="14 2 14 8 20 8"/>
-                                <line x1="16" y1="13" x2="8" y2="13"/>
-                            </svg>
-                            <span>אין בקשות</span>
-                        </div>
+                        <p class="rqw-list-empty">אין בקשות תואמות לסינון הנוכחי</p>
                     }
                     else
                     {
@@ -194,48 +188,96 @@
                             var req = r;
                             var isSelected = _expandedId == req.Id;
                             <button type="button"
-                                    class="lrq-req-card rqw-row @(isSelected ? "lrq-req-card-selected rqw-row-selected" : "")"
+                                    class="rqw-row @(isSelected ? "rqw-row-selected" : "")"
                                     role="option"
                                     aria-selected="@(isSelected)"
                                     aria-label="@req.Title"
                                     @onclick='@(() => SelectRequest(req.Id))'>
 
-                                <div class="lrq-req-top">
-                                    <span class="lrq-req-type-pill">@TypeLabel(req.RequestType)</span>
-                                    <span class="lrq-req-time lrq-req-time-@StatusClass(req)">@RowTimeLabel(req)</span>
+                                @*  ── HEAD LINE — the shared row anatomy ──
+                                    The title flexes and ellipses in place, the
+                                    request type is pinned to the far LEFT.
+                                    Identical to the student and mentor queues:
+                                    a request row is one object across the
+                                    product.
+
+                                    It was three lines, with the type chip and
+                                    the waiting phrase on a line of their own
+                                    above the title. Folding the chip up onto the
+                                    title line is what pays for the row saying
+                                    the same in less height.
+
+                                    NO UNREAD DOT HERE, unlike the student queue.
+                                    On this screen it was a violet dot on very
+                                    nearly every row — a lecturer has not "read"
+                                    most of a cohort's requests — so it stopped
+                                    marking anything and became decoration
+                                    leading every title. The signal itself is not
+                                    lost where it is actionable: in the
+                                    להחלטתך bucket RowTimeLabel below says
+                                    "עדכון חדש" in words. In the other two
+                                    buckets the row is not the lecturer's move
+                                    at all — "אצל המנחה" and "טופל · 12.03" are
+                                    what matters there, and an unread marker on
+                                    them only competed with them.  *@
+                                <div class="rqw-row-head">
+                                    <span class="rqw-row-title">@req.Title</span>
+                                    <span class="rqw-row-type">@TypeLabel(req.RequestType)</span>
                                 </div>
-                                <div class="lrq-req-title-row">
-                                    @if (req.HasUnread)
-                                    {
-                                        <span class="lrq-req-unread-dot" aria-hidden="true"></span>
-                                    }
-                                    <span class="lrq-req-title">@req.Title</span>
-                                </div>
-                                <div class="lrq-req-meta">
-                                    <span>@req.CreatedByName</span>
-                                    @if (!string.IsNullOrWhiteSpace(req.TeamName))
-                                    {
-                                        <span class="lrq-req-meta-sep" aria-hidden="true">·</span>
-                                        <span>@req.TeamName</span>
-                                    }
+
+                                @*  ── META — WHOSE request this is, and nothing
+                                    else.
+
+                                    THE ITEM IS THE TEAM, not the person who
+                                    typed the request. A lecturer reads this
+                                    queue by team: the decision is about a team's
+                                    deadline, the note goes to the team, and the
+                                    same team files several requests through
+                                    whichever member happens to be at a keyboard.
+                                    Naming the member made two rows about one
+                                    team look like two unrelated matters. The
+                                    submitter is still on the record — see the
+                                    head's "נפתחה … על ידי …" — where it is
+                                    detail rather than identity.
+
+                                    NO STATE SENTENCE HERE ANY MORE. The row used
+                                    to lead with RowTimeLabel in the bucket's own
+                                    colour — "ממתינה להחלטתך" in rose,
+                                    "עדכון חדש" and "עודכנה 15.07" in violet. On
+                                    a queue that is ALREADY filtered to one
+                                    bucket by the pills above it, that sentence
+                                    told the reader what the selected tab had
+                                    just told them, in the loudest ink on the
+                                    row, once per row. The state is not gone: it
+                                    is on the record's own badge
+                                    (`rqw-ws-state-…`, painted by StateTone),
+                                    where it is read once, about the one request
+                                    the lecturer has actually opened.
+
+                                    RowTimeLabel, StatusClass, StateTone and the
+                                    buckets behind them are untouched — this is
+                                    which of them the ROW draws, not what any of
+                                    them answers.  *@
+                                <div class="rqw-row-meta">
+                                    <span class="rqw-row-sub">@TeamIdentity(req)</span>
                                 </div>
 
                             </button>
                         }
                     }
-                  </div>@* lrq-list-inner *@
-                </div>@* lrq-list *@
+                  </div>@* rqw-list-inner *@
+                </div>@* rqw-list *@
 
             </aside>
 
             <!-- ── MAIN WORKSPACE — left panel ──────────────────────── -->
-            <main class="lrq-main rqw-main">
+            <main class="rqw-main">
 
                 @if (_expandedId is null)
                 {
                     <!-- No selection — neutral empty state -->
-                    <div class="lrq-ws-empty rqw-empty">
-                        <div class="lrq-ws-empty-icon rqw-empty-icon" aria-hidden="true">
+                    <div class="rqw-empty">
+                        <div class="rqw-empty-icon" aria-hidden="true">
                             <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
                                  stroke="currentColor" stroke-width="1.3"
                                  stroke-linecap="round" stroke-linejoin="round">
@@ -246,8 +288,8 @@
                                 <polyline points="10 9 9 9 8 9"/>
                             </svg>
                         </div>
-                        <p class="lrq-ws-empty-title rqw-empty-title">בחרו בקשה כדי לצפות בפרטים</p>
-                        <p class="lrq-ws-empty-sub rqw-empty-sub">פרטי הבקשה יוצגו כאן לאחר הבחירה</p>
+                        <p class="rqw-empty-title">בחרו בקשה כדי לצפות בפרטים</p>
+                        <p class="rqw-empty-sub">פרטי הבקשה יוצגו כאן לאחר הבחירה</p>
                     </div>
                 }
                 else
@@ -258,85 +300,136 @@
 
                     @if (selectedRow is null)
                     {
-                        <div class="lrq-ws-empty rqw-empty">
-                            <p class="lrq-ws-empty-title rqw-empty-title">הבקשה לא נמצאה</p>
+                        <div class="rqw-empty">
+                            <p class="rqw-empty-title">הבקשה לא נמצאה</p>
                         </div>
                     }
                     else
                     {
                         var r = selectedRow;
 
-                        <div class="lrq-ws-card rqw-card" id="request-@r.Id">
+                        <div class="rqw-card" id="request-@r.Id">
 
                             @if (isLoadingDetail && detail is null)
                             {
-                                <div class="lrq-detail-loading" role="status">
-                                    <span class="lrq-spinner" aria-hidden="true"></span>
-                                    <span>טוענת פרטי בקשה…</span>
+                                <div class="lrq-detail-loading">
+                                    <MLoadingState Label="טוענת פרטי בקשה…" />
                                 </div>
                             }
                             else
                             {
                                 <!-- ── WORKSPACE HEADER ── -->
-                                <div class="lrq-ws-head">
-                                    <div class="lrq-ws-head-badges">
-                                        <span class="lrq-type-pill">@TypeLabel(r.RequestType)</span>
-                                        <span class="lrq-ws-wait lrq-ws-wait-@StatusClass(r)">@RowTimeLabel(r)</span>
+                                @*  ── RECORD HEADER ─────────────────────────
+                                    TWO CHILDREN ON ONE ROW, not a stack. The
+                                    identity keeps the reading end — the RIGHT,
+                                    under dir=rtl — and the badges take the
+                                    opposite corner, the upper LEFT.
+
+                                    The badges used to sit ABOVE the title, which
+                                    is the one thing that made this record read
+                                    as a different object from the student's. The
+                                    title now comes first in the DOM as well as
+                                    visually, which is the order a screen reader
+                                    should meet them in anyway. Nothing inside
+                                    either group is reordered and no badge means
+                                    anything new.  *@
+                                <div class="rqw-ws-head">
+                                    <div class="rqw-ws-ident">
+                                        <h2 class="rqw-ws-title">@r.Title</h2>
+                                        @*  THE IDENTITY SLOT IS THE TEAM.
+                                            `rqw-meta-strong` is the record's
+                                            "who is this about" position — the
+                                            student's own record puts the
+                                            handling role there — and on this
+                                            screen the answer is the team, for
+                                            the same reason the row says it.
+
+                                            The submitter has not been removed,
+                                            it has been DEMOTED: it now finishes
+                                            the opening-date item as
+                                            "נפתחה 05.09.2026 · על ידי יעל כהן",
+                                            which is the shape the student
+                                            record already uses for the same
+                                            fact (RequestBuckets.OpenedByLabel).
+                                            It reads as provenance there instead
+                                            of as the subject of the request.  *@
+                                        @{ var identity = TeamIdentity(r); }
+                                        <p class="rqw-ws-submeta">
+                                            <span class="rqw-meta-strong">@identity</span>
+                                            @*  The project is a SECOND item only
+                                                when it is not already the first:
+                                                where the team has no name of its
+                                                own, TeamIdentity has already
+                                                fallen back to the project title
+                                                and printing it again produced
+                                                the same words twice on one
+                                                line.  *@
+                                            @if (!string.IsNullOrWhiteSpace(r.ProjectTitle)
+                                                 && !string.Equals(r.ProjectTitle, identity, StringComparison.Ordinal))
+                                            {
+                                                <span class="rqw-meta-sep" aria-hidden="true">·</span>
+                                                <span>@r.ProjectTitle</span>
+                                            }
+                                            @if (r.CreatedAt != default)
+                                            {
+                                                <span class="rqw-meta-sep" aria-hidden="true">·</span>
+                                                <span>נפתחה @r.CreatedAt.ToString("dd.MM.yyyy")</span>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(r.CreatedByName))
+                                            {
+                                                <span class="rqw-meta-sep" aria-hidden="true">·</span>
+                                                <span>על ידי @r.CreatedByName</span>
+                                            }
+                                        </p>
                                     </div>
-                                    <h2 class="lrq-ws-title">@r.Title</h2>
-                                    <p class="lrq-ws-submeta">
-                                        <span class="lrq-meta-requester">@r.CreatedByName</span>
-                                        @if (!string.IsNullOrWhiteSpace(r.TeamName))
-                                        {
-                                            <span class="lrq-meta-sep" aria-hidden="true">·</span>
-                                            <span class="lrq-meta-team">@r.TeamName</span>
-                                        }
-                                        @if (!string.IsNullOrWhiteSpace(r.ProjectTitle))
-                                        {
-                                            <span class="lrq-meta-sep" aria-hidden="true">·</span>
-                                            <span class="lrq-meta-project">@r.ProjectTitle</span>
-                                        }
-                                        @if (r.CreatedAt != default)
-                                        {
-                                            <span class="lrq-meta-sep" aria-hidden="true">·</span>
-                                            <span class="lrq-meta-date">@r.CreatedAt.ToString("dd.MM.yyyy")</span>
-                                        }
-                                    </p>
+                                    <div class="rqw-ws-badges">
+                                        <span class="rqw-type-pill">@TypeLabel(r.RequestType)</span>
+                                        @*  The SAME sentence and the SAME four
+                                            statuses the row carries, in the
+                                            workspace's shared colour roles.
+                                            StateTone is a fold of StatusClass,
+                                            not a second mapping — "אצל המנחה"
+                                            stays neutral grey and never takes
+                                            the attention rose, because a request
+                                            with the mentor is not the lecturer's
+                                            move.  *@
+                                        <span class="rqw-ws-state rqw-ws-state-@StateTone(r)">@RowTimeLabel(r)</span>
+                                    </div>
                                 </div>
 
                                 <!-- ── WORKSPACE BODY ── -->
-                                <div class="lrq-ws-body">
+                                <div class="rqw-ws-body">
 
                                     <!-- Description -->
                                     @if (!string.IsNullOrWhiteSpace(detail?.Description))
                                     {
-                                        <div class="lrq-ws-section">
-                                            <p class="lrq-ws-section-label">תיאור הבקשה</p>
-                                            <p class="lrq-desc">@detail.Description</p>
+                                        <div class="rqw-ws-section">
+                                            <p class="rqw-ws-section-label">תיאור הבקשה</p>
+                                            <p class="rqw-desc">@detail.Description</p>
                                         </div>
                                     }
 
                                     <!-- Extension: deadline dates comparison -->
                                     @if (detail?.RequestType == RequestTypes.Extension && detail.Extension is { } ext)
                                     {
-                                        <div class="lrq-ws-section">
-                                            <p class="lrq-ws-section-label">מועדי הגשה</p>
-                                            <div class="lrq-dates-wrap">
-                                                <div class="lrq-dates" aria-label="מועדי הגשה">
-                                                    <div class="lrq-date-col">
-                                                        <span class="lrq-date-val">@ExtDate(ext.CurrentDueDate)</span>
-                                                        <span class="lrq-date-lbl">מועד נוכחי</span>
+                                        <div class="rqw-ws-section">
+                                            <p class="rqw-ws-section-label">מועדי הגשה</p>
+                                            <div class="rqw-dates-wrap">
+                                                <div class="rqw-dates" aria-label="מועדי הגשה">
+                                                    <div class="rqw-date-col">
+                                                        <span class="rqw-date-val">@ExtDate(ext.CurrentDueDate)</span>
+                                                        <span class="rqw-date-lbl">מועד נוכחי</span>
                                                     </div>
-                                                    <span class="lrq-date-arrow" aria-hidden="true">←</span>
-                                                    <div class="lrq-date-col">
-                                                        <span class="lrq-date-val lrq-date-val-req">@ExtDate(ext.RequestedDueDate)</span>
-                                                        <span class="lrq-date-lbl lrq-date-lbl-req">מועד מבוקש</span>
+                                                    <span class="rqw-date-arrow" aria-hidden="true">←</span>
+                                                    <div class="rqw-date-col">
+                                                        <span class="rqw-date-val rqw-date-val-req">@ExtDate(ext.RequestedDueDate)</span>
+                                                        <span class="rqw-date-lbl rqw-date-lbl-req">מועד מבוקש</span>
                                                     </div>
                                                 </div>
                                             </div>
                                             @if (!string.IsNullOrWhiteSpace(ext.TaskTitle) || !string.IsNullOrWhiteSpace(ext.MilestoneTitle))
                                             {
-                                                <p class="lrq-ext-target">יעד: @(ext.TaskTitle ?? ext.MilestoneTitle)</p>
+                                                <p class="rqw-ext-target">יעד: @(ext.TaskTitle ?? ext.MilestoneTitle)</p>
                                             }
                                         </div>
                                     }
@@ -344,10 +437,10 @@
                                     <!-- Attachments -->
                                     @if (detail?.Attachments?.Count > 0)
                                     {
-                                        <div class="lrq-attach-list">
+                                        <div class="rqw-files">
                                             @foreach (var att in detail.Attachments)
                                             {
-                                                <a class="lrq-hist-file"
+                                                <a class="rqw-file"
                                                    href="/request-attachments/@att.StoredFileName"
                                                    target="_blank" rel="noopener noreferrer">
                                                     📎 @att.OriginalFileName
@@ -357,7 +450,7 @@
                                     }
                                     else if (detail is null && r.AttachmentCount > 0)
                                     {
-                                        <p class="lrq-attach-count">📎 @r.AttachmentCount @(r.AttachmentCount == 1 ? "קובץ מצורף" : "קבצים מצורפים")</p>
+                                        <p class="rqw-attach-count">📎 @r.AttachmentCount @(r.AttachmentCount == 1 ? "קובץ מצורף" : "קבצים מצורפים")</p>
                                     }
 
                                     <!-- Mentor recommendation panel -->
@@ -400,7 +493,7 @@
                                         var finalStatus = RequestStatuses.Label(r.Status);
                                         <div class="lrq-decision-done">
                                             <span class="lrq-decision-done-label">סטטוס:</span>
-                                            <span class="lrq-decision-done-val lrq-status-@r.Status.ToLower()">@finalStatus</span>
+                                            <span class="lrq-decision-done-val">@finalStatus</span>
                                             @if (!string.IsNullOrWhiteSpace(lecDec)
                                                  && lecDec != ExtensionDecisionStatuses.NotRequired
                                                  && lecDec != ExtensionDecisionStatuses.Pending)
@@ -491,7 +584,7 @@
 
                                             <div class="lrq-decision-actions">
                                                 <button type="button"
-                                                        class="lrq-send-btn"
+                                                        class="lrq-send-btn motiva-cta"
                                                         disabled="@(isSubmitting || string.IsNullOrEmpty(currentChoice))"
                                                         @onclick='@(() => SubmitDecision(r.Id, r.RequestType, r.Status))'>
                                                     @if (isSubmitting)
@@ -511,13 +604,13 @@
                                     }
                                     @if (histEvents.Count > 0)
                                     {
-                                        <div class="lrq-hist-bar">
+                                        <div class="rqw-ws-footer">
                                             <button type="button"
-                                                    class="lrq-hist-btn"
+                                                    class="rqw-hist-btn"
                                                     aria-expanded="@(histOpen ? "true" : "false")"
                                                     @onclick='@(() => ToggleHistory(r.Id))'>
                                                 <span>היסטוריה · @histEvents.Count @(histEvents.Count == 1 ? "עדכון" : "עדכונים")</span>
-                                                <span class="lrq-hist-caret @(histOpen ? "lrq-hist-caret-open" : "")" aria-hidden="true">
+                                                <span class="rqw-hist-caret @(histOpen ? "rqw-hist-caret-open" : "")" aria-hidden="true">
                                                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                                          stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                                                         <path d="m6 9 6 6 6-6"/>
@@ -528,19 +621,19 @@
 
                                         @if (histOpen)
                                         {
-                                            <div class="lrq-hist-items">
+                                            <div class="rqw-hist-items">
                                                 @foreach (var evt in histEvents.OrderBy(x => x.CreatedAt))
                                                 {
-                                                    <div class="lrq-hist-item">
-                                                        <span class="lrq-hist-dot" aria-hidden="true"></span>
-                                                        <div class="lrq-hist-content">
-                                                            <p class="lrq-hist-text">@HistLine(evt)</p>
+                                                    <div class="rqw-hist-item">
+                                                        <span class="rqw-hist-dot" aria-hidden="true"></span>
+                                                        <div class="rqw-hist-content">
+                                                            <p class="rqw-hist-text">@HistLine(evt)</p>
                                                             @if (evt.EventType == RequestEventTypes.Comment && evt.Attachments.Count > 0)
                                                             {
-                                                                <div class="lrq-hist-files">
+                                                                <div class="rqw-files">
                                                                     @foreach (var att in evt.Attachments)
                                                                     {
-                                                                        <a class="lrq-hist-file"
+                                                                        <a class="rqw-file"
                                                                            href="/request-attachments/@att.StoredFileName"
                                                                            target="_blank" rel="noopener noreferrer">
                                                                             📎 @att.OriginalFileName
@@ -555,18 +648,18 @@
                                         }
                                     }
 
-                                </div>@* lrq-ws-body *@
+                                </div>@* rqw-ws-body *@
                             }
-                        </div>@* lrq-ws-card *@
+                        </div>@* rqw-card *@
                     }
                 }
 
             </main>
 
-        </div>@* lrq-split *@
+        </div>@* rqw-split *@
     }
 
-</div>@* lrq-page *@
+</div>@* rqw-page *@
 
 @code {
     // ── Deep-link support ─────────────────────────────────────────────────────
@@ -804,6 +897,38 @@
         _expandedId   = null;
     }
 
+    // ── Filter tabs ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// להחלטתך · בטיפול מנחה · טופלו — the lecturer's three buckets, in the
+    /// shared MFilterTabs track the student and mentor queues use.
+    ///
+    /// <para>The keys are the ones <see cref="SetTab"/> and
+    /// <see cref="VisibleItems"/> have always switched on, so replacing the
+    /// segmented control moved no bucket and no query. The counts are the same
+    /// three properties the old badges read, and "טופלו" still carries none —
+    /// a history bucket's size is not a number anyone acts on.</para>
+    /// </summary>
+    private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
+    {
+        new MFilterTabs.Tab("decision", "להחלטתך",    DecisionCount),
+        new MFilterTabs.Tab("mentor",   "בטיפול מנחה", MentorCount),
+        new MFilterTabs.Tab("done",     "טופלו"),
+    };
+
+    /// <summary>Re-reads the queue after a failed load. Separate from
+    /// <see cref="LoadAsync"/> only because the empty state's retry has to clear
+    /// the error flag and put the spinner back.</summary>
+    private async Task ReloadAsync()
+    {
+        _loading   = true;
+        _loadError = false;
+        StateHasChanged();
+
+        await LoadAsync();
+        _loading = false;
+    }
+
     // ── Bucket / status logic ─────────────────────────────────────────────────
 
     private static string BucketOf(string status) => status switch
@@ -819,6 +944,24 @@
                  or RequestStatuses.PendingLecturerDecision
             ? "attention"
             : BucketOf(r.Status);
+
+    /// <summary>
+    /// The record header's status badge, in the shared workspace's colour roles
+    /// (`rqw-ws-state-*`). A FOLD of <see cref="StatusClass"/>, not a second
+    /// mapping — it renames the four values that class already produces onto
+    /// the roles the three request queues share.
+    ///
+    /// <para>"בטיפול מנחה" stays NEUTRAL and never takes the attention rose: a
+    /// request waiting on the mentor is not the lecturer's move, and rose is
+    /// reserved on every one of these screens for the request that is.</para>
+    /// </summary>
+    private static string StateTone(ProjectRequestRowDto r) => StatusClass(r) switch
+    {
+        "attention" => "attention",
+        "mentor"    => "neutral",
+        "done"      => "done",
+        _           => "brand",
+    };
 
     // When a specific request type is selected the three tab counts represent
     // only that type. "הכל" (empty _selectedType) restores the global totals.
@@ -872,6 +1015,26 @@
             .ToList();
 
     // ── Row presentation ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// WHOSE REQUEST THIS IS, on a screen that reviews teams.
+    ///
+    /// <para>The lecturer's unit of work is the team: the decision lands on the
+    /// team's deadline, the note is addressed to the team, and any member of it
+    /// may have typed the request. So the queue and the record both name the
+    /// TEAM where the student's own workspace names the handling role — the
+    /// submitter is provenance and lives further down the record.</para>
+    ///
+    /// <para>Falls back to the project, which is the same team said another
+    /// way, and only then to an em dash. TeamName is already on
+    /// <see cref="ProjectRequestRowDto"/> and already filled by
+    /// ProjectRequestsController.GetAll (<c>t.TeamName</c>), so this needed no
+    /// endpoint, DTO or query change.</para>
+    /// </summary>
+    private static string TeamIdentity(ProjectRequestRowDto r) =>
+        !string.IsNullOrWhiteSpace(r.TeamName)     ? r.TeamName!
+      : !string.IsNullOrWhiteSpace(r.ProjectTitle) ? r.ProjectTitle
+      :                                              "—";
 
     private string RowTimeLabel(ProjectRequestRowDto r) => BucketOf(r.Status) switch
     {

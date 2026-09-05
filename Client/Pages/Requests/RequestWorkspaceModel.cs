@@ -193,9 +193,23 @@ public static class RequestBuckets
         _                      => MStatusDot.DotTone.Teal,
     };
 
-    /// <summary>Row-surface modifier suffix (`sreq-thread-waiting`, …).</summary>
-    public static string CssSuffix(RequestBucket bucket) =>
-        bucket.ToString().ToLowerInvariant();
+    /// <summary>
+    /// The bucket's tone in the shared request workspace's colour roles
+    /// (`rqw-ws-state-attention`, …). Named by MEANING, not by this role's
+    /// bucket, because the lecturer and mentor queues paint the same four
+    /// roles from their own buckets — "waiting on the reader" has to be one
+    /// colour across the three screens or it is not a role at all.
+    ///
+    /// <para>Presentation only. It changes no status, no bucket and no count;
+    /// it is the CSS modifier <see cref="WhereLabel(StudentOwnRequestDto)"/> is
+    /// painted with.</para>
+    /// </summary>
+    public static string CssSuffix(RequestBucket bucket) => bucket switch
+    {
+        RequestBucket.Waiting  => "attention",
+        RequestBucket.Lecturer => "brand",
+        _                      => "done",
+    };
 }
 
 /// <summary>
