@@ -99,7 +99,10 @@ public class LecturerDashboardController : ControllerBase
                     (SELECT GROUP_CONCAT(u.FirstName || ' ' || u.LastName, ', ')
                      FROM   ProjectMentors pmm
                      JOIN   users          u  ON u.Id = pmm.UserId
-                     WHERE  pmm.ProjectId = p.Id) AS MentorNames
+                     WHERE  pmm.ProjectId = p.Id) AS MentorNames,
+                    CASE WHEN EXISTS (SELECT 1 FROM ProjectMentors
+                                      WHERE ProjectId = p.Id AND UserId = @UserId)
+                         THEN 1 ELSE 0 END AS IsSupervisedByCurrentUser
             FROM    Projects p
             LEFT JOIN Teams  t ON t.Id = p.TeamId
             " + (restrictToMentor ? projectsSqlMentor : projectsSqlLecturer)
@@ -246,18 +249,19 @@ public class LecturerDashboardController : ControllerBase
 
             rows.Add(new DashboardProjectRowDto
             {
-                ProjectId               = p.ProjectId,
-                ProjectNumber           = p.ProjectNumber,
-                ProjectTitle            = p.ProjectTitle,
-                TeamName                = string.IsNullOrWhiteSpace(p.TeamName) ? null : p.TeamName,
-                MentorNames             = string.IsNullOrWhiteSpace(p.MentorNames) ? null : p.MentorNames,
-                CurrentMilestoneTitle   = currentMs?.MilestoneTitle,
-                CurrentMilestoneDueDate = currentMs?.DueDate,
-                OverdueTaskCount        = overdue,
-                MissingSubmissionCount  = missing,
-                OpenRequestCount        = openRequests,
-                HealthScore             = score,
-                HealthBucket            = HealthBuckets.FromScore(score),
+                ProjectId                    = p.ProjectId,
+                ProjectNumber                = p.ProjectNumber,
+                ProjectTitle                 = p.ProjectTitle,
+                TeamName                     = string.IsNullOrWhiteSpace(p.TeamName) ? null : p.TeamName,
+                MentorNames                  = string.IsNullOrWhiteSpace(p.MentorNames) ? null : p.MentorNames,
+                IsSupervisedByCurrentUser    = p.IsSupervisedByCurrentUser == 1,
+                CurrentMilestoneTitle        = currentMs?.MilestoneTitle,
+                CurrentMilestoneDueDate      = currentMs?.DueDate,
+                OverdueTaskCount             = overdue,
+                MissingSubmissionCount       = missing,
+                OpenRequestCount             = openRequests,
+                HealthScore                  = score,
+                HealthBucket                 = HealthBuckets.FromScore(score),
             });
         }
 
@@ -356,14 +360,16 @@ public class LecturerDashboardController : ControllerBase
 
     private sealed class ProjectBaseRow
     {
-        public int      ProjectId       { get; set; }
-        public int      ProjectNumber   { get; set; }
-        public string   ProjectTitle    { get; set; } = "";
-        public string   ProjectStatus   { get; set; } = "";
-        public int?     TeamId          { get; set; }
-        public string?  TeamName        { get; set; }
-        public int      AcademicYearId  { get; set; }
-        public string?  MentorNames     { get; set; }
+        public int      ProjectId                  { get; set; }
+        public int      ProjectNumber              { get; set; }
+        public string   ProjectTitle               { get; set; } = "";
+        public string   ProjectStatus              { get; set; } = "";
+        public int?     TeamId                     { get; set; }
+        public string?  TeamName                   { get; set; }
+        public int      AcademicYearId             { get; set; }
+        public string?  MentorNames                { get; set; }
+        /// <summary>1 when the requesting user appears in ProjectMentors for this project, else 0.</summary>
+        public int      IsSupervisedByCurrentUser  { get; set; }
     }
 
     private sealed class ProjectIntRow
