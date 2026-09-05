@@ -111,6 +111,59 @@ for email in "${PRESERVED_EMAILS[@]}"; do
     fi
 done
 
+# ── LEVEL 4: the work hanging off the project ────────────────────────────
+#
+# Account, team and project are the three levels this script grew to check, and
+# all three passed on 2026-09-05 while the QA student's project held FIVE team
+# tasks and nothing else. Its ProjectMilestones, Tasks and TaskSubmissions had
+# gone with the reset, so the dashboard's attention card and upcoming
+# deadlines, the Tasks page's filters and every submitted/pending state had no
+# data to render — the account was usable and the screens it exists to exercise
+# were not.
+#
+# A project with zero tasks is therefore a FAILURE, and reported as loudly as a
+# missing team. Having no UPCOMING item is only a warning: a fixture's dates go
+# stale as time passes, which is a reason to re-seed rather than a broken
+# relationship.
+echo ""
+echo "── Project work on preserved projects ─────────────────────────────"
+printf "%-28s %-7s %-7s %-9s %-9s %s\n" "EMAIL" "TASKS" "SUBS" "OVERDUE" "UPCOMING" "TEAMTASKS"
+
+for email in "${PRESERVED_WITH_PROJECT[@]}"; do
+    id=$(q "SELECT Id FROM Users WHERE Email='$email' LIMIT 1;")
+    [ -n "$id" ] || continue
+
+    pid=$(q "SELECT p.Id FROM Projects p
+             WHERE p.TeamId IN (SELECT TeamId FROM TeamMembers
+                                WHERE UserId=$id AND IsActive=1) LIMIT 1;")
+    [ -n "$pid" ] || continue   # already reported as a missing project above
+
+    tasks=$(q "SELECT COUNT(*) FROM Tasks WHERE ProjectId=$pid;")
+    subs=$(q "SELECT COUNT(*) FROM TaskSubmissions s JOIN Tasks t ON t.Id=s.TaskId
+              WHERE t.ProjectId=$pid;")
+    # Open and past due — what the attention card and the overdue badge read.
+    overdue=$(q "SELECT COUNT(*) FROM Tasks
+                 WHERE ProjectId=$pid AND DueDate IS NOT NULL
+                   AND date(DueDate) < date('now')
+                   AND Status NOT IN ('Done','Completed');")
+    upcoming=$(q "SELECT COUNT(*) FROM Tasks
+                  WHERE ProjectId=$pid AND DueDate IS NOT NULL
+                    AND date(DueDate) >= date('now');")
+    teamtasks=$(q "SELECT COUNT(*) FROM TeamTasks
+                   WHERE TeamId IN (SELECT TeamId FROM TeamMembers
+                                    WHERE UserId=$id AND IsActive=1);")
+
+    if [ "${tasks:-0}" -eq 0 ]; then
+        printf "%-28s %-7s %-7s %-9s %-9s %s\n" \
+            "$email" "*** 0 ***" "$subs" "$overdue" "$upcoming" "$teamtasks"
+        failed=1
+    else
+        printf "%-28s %-7s %-7s %-9s %-9s %s\n" \
+            "$email" "$tasks" "$subs" "$overdue" "$upcoming" "$teamtasks"
+        [ "${upcoming:-0}" -eq 0 ] && echo "  WARN: no task is still ahead of today — the fixture's dates have gone stale."
+    fi
+done
+
 # ── Everyone else in the same trap ───────────────────────────────────────
 # The preserve list is who we PROMISED to keep. This catches the students we
 # did not name but stranded anyway — user 2 in the Team 1 incident was exactly
@@ -143,6 +196,7 @@ if [ "$failed" -ne 0 ]; then
     echo ""
     echo "      no team    → restore it from .local/db-backups/ (never create a new one)"
     echo "      no project → scripts/qa-restore-preserved-assignment.sh"
+    echo "      no tasks   → scripts/qa-restore-preserved-tasks.sh"
     exit 1
 fi
 
