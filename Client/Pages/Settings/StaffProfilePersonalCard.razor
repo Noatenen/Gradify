@@ -1,0 +1,311 @@
+@namespace AuthWithAdmin.Client.Pages.Settings
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IUserProfileService UserProfile
+
+@*
+    StaffProfilePersonalCard — "פרטים אישיים" for Lecturer / Mentor / Admin.
+
+    THE STUDENT CARD'S SHAPE, FIELD FOR FIELD. Solid MCard against the
+    translucent .66 fill every other section on the page carries, the same
+    20/24/18 inset, the same 1fr 1fr field grid on a 28px gutter, the same
+    card-level edit mode with ONE action slot at the bottom-left, and the same
+    2.6s "הפרטים נשמרו" flash. StudentProfilePersonalCard is the approved
+    screen and this is that screen for a different payload.
+
+    ── THE ONE REAL DIFFERENCE: THE NAME IS EDITABLE HERE ───────────────────
+    Not a design choice — the endpoints differ.
+
+    The student card renders שם מלא read-only and says why: PUT /api/student/me
+    updates users.Phone and nothing else, so a name input there would silently
+    discard what was typed into it. PUT /api/users/me/profile is a different
+    endpoint and it takes the full editable triple — FirstName, LastName,
+    Phone — validating each name at 1..50 characters server-side. So on this
+    screen the name IS a control, and the client guards mirror the server's
+    own so an invalid value is caught before the round trip.
+
+    Two name fields rather than one "שם מלא" input, because that is the shape
+    of the request: the server stores and validates the parts separately, and
+    splitting a single string on whitespace to fill them would guess at
+    someone's name. Two of them plus אימייל and טלפון is also exactly four
+    fields, which is the 2x2 grid the reference draws.
+
+    אימייל stays read-only, as on the student card and for the same reason:
+    it is the login identity, and no endpoint in the product mutates it.
+
+    There is no שנה אקדמית — that column is on the student payload only — and
+    no תפקיד, for the reason the student card gives: the role is stated once
+    in the identity row 40px above, and a read-only field repeating it would
+    be a field in appearance only.
+
+    THE WRITE SENDS ALL THREE VALUES EVERY TIME. /api/users/me/profile is a
+    replace, not a patch, so a save that omitted the untouched name would
+    clear it. The legacy screen already had this rule; it is restated here
+    because it is the one way this card can lose data.
+*@
+
+@* Solid, and the only Solid card on the page — the finished design draws its
+   ONE primary section opaque against the translucent fill the others carry.
+   Padding None because the reference's section inset differs from the shared
+   card step and the wrapper below applies it verbatim; MCard's own root
+   carries another component's scope id and no rule here can reach it. *@
+<MCard Variant="MCard.CardVariant.Solid" Padding="MCard.CardPadding.None">
+    <div class="stf-pd">
+
+        <div class="stf-pd-head">
+            <h2 class="stf-pd-title">פרטים אישיים</h2>
+        </div>
+
+        @* One live region for both outcomes, so a screen reader hears the
+           result of a save exactly once whichever way it went. *@
+        <div aria-live="polite">
+            @if (_saved)
+            {
+                <p class="stf-pd-flash">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m5 13 4 4L19 7"></path>
+                    </svg>
+                    הפרטים נשמרו
+                </p>
+            }
+            else if (_error is not null)
+            {
+                <p class="stf-pd-flash stf-pd-flash-error">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9"></circle>
+                        <path d="M12 8v5M12 16.5v.01"></path>
+                    </svg>
+                    @_error
+                </p>
+            }
+        </div>
+
+        <div class="stf-pd-fields">
+
+            <div class="stf-pd-field">
+                <span class="stf-pd-label" id="stf-pd-first">שם פרטי</span>
+                @if (_editing)
+                {
+                    <input class="stf-pd-input"
+                           type="text"
+                           maxlength="50"
+                           aria-labelledby="stf-pd-first"
+                           disabled="@_saving"
+                           @bind="_firstDraft"
+                           @bind:event="oninput"
+                           @onkeydown="HandleKeyDownAsync" />
+                }
+                else
+                {
+                    <span class="stf-pd-value" aria-labelledby="stf-pd-first">@Profile.FirstName</span>
+                }
+            </div>
+
+            <div class="stf-pd-field">
+                <span class="stf-pd-label" id="stf-pd-last">שם משפחה</span>
+                @if (_editing)
+                {
+                    <input class="stf-pd-input"
+                           type="text"
+                           maxlength="50"
+                           aria-labelledby="stf-pd-last"
+                           disabled="@_saving"
+                           @bind="_lastDraft"
+                           @bind:event="oninput"
+                           @onkeydown="HandleKeyDownAsync" />
+                }
+                else
+                {
+                    <span class="stf-pd-value" aria-labelledby="stf-pd-last">@Profile.LastName</span>
+                }
+            </div>
+
+            <div class="stf-pd-field">
+                <span class="stf-pd-label" id="stf-pd-email">אימייל</span>
+                <span class="stf-pd-value stf-pd-ltr" aria-labelledby="stf-pd-email">@Profile.Email</span>
+            </div>
+
+            <div class="stf-pd-field">
+                <span class="stf-pd-label" id="stf-pd-phone">טלפון</span>
+                @if (_editing)
+                {
+                    <input class="stf-pd-input stf-pd-ltr"
+                           type="tel"
+                           maxlength="20"
+                           placeholder="05x-xxxxxxx"
+                           aria-labelledby="stf-pd-phone"
+                           disabled="@_saving"
+                           @bind="_phoneDraft"
+                           @bind:event="oninput"
+                           @onkeydown="HandleKeyDownAsync" />
+                }
+                else
+                {
+                    <span class="@PhoneValueClass" aria-labelledby="stf-pd-phone">@PhoneDisplay</span>
+                }
+            </div>
+
+        </div>
+
+        @* ONE slot, not two: the edit affordance and the ביטול / שמירה pair it
+           turns into are the same control in two states, so they share a
+           position. Splitting them would make the card's actions jump from the
+           bottom to the top the moment עריכה was clicked. *@
+        <div class="stf-pd-foot">
+            @if (_editing)
+            {
+                <div class="stf-pd-actions">
+                    <button type="button"
+                            class="stf-pd-btn-ghost"
+                            disabled="@_saving"
+                            @onclick="CancelEdit">ביטול</button>
+
+                    <button type="button"
+                            class="stf-pd-btn-save motiva-cta"
+                            disabled="@_saving"
+                            @onclick="SaveAsync">
+                        @if (_saving)
+                        {
+                            <span class="stf-pd-spinner" aria-hidden="true"></span>
+                        }
+                        <span>שמירה</span>
+                    </button>
+                </div>
+            }
+            else
+            {
+                <button type="button" class="stf-pd-btn-edit" @onclick="StartEdit">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>
+                    </svg>
+                    <span>עריכה</span>
+                </button>
+            }
+        </div>
+    </div>
+</MCard>
+
+@code {
+    /// <summary>The profile the page already loaded. Mutated in place on a
+    /// successful save so the identity row above and this card never disagree
+    /// about the current name or phone number.</summary>
+    [Parameter, EditorRequired] public UserProfileDto Profile { get; set; } = default!;
+
+    /// <summary>Raised after a successful write so the page can re-render.</summary>
+    [Parameter] public EventCallback OnProfileChanged { get; set; }
+
+    private bool   _editing;
+    private bool   _saving;
+    private bool   _saved;
+
+    private string _firstDraft = "";
+    private string _lastDraft  = "";
+    private string _phoneDraft = "";
+
+    /// <summary>The message to show, or null for none. A string rather than a
+    /// flag because the ways a save can fail need different words: a value
+    /// this card rejected was never sent, so telling the user the save failed
+    /// would send them retrying an unchanged value.</summary>
+    private string? _error;
+
+    private bool   HasPhone        => !string.IsNullOrWhiteSpace(Profile.Phone);
+    private string PhoneDisplay    => HasPhone ? Profile.Phone : "לא הוזן מספר";
+    private string PhoneValueClass =>
+        HasPhone ? "stf-pd-value stf-pd-ltr" : "stf-pd-value stf-pd-value-empty";
+
+    // ── Edit / save / cancel ─────────────────────────────────────────────
+
+    private void StartEdit()
+    {
+        _firstDraft = Profile.FirstName ?? "";
+        _lastDraft  = Profile.LastName  ?? "";
+        _phoneDraft = Profile.Phone     ?? "";
+        _editing    = true;
+        _saved      = false;
+        _error      = null;
+    }
+
+    private void CancelEdit()
+    {
+        // The drafts are simply dropped — Profile was never touched, so there
+        // is nothing to roll back.
+        _editing = false;
+        _error   = null;
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")       await SaveAsync();
+        else if (e.Key == "Escape") CancelEdit();
+    }
+
+    private async Task SaveAsync()
+    {
+        var first = (_firstDraft ?? "").Trim();
+        var last  = (_lastDraft  ?? "").Trim();
+        var phone = (_phoneDraft ?? "").Trim();
+
+        // Mirrors UsersMeController.UpdateProfile's own guards so a rejected
+        // value is caught before the round trip. The card stays in edit mode
+        // so the value is still there to correct.
+        if (first.Length == 0 || last.Length == 0)
+        {
+            _error = "שם פרטי ושם משפחה הם שדות חובה.";
+            return;
+        }
+
+        if (first.Length > 50 || last.Length > 50)
+        {
+            _error = "שם ארוך מדי — עד 50 תווים.";
+            return;
+        }
+
+        if (phone.Length > 20)
+        {
+            _error = "מספר טלפון ארוך מדי — עד 20 תווים.";
+            return;
+        }
+
+        _saving = true;
+        _error  = null;
+
+        // All three, always: the endpoint replaces the triple rather than
+        // patching it, so omitting an untouched value would clear it.
+        var ok = await UserProfile.UpdateMyProfileAsync(new UpdateUserProfileRequest
+        {
+            FirstName = first,
+            LastName  = last,
+            Phone     = phone,
+        });
+
+        _saving = false;
+
+        if (!ok)
+        {
+            _error = "שמירת הפרטים נכשלה. נסי שנית.";
+            return;
+        }
+
+        Profile.FirstName = first;
+        Profile.LastName  = last;
+        Profile.Phone     = phone;
+        _editing          = false;
+        _saved            = true;
+
+        if (OnProfileChanged.HasDelegate) await OnProfileChanged.InvokeAsync();
+
+        _ = ClearSavedFlagAsync();
+    }
+
+    private async Task ClearSavedFlagAsync()
+    {
+        // 2.6s, the same hold as the student card's.
+        await Task.Delay(2600);
+        _saved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+}

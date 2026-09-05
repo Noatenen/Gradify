@@ -1,0 +1,173 @@
+@namespace AuthWithAdmin.Client.Pages.Settings
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@inject IUserProfileService UserProfile
+
+@*
+    StaffProfilePage — "הפרופיל שלי" for Lecturer, Mentor and Admin.
+
+    STRUCTURAL SOURCE OF TRUTH: StudentProfilePage. The student screen is the
+    approved composition — an identity row over a 1.6fr / 1fr grid, the wide
+    column carrying what the user edits about themselves and the narrow one
+    the read-mostly blocks — and this is that composition for the roles that
+    were still being served the legacy /settings page.
+
+        ┌ identity: avatar · name · role line ───────────────────────────┐
+        ├──────────────────────────────────┬─────────────────────────────┤
+        │ פרטים אישיים        (opaque)     │ העדפות           (translucent)│
+        │ שירותים מחוברים    (translucent) │                              │
+        └──────────────────────────────────┴─────────────────────────────┘
+
+    ONE LAYOUT FOR ALL THREE ROLES. There is no card on this page that a
+    lecturer has and a mentor does not, or the reverse, so the page has no
+    role branch in it at all — see "WHAT IS NOT ON THIS PAGE" below.
+
+    ── WHY THIS PAGE EXISTS AT ALL ──────────────────────────────────────────
+    Lecturer, Mentor and Admin have been on the Motiva canvas shell since
+    AppLayout's Shell.Staff branch stopped being reachable — GetShell sends
+    every non-student to Shell.Lecturer or Shell.Mentor. What they were NOT
+    given is a Motiva page inside it: /settings still rendered
+    StaffSettingsPage, a legacy `spp-*` screen built on the `--g-*` tokens.
+    Inside `.motiva-final` those tokens resolve to the right colours and the
+    WRONG geometry — a documented trap in this codebase — so the screen read
+    as a different product from every other page in the same shell.
+
+    ── ADMIN IS HERE TOO, AND THAT IS NOT SCOPE CREEP ───────────────────────
+    StaffSettingsPage's non-student branch made no distinction between a
+    lecturer and an admin: same /api/users/me load, same fields, same cards.
+    GetShell already sends both to the same shell for the same stated reason
+    ("Admin no longer gets a separate legacy sidebar shell"). Leaving Admin
+    behind would have meant keeping the legacy screen alive to serve a role
+    that renders it identically to the one being migrated.
+
+    ── WHAT EACH BLOCK READS ────────────────────────────────────────────────
+      * identity + פרטים אישיים   GET /api/users/me (UserProfileDto), written
+                                  back through PUT /api/users/me/profile
+      * העדפות                    GET/PUT /api/users/me/notification-preferences
+      * שירותים מחוברים           GET /api/google-calendar/status + the real
+                                  OAuth connect / disconnect endpoints
+
+    Every one of those three is per-ACCOUNT: one row per user, no project and
+    no team anywhere in the key. That is the page's admission rule, and the
+    section below is what it excludes.
+
+    Two of those four are the STUDENT'S OWN COMPONENTS, rendered here rather
+    than copied: ProfileNotificationsCard and ProfileIntegrationsCard sit in
+    this folder now precisely because neither was ever a student's.
+
+    ── WHAT IS NOT ON THIS PAGE: העדפות מנחה ────────────────────────────────
+    A mentor's mentorship preferences — involvement level, preferred channel,
+    expected response time, update cadence, red lines, meeting format — are
+    NOT profile settings and this page does not render them.
+
+    They are stated per TEAM. A mentor who wants a weekly written update from
+    one project and "call me when you are stuck" from another is describing
+    two working agreements, not changing their mind about one global one; the
+    same is true of every field in that set. Published on a profile they read
+    as one contract the mentor holds with everybody, which is the one thing
+    they are not — and a student reading a value that was written with a
+    different team in mind is worse served than a student who sees nothing.
+
+    THE DATA AND THE COMPONENT ARE BOTH INTACT. Nothing was deleted, no
+    endpoint changed, and MentorPreferencesCard is untouched on disk — it is
+    simply no longer rendered by any routed page, because the page that used
+    to render it (StaffSettingsPage) is unreferenced too. Re-homing it at the
+    team / project level is deliberately not this task's; that area is being
+    worked separately, and the values a mentor already saved are still read
+    today by the mentor-profile popup and the team quick-info popover.
+
+    Nothing was put in its place. The card is gone, not swapped for a stub or
+    a "coming soon" — see the column note below for what happened to the
+    space instead.
+
+    ── WHAT ELSE IS NOT HERE ────────────────────────────────────────────────
+    Reported, not silently dropped. Every one of these was student-gated on
+    the legacy screen too, so no user of THIS page loses anything:
+
+      * the avatar upload / remove overlay — `_isStudent`-gated there, and
+        for a real reason: PUT/DELETE /api/student/me/avatar are the only
+        avatar endpoints and they carry [Authorize(Roles = Student)]. See
+        StaffProfileIdentityHero.
+      * the Slack row — `_isStudent`-gated there; its audience is unchanged.
+      * מראה (theme) and the five quick toggles — both write
+        StudentPreferences through /api/student/me, student-only.
+
+    And nothing was invented to fill the page. "General professional
+    information" would be the natural fourth block for a lecturer or a mentor
+    — a title, a department, a field of expertise — and the product stores
+    none of it: users carries FirstName, LastName, Email, Phone,
+    ProfileImagePath and the role rows, and that is the whole account.
+
+    ── HOW THE TWO COLUMNS BALANCE ──────────────────────────────────────────
+    The student's grid, with the two short cards paired against the tall one
+    rather than stacked on top of it.
+
+    שירותים מחוברים sits under פרטים אישיים in the WIDE column and העדפות
+    takes the narrow one — which is a swap of the student page's own
+    arrangement, and the reason is arithmetic rather than taste. The student
+    has four cards, two per column, and they balance. Take away העדפות מנחה
+    and this page has three: a four-field card (~230px), a seven-switch list
+    (~330px) and a single service row (~120px). Stacked the student's way the
+    wide column runs ~560px against a ~120px narrow one, and the last-card
+    stretch rule would hand a lone Google Calendar row four hundred pixels of
+    empty card — the exact ragged foot that rule exists to prevent, made
+    worse. Paired this way the columns come out at ~350 and ~330, and the
+    stretch has almost nothing left to absorb.
+
+    Both cards are unharmed by the swap: שירותים מחוברים is a single flex row
+    that simply gets wider, and העדפות is a list of "title … switch" rows,
+    which is the shape the narrow track is for.
+
+    Not routable: SettingsPage.razor owns /settings and picks between this and
+    StudentProfilePage.
+*@
+
+@if (_loading)
+{
+    <div class="stf-page-state">
+        <span class="stf-page-spinner" aria-hidden="true"></span>
+        <span>טוענת פרטים…</span>
+    </div>
+}
+else if (_profile is null)
+{
+    <div class="stf-page-state">
+        <MEmptyState Live="true"
+                     Title="אירעה שגיאה בטעינת הפרופיל"
+                     Description="נסי לרענן את הדף." />
+    </div>
+}
+else
+{
+    <StaffProfileIdentityHero Profile="_profile" />
+
+    <div class="stf-grid">
+        @* Each column is a plain flex stack, as on the student page — the
+           sections in a column are siblings at the same rhythm as the gap
+           between the columns themselves.
+
+           No role branch. Every card here is per-account, so a lecturer, a
+           mentor and an admin see the same three. *@
+        <div class="stf-col">
+            <StaffProfilePersonalCard Profile="_profile"
+                                      OnProfileChanged="StateHasChanged" />
+            <ProfileIntegrationsCard />
+        </div>
+
+        <div class="stf-col">
+            <ProfileNotificationsCard StudentVoice="false" />
+        </div>
+    </div>
+}
+
+@code {
+    private UserProfileDto? _profile;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _profile = await UserProfile.GetMyAsync();
+        _loading = false;
+    }
+}
