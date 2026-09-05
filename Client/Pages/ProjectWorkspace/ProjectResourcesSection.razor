@@ -32,11 +32,20 @@
     association on its type line, so the thing driving a deliverable's state is
     visible from here too.
 
-    ── ONE FORM, TWO JOBS ────────────────────────────────────────────────────
-    Adding and editing are the same three fields, so they are the same component
-    (ResourceForm below) in two positions: above the grid when adding, and in
-    the edited tile's own place — spanning the full row — when editing. Nothing about the interaction
-    differs between them except the button words and the presence of "הסרה".
+    ── ONE FORM, TWO JOBS, ONE DIALOG ────────────────────────────────────────
+    Adding and editing are the same three fields, so they are the same fragment
+    (ResourceForm below) in the same place: a modal. Nothing about the
+    interaction differs between them except the button words and the presence
+    of "הסרה".
+
+    IT USED TO BE INLINE — above the grid when adding, and in the edited tile's
+    own place when editing — and that is what changed. Both positions grew the
+    card: this card is the bottom half of the page's right column and takes that
+    column's height, so an expanding form either pushed the tile wall into an
+    internal scroll or resized one column of the row while the other stayed put.
+    The same reason the project card's editor became a dialog, and the same
+    shell: MModal, Size.Medium. See ProjectIdentityEditModal for the full
+    argument.
 
     ── WHY THE TILE CARRIES ONLY A PENCIL ────────────────────────────────────
     The tile's primary action is opening the resource, and it stays the whole
@@ -47,9 +56,7 @@
     one-click control on a hover-revealed corner button was both the busiest
     thing on the tile and the easiest to hit by accident.
 
-    Two deliberate departures from the design export:
-      * ADD IS INLINE, not a modal — the export's own choice, and the right one
-        for a two-field form.
+    One deliberate departure from the design export:
       * ONE ACCENT for every kind. The Master permits three semantic colours and
         none of these is a status, so the kind is carried by the icon instead.
         See ProjectResourceKinds.
@@ -76,6 +83,14 @@
    MCard's root across CSS isolation, and it gives the card its cell's height
    plus the flex column that lets the tile wall below the head scroll instead
    of spilling out of the card. *@
+@*  THE ONE MOUNT POINT for the add/edit dialog. `_editingId` decides which
+    of its two jobs it is doing; IsFormOpen decides whether it exists at all,
+    so the shell is torn down on close and its scroll lock released with it. *@
+@if (IsFormOpen)
+{
+    @ResourceForm(_editingId is not null)
+}
+
 <MCard Padding="MCard.CardPadding.None" Fill="true">
 <section class="pwr" aria-labelledby="pwr-heading">
 
@@ -95,20 +110,16 @@
            resource is the only thing to do was the one case where the section's
            own action was missing from its head, and the page carried two
            controls for one job. One button, one place, always. *@
-        @if (!IsFormOpen)
-        {
-            <MButton Variant="MButton.ButtonVariant.Primary"
-                     Size="MButton.ButtonSize.Small"
-                     OnClick="StartAdd">
-                + הוספת משאב
-            </MButton>
-        }
+        @*  Unconditional now. It used to be hidden while the inline form was
+            open, because the form appeared directly beneath it and the button
+            would have offered to open what was already open. The form is a
+            dialog over the page, so the head simply stays as it is.  *@
+        <MButton Variant="MButton.ButtonVariant.Primary"
+                 Size="MButton.ButtonSize.Small"
+                 OnClick="StartAdd">
+            + הוספת משאב
+        </MButton>
     </div>
-
-    @if (_adding)
-    {
-        @ResourceForm(false)
-    }
 
     @* Outside the form on purpose: a failed DELETE has to be able to report
        itself too, and it can happen while no form is open. *@
@@ -129,9 +140,7 @@
     }
     else if (Resources.Count == 0)
     {
-        @if (!_adding)
-        {
-            @* ONE LINE, NOT A PANEL.
+        @* ONE LINE, NOT A PANEL.
 
                This was an MEmptyState: a centred title, a two-line explanation
                and a button, ~170px of reserved height under .motiva-final. On a
@@ -148,8 +157,7 @@
                `.pwr-note` is the class the loading and load-failed lines beside
                it already use — same register, same rhythm, no new declaration
                for a third way of saying "there is nothing here yet". *@
-            <p class="pwr-note">עדיין לא נוספו משאבים.</p>
-        }
+        <p class="pwr-note">עדיין לא נוספו משאבים.</p>
     }
     else
     {
@@ -158,15 +166,10 @@
             {
                 var captured = resource;
 
-                if (_editingId == captured.Id)
-                {
-                    @* The editor takes the row's place rather than opening
-                       somewhere else, so the thing being edited never moves. *@
-                    <div class="pwr-cell pwr-cell-editing">
-                        @ResourceForm(true)
-                    </div>
-                }
-                else
+                @*  Every resource is a tile, always. Editing used to replace
+                    the edited tile with the form in its own place; the form is
+                    a dialog now, so the wall never rearranges itself and the
+                    tile stays visible behind the thing editing it.  *@
                 {
                     var kind = ProjectResourceKinds.Detect(captured.Url);
                     var host = ProjectResourceKinds.HostOf(captured.Url);
@@ -311,57 +314,136 @@
     // One definition for add and edit. `isEdit` changes the button words and
     // adds "הסרה"; everything else — fields, keys, validation, error surface —
     // is deliberately identical, because to the student it is the same act.
-    private RenderFragment ResourceForm(bool isEdit) => @<div class="pwr-form">
-        <div class="pwr-formfields">
-            <label class="pwr-sr-only" for="pwr-label">שם המשאב</label>
-            <input id="pwr-label"
-                   class="pwr-input pwr-input-label"
-                   type="text"
-                   maxlength="@MaxLabel"
-                   placeholder="שם המשאב"
-                   disabled="@IsBusy"
-                   @ref="_labelInput"
-                   @bind="_labelDraft"
-                   @bind:event="oninput"
-                   @onkeydown="HandleFormKeyDownAsync" />
+    //
+    // THE SHELL IS MModal, UNMODIFIED — the same one ProjectIdentityEditModal
+    // uses, at the same Size.Medium that `.motiva-final` scopes to the finished
+    // student geometry (460px, radius-xl, soft ink scrim, the continuous
+    // 26/28px pad, no divider rules). Rendering it here rather than wrapping it
+    // in a second component is deliberate: this section owns every write, the
+    // drafts and the error surface, and a component boundary between the form
+    // and its state would only have to pass all of it back and forth. Nothing
+    // about the create/update/delete logic changed.
+    //
+    // FitContent stays OFF, as on the project dialog: a form wants the default,
+    // where the dialog is capped at the viewport and `.m-modal-body` scrolls
+    // with the header and footer pinned.
+    private RenderFragment ResourceForm(bool isEdit) =>@<MModal IsOpen="true"
+            Size="MModal.ModalSize.Medium"
+            Title="@(isEdit ? "עריכת משאב" : "הוספת משאב")"
+            Class="pwr-modal"
+            OnClose="CloseForm">
+
+        <ChildContent>
+            <div class="pwr-field">
+                <label class="pwr-fieldlabel" for="pwr-label">שם המשאב</label>
+                <input id="pwr-label"
+                       class="pwr-input"
+                       type="text"
+                       maxlength="@MaxLabel"
+                       placeholder="לדוגמה: מסמך האפיון"
+                       disabled="@IsBusy"
+                       @ref="_labelInput"
+                       @bind="_labelDraft"
+                       @bind:event="oninput"
+                       @onkeydown="HandleFormKeyDownAsync" />
+            </div>
 
             @* dir="ltr" on the URL field only: a pasted link is Latin text and
-               reads backwards inside an RTL field. The label beside it stays
+               reads backwards inside an RTL field. The label above it stays
                RTL — this is a per-field property, not a page one. *@
-            <label class="pwr-sr-only" for="pwr-url">קישור</label>
-            <input id="pwr-url"
-                   class="pwr-input pwr-input-url"
-                   type="url"
-                   dir="ltr"
-                   maxlength="@MaxUrl"
-                   placeholder="https://…"
-                   disabled="@IsBusy"
-                   @bind="_urlDraft"
-                   @bind:event="oninput"
-                   @onkeydown="HandleFormKeyDownAsync" />
-        </div>
+            <div class="pwr-field">
+                <label class="pwr-fieldlabel" for="pwr-url">קישור</label>
+                <input id="pwr-url"
+                       class="pwr-input"
+                       type="url"
+                       dir="ltr"
+                       maxlength="@MaxUrl"
+                       placeholder="https://…"
+                       disabled="@IsBusy"
+                       @bind="_urlDraft"
+                       @bind:event="oninput"
+                       @onkeydown="HandleFormKeyDownAsync" />
 
-        @* THE ASSOCIATION — optional, and last, because it is the only field
-           that is not about the link itself. A native <select>: three options
-           on a good day and nine on this one, all short, which is exactly what
-           a select is for, and it comes with keyboard behaviour and mobile
-           pickers that a custom listbox would have to re-implement.
+                @* The kind is DERIVED from the URL, never stored, so it cannot
+                   be edited directly — it changes when the link changes.
+                   Showing it live while the link is typed is what makes that
+                   rule visible instead of mysterious. It sits under the field
+                   it describes now, rather than at the foot of the form. *@
+                @if (DetectedKindLabel is { } kindLabel)
+                {
+                    <p class="pwr-kindhint">סוג: <strong>@kindLabel</strong> · נקבע אוטומטית לפי הקישור</p>
+                }
+            </div>
 
-           The value is the catalog KEY; only the title is ever shown. That is
-           the same key ProjectSubmissionStatuses stores, so an artifact and a
-           declared status are keyed identically. *@
-        <div class="pwr-formfield">
-            <label class="pwr-fieldlabel" for="pwr-deliverable">שיוך לתוצר הגשה (רשות)</label>
-            <MSelectField Options="@DeliverableOptions"
-                          @bind-Value="_deliverableDraft"
-                          Disabled="@IsBusy"
-                          Class="pwr-select" />
-            <p class="pwr-kindhint">
-                משאב שמשויך לתוצר מסמן אותו אוטומטית כ"בעבודה", עד שהתוצר מסומן כהושלם.
-            </p>
-        </div>
+            @* THE ASSOCIATION — optional, and last, because it is the only
+               field that is not about the link itself.
 
-        <div class="pwr-formactions">
+               The value is the catalog KEY; only the title is ever shown. That
+               is the same key ProjectSubmissionStatuses stores, so an artifact
+               and a declared status are keyed identically. *@
+            <div class="pwr-field">
+                @*  The consequence of choosing a deliverable used to be a
+                    permanent two-line sentence under the select. It is worth
+                    saying — it explains a state change the student does not
+                    otherwise trigger — and it is not worth standing space in a
+                    three-field dialog, which is what MInfoTip is for.  *@
+                @*  THE TIP LEADS THE ROW, and that is geometry rather than
+                    taste. The bubble is anchored at its trigger's inline-start
+                    and grows toward the inline-end — leftward under RTL — up to
+                    340px. Placed AFTER the label it starts one label-width in
+                    from the dialog's right edge, so on a long label like this
+                    one it ran past the left edge and was clipped. Leading the
+                    row puts its anchor at the body's own start edge, where the
+                    full 443px is available and any label length fits.
+
+                    SINGLE-quoted attribute, so the sentence keeps its real
+                    double quotes around "בעבודה": a Razor attribute value is a
+                    C# string, not markup, so &quot; inside a double-quoted one
+                    is passed through as those six literal characters.  *@
+                <div class="pwr-labelrow">
+                    <MInfoTip Text='משאב שמשויך לתוצר מסמן אותו אוטומטית כ"בעבודה", עד שהתוצר מסומן כהושלם.'
+                              TriggerLabel="מידע על שיוך לתוצר הגשה"
+                              Placement="MInfoTip.TipPlacement.Above" />
+                    <label class="pwr-fieldlabel" for="pwr-deliverable">שיוך לתוצר הגשה (רשות)</label>
+                </div>
+                <MSelectField Options="@DeliverableOptions"
+                              @bind-Value="_deliverableDraft"
+                              Disabled="@IsBusy"
+                              Class="pwr-select" />
+            </div>
+
+            @if (_error is not null)
+            {
+                <p class="pwr-formerror" role="alert">@_error</p>
+            }
+
+            @if (isEdit)
+            {
+                @*  DESTRUCTIVE, AND NOT IN THE FOOTER. The footer carries the
+                    one primary action and nothing else; a delete beside a save
+                    is the classic mis-click. It stays where this component
+                    already decided it belongs — one step inside the flow, as
+                    the quietest control on the surface — which is also why it
+                    is not on the tile any more.  *@
+                <div class="pwr-danger">
+                    <MButton Variant="MButton.ButtonVariant.Ghost"
+                             Size="MButton.ButtonSize.Small"
+                             Class="pwr-remove"
+                             Loading="_deleting"
+                             LoadingText="מסירה…"
+                             Disabled="_saving"
+                             OnClick="DeleteEditedAsync">
+                        הסרת המשאב
+                    </MButton>
+                </div>
+            }
+        </ChildContent>
+
+        <FooterContent>
+            @*  ONE ACTION. The dialog's X is the secondary exit — a footer
+                ביטול beside it would be two controls for one job, and the
+                shell's own `justify-content: flex-end` already puts this on
+                the physical left under RTL.  *@
             <MButton Variant="MButton.ButtonVariant.Primary"
                      Size="MButton.ButtonSize.Small"
                      Loading="_saving"
@@ -370,39 +452,8 @@
                      OnClick="SaveFormAsync">
                 @(isEdit ? "שמירה" : "הוספה")
             </MButton>
-
-            <MButton Variant="MButton.ButtonVariant.Secondary"
-                     Size="MButton.ButtonSize.Small"
-                     Disabled="IsBusy"
-                     OnClick="CloseForm">
-                ביטול
-            </MButton>
-
-            @if (isEdit)
-            {
-                @* Destructive, so it is the quietest control in the row and it
-                   lives one step inside the flow rather than on the card. *@
-                <MButton Variant="MButton.ButtonVariant.Ghost"
-                         Size="MButton.ButtonSize.Small"
-                         Class="pwr-remove"
-                         Loading="_deleting"
-                         LoadingText="מסירה…"
-                         Disabled="_saving"
-                         OnClick="DeleteEditedAsync">
-                    הסרה
-                </MButton>
-            }
-        </div>
-
-        @* The kind is DERIVED from the URL, never stored, so it cannot be
-           edited directly — it changes when the link changes. Showing it live
-           while the link is typed is what makes that rule visible instead of
-           mysterious. *@
-        @if (DetectedKindLabel is { } kindLabel)
-        {
-            <p class="pwr-kindhint">סוג: <strong>@kindLabel</strong> · נקבע אוטומטית לפי הקישור</p>
-        }
-    </div>;
+        </FooterContent>
+    </MModal>;
 
     // NO LOAD HERE. ProjectWorkspacePage reads api/projects/my-resources once
     // and passes the result in — see the Resources parameter above.

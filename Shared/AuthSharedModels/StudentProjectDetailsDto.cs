@@ -40,4 +40,30 @@ public class StudentProjectDetailsDto
     public string? ContactRole      { get; set; }
     public string? ContactEmail     { get; set; }
     public string? ContactPhone     { get; set; }
+
+    // ── Branding ─────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Public URL of the team's uploaded project logo, or null when the team
+    /// has not uploaded one.
+    ///
+    /// <para>Built server-side from ProjectTeamProfile.LogoPath, which stores
+    /// the bare filename — the same split users.ProfileImagePath uses. The
+    /// client never composes this path itself: the server names the stored
+    /// file, so its response is the only authoritative source for the URL.</para>
+    /// </summary>
+    public string? LogoUrl { get; set; }
+}
+
+/// <summary>
+/// Body of PUT /api/projects/my-project/logo.
+///
+/// <para>Same shape as <c>UploadAvatarRequest</c> because it is the same
+/// transport — a base64 image plus its extension — but kept as its own type:
+/// these are two different features, and a project-workspace call site reading
+/// "UploadAvatarRequest" would be describing the wrong thing.</para>
+/// </summary>
+public class UploadProjectLogoRequest
+{
+    public string ImageBase64 { get; set; } = "";
+    public string Extension   { get; set; } = "";
 }

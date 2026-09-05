@@ -48,36 +48,20 @@ public static class ProjectWorkspaceModel
         return string.Join(" · ", parts);
     }
 
-    /// <summary>
-    /// The project's fallback mark: up to two letters derived from its own
-    /// display name, drawn when the project has no logo image.
-    ///
-    /// Separate from <see cref="Initials"/> even though both take initials,
-    /// because they answer different questions. A PERSON's initials are
-    /// first-name + last-name and are never case-folded — "Noa Ofir" is
-    /// "NO". A PROJECT's name is a title, not a name: it can be one word
-    /// ("motiva"), and a one-word title reads as a monogram only at two
-    /// letters and in caps. Latin text is upper-cased for exactly that
-    /// reason; Hebrew has no case, so ToUpperInvariant is a no-op there and
-    /// the two-word path gives it the pair of initials it expects.
-    /// </summary>
-    public static string ProjectMonogram(string? title)
-    {
-        if (string.IsNullOrWhiteSpace(title)) return "?";
+    // ProjectMonogram lived here: a two-letter mark derived from the project's
+    // display name, drawn on the identity card when a project had no logo.
+    //
+    // It is gone because the fallback it served is gone. A project logo is a
+    // real uploaded image now (ProjectTeamProfile.LogoPath), and the tile's
+    // empty state is a neutral glyph rather than generated initials — a
+    // monogram is machine-made content that reads as the team's own choice,
+    // and an unset logo should invite one instead of pre-filling it. Removed
+    // rather than left unused so it cannot quietly come back.
+    //
+    // Initials() below is NOT the same helper and stays: it marks PEOPLE, on
+    // the team chips, and a person's initials follow different rules (see its
+    // own summary).
 
-        var words = title.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-        if (words.Length == 0) return "?";
-
-        var mark = words.Length == 1
-            // One word: the first two of its own letters, or the single letter
-            // it has. Slicing a word this way is wrong for a person and right
-            // for a title — see the summary.
-            ? (words[0].Length >= 2 ? words[0][..2] : words[0])
-            : $"{words[0][0]}{words[^1][0]}";
-
-        return mark.ToUpperInvariant();
-    }
 
     /// <summary>
     /// Two-letter initials for a member chip, from a "First Last" string. Same

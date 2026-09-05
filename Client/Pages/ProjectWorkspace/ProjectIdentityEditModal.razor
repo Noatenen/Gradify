@@ -1,0 +1,443 @@
+@namespace AuthWithAdmin.Client.Pages.ProjectWorkspace
+@using AuthWithAdmin.Shared.AuthSharedModels
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Client.Components
+@using Microsoft.AspNetCore.Components.Forms
+@inject IProjectWorkspaceService Workspace
+@inject IProjectContextService ProjectContext
+
+@*
+    ProjectIdentityEditModal — עריכת פרטי הפרויקט.
+
+    WHY THIS IS A MODAL AND NOT AN INLINE FORM
+    ──────────────────────────────────────────
+    ProjectIdentityCard used to swap itself into a form. The card is the top
+    half of the page's right column and takes that column's height from
+    .pw-workspace, so .pwi-inner holds a fixed height and scrolls — which was
+    fine for a short read-only record and wrong for a form: the fields pushed
+    שמירה/ביטול below the card's own fold, and the actions could only be
+    reached through an internal scrollbar that belonged to nothing the reader
+    had asked to scroll. Growing the card instead would have resized one column
+    of a 50/50 row while the other stayed put.
+
+    A dialog has neither problem. It is sized by its own content, it is capped
+    at the viewport by the shell rather than by a neighbouring column, and when
+    it does have to scroll it is the BODY that scrolls with the actions pinned
+    under it.
+
+    THE SHELL IS MModal, UNMODIFIED
+    ──────────────────────────────
+    Size.Medium, which `.motiva-final` scopes to 460px — the width the finished
+    student design draws every modal at, with radius-xl, the soft ink scrim and
+    the continuous 26/28px pad instead of divider rules. Nothing here restyles
+    the shell; the only rules this component owns are for its own fields.
+
+    Left FitContent OFF deliberately. That parameter moves the scroll out to the
+    overlay for surfaces you read ACROSS; this is a form, and a form wants the
+    default — dialog capped at the viewport, m-modal-body scrolling inside it,
+    m-modal-header and m-modal-footer pinned. `justify-content: flex-end` on the
+    footer is the shell's own rule and resolves to the physical LEFT under RTL,
+    which is where these actions belong.
+
+    WHAT COMMITS WHEN
+    ─────────────────
+    The two TEXT fields are drafts: they live here, and ביטול / X / Escape /
+    backdrop all drop them without a write. The LOGO is not a draft — it commits
+    the moment a file is chosen, exactly as the profile avatar does, so there is
+    no pending image change for a cancel to undo and removing one is its own
+    button. That is why closing is safe to do without a confirmation.
+*@
+
+<MModal IsOpen="@IsOpen"
+        Size="MModal.ModalSize.Medium"
+        Title="עריכת פרטי הפרויקט"
+        Class="pwe-modal"
+        OnClose="CancelAsync">
+
+    <ChildContent>
+
+        @*  ── LOGO ─────────────────────────────────────────────────────────
+            A compact row rather than a block: the tile with its own overlay,
+            and the two verbs beside it. It leads the body because it is the
+            one control here that acts immediately — the fields below it are
+            drafts that wait for שמירה, and putting the instant one first
+            stops it reading as part of the form it does not belong to.  *@
+        <div class="pwe-logo-row">
+            <div class="pwe-logo-wrap">
+                <span class="pwe-logo" aria-hidden="true">
+                    @if (HasLogo)
+                    {
+                        @* A src that fails to load flips _logoFailed and the
+                           placeholder takes the tile back on the next render,
+                           so the fallback covers a dead URL and not just an
+                           absent one. *@
+                        <img class="pwe-logo-img"
+                             src="@LogoUrl"
+                             alt=""
+                             @onerror="HandleLogoError" />
+                    }
+                    else
+                    {
+                        @* The empty slot. An outline glyph, never initials:
+                           a monogram is machine-made content that reads as the
+                           team's own choice, and an unset logo should invite
+                           one rather than pre-fill it. *@
+                        <svg class="pwe-logo-ph" width="20" height="20" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="1.5"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="4" />
+                            <circle cx="8.5" cy="9" r="1.6" />
+                            <path d="M21 15.5l-4.6-4.2a1.6 1.6 0 0 0-2.2 0L4.2 20" />
+                        </svg>
+                    }
+                </span>
+
+                @if (_logoBusy)
+                {
+                    <span class="pwe-logo-busy" aria-hidden="true"></span>
+                }
+            </div>
+
+            <div class="pwe-logo-side">
+                <span class="pwe-logo-label">לוגו הפרויקט</span>
+
+                <div class="pwe-logo-verbs">
+                    @*  The label IS the trigger; the input never renders. The
+                        WRAPPER hides it, never a class handed to InputFile —
+                        InputFile renders its own <input> root, which does not
+                        carry this component's CSS-isolation attribute, so a
+                        class passed to it would match no rule and the native
+                        "choose file" control would appear in the row.  *@
+                    <label class="pwe-logo-btn" for="@LogoFieldId">
+                        @(HasLogo ? "החלפה" : "העלאת לוגו")
+                    </label>
+
+                    <div class="pwe-logo-input-wrap">
+                        <InputFile id="@LogoFieldId"
+                                   OnChange="HandleLogoUploadAsync"
+                                   accept="image/jpeg,image/png,image/webp" />
+                    </div>
+
+                    @if (HasLogo)
+                    {
+                        <button type="button"
+                                class="pwe-logo-btn pwe-logo-btn-danger"
+                                disabled="@_logoBusy"
+                                @onclick="RemoveLogoAsync">
+                            הסרה
+                        </button>
+                    }
+                </div>
+
+                <span class="pwe-logo-note">PNG, JPG או WEBP · עד 3MB</span>
+            </div>
+        </div>
+
+        @if (_logoError is not null)
+        {
+            <p class="pwe-error" role="alert">@_logoError</p>
+        }
+
+        @*  ── NAME ─────────────────────────────────────────────────────────  *@
+        <div class="pwe-field">
+            @*  The guidance that used to be a permanent sentence under the
+                form. It is worth saying and not worth a standing line of the
+                dialog, which is exactly what MInfoTip is for — the same
+                label+tip pairing StudentAssignmentPage uses on its fields.  *@
+            @*  The tip leads the row — see the note in ProjectResourcesSection
+                for why: the bubble grows from its trigger toward the dialog's
+                inline-end, so anchoring it at the body's start edge is the only
+                placement that fits at any label length. Same arrangement in
+                both dialogs so they read as one pattern.  *@
+            <div class="pwe-labelrow">
+                <MInfoTip Text="השם יופיע בכל מקום שבו הפרויקט מוצג במערכת."
+                          TriggerLabel="מידע על שם הפרויקט" />
+                <label class="pwe-label" for="@TitleFieldId">שם הפרויקט</label>
+            </div>
+            <input id="@TitleFieldId"
+                   class="pwe-input"
+                   type="text"
+                   maxlength="@MaxTitle"
+                   placeholder="שם הפרויקט"
+                   disabled="@_saving"
+                   @bind="_titleDraft"
+                   @bind:event="oninput"
+                   @onkeydown="HandleTitleKeyDownAsync" />
+        </div>
+
+        @*  ── DESCRIPTION ──────────────────────────────────────────────────  *@
+        <div class="pwe-field">
+            <label class="pwe-label" for="@DescFieldId">תיאור הפרויקט</label>
+            <textarea id="@DescFieldId"
+                      class="pwe-textarea"
+                      rows="5"
+                      maxlength="@MaxDescription"
+                      placeholder="על מה הפרויקט, למי הוא מיועד ומה הוא פותר"
+                      disabled="@_saving"
+                      @bind="_descDraft"
+                      @bind:event="oninput"></textarea>
+        </div>
+
+        @if (_error is not null)
+        {
+            <p class="pwe-error" role="alert">@_error</p>
+        }
+    </ChildContent>
+
+    <FooterContent>
+        @*  The shell's footer already collects its actions at the row's end,
+            which under RTL is the physical left. Order inside it is
+            cancel-then-confirm so the confirming action is the outermost —
+            the same order every other Motiva dialog footer uses.  *@
+        <MButton Variant="MButton.ButtonVariant.Secondary"
+                 Size="MButton.ButtonSize.Small"
+                 Disabled="_saving"
+                 OnClick="CancelAsync">
+            ביטול
+        </MButton>
+        <MButton Variant="MButton.ButtonVariant.Primary"
+                 Size="MButton.ButtonSize.Small"
+                 Loading="_saving"
+                 LoadingText="שומרת…"
+                 OnClick="SaveAsync">
+            שמירה
+        </MButton>
+    </FooterContent>
+</MModal>
+
+@code {
+    /// <summary>The project as returned by GET api/projects/my-project-details.
+    /// Mutated in place on a successful write, so the card and the page never
+    /// disagree about the current values.</summary>
+    [Parameter, EditorRequired] public StudentProjectDetailsDto Project { get; set; } = default!;
+
+    [Parameter] public bool IsOpen { get; set; }
+
+    /// <summary>Raised when the dialog wants to close — on cancel, on a
+    /// successful save, and on the shell's own X / Escape / backdrop.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>Raised after any successful write so the page can re-render and
+    /// the card can flash "נשמר".</summary>
+    [Parameter] public EventCallback OnSaved { get; set; }
+
+    // Mirrors the server's guards (ProjectsController.UpdateMyProject) so an
+    // over-long value is caught before the round trip. `maxlength` makes it
+    // unreachable by typing; the check still runs, because a paste can exceed
+    // it in some browsers.
+    private const int MaxTitle       = 120;
+    private const int MaxDescription = 2000;
+
+    private const string TitleFieldId = "pwe-title";
+    private const string DescFieldId  = "pwe-desc";
+    private const string LogoFieldId  = "pwe-logo";
+
+    /// <summary>Client-side ceiling on the upload. The server resizes whatever
+    /// it accepts down to a 600px box, so this is about not shipping a 20MB
+    /// base64 payload over the wire, not about the stored file.</summary>
+    private const long MaxLogoBytes = 3 * 1024 * 1024;
+
+    private bool    _saving;
+    private string  _titleDraft = "";
+    private string  _descDraft  = "";
+    private string? _error;
+
+    private bool    _logoBusy;
+    private string? _logoError;
+    private bool    _logoFailed;
+
+    /// <summary>Tracks the closed→open edge so the drafts are seeded once per
+    /// opening. Seeding on every parameter set would overwrite what the student
+    /// is typing on the next re-render.</summary>
+    private bool _wasOpen;
+
+    protected override void OnParametersSet()
+    {
+        if (IsOpen && !_wasOpen)
+        {
+            _titleDraft = Project.Title       ?? "";
+            _descDraft  = Project.Description ?? "";
+            _error      = null;
+            _logoError  = null;
+            _logoFailed = false;
+        }
+
+        _wasOpen = IsOpen;
+    }
+
+    // ── Logo ─────────────────────────────────────────────────────────────
+
+    private string? LogoUrl => Project.LogoUrl;
+
+    private bool HasLogo => !_logoFailed && !string.IsNullOrWhiteSpace(LogoUrl);
+
+    private void HandleLogoError() => _logoFailed = true;
+
+    private async Task HandleLogoUploadAsync(InputFileChangeEventArgs e)
+    {
+        var file   = e.File;
+        _logoError = null;
+
+        if (file.Size > MaxLogoBytes)
+        {
+            _logoError = "התמונה גדולה מדי. הגודל המרבי הוא 3MB.";
+            return;
+        }
+
+        var ext = System.IO.Path.GetExtension(file.Name).TrimStart('.').ToLowerInvariant();
+        if (ext is not ("jpg" or "jpeg" or "png" or "webp"))
+        {
+            _logoError = "סוג הקובץ אינו נתמך. נתמכים: JPG, PNG, WEBP.";
+            return;
+        }
+
+        _logoBusy = true;
+
+        try
+        {
+            using var ms = new System.IO.MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: MaxLogoBytes).CopyToAsync(ms);
+
+            var url = await Workspace.UploadLogoAsync(Convert.ToBase64String(ms.ToArray()), ext);
+
+            if (url is null)
+            {
+                _logoError = "העלאת הלוגו נכשלה. נסי שנית.";
+                return;
+            }
+
+            await SyncLogoFromServerAsync(url);
+        }
+        catch
+        {
+            _logoError = "העלאת הלוגו נכשלה. נסי שנית.";
+        }
+        finally
+        {
+            _logoBusy = false;
+        }
+    }
+
+    private async Task RemoveLogoAsync()
+    {
+        _logoBusy  = true;
+        _logoError = null;
+
+        try
+        {
+            if (await Workspace.RemoveLogoAsync()) await SyncLogoFromServerAsync(null);
+            else                                   _logoError = "הסרת הלוגו נכשלה. נסי שנית.";
+        }
+        catch
+        {
+            _logoError = "הסרת הלוגו נכשלה. נסי שנית.";
+        }
+        finally
+        {
+            _logoBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Adopts the server's answer for the logo. <paramref name="fallbackUrl"/>
+    /// is what the write itself returned, used only when the re-read fails —
+    /// the write already succeeded at that point, so showing the new image
+    /// beats showing the old one until the next page load.
+    /// </summary>
+    private async Task SyncLogoFromServerAsync(string? fallbackUrl)
+    {
+        var reread = await Workspace.GetProjectAsync();
+
+        Project.LogoUrl = reread.State == ProjectLoadState.Loaded && reread.Project is not null
+            ? reread.Project.LogoUrl
+            : fallbackUrl;
+
+        // A fresh URL deserves a fresh attempt: without this, one broken image
+        // would keep the placeholder up for the rest of the session.
+        _logoFailed = false;
+
+        // The card behind the dialog shows the same tile, so it has to repaint
+        // now rather than when the dialog closes.
+        if (OnSaved.HasDelegate) await OnSaved.InvokeAsync();
+    }
+
+    // ── Text ─────────────────────────────────────────────────────────────
+
+    /// <summary>Enter saves from the single-line field. The textarea binds no
+    /// such key — Enter there is a newline, which is what that field is for.
+    /// Escape is the shell's, so it is not bound twice.</summary>
+    private async Task HandleTitleKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey) await SaveAsync();
+    }
+
+    private async Task CancelAsync()
+    {
+        // The drafts are simply abandoned; OnParametersSet re-seeds them from
+        // Project the next time the dialog opens, so nothing has to be undone
+        // here. The logo is deliberately untouched — it was already committed.
+        if (_saving) return;
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        var title = (_titleDraft ?? "").Trim();
+        var desc  = (_descDraft  ?? "").Trim();
+
+        if (title.Length > MaxTitle)
+        {
+            _error = $"שם הפרויקט ארוך מדי — עד {MaxTitle} תווים.";
+            return;
+        }
+
+        if (desc.Length > MaxDescription)
+        {
+            _error = $"תיאור הפרויקט ארוך מדי — עד {MaxDescription} תווים.";
+            return;
+        }
+
+        _saving = true;
+        _error  = null;
+
+        var ok = await Workspace.UpdateProjectAsync(title, desc);
+
+        _saving = false;
+
+        if (!ok)
+        {
+            _error = "שמירת פרטי הפרויקט נכשלה. נסי שנית.";
+            return;
+        }
+
+        // Clearing a field falls back to the catalog value on the server, so
+        // the local copy cannot simply take the empty string — the card would
+        // show a blank name until the next reload while the server shows the
+        // catalog title. Re-reading the project is the only honest answer.
+        var reread = await Workspace.GetProjectAsync();
+        if (reread.State == ProjectLoadState.Loaded && reread.Project is not null)
+        {
+            Project.Title       = reread.Project.Title;
+            Project.Description = reread.Project.Description;
+            // Same payload, so take the logo from it too — otherwise a text
+            // save would quietly revert an image uploaded moments earlier in
+            // the same dialog.
+            Project.LogoUrl     = reread.Project.LogoUrl;
+        }
+        else
+        {
+            // The write succeeded; only the re-read failed. Show what was sent
+            // rather than stale values, and let the next page load reconcile.
+            Project.Title       = title.Length == 0 ? Project.Title : title;
+            Project.Description = desc.Length  == 0 ? null          : desc;
+        }
+
+        // The sidebar names this project too, and that name is the link back
+        // here. Refreshing the shared context is what makes it agree without a
+        // page reload.
+        await ProjectContext.RefreshAsync();
+
+        if (OnSaved.HasDelegate) await OnSaved.InvokeAsync();
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+}

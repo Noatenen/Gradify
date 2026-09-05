@@ -41,6 +41,16 @@ public interface IProjectWorkspaceService
     /// </summary>
     Task<bool> UpdateProjectAsync(string title, string description);
 
+    /// <summary>Uploads or replaces the team's project logo
+    /// (PUT api/projects/my-project/logo). Returns the new public URL on
+    /// success, null on any failure — the caller re-reads the project rather
+    /// than trusting a locally-composed path.</summary>
+    Task<string?> UploadLogoAsync(string imageBase64, string extension);
+
+    /// <summary>Removes the team's project logo
+    /// (DELETE api/projects/my-project/logo). Returns true on success.</summary>
+    Task<bool> RemoveLogoAsync();
+
     /// <summary>The team's own links. Returns null on failure, an empty list
     /// when the team simply has none yet — the two are different screens.</summary>
     Task<List<ProjectResourceDto>?> GetResourcesAsync();
@@ -124,6 +134,47 @@ public class ProjectWorkspaceService : IProjectWorkspaceService
         {
             return false;
         }
+    }
+
+    public async Task<string?> UploadLogoAsync(string imageBase64, string extension)
+    {
+        try
+        {
+            var res = await _http.PutAsJsonAsync(
+                "api/projects/my-project/logo",
+                new UploadProjectLogoRequest
+                {
+                    ImageBase64 = imageBase64,
+                    Extension   = extension,
+                });
+
+            if (!res.IsSuccessStatusCode) return null;
+
+            var body = await res.Content.ReadFromJsonAsync<LogoUploadResult>();
+            return string.IsNullOrWhiteSpace(body?.Url) ? null : body.Url;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public async Task<bool> RemoveLogoAsync()
+    {
+        try
+        {
+            var res = await _http.DeleteAsync("api/projects/my-project/logo");
+            return res.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private sealed class LogoUploadResult
+    {
+        public string? Url { get; set; }
     }
 
     public async Task<List<ProjectResourceDto>?> GetResourcesAsync()

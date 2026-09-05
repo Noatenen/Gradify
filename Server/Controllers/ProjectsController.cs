@@ -25,11 +25,29 @@ public class ProjectsController : ControllerBase
     /// </summary>
     private readonly GoogleCalendarEventService _calendarEvents;
 
-    public ProjectsController(DbRepository db, GoogleCalendarEventService calendarEvents)
+    /// <summary>Project-logo upload/replace. The same helper every other image
+    /// in the product goes through — SaveFile resizes to a 600px box and names
+    /// the stored file, so this controller never invents a filename.</summary>
+    private readonly FilesManage _files;
+
+    public ProjectsController(
+        DbRepository db, GoogleCalendarEventService calendarEvents, FilesManage files)
     {
         _db             = db;
         _calendarEvents = calendarEvents;
+        _files          = files;
     }
+
+    // ── Project logo ─────────────────────────────────────────────────────────
+    // The wwwroot container the team's uploaded marks live in, alongside
+    // "profile-images", "request-attachments", "resources" and "submissions".
+    private const string LogoContainer = "project-logos";
+
+    // Mirrors StudentController's avatar guard exactly. ImageSharp re-encodes
+    // whatever it is handed, so this list is about what we are willing to
+    // accept, not about what it can read.
+    private static readonly HashSet<string> AllowedLogoExts =
+        new(StringComparer.OrdinalIgnoreCase) { "jpg", "jpeg", "png", "webp" };
 
     // ── GET /api/projects/my-dashboard ───────────────────────────────────────
     // Returns the complete dashboard payload for the authenticated student.
@@ -1803,7 +1821,10 @@ public class ProjectsController : ControllerBase
         // value is the fallback. See the ProjectTeamProfile block in
         // DatabaseMigrator for why the student's edit is not written into the
         // Projects row itself (Airtable sync overwrites those two columns).
-        const string sql = @"
+        // Interpolated (and therefore not const) for one reason: LogoContainer.
+        // Repeating the folder name as a literal inside the SQL would be a
+        // second place to edit if the container ever moves.
+        string sql = $@"
             SELECT  p.Id,
                     p.ProjectNumber,
                     COALESCE(NULLIF(TRIM(ptp.DisplayTitle), ''), p.Title)       AS Title,
@@ -1819,7 +1840,14 @@ public class ProjectsController : ControllerBase
                     p.ContactEmail,
                     p.ContactPhone,
                     p.ProjectTopic,
-                    p.Contents
+                    p.Contents,
+                    -- The stored filename becomes a URL here and nowhere else,
+                    -- so the container stays a server-side detail the client
+                    -- never has to know. Concatenating with NULL yields NULL in
+                    -- SQLite, so a missing or blank LogoPath falls out as a null
+                    -- LogoUrl on its own -- no row and no upload both mean the
+                    -- team has no logo.
+                    '/{LogoContainer}/' || NULLIF(TRIM(ptp.LogoPath), '')   AS LogoUrl
             FROM    Projects      p
             JOIN    ProjectTypes  pt  ON p.ProjectTypeId  = pt.Id
             JOIN    AcademicYears ay  ON p.AcademicYearId = ay.Id
@@ -1895,6 +1923,107 @@ public class ProjectsController : ControllerBase
 
     private const int MaxProjectTitleLength       = 120;
     private const int MaxProjectDescriptionLength = 2000;
+
+    // ── PUT /api/projects/my-project/logo ────────────────────────────────────
+    // Uploads or replaces the team's project logo.
+    //
+    // Deliberately a SEPARATE endpoint from PUT my-project rather than another
+    // field on it: the text save is a form submit the student presses "שמירת
+    // שינויים" for, and the image write happens the moment a file is chosen.
+    // Folding a multi-megabyte base64 payload into the text save would also
+    // mean re-uploading the logo on every rename.
+    //
+    // The whole shape is StudentController.UpdateMyAvatar's, because it is the
+    // same job: validate the extension, hand the bytes to FilesManage.SaveFile
+    // (which resizes and names the file), store the bare filename, then delete
+    // the file it replaced — in that order, so a failed save never destroys the
+    // logo that is still on screen.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPut("my-project/logo")]
+    public async Task<IActionResult> UpdateMyProjectLogo(
+        [FromBody] UploadProjectLogoRequest req, int authUserId)
+    {
+        if (req is null || string.IsNullOrWhiteSpace(req.ImageBase64))
+            return BadRequest("לא התקבל קובץ תמונה");
+
+        var ext = (req.Extension ?? "").ToLowerInvariant().TrimStart('.');
+        if (!AllowedLogoExts.Contains(ext))
+            return BadRequest("סוג הקובץ אינו נתמך. נתמכים: JPG, PNG, WEBP");
+
+        var projectId = await GetProjectIdForUserAsync(authUserId);
+        if (projectId is null) return NotFound("פרויקט לא נמצא");
+
+        var existing = (await _db.GetRecordsAsync<ProjectLogoPathRow>(
+            "SELECT LogoPath FROM ProjectTeamProfile WHERE ProjectId = @ProjectId",
+            new { ProjectId = projectId.Value }))?.FirstOrDefault();
+
+        string newFileName;
+        try
+        {
+            newFileName = await _files.SaveFile(req.ImageBase64, ext, LogoContainer);
+        }
+        catch
+        {
+            return StatusCode(500, "שמירת התמונה נכשלה");
+        }
+
+        // Upsert, because a team that has never edited its name has no row yet
+        // and choosing a logo must not require saving the text form first.
+        const string sql = @"
+            INSERT INTO ProjectTeamProfile
+                        (ProjectId, LogoPath, UpdatedAt, UpdatedByUserId)
+            VALUES      (@ProjectId, @LogoPath, datetime('now'), @UserId)
+            ON CONFLICT(ProjectId) DO UPDATE SET
+                        LogoPath        = excluded.LogoPath,
+                        UpdatedAt       = excluded.UpdatedAt,
+                        UpdatedByUserId = excluded.UpdatedByUserId";
+
+        await _db.SaveDataAsync(sql, new
+        {
+            ProjectId = projectId.Value,
+            LogoPath  = newFileName,
+            UserId    = authUserId,
+        });
+
+        if (!string.IsNullOrWhiteSpace(existing?.LogoPath))
+            _files.DeleteFile(existing.LogoPath, LogoContainer);
+
+        return Ok(new { url = $"/{LogoContainer}/{newFileName}" });
+    }
+
+    // ── DELETE /api/projects/my-project/logo ─────────────────────────────────
+    // Removes the team's logo and falls the card back to its placeholder.
+    // Nulls the column BEFORE deleting the file, so a delete that throws leaves
+    // a missing image rather than a row pointing at a file that is gone.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpDelete("my-project/logo")]
+    public async Task<IActionResult> RemoveMyProjectLogo(int authUserId)
+    {
+        var projectId = await GetProjectIdForUserAsync(authUserId);
+        if (projectId is null) return NotFound("פרויקט לא נמצא");
+
+        var existing = (await _db.GetRecordsAsync<ProjectLogoPathRow>(
+            "SELECT LogoPath FROM ProjectTeamProfile WHERE ProjectId = @ProjectId",
+            new { ProjectId = projectId.Value }))?.FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(existing?.LogoPath))
+        {
+            await _db.SaveDataAsync(
+                @"UPDATE ProjectTeamProfile
+                  SET    LogoPath = NULL, UpdatedAt = datetime('now'), UpdatedByUserId = @UserId
+                  WHERE  ProjectId = @ProjectId",
+                new { ProjectId = projectId.Value, UserId = authUserId });
+
+            _files.DeleteFile(existing.LogoPath, LogoContainer);
+        }
+
+        return NoContent();
+    }
+
+    private sealed class ProjectLogoPathRow
+    {
+        public string? LogoPath { get; set; }
+    }
 
     // ── GET /api/projects/my-resources ───────────────────────────────────────
     // The team's own links (משאבי הפרויקט), newest last so the grid keeps a

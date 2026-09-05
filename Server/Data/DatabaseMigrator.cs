@@ -2893,16 +2893,34 @@ public static class DatabaseMigrator
         //
         // One row per project (PK on ProjectId), because the identity belongs
         // to the project, not to whichever team member last edited it.
+        //
+        // LogoPath is the team's own uploaded mark — the STORED FILENAME only,
+        // never a URL, exactly as users.ProfileImagePath holds an avatar. The
+        // container ("project-logos") lives in the controller, so moving the
+        // folder never requires a data migration. NULL means "no logo", which
+        // is the state every project starts in and the one the card's
+        // placeholder is drawn for.
         await connection.ExecuteNonQueryAsync(@"
             CREATE TABLE IF NOT EXISTS ProjectTeamProfile (
                 ProjectId       INTEGER PRIMARY KEY,
                 DisplayTitle    TEXT,
                 Description     TEXT,
+                LogoPath        TEXT,
                 UpdatedAt       TEXT    NOT NULL DEFAULT (datetime('now')),
                 UpdatedByUserId INTEGER,
                 FOREIGN KEY (ProjectId)       REFERENCES Projects(Id) ON DELETE CASCADE,
                 FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
             )");
+
+        // The CREATE above only covers a fresh database. Every existing one
+        // already has the table without the column, so it is added separately
+        // and guarded by PRAGMA table_info — the same idiom as
+        // EnsureCycleMilestoneOrderAsync. Left NULL: there is nothing to
+        // backfill, a project without an uploaded logo simply has none.
+        var ptpColumns = await GetColumnsAsync(connection, "ProjectTeamProfile");
+        if (!ptpColumns.Contains("LogoPath"))
+            await connection.ExecuteNonQueryAsync(
+                "ALTER TABLE ProjectTeamProfile ADD COLUMN LogoPath TEXT");
 
         // ── ProjectResources — the team's own links ─────────────────────────
         // "משאבי הפרויקט": the Google Doc, the Drive folder, the Figma file,
