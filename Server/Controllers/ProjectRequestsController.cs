@@ -253,11 +253,47 @@ public class ProjectRequestsController : ControllerBase
                     CASE
                         WHEN s.LastSeenAt IS NULL OR r.UpdatedAt > s.LastSeenAt THEN 1
                         ELSE 0
-                    END                                              AS HasUnread
+                    END                                              AS HasUnread,
+
+                    -- ── WHO OPENED IT ────────────────────────────────────
+                    -- This list is scoped by PROJECT, not by author: every
+                    -- request on the team's project is returned, including one
+                    -- an Admin / Staff / Mentor filed. Without these columns the
+                    -- workspace could not tell the two apart and worded every
+                    -- row as if the team had filed it.
+                    r.CreatedByUserId,
+                    COALESCE(cu.FirstName || ' ' || cu.LastName, '')  AS CreatedByName,
+
+                    -- The creator's most senior ACADEMIC role, Staff first so a
+                    -- dual-role lecturer/mentor is named the way the student
+                    -- knows them. '' when the creator holds none, i.e. a student.
+                    COALESCE((
+                        SELECT ur.Role
+                        FROM   UserRoles ur
+                        WHERE  ur.UserId = r.CreatedByUserId
+                          AND  ur.Role IN ('Staff','Admin','Mentor')
+                        ORDER  BY CASE ur.Role
+                                      WHEN 'Staff'  THEN 1
+                                      WHEN 'Admin'  THEN 2
+                                      ELSE 3
+                                  END
+                        LIMIT  1), '')                               AS CreatedByRole,
+
+                    -- Authorship is decided by TEAM MEMBERSHIP, not by the role
+                    -- table: 'my team filed this' is true for a teammate too,
+                    -- and false for academic staff even when they also happen to
+                    -- hold a Student role somewhere.
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM TeamMembers ctm
+                        WHERE  ctm.TeamId   = t.Id
+                          AND  ctm.UserId   = r.CreatedByUserId
+                          AND  ctm.IsActive = 1
+                    ) THEN 1 ELSE 0 END                              AS OpenedByTeam
             FROM    ProjectRequests r
             JOIN    Projects    p  ON p.Id      = r.ProjectId
             JOIN    Teams       t  ON t.Id      = p.TeamId
             JOIN    TeamMembers tm ON tm.TeamId  = t.Id
+            LEFT JOIN users     cu ON cu.Id     = r.CreatedByUserId
             LEFT JOIN ProjectRequestAttachments a ON a.RequestId = r.Id
             LEFT JOIN ProjectRequestSeenStates  s ON s.RequestId = r.Id AND s.UserId = @UserId
             WHERE   tm.UserId   = @UserId

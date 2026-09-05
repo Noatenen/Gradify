@@ -698,6 +698,45 @@ public class StudentOwnRequestDto
     public bool     HasUnread       { get; set; }
     public List<ProjectRequestEventDto> Events { get; set; } = new();
 
+    // ── WHO OPENED IT ────────────────────────────────────────────────────────
+    //
+    // GET /my is scoped by PROJECT — it returns every request on the team's
+    // project, whoever filed it — and until these fields existed it returned no
+    // creator at all. A request an Admin / Staff / Mentor opened on the project
+    // therefore arrived indistinguishable from one the team had filed, and the
+    // workspace worded it from the status alone: born 'New', owned by Staff,
+    // rendered "אצל הצוות האקדמי" — literally true about whose court it is in,
+    // and read by the student as "the answer to MY question is pending".
+    //
+    // The ownership itself is NOT in question and is not restated here.
+    // RequestTypeHandlerRoles.All is { Admin, Staff, Mentor } — a student is
+    // never a handler — so every request in this product is handled by the
+    // academic side, and the only move that hands one back to the team is
+    // /handle → NeedsInfo. What was missing was the AUTHOR, which is the single
+    // fact that separates "you asked, they are answering" from "they asked".
+
+    /// <summary>The account that filed the request.</summary>
+    public int      CreatedByUserId { get; set; }
+
+    /// <summary>Display name of that account. Empty when the user row is gone.</summary>
+    public string   CreatedByName   { get; set; } = "";
+
+    /// <summary>The creator's most senior ACADEMIC role — one of
+    /// <see cref="RequestTypeHandlerRoles"/>, Staff preferred so a dual-role
+    /// lecturer/mentor is named the way the student knows them. Empty when the
+    /// creator holds none, i.e. a student.</summary>
+    public string   CreatedByRole   { get; set; } = "";
+
+    /// <summary>True when the creator is an active member of this project's own
+    /// team. THE authorship test — a teammate's request is the team's, and an
+    /// academic's is not, regardless of what role rows either account carries.
+    /// </summary>
+    public bool     OpenedByTeam    { get; set; }
+
+    /// <summary>Convenience inverse, for the surfaces that only ask "did we file
+    /// this?". Kept as a computed property so there is one stored answer.</summary>
+    public bool     OpenedByAcademicStaff => !OpenedByTeam;
+
     /// <summary>Populated only when RequestType = Extension. Null otherwise.</summary>
     public ExtensionRequestInfoDto? Extension { get; set; }
 }

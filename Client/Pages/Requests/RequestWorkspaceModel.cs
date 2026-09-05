@@ -90,6 +90,64 @@ public static class RequestBuckets
         _                                           => "אצל הצוות האקדמי",
     };
 
+    /// <summary>
+    /// THE SAME QUESTION, ASKED OF A REQUEST RATHER THAN OF A BARE STATUS —
+    /// and the only place authorship changes the answer.
+    ///
+    /// <para><b>Why a status alone is not enough at exactly one point.</b>
+    /// <see cref="RequestStatuses.New"/> is the BIRTH status: no one has acted
+    /// yet, so nothing about the request except its author has happened. Every
+    /// other status is a record of an action and already names its own owner —
+    /// NeedsInfo was written by a staff member handing the request back,
+    /// WaitingForStaff by the student replying, InProgress by staff picking it
+    /// up, PendingLecturerDecision by a mentor's recommendation. Only New
+    /// carries no action at all, which is why it is the one status whose
+    /// wording has to look at who opened the request.</para>
+    ///
+    /// <para><b>What was wrong.</b> New falls through
+    /// <c>RequestOwnership.NextActionOwner</c>'s default arm to Staff — correct,
+    /// since <see cref="RequestTypeHandlerRoles"/> is { Admin, Staff, Mentor }
+    /// and a student is never a handler — and was therefore worded
+    /// "אצל הצוות האקדמי" for every New request. On a request the team filed
+    /// that reads as "your question is with them"; on one an Admin / Staff /
+    /// Mentor filed it reads as if the academic side were waiting on itself to
+    /// answer a question the student never asked. The ownership was right and
+    /// the sentence was wrong.</para>
+    ///
+    /// <para><b>The ownership is unchanged.</b> A staff-opened request is still
+    /// owned by staff and still sits in <see cref="RequestBucket.Lecturer"/> —
+    /// the bucket, the counters and the filter pills are untouched. The only
+    /// mechanism that puts a request in the team's court is /handle → NeedsInfo,
+    /// and it already works from either author.</para>
+    /// </summary>
+    public static string WhereLabel(StudentOwnRequestDto r) =>
+        r.Status == RequestStatuses.New && r.OpenedByAcademicStaff
+            ? "נפתחה על ידי הצוות האקדמי"
+            : WhereLabel(r.Status);
+
+    /// <summary>Who opened the request — null when the team opened it, because
+    /// "you filed this" is what the student's own queue already means and saying
+    /// it on every row is noise.
+    ///
+    /// <para>Worded as a CONTINUATION of the meta line's "נפתחה &lt;date&gt;"
+    /// item rather than as an item of its own: as a separate one it produced
+    /// "נפתחה על ידי ג'ני אלון · מרצה · נפתחה 05.09.2026" — the word נפתחה and
+    /// the role both twice on a line that already names the handling role. The
+    /// role stays, in parentheses, so a student who does not recognise the name
+    /// still knows which side of the course opened it.</para></summary>
+    public static string? OpenedByLabel(StudentOwnRequestDto r)
+    {
+        if (r.OpenedByTeam) return null;
+
+        string role = string.IsNullOrWhiteSpace(r.CreatedByRole)
+            ? "הצוות האקדמי"
+            : RequestTypeHandlerRoles.Label(r.CreatedByRole);
+
+        return string.IsNullOrWhiteSpace(r.CreatedByName)
+            ? $"על ידי {role}"
+            : $"על ידי {r.CreatedByName} ({role})";
+    }
+
     public static string FilterId(RequestBucket bucket) => bucket switch
     {
         RequestBucket.Waiting  => WaitingFilterId,
