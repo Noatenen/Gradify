@@ -8,6 +8,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @inject IProjectRequestsService RequestsService
 @inject IMentorAttentionService Attention
+@inject IRequestTypesService RequestTypesService
 
 @*
     ── בקשות — the mentor's request queue ──────────────────────────────────
@@ -44,14 +45,33 @@
     and the lecturer's אישור / דחייה / החזרה להשלמה never appear here.
 
     BUCKETS are MentorRequestBuckets.Of(), the mentor's four-way split, used
-    verbatim. The three KPI chips are folded from those same four so a chip can
-    never disagree with the list: ממתינות להמלצתך = AwaitingMentor, טופלו =
-    Closed, and בטיפול = WithLecturer + AwaitingTeam, the two "in flight
-    somewhere else" buckets the mentor cannot move. The tabs keep all four,
-    because filtering to one of them is still useful.
+    verbatim and unchanged. The three pills fold those four:
+
+        להמלצתך        = AwaitingMentor   = PendingMentorRecommendation
+        ממתין לאחרים   = WithLecturer     = everything else (New, InProgress,
+                                            WaitingForStaff,
+                                            PendingLecturerDecision, and any
+                                            status added later)
+                       + AwaitingTeam     = NeedsInfo
+        טופלו          = Closed           = Resolved, Closed
+
+    The middle pill said "בטיפול" and now says "ממתין לאחרים". That is a
+    correction, not a preference: "בטיפול" reads most naturally on a mentor's
+    own queue as "being handled by you", and the mentor holds nothing in it —
+    the one endpoint a mentor has is gated on PendingMentorRecommendation,
+    which is the OTHER pill. See LaneLabel for the full argument.
 
     ORDERING puts the requests the mentor actually owns first — bucket order is
-    descending urgency for a mentor — then newest activity within each.
+    descending urgency for a mentor — then newest activity within each. It
+    still runs inside a lane, so it only separates WithLecturer from
+    AwaitingTeam within ממתין לאחרים.
+
+    THE ROW SAYS WHAT THE LECTURER QUEUE'S ROW SAYS, and nothing more: the
+    request type, the title, and the team · project it belongs to. The
+    submitter's name, the leading status dot, the holding phrase and
+    "עדכון אחרון · dd.MM" all came off. Every one of them either restated the
+    selected pill or was a value nobody acts on from a list; all of them are
+    still on the opened record, which is where a mentor reads detail.
 
     CARRIED OVER: the ?requestId= deep link a notification arrives on, and
     MarkRead on open (inside MentorRequestDetail).
@@ -155,7 +175,7 @@
                                             role="option"
                                             aria-selected="@(_typeFilter == type ? "true" : "false")"
                                             @onclick="@(() => PickType(type))">
-                                        <span class="rqw-type-opt-label">@RequestTypes.Label(type)</span>
+                                        <span class="rqw-type-opt-label">@TypeLabel(type)</span>
                                         @if (_typeFilter == type)
                                         {
                                             <svg class="rqw-type-check" width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -195,42 +215,62 @@
                                     @onclick="@(() => SelectRequest(req.Id))">
 
                                 @*  ── HEAD LINE — the shared row anatomy ──
-                                    The dot leads, the title flexes and ellipses
-                                    in place, the request type is pinned to the
-                                    far LEFT. Identical to the student and
-                                    lecturer queues: a request row is one object
+                                    The title flexes and ellipses in place, the
+                                    request type is pinned to the far LEFT.
+                                    Byte for byte the lecturer queue's head, and
+                                    the student's: a request row is one object
                                     across the product.
 
-                                    The dot stays where the mentor's status
-                                    lives — it is this screen's four-role signal
-                                    and NOT the student's unread marker, so it
-                                    keeps its own class and its own tones.  *@
+                                    THE LEADING DOT IS GONE. It carried four
+                                    tones — rose / violet for "waiting on you"
+                                    at and under the attention threshold, blue
+                                    for in flight elsewhere, teal / grey for
+                                    resolved / closed — and every one of those
+                                    is the BUCKET, which is now the pill the
+                                    mentor selected to get this list. A colour
+                                    per row restating the tab above it is not a
+                                    signal; inside "להמלצתך" it was the same
+                                    violet on every row, and inside
+                                    "ממתין לאחרים" the same blue.
+
+                                    The one thing the dot said that the tab does
+                                    not — that a request has waited past the
+                                    attention threshold — is not lost: it is on
+                                    the opened record's meta line, in the shared
+                                    attention model's own words (recWait), where
+                                    it is read once about the request the mentor
+                                    actually opened.  *@
                                 <div class="rqw-row-head">
-                                    <span class="mrq-dot @DotClass(req)" aria-hidden="true"></span>
                                     <span class="rqw-row-title">@req.Title</span>
-                                    <span class="rqw-row-type">@RequestTypes.Label(req.RequestType)</span>
+                                    <span class="rqw-row-type">@TypeLabel(req.RequestType)</span>
                                 </div>
 
-                                @*  ── META — where it stands, then who it is about.
-                                    Two lines rather than the student's one: a
-                                    mentor's queue spans several projects, so
-                                    "מגיש · צוות · פרויקט" cannot share a line
-                                    with the state and still survive the
-                                    ellipsis. Same recipe, one more line of it.
+                                @*  ── META — WHOSE request this is, and nothing
+                                    else. The lecturer queue's line, with the
+                                    project kept beside the team because a
+                                    mentor's queue spans several of them.
 
-                                    The waiting phrase keeps its rose at NEEDS
-                                    ATTENTION — the shared attention model's
-                                    threshold, never re-derived here.  *@
+                                    THE SUBMITTER'S NAME IS GONE. A mentor reads
+                                    this queue by TEAM: the recommendation is
+                                    about a team's extension, the note goes to
+                                    the team, and the same team files several
+                                    requests through whichever member is at a
+                                    keyboard. Naming the member made two rows
+                                    about one team look like two unrelated
+                                    matters. It is still on the record — the
+                                    head's own meta line leads with it — where
+                                    it is detail rather than identity.
+
+                                    NO STATE PHRASE AND NO DATE. The row used to
+                                    carry "בבדיקת מרצה · עודכן אחרון · 22.08",
+                                    the second half of which is the noisiest
+                                    thing that can sit under a title: a date
+                                    nobody acts on, differing per row, competing
+                                    with the identity beside it. The state half
+                                    is the selected tab's job now — see
+                                    LaneLabel — and the date is on the record.  *@
                                 <div class="rqw-row-meta">
-                                    @if (HoldingLabel(req) is { } holding)
-                                    {
-                                        <span class="rqw-row-where">@holding</span>
-                                        <span class="rqw-row-sep" aria-hidden="true">·</span>
-                                    }
-                                    <span class="rqw-row-sub @TimeClass(req)">@TimeLabel(req)</span>
-                                </div>
-                                <div class="rqw-row-meta">
-                                    <span class="rqw-row-sub">@RowSub(req)</span>
+                                    <span class="rqw-row-sub">@RowIdentity(req)</span>
                                 </div>
 
                             </button>
@@ -335,7 +375,7 @@
                                     </p>
                                 </div>
                                 <div class="rqw-ws-badges">
-                                    <span class="rqw-type-pill">@RequestTypes.Label(selectedRow.RequestType)</span>
+                                    <span class="rqw-type-pill">@TypeLabel(selectedRow.RequestType)</span>
                                     <span class="rqw-ws-state rqw-ws-state-@StateTone(recBucket)">
                                         @MentorRequestBuckets.RowLabel(recBucket)
                                     </span>
@@ -373,10 +413,30 @@
     /// One extra GET, and the reason this page cannot word or escalate a request
     /// differently from the rest of the mentor experience.</summary>
     private MentorAttentionDto _attention = new();
+
+    /// <summary>Admin-managed request-type names, by code. Empty until loaded
+    /// and empty if the call fails — TypeLabel falls back to the Shared
+    /// constant either way, so the tag is never blank.</summary>
+    private Dictionary<string, string> _typeNames = new();
     private bool _loading = true;
     private bool _loadError;
 
-    private MentorLane? _laneFilter;   // null = הכל
+    /// <summary>
+    /// The selected lane. NON-NULLABLE, and that is the fix for "which
+    /// workflow state am I looking at?".
+    ///
+    /// <para>It used to be a nullable with null as the opening value, meaning
+    /// the queue loaded showing "everything except טופלו" with NO pill lit —
+    /// a state the filter bar had no way to name, on a list whose rows had
+    /// just stopped naming it either. The lecturer queue has never had that
+    /// state: its own <c>_activeTab</c> opens on "decision" and is always one
+    /// of the three. This is the same rule, and it opens on the same lane —
+    /// the one the mentor actually owns.</para>
+    ///
+    /// <para>Nothing about the lanes, the counts or the ordering changed; the
+    /// list simply opens filtered instead of opening unfiltered.</para>
+    /// </summary>
+    private MentorLane _laneFilter = MentorLane.AwaitingMentor;
     private string?              _typeFilter;
     private int?                 _expandedId;
     private bool                 _typeOpen;
@@ -396,11 +456,11 @@
 
         _expandedId = id;
 
-        // הכל hides "טופלו", so a closed request reached from a notification
-        // has to bring its own tab with it or the deep link selects a row the
-        // queue is not showing.
-        if (LaneOf(row.Status) == MentorLane.Closed)
-            _laneFilter = MentorLane.Closed;
+        // The queue shows exactly ONE lane now, so a deep link has to bring its
+        // own or it selects a row the list is not drawing. It already did this
+        // for טופלו, which the old unfiltered opening state hid; every lane
+        // needs it once the opening state is a lane of its own.
+        _laneFilter = LaneOf(row.Status);
     }
 
     private async Task LoadAsync()
@@ -410,12 +470,25 @@
 
         var rowsTask      = RequestsService.GetAllAsync();
         var attentionTask = Attention.GetAsync();
-        await Task.WhenAll(rowsTask, attentionTask);
+        var typesTask     = RequestTypesService.GetActiveAsync();
+        await Task.WhenAll(rowsTask, attentionTask, typesTask);
 
         var rows = await rowsTask;
         if (rows is null) { _loadError = true; _loading = false; return; }
 
         _attention = await attentionTask;
+
+        // The admin-managed display names, exactly as the lecturer queue loads
+        // them. GET /api/request-types/active is open to any authenticated user
+        // — it is the same call the student's NewRequestModal picker makes — so
+        // this adds a read the mentor already had, and no write, no state and
+        // no permission.
+        var types = await typesTask;
+        _typeNames = types is null
+            ? new()
+            : types.Where(t => !string.IsNullOrWhiteSpace(t.Code))
+                   .GroupBy(t => t.Code)
+                   .ToDictionary(g => g.Key, g => g.First().Name);
 
         // Newest activity first, the ordering the legacy inbox used.
         _all = rows.OrderByDescending(r => r.UpdatedAt).ToList();
@@ -439,11 +512,13 @@
     // ── Filters ─────────────────────────────────────────────────────────
 
     /// <summary>Changing a filter drops the selection — never auto-selects the
-    /// first row. The queue always opens with nothing chosen. An unparseable
-    /// key (the reset button passes "") clears the lane filter.</summary>
+    /// first row. An unparseable key falls back to the opening lane rather than
+    /// to "no lane", so the bar can never end up with every pill dark again.
+    /// (MFilterTabs only ever emits one of its own keys; this is the guard, not
+    /// a path anything takes.)</summary>
     private void SelectLane(string key)
     {
-        _laneFilter = Enum.TryParse<MentorLane>(key, out var l) ? l : null;
+        _laneFilter = Enum.TryParse<MentorLane>(key, out var l) ? l : MentorLane.AwaitingMentor;
         _expandedId = null;
     }
 
@@ -463,14 +538,18 @@
         _expandedId = null;
     }
 
-    /// <summary>No lane selected leaves every pill inactive, which is the הכל
-    /// state — there is no "הכל" pill to light up.</summary>
-    private string ActiveTabKey => _laneFilter?.ToString() ?? "";
+    /// <summary>Always one of the three, so exactly one pill is lit at all
+    /// times — the same contract the lecturer queue's ActiveKey has.</summary>
+    private string ActiveTabKey => _laneFilter.ToString();
 
     /// <summary>
-    /// ממתינות להמלצתך · בטיפול · טופלו — the three lanes.
-    /// AwaitingMentor and InFlight carry live counts that respect the current
-    /// type filter, matching the student requests screen's badge behaviour.
+    /// להמלצתך · ממתין לאחרים · טופלו — the three lanes, worded from the
+    /// mentor's side (see LaneLabel).
+    ///
+    /// <para>AwaitingMentor and InFlight carry live counts that respect the
+    /// current type filter, matching the student and lecturer queues. טופלו
+    /// carries none, also matching them: a count of everything ever finished is
+    /// not a workload.</para>
     /// </summary>
     private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
     {
@@ -508,10 +587,44 @@
         _                                  => MentorLane.InFlight,
     };
 
+    /// <summary>
+    /// What the mentor is being asked for, per lane. Each label answers one
+    /// question — "what is expected from me now?" — because with the state
+    /// phrase off the rows, the pill is the only thing left that explains why
+    /// these requests are in front of the reader.
+    ///
+    /// <para><b>"בטיפול" became "ממתין לאחרים", and the mapping is what earns
+    /// the rename.</b> The old word was ambiguous in the worst direction: it
+    /// reads as "someone is working on it" and, on the mentor's own queue,
+    /// most naturally as "being handled BY YOU" — which is the one thing it
+    /// never meant. LaneOf folds MentorRequestBuckets.WithLecturer and
+    /// AwaitingTeam into it, i.e. every status except PendingMentorRecommendation
+    /// (its own lane) and Resolved / Closed (the last one). The mentor holds
+    /// none of them: the server gives a mentor exactly one decision endpoint,
+    /// <c>POST /api/project-requests/{id}/mentor-recommendation</c>, which is
+    /// Mentor-only AND gated on PendingMentorRecommendation, so every request
+    /// in this lane is literally waiting on the academic side or on the team.
+    /// "ממתין לאחרים" is a restatement of that, not a new claim.</para>
+    ///
+    /// <para><b>"להמלצתך" is kept over the more generic "דורש ממך פעולה".</b>
+    /// The lane is one status wide and the action it wants has a name — a
+    /// recommendation — so the specific word answers the question better than
+    /// the general one, and it is the word the endpoint, the status label
+    /// ("ממתינה להמלצת מנחה") and the lecturer's own "בטיפול מנחה" tab already
+    /// use for the same moment.</para>
+    ///
+    /// <para>Which of the two OTHERS is holding a request — the lecturer or
+    /// the team — is no longer on the row; MentorRequestBuckets.RowLabel still
+    /// says it exactly, on the opened record's status badge. That is the one
+    /// thing this lane's fold costs, and the record is where it is read.</para>
+    ///
+    /// <para>No bucket, no count, no query and no status moved. This is the
+    /// word on the pill.</para>
+    /// </summary>
     private static string LaneLabel(MentorLane l) => l switch
     {
         MentorLane.AwaitingMentor => "להמלצתך",
-        MentorLane.InFlight       => "בטיפול",
+        MentorLane.InFlight       => "ממתין לאחרים",
         _                         => "טופלו",
     };
 
@@ -519,7 +632,7 @@
     /// VALUE, so it still says what it filters once a type is picked — and "הכל"
     /// is a real value rather than a blank.</summary>
     private string TypeButtonValue =>
-        _typeFilter is null ? "הכל" : RequestTypes.Label(_typeFilter);
+        _typeFilter is null ? "הכל" : TypeLabel(_typeFilter);
 
     private string TypeButtonClass =>
         _typeFilter is null ? "rqw-type-btn" : "rqw-type-btn rqw-type-btn-active";
@@ -559,9 +672,7 @@
         _all.Where(r => _typeFilter is null || r.RequestType == _typeFilter);
 
     /// <summary>
-    /// The queue, flat. The reference's own rule survives the change of layout:
-    /// הכל shows everything EXCEPT history, and any other tab shows exactly its
-    /// one bucket.
+    /// The queue, flat: exactly the selected lane, narrowed by the type filter.
     ///
     /// <para>Ordered by bucket first, because MentorRequestBuckets.Ordered is
     /// descending urgency for a mentor — so the requests the mentor actually
@@ -571,29 +682,10 @@
     /// </summary>
     private List<ProjectRequestRowDto> VisibleItems =>
         Narrowed
-            .Where(r => _laneFilter is null
-                        ? LaneOf(r.Status) != MentorLane.Closed
-                        : LaneOf(r.Status) == _laneFilter)
+            .Where(r => LaneOf(r.Status) == _laneFilter)
             .OrderBy(r => BucketRank(MentorRequestBuckets.Of(r.Status)))
             .ThenByDescending(r => r.UpdatedAt)
             .ToList();
-
-    /// <summary>
-    /// The bucket, as metadata on the row, for the one lane where it is not
-    /// obvious: "בטיפול" folds two buckets together, so the row says whether it
-    /// is the lecturer or the team who is holding it. Null everywhere else —
-    /// ממתינות להמלצתך and טופלו are already one bucket each, and repeating the
-    /// lane's own name on every row would be noise.
-    ///
-    /// <para>The words are MentorRequestBuckets.RowLabel's, not new ones: the
-    /// product already says "בבדיקת מרצה" and "ממתין לצוות" for these two
-    /// states elsewhere, and a third vocabulary for the same fact is exactly
-    /// what the shared labels exist to prevent.</para>
-    /// </summary>
-    private static string? HoldingLabel(ProjectRequestRowDto r) =>
-        LaneOf(r.Status) == MentorLane.InFlight
-            ? MentorRequestBuckets.RowLabel(MentorRequestBuckets.Of(r.Status))
-            : null;
 
     /// <summary>Position in MentorRequestBuckets.Ordered — descending urgency
     /// for a mentor. A lookup rather than a second switch, so the sort follows
@@ -608,61 +700,49 @@
 
     // ── Presentation ────────────────────────────────────────────────────
 
-    /// <summary>"מגיש · צוות · פרויקט" — the reference's second line, with the
-    /// project kept because a mentor's queue spans several.
-    ///
-    /// <para>The type left this line when it gained its own chip at the top of
-    /// the row: printing it in both places is the same fact twice in 24px.
-    /// </para></summary>
-    private static string RowSub(ProjectRequestRowDto r) =>
-        string.Join(" · ", new[]
-        {
-            r.CreatedByName,
-            r.TeamName,
-            r.ProjectTitle,
-        }.Where(s => !string.IsNullOrWhiteSpace(s)));
-
     /// <summary>
-    /// The reference's end-of-row time cell: a request waiting on the mentor
-    /// reports how long it has waited, everything else reports when it last
-    /// moved.
+    /// The row's whole identity: "צוות · פרויקט".
     ///
-    /// <para>The waiting phrase is looked up in the attention snapshot rather
-    /// than computed here. This page used to derive it from CreatedAt with its
-    /// own <c>&gt;= 3</c> comparison — the last of the four scattered
-    /// thresholds — and could therefore word or escalate the same request
-    /// differently from בית, המשימות שלי and the daily digest.</para>
+    /// <para>The lecturer queue's TeamIdentity with the project kept beside the
+    /// team rather than used only as its fallback, and that difference is the
+    /// audience's, not a design divergence: a lecturer reads one cohort, where
+    /// the team name identifies a row on its own, while a mentor's queue spans
+    /// several projects at once and "צוות 3" in two of them is two different
+    /// teams. Both roles draw it as one muted line under the title, in the same
+    /// class, so the rows stay the same object.</para>
+    ///
+    /// <para>CreatedByName was the first item here and is deliberately gone —
+    /// see the row's own note. Nothing is computed: both values arrive on the
+    /// row DTO the queue already loaded.</para>
     /// </summary>
-    private string TimeLabel(ProjectRequestRowDto r) =>
-        AttentionFor(r)?.WaitingLabel is { Length: > 0 } waiting
-            ? waiting
-            : $"עדכון אחרון · {r.UpdatedAt.IsraelFormat("dd.MM")}";
-
-    /// <summary>Rose only at NEEDS ATTENTION, and only for requests the mentor
-    /// is actually holding. Same condition MRow's Rose tone carried before the
-    /// row stopped being an MRow — the threshold still lives in the shared
-    /// attention snapshot, not here.</summary>
-    private string TimeClass(ProjectRequestRowDto r) =>
-        AttentionFor(r)?.Age == MentorAttentionAge.NeedsAttention
-            ? "mrq-row-time-rose"
-            : "";
-
     /// <summary>
-    /// The reference's leading dot, in its four roles: rose for a request that
-    /// has waited too long, violet for one waiting on you, blue for one in
-    /// flight elsewhere, and teal/grey for a resolved/closed one.
+    /// The request type's display name — the lecturer queue's TypeLabel,
+    /// verbatim.
     ///
-    /// <para>Not MStatusDot: that primitive is closed to violet / teal / rose,
-    /// and this screen needs the final design's blue and its inert grey. The
-    /// element is an 8px circle either way.</para>
+    /// <para>This page printed <c>RequestTypes.Label</c> directly, which is the
+    /// Shared constant list. Request types are ADMIN-MANAGED, so a type created
+    /// in /management/request-types has no constant and that call returns its
+    /// raw code: the same request showed a real Hebrew name on the lecturer's
+    /// queue and something like "ExtensionB" on the mentor's. Two words for one
+    /// tag on two screens of one feature.</para>
+    ///
+    /// <para>Presentation only. The dictionary decides how a code is SPELLED;
+    /// it never decides which requests exist, which bucket they fall in, or
+    /// what may be done to them.</para>
     /// </summary>
-    private string DotClass(ProjectRequestRowDto r) => MentorRequestBuckets.Of(r.Status) switch
+    private string TypeLabel(string code) =>
+        _typeNames.TryGetValue(code, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : RequestTypes.Label(code);
+
+    private static string RowIdentity(ProjectRequestRowDto r)
     {
-        MentorRequestBucket.AwaitingMentor =>
-            AttentionFor(r)?.Age == MentorAttentionAge.NeedsAttention ? "mrq-dot-rose" : "mrq-dot-violet",
-        MentorRequestBucket.WithLecturer or MentorRequestBucket.AwaitingTeam => "mrq-dot-blue",
-        _ => r.Status == RequestStatuses.Resolved ? "mrq-dot-teal" : "mrq-dot-grey",
-    };
+        var parts = new[] { r.TeamName, r.ProjectTitle }
+            .Where(v => !string.IsNullOrWhiteSpace(v));
+
+        var line = string.Join(" · ", parts);
+        return line.Length > 0 ? line : "—";
+    }
 
     /// <summary>
     /// The record header's status badge, in the shared workspace's colour roles
