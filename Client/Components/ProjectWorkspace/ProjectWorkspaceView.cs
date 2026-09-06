@@ -90,12 +90,23 @@ public enum PwContext
 /// naming a stage it has not got to. <paramref name="IsStaff"/> stays a fact
 /// about the reader and is used only where no capability applies: the
 /// non-extension statuses academic staff answer through their own flows.</para>
+///
+/// <para><paramref name="IsProjectMentor"/> is the server's ProjectMentors
+/// answer for THIS request's project — not "holds the Mentor role", so a mentor
+/// of some other project is false here. It exists because the two capability
+/// flags above are Extension-only by construction: ExtensionWorkflow.Resolve
+/// returns (false, false) for every requestType that is not an Extension, which
+/// left a plain mentor reading the third-person "ממתינה להמלצת מנחה" about a
+/// non-extension request that was waiting on nobody but them. Defaulted so the
+/// lecturer workspace's construction is unchanged; see AwaitsThisMentor for the
+/// single, staff-excluded rule it feeds.</para>
 /// </summary>
 public readonly record struct PwRequestViewer(
     bool IsStaff,
     bool CanRecommend,
     bool CanDecide,
-    bool MentorStageComplete);
+    bool MentorStageComplete,
+    bool IsProjectMentor = false);
 
 /// <summary>
 /// Request status wording, resolved from WHAT THIS VIEWER MAY ACTUALLY DO.
@@ -121,6 +132,39 @@ public readonly record struct PwRequestViewer(
 /// </summary>
 public static class PwRequestVocabulary
 {
+    /// <summary>
+    /// THE ONE MENTOR-ONLY RULE. True when the reader is the plain (non-staff)
+    /// assigned mentor of this project and the request's status says the mentor
+    /// stage is what everyone is waiting for.
+    ///
+    /// <para><b>Why it is needed.</b> ExtensionWorkflow.Resolve short-circuits
+    /// to <c>(CanRecommend: false, CanDecide: false)</c> for every requestType
+    /// that is not an Extension. A plain mentor also has IsStaff false, so all
+    /// three arms of <see cref="OwnedByViewer"/> were dead for them and a
+    /// non-extension request sitting at PendingMentorRecommendation — waiting on
+    /// that very reader — was worded in the third person, "ממתינה להמלצת מנחה",
+    /// carried PwTone.Waiting instead of Attention, and ranked as context.</para>
+    ///
+    /// <para><b>Why it is safe.</b> Three conjuncts, each doing real work.
+    /// <c>!IsStaff</c> makes the rule structurally inert for every Admin/Staff
+    /// reader, so no lecturer result can move. <c>IsProjectMentor</c> is the
+    /// server's ProjectMentors row, so a mentor looking at a request awaiting a
+    /// DIFFERENT project's mentor stays false — ownership is never inferred from
+    /// the status alone. And pinning the status to PendingMentorRecommendation
+    /// keeps every other status, terminal ones included, exactly where it
+    /// was.</para>
+    ///
+    /// <para><b>Why Extension behaviour cannot change.</b> For an Extension at
+    /// this status the assigned mentor already has CanRecommend true, and every
+    /// consumer below tests the capability flags FIRST — so this rule is only
+    /// ever reached where the flags are false, and returns the same answer the
+    /// capability would have given.</para>
+    /// </summary>
+    private static bool AwaitsThisMentor(string status, PwRequestViewer viewer) =>
+        !viewer.IsStaff
+        && viewer.IsProjectMentor
+        && status is RequestStatuses.PendingMentorRecommendation;
+
     public static string StatusLabel(string status, PwRequestViewer viewer) => status switch
     {
         // New requests show no state badge — the action label already
@@ -133,6 +177,9 @@ public static class PwRequestVocabulary
         RequestStatuses.PendingMentorRecommendation =>
             viewer.CanDecide      ? "ממתינה להחלטתך"
             : viewer.CanRecommend ? "ממתינה להמלצתך"
+            // Same second person, same words: this reader IS the mentor the
+            // third-person arm below would otherwise be describing to them.
+            : AwaitsThisMentor(status, viewer) ? "ממתינה להמלצתך"
             :                       "ממתינה להמלצת מנחה",
 
         // Owner: academic staff — but ONLY once the request actually reached
@@ -165,7 +212,10 @@ public static class PwRequestVocabulary
         || viewer.CanRecommend
         || (viewer.IsStaff && status is RequestStatuses.WaitingForStaff
                                      or RequestStatuses.New
-                                     or RequestStatuses.InProgress);
+                                     or RequestStatuses.InProgress)
+        // The plain mentor this request is actually waiting on. Staff-excluded,
+        // so nothing an Admin/Staff reader sees can move — see AwaitsThisMentor.
+        || AwaitsThisMentor(status, viewer);
 
     /// <summary>
     /// The row's call to action, or null when the next move is not this
@@ -190,8 +240,18 @@ public static class PwRequestVocabulary
         : status is RequestStatuses.New ? "ממתינה לתגובתך"
         : viewer.CanDecide             ? "להחלטה"
         : viewer.CanRecommend          ? "להמלצה"
+        // OWNED, BUT DELIBERATELY BUTTONLESS. This mentor is who the request
+        // waits on, yet no endpoint would take a decision from them here:
+        // /mentor-recommendation answers "המלצת מנחה תקפה רק לבקשות דחייה" for
+        // anything that is not an Extension, and /handle is [Authorize(Admin,
+        // Staff)]. Offering "להמלצה" or "להחלטה" would be exactly the promise
+        // this class exists to prevent, so the row carries the second-person
+        // STATE and no action; it stays clickable, and the thread it opens has
+        // the reply that genuinely is available.
+        : AwaitsThisMentor(status, viewer) ? null
         // Staff-owned non-extension statuses: they owe a reply through their
-        // own flow, and the wording they have always had is kept.
+        // own flow, and the wording they have always had is kept. Reachable
+        // only with IsStaff true, since the arm above claims the other case.
         :                                "להחלטה";
 
     /// <summary>Row tone from the same predicate, in the shared vocabulary:

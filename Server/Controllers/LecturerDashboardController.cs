@@ -45,10 +45,28 @@ public class LecturerDashboardController : ControllerBase
         bool restrictToMentor = effectiveScope == "mentor";
 
         // ── Resolve current academic year ──────────────────────────────────
+        // The intent is "the cycle flagged IsCurrent, and the newest cycle when
+        // nothing is flagged". The compound form this replaces did not express
+        // it: in SQLite an ORDER BY / LIMIT at the end of a UNION applies to the
+        // WHOLE compound result, not to its last arm — so
+        //
+        //     SELECT Id FROM AcademicYears WHERE IsCurrent = 1
+        //     UNION ALL
+        //     SELECT Id FROM AcademicYears ORDER BY Id DESC LIMIT 1
+        //
+        // sorted both arms together and returned MAX(Id) unconditionally,
+        // silently scoping the whole dashboard to the newest cycle even when an
+        // older one is the current one. Verified against this schema: with years
+        // (1 current, 2, 5) it returns 5.
+        //
+        // It is latent rather than active on the local database, which holds one
+        // academic year — so this changes no count today. It becomes a wrong
+        // course population the moment a second cycle is opened while the
+        // current one is still running, which is a scope bug of exactly the kind
+        // this pass was asked to look for.
         const string yearSql = @"
-            SELECT Id FROM AcademicYears WHERE IsCurrent = 1
-            UNION ALL
-            SELECT Id FROM AcademicYears ORDER BY Id DESC
+            SELECT Id FROM AcademicYears
+            ORDER BY IsCurrent DESC, Id DESC
             LIMIT 1";
         var currentYearId = (await _db.GetRecordsAsync<int>(yearSql))?.FirstOrDefault() ?? 0;
 

@@ -44,7 +44,7 @@ fi
 # full relationship graph, not just existence.
 PRESERVED_EMAILS=(
     "noa.qa@motiva.local"
-    "avi.mentor.qa@motiva.local"
+    "mentor.qa@motiva.local"
     "admin.qa@motiva.local"
 )
 

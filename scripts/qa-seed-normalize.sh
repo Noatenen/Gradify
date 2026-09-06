@@ -15,7 +15,7 @@
 #   PRESERVE PROJECT ASSIGNMENT  Projects.TeamId pointing at that team
 #
 #   noa.qa@motiva.local    account YES   team YES   assignment YES
-#   avi.mentor.qa@motiva.local  account YES   team n/a   assignment n/a   (Mentor)
+#   mentor.qa@motiva.local  account YES   team n/a   assignment n/a   (Mentor)
 #   admin.qa@motiva.local  account YES   team n/a   assignment n/a   (Admin)
 #
 # Preserving the account while dropping the team leaves a user trapped between
@@ -81,7 +81,7 @@ echo ""
 echo "[1/5] Verifying preserved accounts…"
 STUDENT_EMAIL="noa.qa@motiva.local"
 missing=0
-for email in "$STUDENT_EMAIL" "avi.mentor.qa@motiva.local" "admin.qa@motiva.local"; do
+for email in "$STUDENT_EMAIL" "mentor.qa@motiva.local" "admin.qa@motiva.local"; do
     id=$(q "SELECT Id FROM Users WHERE Email='$email';")
     if [ -z "$id" ]; then
         echo "      MISSING: $email — restore it from a backup before continuing." >&2

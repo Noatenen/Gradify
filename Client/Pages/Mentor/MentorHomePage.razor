@@ -1,3 +1,101 @@
+@*
+    ── בית — Mentor Home ────────────────────────────────────────────────────
+    Data source: IMentorWorkspaceService.LoadAsync() — one snapshot carrying
+                 GET /api/mentor/attention, the mentor's projects, the open
+                 requests on them and the mentor's own personal tasks.
+                 IMentorWorkspaceService.BuildCalendarAsync for the dates.
+
+    ── THE LECTURER DASHBOARD, MINUS LECTURER RESPONSIBILITIES ──────────────
+    This screen and /dashboard/lecturer are ONE dashboard drawn twice. They
+    share their composition, their card language, their row rhythm, their
+    empty states, their fill behaviour and their breakpoints, and they share
+    them literally: every one of those lives in css/motiva-dashboard.css and
+    neither page owns a copy. What differs is WHICH ITEMS each card selects.
+
+        WIDE (1.75fr)   דורש פעולה · הצוותים שלי
+        RAIL (1fr)      מועדים קרובים · משימות אישיות
+
+    ── WHAT A MENTOR IS NOT RESPONSIBLE FOR ─────────────────────────────────
+    The lecturer's middle card is תמונת מצב צוותים — every team IN THE COURSE,
+    with a summary line counting the whole cohort and a "בהנחייתי" tag marking
+    the subset that is personally theirs. None of that is meaningful here: a
+    mentor's population IS their own teams, so
+
+      • there is no course-wide count, no "צוותים בקורס", no "ללא מנחה משויך"
+        and no risk aggregate — those are שיבוצים and lecturer questions;
+      • there is no "בהנחייתי" qualifier, because it would be telling the
+        reader something this screen cannot contradict;
+      • there is no mentor name on a row. Every row is this mentor's.
+
+    Nothing decorative replaced them. The card is shorter, which is the honest
+    result of a smaller responsibility.
+
+    ── דורש פעולה IS A SYSTEM WORK QUEUE, NOT A TODO LIST ───────────────────
+    Same card, same lift, same filter tabs, same row density as the lecturer's
+    — different rows. TWO KINDS, and both are ENTITIES whose current workflow
+    state requires this mentor:
+
+      הגשה   MentorAttentionKind.Submission — a TaskSubmission with
+             MentorStatus = 'Pending', waiting on this mentor's review
+      בקשה   MentorAttentionKind.Request — a ProjectRequest with Status =
+             'PendingMentorRecommendation', awaiting their recommendation
+
+    Both come from GET /api/mentor/attention, the product's single source of
+    truth for what is waiting on a mentor. This page adds no status filter, no
+    age computation and no threshold comparison, and it does not re-sort: the
+    server's list is already worst-first and filtering preserves that order.
+    The daily digest reads the very same model. An item leaves the queue when
+    the underlying entity moves; nothing here is marked done.
+
+    ── PERSONAL TASKS ARE NOT IN IT, ON EITHER ROLE ─────────────────────────
+    The attention endpoint DOES return a third kind — the mentor's own
+    reminders that are overdue or due today — and this page deliberately does
+    not render them, which is the one place it narrows what the server sends.
+
+    The rule is a product rule and it is the same for the lecturer:
+
+      דורש פעולה     THE SYSTEM IS WAITING ON YOU. Completion comes from the
+                     WORKFLOW — no checkbox, ever. The row is an anchor into
+                     the thing that owns the entity, and it disappears when
+                     that entity's own state moves.
+      משימות אישיות   YOU ARE WAITING ON YOURSELF. Completion comes from the
+                     PERSON, through PATCH …/personal-tasks/{id}/toggle.
+
+    Mixing them puts two kinds of completion in one list and makes the queue's
+    count a number about two unrelated things. So משימות אישיות is the ONLY
+    Home surface for a mentor's reminders, and this queue has no "משימות" tab
+    for a kind it cannot contain.
+
+    THE SHARED VISUAL LANGUAGE IS NOT SHARED BUSINESS MEANING. This card and
+    the lecturer's are the same object with the same rule; הצוותים שלי below
+    and the lecturer's תמונת מצב צוותים are deliberately NOT — see its note.
+
+    ── ROWS INSPECT, THEY DO NOT NAVIGATE ───────────────────────────────────
+    The one deliberate behavioural difference from the lecturer's queue, and it
+    is the mentor experience's existing rule rather than a new idea: clicking an
+    entity on a mentor overview opens its shared popup OVER this page, and only
+    the CTA inside that popup changes the URL. So these rows are MRow with
+    OnClick (a <button>) where the lecturer's are MRow with Href (an <a>). The
+    affordance is identical — badge, title, context, an action verb and a
+    chevron — and both render through the same MRow and the same stylesheet.
+
+    ── WHAT THIS PASS REMOVED FROM THIS SCREEN ──────────────────────────────
+    All of it because the lecturer dashboard does not have it and the two are
+    one product:
+
+      the hand-rolled .mh-* card / head / row / accordion system   → M* + mdash-*
+      the two shortcut pills under the greeting                    → the queue's
+                                                                     filter tabs
+                                                                     state the
+                                                                     same counts
+      the per-team attention ACCORDION                             → one row per
+                                                                     item, as the
+                                                                     lecturer has
+      the colour key under the dashboard                           → the rail's
+                                                                     tiles read
+                                                                     the same way
+                                                                     on both roles
+*@
 @page "/dashboard/mentor"
 @layout AppLayout
 @attribute [Authorize(Roles = Roles.Mentor + "," + Roles.Admin + "," + Roles.Staff)]
@@ -11,349 +109,144 @@
 @inject IRoadmapStagesService Roadmap
 @inject NavigationManager Nav
 
-@*
-    ── בית — the mentor's daily cross-project workspace ─────────────────────
-    Visual source:  design/design-system/Motiva Mentor Dashboard.dc.html —
-                    the finished Mentor dashboard, and the file this screen is
-                    now transcribed from. It supersedes Motiva Mentor Home.dc.html
-                    for this route: same four questions, a different composition.
-    Data source:    IMentorWorkspaceService. Everything about "what is waiting
-                    on me" — which items, how long they have waited, how urgent
-                    that is and in what order — comes from
-                    GET /api/mentor/attention. This page does not filter by
-                    status, compute an age or compare against a threshold; the
-                    daily digest reads the very same model, which is what keeps
-                    the morning email and this screen in agreement.
+<div class="mdash-page" dir="rtl">
 
-    THE COMPOSITION IS THE DESIGN'S, THE CONTENT IS THE PRODUCT'S
-    The reference's own order and proportions:
-
-        greeting + workload line          (38px / 15px, baseline-aligned)
-        two shortcut pills
-        ┌ main column                1.75fr ─────┬ בקרוב            1fr ─┐
-        │ ┌ דורש את תשומת לבך — the bright card ┐ │  4 dated entries      │
-        │ └─────────────────────────────────────┘ │  + ליומן המלא          │
-        │ ┌ הצוותים שלי — the quiet card ───────┐ │                       │
-        │ └─────────────────────────────────────┘ │                       │
-        └─────────────────────────────────────────┴───────────────────────┘
-
-    Its people (רונית, צוות אוריון/נובה/אטלס), its counts and its dates are
-    prototype data and none of it is copied. Every row here is a real
-    MentorAttentionItemDto, MentorProjectSummaryDto or MentorCalendarEvent.
-
-    ── FOUR SECTIONS ────────────────────────────────────────────────────────
-    The reference draws three. משימות אישיות is the fourth and it is required
-    on this dashboard, so it is BUILT FROM THE FILE'S OWN PARTS rather than
-    designed: the file's quiet card, the file's quiet head, the file's row,
-    and המשימות שלי's existing 19px round checkbox. Nothing about it is a new
-    visual idea, and it introduces no new endpoint — _ws.PersonalTasks is
-    already in the snapshot this page loads, and the checkbox calls the same
-    IPersonalTasksService.ToggleAsync the tasks screen calls.
-
-    It sits under בקרוב because both are narrow quiet lists, and because that
-    is what brings the side column's height up to the main column beside it.
-
-    ── A COMMAND CENTRE, NOT THREE TABLES ───────────────────────────────────
-    The page answers three questions and is sized to be answered in seconds:
-    what needs me now, how are my teams, what is next. Each list is therefore
-    a SHORTLIST — 4 attention groups, 5 teams, 4 dated entries, 5 tasks — and
-    each row carries the fewest facts that still identify it:
-
-        attention   bar · team / what is waiting · how long · chevron
-        team        dot · name · stage · note
-        בקרוב        when · what it is · whose
-        task        checkbox · title · when it is due
-
-    What each row lost is not lost from the product: the item's milestone is
-    on the screen the row opens, and the team's progress bar is on
-    /mentor/projects/{id}. The counts — the heading badge and the two shortcut
-    pills — still come from the server, so the shortlists never hide a number.
-
-    ── משימות אישיות APPEARS TWICE, AND THAT IS CORRECT ─────────────────────
-    The card lists the mentor's reminders. The attention section may ALSO show
-    a משימות אישיות group — but only for the ones that are actually waiting
-    (overdue, or due today), because that section is "what is blocked on me"
-    and the card is "my list". A task that is simply next appears only on the
-    card; a task that is late appears on both, once as a queue item and once
-    as a line to tick off.
-
-    ── THE THREE-UP HEALTH GRID (מצב הפרויקטים) IS GONE ─────────────────────
-    The reference has no health tiles: it carries health as a per-team dot and
-    note in הצוותים שלי, which is the same fact stated once per team instead of
-    three times in aggregate. The three tiles were also navigation — each
-    opened פרויקטים בהנחייתי filtered to that state via MentorLinks.Projects(state).
-    That helper, those routes and the filter on the projects page are ALL
-    untouched and still work; what is gone is this page's shortcut to them.
-
-    ── THE REFERENCE'S ATTENTION DETAIL IS THE DRAWER, NOT A ROW PER ITEM ───
-    The file draws one row per ITEM. This screen groups them by team and opens
-    the team's real items in a drawer, because MentorAttentionItemDto carries
-    title, project, team, milestone, actor, waiting age and href and nothing
-    else — a row-per-item list padded out to the reference's copy would be
-    exactly the static design content this pass is not allowed to introduce.
-    The navigation contract is unchanged: every row inside the drawer still
-    opens THAT item's own screen, with its id in the URL.
-*@
-
-<div class="mh-page">
-
-    @* ── Title ────────────────────────────────────────────────────────
-       The greeting alone. The reference's title row carries no second
-       line — the workload sentence that used to sit on its baseline is
-       gone, and the two shortcut pills under it state the same counts
-       the sentence did. *@
-    <header class="mh-title-row">
-        <h1 class="mh-greeting">@Greeting</h1>
-    </header>
+    @* The greeting and nothing else — the lecturer header's own rule. The
+       workload sentence and the two shortcut pills that used to sit here
+       stated counts that the queue's filter tabs now carry on the card
+       that owns them. *@
+    <MPageHeader Variant="MPageHeader.HeaderVariant.Hero"
+                 Class="mdash-header"
+                 Title="@_greeting" />
 
     @if (_loading)
     {
-        <div class="mh-state" role="status" aria-live="polite">
-            <span class="mh-spinner" aria-hidden="true"></span>
-            <span>טוענת את סביבת העבודה…</span>
-        </div>
+        <MLoadingState Label="טוענת את סביבת העבודה…" />
     }
     else
     {
-        @* ── Shortcut pills ───────────────────────────────────────────
-           Real counts from the attention model, each opening the queue
-           that owns it. A pill whose count is zero is not rendered. *@
-        @if (Counts.AwaitingRequests > 0 || Counts.PendingSubmissions > 0)
-        {
-            <div class="mh-shortcuts">
-                @if (Counts.AwaitingRequests > 0)
-                {
-                    <a class="mh-shortcut" href="@MentorLinks.Requests">
-                        <span class="mh-shortcut-dot mh-dot-violet" aria-hidden="true"></span>
-                        @(Counts.AwaitingRequests == 1
-                            ? "בקשה אחת ממתינה לך"
-                            : $"{Counts.AwaitingRequests} בקשות ממתינות לך")
-                    </a>
-                }
-                @if (Counts.PendingSubmissions > 0)
-                {
-                    <a class="mh-shortcut" href="@MentorLinks.Reviews">
-                        <span class="mh-shortcut-dot mh-dot-blue" aria-hidden="true"></span>
-                        @(Counts.PendingSubmissions == 1
-                            ? "הגשה אחת לבדיקה"
-                            : $"{Counts.PendingSubmissions} הגשות לבדיקה")
-                    </a>
-                }
-            </div>
-        }
+        <div class="mdash-grid">
 
-        @* ── ROW 1 — דורש את תשומת לבך (1.75fr) · בקרוב (1fr) ────────── *@
-        <div class="mh-row mh-row-1">
+            @* ── The wide column — what needs me, and how my teams are ── *@
+            <div class="mdash-main-col">
 
-            @* ── 1. דורש את תשומת לבך ──────────────────────────────
-               The page's one lifted card, and the only one wearing the
-               reference's three-hue glow. Rows are teams; the items
-               inside open IN PLACE. *@
-            <div class="mh-col">
-                <section class="mh-card mh-card-primary" aria-labelledby="mh-attn-h">
-                    <div class="mh-card-head">
-                        <h2 class="mh-card-title mh-card-title-lg" id="mh-attn-h">דורש את תשומת לבך</h2>
-                        @if (Counts.Total > 0)
-                        {
-                            <span class="mh-count"
-                                  aria-label="@($"{Counts.Total} פריטים דורשים את תשומת לבך")">@Counts.Total</span>
-                        }
-                        <a class="mh-card-link" href="@MentorLinks.Tasks">לכל הפריטים</a>
-                    </div>
+            @* ── 1. דורש פעולה ─────────────────────────────────────
+                 The page's one lifted card, and the one glyph that is not
+                 the brand sweep — both read the shared stylesheet's
+                 .mdash-card-strong / .mdash-head-icon-alert, so the
+                 emphasis is the same emphasis the lecturer's queue has. *@
+            <MCard Padding="MCard.CardPadding.None"
+                   Class="mdash-card-strong mdash-queue-card">
+                <div class="sd-head">
+                    <span class="sd-head-icon mdash-head-icon-alert" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+                            <path d="M12 9v4M12 17h.01"></path>
+                        </svg>
+                    </span>
+                    <h2 class="sd-head-title mdash-queue-title">דורש פעולה</h2>
 
-                    @if (_attention.Count == 0)
+                    @if (WorkQueue.Count > 0)
                     {
-                        <p class="mh-calm">
-                            <strong>הכול תחת שליטה.</strong>
-                            אין הגשות, בקשות או משימות שדורשות את תשומת לבך כרגע.
-                        </p>
-                    }
-                    else
-                    {
-                        <div class="mh-attn-list">
-                            @foreach (var group in _attention)
-                            {
-                                var g    = group;
-                                var open = _openGroup == g.Key;
-
-                                <div class="mh-attn-group">
-                                    <button type="button"
-                                            class="mh-attn-row"
-                                            @onclick="@(() => ToggleGroup(g.Key))"
-                                            aria-expanded="@open"
-                                            aria-controls="@($"mh-g-{g.Key}")"
-                                            aria-label="@($"{g.Name} — {g.Summary}")">
-                                        <MStatusBar Tone="@g.Tone" />
-
-                                        <span class="mh-attn-body">
-                                            <span class="mh-attn-name">@g.Name</span>
-                                            <span class="mh-attn-summary">@g.Summary</span>
-                                        </span>
-
-                                        @* The waiting age. Rose is reserved for a real
-                                           missed deadline; an escalated wait takes the
-                                           brand chip. See GroupTone. *@
-                                        <span class="@AgeChipClass(g.IsOverdue, g.IsEscalated, "mh-attn-time")">@g.Urgency</span>
-
-                                        <span class="@(open ? "mh-chevron mh-chevron-open" : "mh-chevron")" aria-hidden="true">
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                <path d="M15 6l-6 6 6 6"></path>
-                                            </svg>
-                                        </span>
-                                    </button>
-
-                                    @* The group expands IN PLACE, as the reference draws
-                                       it, and so does the item inside it: a row opens its
-                                       own popup OVER this dashboard rather than navigating
-                                       to the screen that owns it. Each popup carries the
-                                       CTA that does the navigating — see OpenAttentionItem. *@
-                                    @if (open)
-                                    {
-                                        <div class="mh-attn-items" id="@($"mh-g-{g.Key}")">
-                                            @foreach (var item in g.Items)
-                                            {
-                                                var it = item;
-                                                <button type="button" class="mh-attn-item"
-                                                        @onclick="@(() => OpenAttentionItem(it))"
-                                                        aria-label="@($"פתיחת {it.Title}")">
-                                                    <MStatusBadge Variant="@MentorAttentionRows.TypeVariant(it)"
-                                                                  Text="@MentorAttentionRows.TypeLabel(it)" />
-                                                    <span class="mh-attn-item-title" title="@it.Title">@it.Title</span>
-                                                    <span class="@AgeChipClass(it.IsOverdue, MentorAttentionRows.IsEscalated(it), "mh-attn-item-time")">
-                                                        @MentorAttentionRows.TimeLabel(it)
-                                                    </span>
-                                                </button>
-                                            }
-                                        </div>
-                                    }
-                                </div>
-                            }
+                        <div class="mdash-head-tabs">
+                            <MFilterTabs Tabs="@FilterTabs"
+                                         ActiveKey="@_filter"
+                                         OnSelect="@(k => _filter = k)"
+                                         AriaLabel="סינון תור העבודה" />
                         </div>
                     }
-                </section>
-            </div>
-
-            @* ── 2. בקרוב ──────────────────────────────────────────
-               A 46px date block per entry, its kind carried as an inset
-               top bar in the calendar's own five hues. *@
-            <section class="mh-card mh-card-quiet" aria-labelledby="mh-up-h">
-                <div class="mh-card-head">
-                    <span class="mh-head-icon motiva-ico-gradient" aria-hidden="true">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
-                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="3" y="4" width="18" height="18" rx="3"></rect>
-                            <path d="M16 2v4M8 2v4M3 10h18"></path>
-                        </svg>
-                    </span>
-                    <h2 class="mh-card-title" id="mh-up-h">בקרוב</h2>
-                    <a class="mh-card-link mh-card-link-sm" href="@MentorLinks.Calendar">ליומן המלא</a>
                 </div>
 
-                @if (_upcomingLoading)
+                @if (WorkQueue.Count == 0)
                 {
-                    <div class="mh-substate">
-                        <span class="mh-spinner-sm" aria-hidden="true"></span>
-                        <span>טוענת אירועים…</span>
-                    </div>
+                    <MEmptyState Title="אין פריטים שממתינים לפעולה שלך."
+                                 Description="הגשות לבדיקה ובקשות שממתינות להמלצתך יופיעו כאן מעצמן. משימות אישיות מנוהלות בכרטיס שלהן." />
                 }
-                else if (_upcoming.Count == 0)
+                else if (VisibleQueue.Count == 0)
                 {
-                    <p class="mh-empty">אין אירועים קרובים ביומן.</p>
+                    <MEmptyState Title="אין פריטים בסינון הזה."
+                                 Description="אפשר לחזור ל״הכל״ כדי לראות את שאר התור." />
                 }
                 else
                 {
-                    <div class="mh-up-list">
-                        @foreach (var e in _upcoming)
+                    <MRowList Class="mdash-queue-list" AriaLabel="פריטים שדורשים את פעולתך">
+                        @foreach (var item in VisibleQueue.Take(QueuePreview))
                         {
-                            var ev = e;
-                            <button type="button" class="mh-up-row"
-                                    @onclick="@(() => OpenEvent(ev))"
-                                    aria-label="@($"פתיחת {ev.Title}")">
-                                <span class="@($"mh-up-tile mh-kind-{MentorEventTypes.CssSuffix(e.Type)}")">
-                                    <span class="mh-up-day">@e.Date.Day.ToString("00")</span>
-                                    <span class="mh-up-month">@MotivaDates.ShortMonth(e.Date)</span>
-                                </span>
-                                <span class="mh-up-body">
-                                    <span class="mh-up-title" title="@e.Title">@e.Title</span>
-                                    <span class="mh-up-meta">@UpcomingRelative(e) · @UpcomingContext(e)</span>
-                                </span>
-                            </button>
-                        }
-                    </div>
-                }
-            </section>
-        </div>
-
-        @* ── ROW 2 — משימות אישיות (1fr) · הצוותים שבהנחייתי (1.75fr) ──
-           The reference's checkerboard: the wide card sits on the
-           reading side in row 1 and on the far side in row 2, so the two
-           rows do not stack into one column of the same width. *@
-        <div class="mh-row mh-row-2">
-
-            @* ── 4. משימות אישיות ──────────────────────────────────
-               The mentor's own reminders, off the snapshot the page has
-               already loaded. The checkbox calls the same
-               IPersonalTasksService.ToggleAsync המשימות שלי calls and
-               flips locally, so ticking one never costs a page load. *@
-            <section class="mh-card mh-card-quiet mh-tasks" aria-labelledby="mh-tasks-h">
-                <div class="mh-card-head">
-                    <span class="mh-head-icon motiva-ico-gradient" aria-hidden="true">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
-                             stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M20 6 9 17l-5-5"></path>
-                        </svg>
-                    </span>
-                    <h2 class="mh-card-title" id="mh-tasks-h">משימות אישיות</h2>
-                    <a class="mh-card-link mh-card-link-sm" href="@MentorLinks.PersonalTasks">לכל המשימות</a>
-                </div>
-
-                @if (_tasks.Count == 0)
-                {
-                    <p class="mh-empty">אין משימות אישיות כרגע.</p>
-                }
-                else
-                {
-                    <div class="mh-task-list">
-                        @foreach (var task in _tasks)
-                        {
-                            var t  = task;
-                            var id = t.Id;
-                            <div class="mh-task-row">
-                                <button type="button"
-                                        class="@(t.IsDone ? "mh-check mh-check-on" : "mh-check")"
-                                        role="checkbox"
-                                        aria-checked="@t.IsDone"
-                                        aria-label="@($"סימון \"{t.Title}\" כהושלמה")"
-                                        disabled="@(_togglingId == id)"
-                                        @onclick="@(() => ToggleTaskAsync(id))">
-                                    @if (t.IsDone)
-                                    {
-                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                             stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                            <path d="M20 6 9 17l-5-5"></path>
+                            var it = item;
+                            <MRow Class="mdash-queue-row"
+                                  Primary="@it.Title"
+                                  Secondary="@it.Context"
+                                  OnClick="@(_ => OpenAttentionItem(it.Source))"
+                                  AriaLabel="@($"{it.TypeLabel}: {it.Title}. {it.Context}. {it.Wait}. {it.ActionLabel}")">
+                                <Leading>
+                                    <MStatusBadge Size="MStatusBadge.BadgeSize.Small"
+                                                  Variant="@it.TypeVariant"
+                                                  Text="@it.TypeLabel" />
+                                </Leading>
+                                <Status>
+                                    @* The waiting age, as a tag — the same
+                                       object, class and position the lecturer's
+                                       queue uses. See the note at its call
+                                       site: state belongs in the row's end
+                                       block, ownership on the context line, and
+                                       a long wait is never rose because neither
+                                       kind here has a deadline to miss. *@
+                                    <span class="motiva-tag mdash-wait-tag">@it.Wait</span>
+                                </Status>
+                                <Trailing>
+                                    <span class="mdash-go">
+                                        @it.ActionLabel
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                             stroke="currentColor" stroke-width="2.3" stroke-linecap="round"
+                                             stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M15 6l-6 6 6 6"></path>
                                         </svg>
-                                    }
-                                </button>
-
-                                <button type="button"
-                                        class="@(t.IsDone ? "mh-task-title mh-task-title-done" : "mh-task-title")"
-                                        @onclick="@(() => OpenTask(t))" title="@t.Title">@t.Title</button>
-
-                                <span class="@TaskDueClass(t)">@TaskDue(t)</span>
-                            </div>
+                                    </span>
+                                </Trailing>
+                            </MRow>
                         }
+                    </MRowList>
+                }
+
+                @* Both destinations exist and neither is the queue itself, so
+                   the foot only appears when the preview is actually hiding
+                   something — the lecturer card's own rule. *@
+                @if (VisibleQueue.Count > QueuePreview)
+                {
+                    <div class="mdash-card-foot">
+                        <a class="mdash-foot-link" href="@MentorLinks.RequestsInbox">
+                            לכל הבקשות
+                            @if (RequestItems.Count > 0)
+                            {
+                                <span class="mdash-foot-n">@RequestItems.Count</span>
+                            }
+                        </a>
+                        <a class="mdash-foot-link" href="@MentorLinks.Reviews">
+                            לכל ההגשות
+                            @if (SubmissionItems.Count > 0)
+                            {
+                                <span class="mdash-foot-n">@SubmissionItems.Count</span>
+                            }
+                        </a>
                     </div>
                 }
-            </section>
+            </MCard>
 
-            @* ── 3. הצוותים שבהנחייתי ──────────────────────────────
-               Every supervised team, worst-first, four deep — see
-               ShortlistTeams for why this no longer excludes the teams
-               that are also in דורש את תשומת לבך. *@
-            <section class="mh-card mh-card-quiet" aria-labelledby="mh-teams-h">
-                <div class="mh-card-head">
-                    <span class="mh-head-icon motiva-ico-gradient" aria-hidden="true">
+            @* ── 2. הצוותים שלי ────────────────────────────────────
+                 EVERY supervised team, worst-first — not only the ones in
+                 trouble. That is the difference from the lecturer's card
+                 and it is the whole reason this one keeps a possessive
+                 title: the lecturer previews EXCEPTIONS out of a cohort
+                 too large to list, while a mentor's caseload is small
+                 enough to be the list.
+
+                 NO SUMMARY LINE. The lecturer's MSummaryTag counts the
+                 course; there is no such population here, and counting
+                 "my teams" beside a list of my teams says nothing. *@
+            <MCard Padding="MCard.CardPadding.None" Class="mdash-teams-card">
+                <div class="sd-head">
+                    <span class="sd-head-icon motiva-ico-gradient" aria-hidden="true">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
                              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
@@ -361,74 +254,197 @@
                             <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"></path>
                         </svg>
                     </span>
-                    <h2 class="mh-card-title" id="mh-teams-h">הצוותים שבהנחייתי</h2>
-                    <a class="mh-card-link" href="@MentorLinks.Projects()">לכל הצוותים</a>
+                    <h2 class="sd-head-title">הצוותים שלי</h2>
+                    <a class="sd-head-link" href="@MentorLinks.Projects()">לכל הצוותים</a>
                 </div>
 
-                @if (_teams.Count == 0)
+                @if (TeamRows.Count == 0)
                 {
-                    <p class="mh-empty">לא משויכים אליך פרויקטים כרגע.</p>
+                    <p class="mdash-teams-calm">
+                        <span class="mdash-teams-calm-dot" aria-hidden="true"></span>
+                        לא משויכים אליך פרויקטים כרגע.
+                    </p>
                 }
                 else
                 {
-                    <div class="mh-team-list">
-                        @foreach (var t in _teams)
+                    <MRowList Class="mdash-team-list" AriaLabel="הצוותים שלי">
+                        @foreach (var t in TeamRows.Take(TeamsPreview))
                         {
-                            var team = TeamRow(t);
-                            <button type="button" class="mh-team-row"
-                                    @onclick="@(() => OpenProject(t.Id))"
-                                    aria-label="@($"פתיחת פרטי {team.Name}")">
-                                <span class="mh-team-id">
-                                    <span class="@($"mh-team-dot mh-tone-{team.Tone}")" role="img"
-                                          aria-label="@team.Label"></span>
-                                    <span class="mh-team-text">
-                                        <span class="mh-team-name" title="@team.Name">@team.Name</span>
-                                        <span class="mh-team-stage">
-                                            אבן דרך נוכחית: <span class="mh-team-stage-val" title="@team.Stage">@team.Stage</span>
-                                        </span>
-                                    </span>
+                            var team = t;
+                            <MRow Class="mdash-team-row"
+                                  Primary="@team.Name"
+                                  Secondary="@team.Context"
+                                  Meta="@team.Reason"
+                                  MetaTone="@team.ReasonTone"
+                                  OnClick="@(_ => OpenProject(team.ProjectId))"
+                                  AriaLabel="@($"פתיחת פרטי {team.Name} — {team.Reason}")">
+                                <Leading>
+                                    @* Decorative: the row's aria-label already
+                                       names the state this dot encodes. *@
+                                    <MStatusDot Tone="@team.Tone" />
+                                </Leading>
+                            </MRow>
+                        }
+                    </MRowList>
+
+                    @if (TeamRows.Count > TeamsPreview)
+                    {
+                        <p class="mdash-teams-more">@MoreTeamsLabel(TeamRows.Count - TeamsPreview)</p>
+                    }
+                }
+            </MCard>
+
+            </div>
+
+            @* ── The rail — what is coming, and what I set myself ── *@
+            <div class="mdash-side-col">
+
+            @* ── 3. מועדים קרובים ──────────────────────────────────
+                 The same tile card the lecturer draws, from the mentor's
+                 OWN dates: BuildCalendarAsync composes them from this
+                 mentor's projects only, so nothing course-wide and nothing
+                 invented can reach it. Same builder /mentor/calendar uses,
+                 so a date reads identically in both places. *@
+            <MCard Padding="MCard.CardPadding.None" Class="mdash-dates-card">
+                <div class="sd-head">
+                    <span class="sd-head-icon motiva-ico-gradient" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                            <path d="M16 2v4M8 2v4M3 10h18"></path>
+                        </svg>
+                    </span>
+                    <h2 class="sd-head-title" id="mdash-dates-h">מועדים קרובים</h2>
+                    <a class="sd-head-link" href="@MentorLinks.Calendar">ליומן המלא</a>
+                </div>
+
+                @if (_upcomingLoading)
+                {
+                    <p class="mdash-dates-empty">
+                        <strong>טוענת מועדים…</strong>
+                        <span>המועדים הקרובים יופיעו כאן בעוד רגע.</span>
+                    </p>
+                }
+                else if (_upcoming.Count == 0)
+                {
+                    <p class="mdash-dates-empty">
+                        <strong>אין מועדים קרובים</strong>
+                        <span>המועד הבא יופיע כאן כשייקבע.</span>
+                    </p>
+                }
+                else
+                {
+                    <div class="mdash-up-list">
+                        @foreach (var e in _upcoming)
+                        {
+                            var ev = e;
+                            <button type="button"
+                                    class="@($"mdash-up-row mdash-kind-{MentorEventTypes.CssSuffix(ev.Type)}")"
+                                    @onclick="@(() => OpenEvent(ev))"
+                                    aria-label="@($"פתיחת {ev.Title}")">
+                                <span class="mdash-up-tile">
+                                    <span class="mdash-up-day">@ev.Date.Day.ToString("00")</span>
+                                    <span class="mdash-up-month">@MotivaDates.ShortMonth(ev.Date)</span>
                                 </span>
-                                <span class="@($"mh-team-note mh-tone-{team.Tone}")" title="@team.Note">@team.Note</span>
+                                <span class="mdash-up-body">
+                                    <span class="mdash-up-title" title="@ev.Title">@ev.Title</span>
+                                    <span class="mdash-up-meta">@UpcomingRelative(ev) · @UpcomingContext(ev)</span>
+                                </span>
                             </button>
                         }
                     </div>
                 }
-            </section>
-        </div>
+            </MCard>
 
-        @* ── The colour key ───────────────────────────────────────────
-           One quiet line under the dashboard, and the only thing on this
-           screen that explains rather than reports.
+            @* ── 4. משימות אישיות ──────────────────────────────────
+                 The lecturer card, unchanged in concept: the mentor's own
+                 reminders, created / edited / completed / deleted through
+                 the same IPersonalTasksService and the same
+                 MentorPersonalTaskModal every other mentor screen uses.
 
-           IT EXISTS FOR בקרוב. Every other colour on the page sits beside
-           the words that mean it — a team's pill says "באיחור 224 ימים"
-           in its own tone, an attention bar sits next to the summary that
-           explains it. The date tiles are the exception: their kind is a
-           2.5px bar and nothing on the row names it.
+                 IT LINKS NOWHERE, deliberately. Home IS the mentor's
+                 personal-task surface now — המשימות שלי has left the nav
+                 exactly as it left the lecturer's, so a "לכל המשימות" link
+                 would point at a destination the product no longer offers. *@
+            <MCard Padding="MCard.CardPadding.None" Class="mdash-tasks-card">
+                <div class="sd-head">
+                    <span class="sd-head-icon motiva-ico-gradient" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 11l3 3L22 4"></path>
+                            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                        </svg>
+                    </span>
+                    <h2 class="sd-head-title">משימות אישיות</h2>
+                    @if (ActiveTasks.Count > 0)
+                    {
+                        <span class="motiva-count mdash-head-count"
+                              aria-label="@($"{ActiveTasks.Count} משימות פתוחות")">@ActiveTasks.Count</span>
+                    }
+                </div>
 
-           So the key lists the CALENDAR's five kinds, and it reads them
-           from MentorEventTypes — the same Ordered list, the same Label
-           and the same CssSuffix the tiles themselves use. Nothing here
-           declares a colour or invents a meaning; a kind renamed or
-           recoloured for the calendar changes here in the same commit. *@
-        <div class="mh-legend" role="group" aria-label="מקרא צבעים ביומן">
-            @foreach (var kind in MentorEventTypes.Ordered)
-            {
-                <span class="mh-legend-item">
-                    <span class="@($"mh-legend-dot mh-kind-{MentorEventTypes.CssSuffix(kind)}")"
-                          aria-hidden="true"></span>@MentorEventTypes.Label(kind)
-                </span>
-            }
+                @if (ActiveTasks.Count == 0)
+                {
+                    <p class="mdash-tasks-calm">
+                        <span class="mdash-tasks-calm-mark" aria-hidden="true">✓</span>
+                        הכול בוצע
+                    </p>
+                }
+                else
+                {
+                    <MRowList Class="mdash-tasks-list" AriaLabel="משימות אישיות">
+                        @foreach (var t in ActiveTasks.Take(TasksPreview))
+                        {
+                            var task = t;
+                            <MRow Class="mdash-task-row"
+                                  Secondary="@DueLabel(task)"
+                                  MetaTone="MRow.RowMetaTone.Default">
+                                <Leading>
+                                    <button type="button"
+                                            class="mdash-check"
+                                            disabled="@(_togglingId == task.Id)"
+                                            @onclick="@(() => ToggleTaskAsync(task))"
+                                            aria-label="@($"סימון \"{task.Title}\" כהושלמה")">
+                                        <span class="mdash-check-box" aria-hidden="true"></span>
+                                    </button>
+                                </Leading>
+                                <PrimaryContent>
+                                    <button type="button" class="mdash-task-title"
+                                            @onclick="@(() => OpenTask(task))"
+                                            title="@task.Title"
+                                            aria-label="@($"עריכת המשימה {task.Title}")">@task.Title</button>
+                                </PrimaryContent>
+                            </MRow>
+                        }
+                    </MRowList>
+
+                    @if (ActiveTasks.Count > TasksPreview)
+                    {
+                        <p class="mdash-tasks-more">@MoreTasksLabel(ActiveTasks.Count - TasksPreview)</p>
+                    }
+                }
+
+                <div class="mdash-card-foot">
+                    <button type="button" class="mdash-add" @onclick="OpenNewTask">
+                        <span class="mdash-add-glyph" aria-hidden="true">+</span>
+                        <span>משימה</span>
+                    </button>
+                </div>
+            </MCard>
+
+            </div>
+
         </div>
     }
 </div>
 
 @*  ── Inspection popups, all opened OVER this dashboard ────────────────────
-    The rule this screen now follows: clicking an entity on an overview
-    INSPECTS it here; only the CTA inside the popup navigates. None of these
-    is a page-local implementation — the Quick View is the same panel
-    פרויקטים בהנחייתי opens, the request modal is the same one המשימות שלי
-    opens, and the task editor is the same one יומן ותכנון opens. *@
+    The mentor rule this screen follows: clicking an entity on an overview
+    INSPECTS it here; only the CTA inside the popup navigates. None of these is
+    a page-local implementation — the Quick View is the same panel
+    פרויקטים בהנחייתי opens, the request modal is the same one the mentor
+    request queue opens, and the task editor is the same one יומן ותכנון and
+    the lecturer dashboard open. *@
 <MentorProjectQuickView Card="@_openProject"
                         Focus="@_openProjectFocus"
                         OnClose="CloseProject" />
@@ -438,58 +454,62 @@
                     OnClose="@(() => _openRequestId = null)"
                     OnChanged="ReloadAsync" />
 
-<MentorPersonalTaskModal IsOpen="@(_openTask is not null)"
+<MentorPersonalTaskModal IsOpen="@(_creatingTask || _openTask is not null)"
                          EditingTask="@_openTask"
                          Projects="@_ws.Projects"
-                         OnClose="@(() => _openTask = null)"
+                         OnClose="CloseTaskEditor"
                          OnSaved="@(_ => TaskChangedAsync())"
                          OnDeleted="@(_ => TaskChangedAsync())" />
 
 @code {
     [CascadingParameter] private User? _user { get; set; }
 
+    // ── Preview depths ───────────────────────────────────────────────────────
+    // The lecturer dashboard's caps, and for its reasons: they are measured
+    // against the same grid, the same row metrics and the same viewport bands,
+    // which are all in css/motiva-dashboard.css. The one that differs is the
+    // team preview — see TeamsPreview.
+    private const int QueuePreview    = 4;
+    private const int UpcomingPreview = 3;
+    private const int TasksPreview    = 4;
+
+    /// <summary>How many teams the middle card lists. FOUR, where the
+    /// lecturer's card shows three.
+    ///
+    /// <para>Not a style difference: the lecturer previews the EXCEPTIONS out
+    /// of a cohort that a card could never hold, so a fourth row buys almost
+    /// nothing and the CTA is the real answer. A mentor's list is their entire
+    /// caseload, so each extra row is a larger share of the whole — four is
+    /// what the card's own height holds at the base density, and the "ועוד N"
+    /// line states the remainder honestly.</para></summary>
+    private const int TeamsPreview = 4;
+
     private MentorWorkspace _ws = MentorWorkspace.Empty;
     private bool _loading = true;
 
-    /// <summary>Everything waiting on this mentor, GROUPED BY TEAM and left
-    /// in the server's own worst-first order. See BuildAttentionTeams.</summary>
-    private IReadOnlyList<MentorAttentionTeam> _attention = Array.Empty<MentorAttentionTeam>();
+    private List<MentorCalendarEvent> _upcoming = new();
 
-    /// <summary>The supervised teams that are NOT in the section above — see
-    /// QuietTeams.</summary>
-    private List<MentorProjectSummaryDto> _teams    = new();
-    private List<MentorCalendarEvent>     _upcoming = new();
+    /// <summary>מועדים קרובים fills in after the rest of the screen — see
+    /// LoadUpcomingAsync.</summary>
+    private bool _upcomingLoading = true;
 
-    /// <summary>משימות אישיות — the mentor's own reminders, open ones first.
-    /// Straight off the snapshot the page already loaded; the card issues no
-    /// request of its own.</summary>
-    private List<PersonalTaskDto> _tasks = new();
-
-    /// <summary>The task whose checkbox is mid-flight, so it cannot be clicked
-    /// twice. Same guard המשימות שלי uses.</summary>
+    /// <summary>The task whose checkbox is mid-flight, so it cannot be pressed
+    /// twice while the PATCH is on the wire.</summary>
     private int? _togglingId;
 
-    /// <summary>The key of the expanded attention group, or null. The
-    /// reference opens a group IN PLACE under its own row rather than in a
-    /// dialog, and only one at a time — clicking a second closes the first,
-    /// which is what keeps the card's height from running away.</summary>
-    private string? _openGroup;
-
-    /// <summary>בקרוב fills in after the rest of the screen. See LoadUpcomingAsync.</summary>
-    private bool _upcomingLoading = true;
+    /// <summary>The queue's lens: "" for everything, "submissions",
+    /// "requests". Presentational only — it hides rows the card already holds
+    /// and touches no feed, filter or count.</summary>
+    private string _filter = "";
 
     // ── Inspection state ────────────────────────────────────────────────
     //
     // WHY THESE ARE FIELDS AND NOT ROUTES. Every one of them used to be an
-    // href: a team row went to /mentor/projects/{id}, a submission to that
-    // route with ?submissionId=, a request to /mentor-requests?requestId= and
-    // a personal task to /mentor/tasks?editTask=. Each of those navigations
-    // then opened a popup on ARRIVAL, so one click cost the mentor the screen
-    // they were reading in order to show them a panel that could just as well
-    // have opened here. Clicking an entity on an overview is INSPECTION, and
-    // inspection does not move you. The destinations are all still reachable —
-    // each popup carries the CTA that goes there, and that CTA is now the only
-    // thing on this screen that changes the URL.
+    // href, and each of those navigations then opened a popup on ARRIVAL — one
+    // click cost the mentor the screen they were reading in order to show a
+    // panel that could just as well have opened here. The destinations are all
+    // still reachable: each popup carries the CTA that goes there, and that CTA
+    // is the only thing on this screen that changes the URL.
 
     /// <summary>The project whose Quick View is open, or null.</summary>
     private MentorProjectCard? _openProject;
@@ -503,14 +523,16 @@
     private int?             _openRequestId;
     private PersonalTaskDto? _openTask;
 
+    /// <summary>True while the shared editor is open on a NEW reminder — the
+    /// same field cannot express "creating" and "editing nothing", so this
+    /// does. Same contract as the lecturer dashboard's.</summary>
+    private bool _creatingTask;
+
     /// <summary>Roadmap progress per project, for the Quick View's stage line.
-    ///
-    /// <para>Loaded in the BACKGROUND, exactly like בקרוב and for the same
-    /// reason: this dashboard paints from one fast snapshot, and holding it
-    /// behind a second round-trip to fill in one line of a panel that is not
-    /// open yet would be paying for it on every visit. Absent, the card falls
-    /// back to the project summary's own milestone — the same degradation
-    /// פרויקטים בהנחייתי takes when a cycle has no stages configured.</para></summary>
+    /// Loaded in the BACKGROUND, like the dates and for the same reason: this
+    /// dashboard paints from one fast snapshot, and holding it behind a second
+    /// round-trip to fill one line of a panel that is not open yet would be
+    /// paying for it on every visit.</summary>
     private IReadOnlyDictionary<int, ProjectRoadmapProgressDto> _roadmap =
         new Dictionary<int, ProjectRoadmapProgressDto>();
 
@@ -522,28 +544,29 @@
             ? _ws.AwaitingMe.FirstOrDefault(r => r.EntityId == id)?.WaitingLabel
             : null;
 
-    /// <summary>
-    /// How many rows each list shows — a SHORTLIST, not a window onto the
-    /// whole queue.
-    ///
-    /// <para>The attention cap counts TEAMS now, not items, which is why four
-    /// is generous rather than tight: four teams can carry a dozen items
-    /// between them and the drawer reaches every one. The list arrives
-    /// worst-first from the server and the grouping preserves that order, so
-    /// the top four teams ARE the four that matter; "לכל הפריטים" is the way
-    /// to the rest. Nothing is lost, only deferred one click.</para>
-    ///
-    /// <para>בקרוב shows four, which is what the dashboard reference draws and
-    /// what the rail's own height beside a two-card column will hold.</para></summary>
-    private const int AttentionRows = 4;
-    private const int TeamRows      = 4;
-    private const int TaskRows      = 4;
-    private const int UpcomingRows  = 3;
+    // ── Time / greeting ──────────────────────────────────────────────────────
 
-    /// <summary>Server-computed counts. The workload sentence, the shortcut
-    /// pills and the section badge all read these rather than counting a list,
-    /// so they cannot disagree with each other or with the daily digest.</summary>
-    private MentorAttentionCountsDto Counts => _ws.Attention.Counts;
+    private string _greeting
+    {
+        get
+        {
+            var name = _user?.FirstName?.Trim();
+            var hour = DateTime.Now.Hour;
+
+            // Written as conditionals rather than as a `switch { < 12 => … }`
+            // relational pattern on purpose: inside a .razor @code block the
+            // Razor parser reads a leading `<` as the start of a tag and the
+            // whole code block stops compiling.
+            var part = hour < 12 ? "בוקר טוב"
+                     : hour < 17 ? "צהריים טובים"
+                     : hour < 21 ? "ערב טוב"
+                     :             "לילה טוב";
+
+            return string.IsNullOrEmpty(name) ? part : $"{part}, {name}";
+        }
+    }
+
+    // ── Data loading ─────────────────────────────────────────────────────────
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -551,25 +574,45 @@
     {
         _loading = true;
         _ws = await Workspace.LoadAsync();
-
-        // Already filtered, aged and ordered worst-first by the server. No
-        // .Where on status and no .OrderBy on a timestamp — grouping preserves
-        // that order rather than replacing it.
-        _attention = BuildAttentionTeams(_ws.Attention.Items).Take(AttentionRows).ToList();
-        _teams     = ShortlistTeams();
-        _tasks     = ShortlistTasks(_ws.PersonalTasks);
-        _openGroup = null;
-
         _loading = false;
 
         // NOT awaited, and deliberately so. BuildCalendarAsync issues one
         // GetProjectDetailAsync per project on top of the snapshot — it is what
         // makes /mentor/calendar take the better part of ten seconds on a full
-        // caseload. Awaiting it here would hold the ENTIRE screen behind the
-        // one block that needs it, so Home paints from the single fast snapshot
-        // and בקרוב fills itself in a moment later.
+        // caseload. Awaiting it here would hold the ENTIRE screen behind the one
+        // card that needs it, so Home paints from the single fast snapshot and
+        // מועדים קרובים fills itself in a moment later.
         _ = LoadUpcomingAsync();
         _ = LoadRoadmapAsync();
+    }
+
+    /// <summary>The mentor's own dates, from the same builder /mentor/calendar
+    /// renders. Floored at today: an undated entry cannot be "coming up", and a
+    /// past one is not either.</summary>
+    private async Task LoadUpcomingAsync()
+    {
+        try
+        {
+            var today  = DateTime.Today;
+            var events = await Workspace.BuildCalendarAsync(_ws);
+
+            _upcoming = events
+                .Where(e => e.Date.Date >= today)
+                .OrderBy(e => e.Date)
+                .Take(UpcomingPreview)
+                .ToList();
+        }
+        catch
+        {
+            // A failed calendar build empties one card; it must not take the
+            // screen down with it. The empty state says so honestly.
+            _upcoming = new();
+        }
+        finally
+        {
+            _upcomingLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     /// <summary>Roadmap progress, off the critical path. Same contract as
@@ -589,6 +632,324 @@
         {
             _roadmap = new Dictionary<int, ProjectRoadmapProgressDto>();
         }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 1. דורש פעולה — the mentor's system work queue ───────────────────────
+
+    /// <summary>One queue row. Every field is DERIVED from the entity's current
+    /// state on each render — there is no stored work item, so there is nothing
+    /// to keep in sync and nothing to mark done. <c>Source</c> is the attention
+    /// item itself, because the row INSPECTS rather than navigates and the
+    /// popups need the item, not a URL.</summary>
+    /// <summary>One row of the queue.
+    ///
+    /// <para><c>Context</c> is OWNERSHIP — team, milestone — and <c>Wait</c> is
+    /// STATE. Two fields because they render in two places: the context line
+    /// under the title, and a tag in the row's end block. Neither repeats the
+    /// other, which is the whole reason the wait left the sentence.</para>
+    /// </summary>
+    private sealed record WorkItem(
+        MentorAttentionKind       Kind,
+        string                    TypeLabel,
+        MStatusBadge.BadgeVariant TypeVariant,
+        string                    Title,
+        string                    Context,
+        string                    Wait,
+        string                    ActionLabel,
+        MentorAttentionItemDto    Source);
+
+    /// <summary>Submissions waiting on this mentor's review.</summary>
+    private IReadOnlyList<MentorAttentionItemDto> SubmissionItems => _ws.Reviews;
+
+    /// <summary>Requests awaiting this mentor's recommendation.</summary>
+    private IReadOnlyList<MentorAttentionItemDto> RequestItems => _ws.AwaitingMe;
+
+    /// <summary>
+    /// The two feeds as one queue, IN THE SERVER'S OWN ORDER.
+    ///
+    /// <para>No .Where on status, no .OrderBy on a timestamp and no threshold
+    /// comparison: GET /api/mentor/attention already returns worst-first
+    /// (NeedsAttention → Waiting → New, oldest first inside each) and filtering
+    /// preserves that order. That is what keeps this screen, the mentor request
+    /// queue and the daily digest agreeing about which item is most
+    /// pressing.</para>
+    ///
+    /// <para><b>The one thing this narrows is KIND.</b> The endpoint also
+    /// returns the mentor's own reminders that are overdue or due today, and
+    /// they are dropped here because a note you wrote yourself is not the
+    /// system waiting on you — see the header note. They are not lost: משימות
+    /// אישיות is the card that owns them, and it reads the full
+    /// <c>PersonalTasks</c> list rather than this filtered one.</para>
+    ///
+    /// <para>So this count is <c>PendingSubmissions + AwaitingRequests</c>, and
+    /// deliberately NOT <c>Counts.Total</c> — that figure includes the personal
+    /// kind this card cannot contain.</para></summary>
+    private IReadOnlyList<WorkItem> WorkQueue =>
+        _ws.Attention.Items
+            .Where(i => i.Kind is MentorAttentionKind.Submission or MentorAttentionKind.Request)
+            .Select(i => new WorkItem(
+                Kind:        i.Kind,
+                // The lecturer queue's short words, not MentorAttentionRows'
+                // longer "הגשה לבדיקה": the badge names the KIND and the
+                // trailing verb says what is done about it, so repeating
+                // "לבדיקה" in both would be the same word twice on one row.
+                TypeLabel:   i.Kind == MentorAttentionKind.Submission ? "הגשה" : "בקשה",
+                TypeVariant: MentorAttentionRows.TypeVariant(i),
+                Title:       i.Title,
+                Context:     QueueContext(i),
+                // The compact form, for the tag — not i.WaitingLabel, which is
+                // the server's full sentence ("ממתינה לבדיקה כבר 5 ימים") and
+                // is right for the digest and the detail panel. Same helper the
+                // lecturer's queue calls, so a wait reads identically on both.
+                Wait:        MentorAging.ShortLabel(i.WaitingDays),
+                // A mentor RECOMMENDS on a request; only a lecturer decides
+                // one. The verb is the difference between the two queues, and
+                // it is the mentor's own vocabulary — MentorProjectSignals
+                // words the same state "בקשה ממתינה להמלצתך".
+                ActionLabel: i.Kind == MentorAttentionKind.Submission ? "לבדיקה" : "להמלצה",
+                Source:      i))
+            .ToList();
+
+    private IReadOnlyList<WorkItem> VisibleQueue => _filter switch
+    {
+        "requests"    => WorkQueue.Where(i => i.Kind == MentorAttentionKind.Request).ToList(),
+        "submissions" => WorkQueue.Where(i => i.Kind == MentorAttentionKind.Submission).ToList(),
+        _             => WorkQueue,
+    };
+
+    /// <summary>The lens, carrying each kind's size. A zero renders no bubble,
+    /// which is MFilterTabs' own rule. THREE TABS, matching the lecturer's
+    /// exactly: there is no "משימות" tab, because a filter for a kind this card
+    /// cannot contain is a promise it cannot keep.</summary>
+    private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
+    {
+        new MFilterTabs.Tab("",            "הכל",   WorkQueue.Count),
+        new MFilterTabs.Tab("requests",    "בקשות", RequestItems.Count),
+        new MFilterTabs.Tab("submissions", "הגשות", SubmissionItems.Count),
+    };
+
+    /// <summary>
+    /// The row's context line: WHOSE the item is, and where in the programme.
+    ///
+    /// <para><b>THE WAIT IS NO LONGER IN THIS SENTENCE.</b> It sat between the
+    /// team and the milestone as the server's full phrase — "צוות ברוש ·
+    /// ממתינה לתגובתך כבר 22 ימים · אפיון" — which put the row's most scannable
+    /// fact in its least scannable position and made ownership and state read
+    /// as one run-on line. It is a tag in the row's end block now
+    /// (<c>WorkItem.Wait</c>), and it appears in exactly one of the two
+    /// places.</para>
+    ///
+    /// <para>Only Submission and Request reach this — WorkQueue drops the
+    /// personal kind before building a row — so <c>Team</c> always has a real
+    /// project behind it.</para></summary>
+    private static string QueueContext(MentorAttentionItemDto i)
+    {
+        var stage = string.IsNullOrWhiteSpace(i.MilestoneTitle) ? null : i.MilestoneTitle;
+        return Join(MentorAttentionRows.Team(i), stage);
+    }
+
+    // ── 2. הצוותים שלי ───────────────────────────────────────────────────────
+
+    private sealed record TeamItem(
+        int ProjectId, string Name, string Context, string Reason,
+        MStatusDot.DotTone Tone, MRow.RowMetaTone ReasonTone);
+
+    /// <summary>
+    /// Every supervised team, worst-first.
+    ///
+    /// <para>Order is the shared signal priority then the nearest deadline —
+    /// the same ordering פרויקטים בהנחייתי uses, so the top of this list is the
+    /// top of that screen. It does NOT exclude the teams that also appear in
+    /// דורש פעולה: the two cards answer different questions (what is blocked on
+    /// me, versus how are my teams) and the same team legitimately appears in
+    /// both answers.</para></summary>
+    private IReadOnlyList<TeamItem> TeamRows =>
+        _ws.Projects
+           .OrderBy(p => MentorProjectSignals.Priority(SignalOf(p)))
+           .ThenBy(p => p.CurrentMilestoneDueDate ?? DateTime.MaxValue)
+           .Select(BuildTeamItem)
+           .ToList();
+
+    /// <summary>
+    /// The project's signal, from the three real columns.
+    ///
+    /// <para><b>Why this is not Projects.HealthStatus.</b> That column is never
+    /// written by this application, so in practice every project comes back
+    /// OnTrack and the row would draw a calm dot beside a milestone that is
+    /// visibly overdue. The state is read off real columns instead, through the
+    /// shared <see cref="MentorProjectSignal"/> — the same vocabulary
+    /// פרויקטים בהנחייתי filters and colours its rows with.</para></summary>
+    private MentorProjectSignal SignalOf(MentorProjectSummaryDto p) =>
+        MentorProjectSignals.Of(
+            milestoneOverdue: MentorTime.IsOverdue(p.CurrentMilestoneDueDate),
+            pendingReviews:   p.PendingMentorReview,
+            openRequests:     _ws.OpenRequestsFor(p.Id));
+
+    /// <summary>
+    /// One team row: the team, its current stage and deadline, and what it
+    /// needs next.
+    ///
+    /// <para><b>NO MENTOR NAME.</b> The lecturer's equivalent row ends its
+    /// context with "מנחה: …" because that card spans the whole course and the
+    /// reader genuinely does not know whose team it is. Every row here is this
+    /// mentor's, so the line carries the project, the milestone and its date
+    /// instead — three facts the reader cannot derive.</para>
+    ///
+    /// <para><b>OVERDUE TASKS OUTRANK THE SIGNAL.</b> A team carrying work past
+    /// its due date is the strongest thing this row can say, and it is the one
+    /// state on this card that earns rose — the same rule the lecturer's team
+    /// rows follow. Everything else takes MentorProjectSignals.Note, the
+    /// product's single wording for "what does this project need from me
+    /// next".</para></summary>
+    private TeamItem BuildTeamItem(MentorProjectSummaryDto p)
+    {
+        var signal  = SignalOf(p);
+        bool overdue = p.OverdueTasks > 0;
+
+        // Correct Hebrew number agreement: never "1 משימות באיחור".
+        string reason = overdue
+            ? (p.OverdueTasks == 1 ? "משימה אחת באיחור" : $"{p.OverdueTasks} משימות באיחור")
+            : MentorProjectSignals.Note(
+                  signal, p.CurrentMilestoneDueDate,
+                  p.PendingMentorReview, _ws.OpenRequestList(p.Id));
+
+        var context = new List<string>();
+        if (!string.IsNullOrWhiteSpace(p.Title))                  context.Add(p.Title);
+        if (!string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle))  context.Add(p.CurrentMilestoneTitle!);
+        if (p.CurrentMilestoneDueDate is { } due)                 context.Add($"יעד {due:dd.MM}");
+
+        return new TeamItem(
+            ProjectId:  p.Id,
+            Name:       string.IsNullOrWhiteSpace(p.TeamName) ? p.Title : p.TeamName,
+            Context:    string.Join(" · ", context),
+            Reason:     reason,
+            Tone:       overdue ? MStatusDot.DotTone.Rose : MentorProjectSignals.Tone(signal),
+            ReasonTone: overdue ? MRow.RowMetaTone.Rose   : MRow.RowMetaTone.Default);
+    }
+
+    // ── 3. מועדים קרובים ─────────────────────────────────────────────────────
+
+    /// <summary>The team the entry belongs to. A mentor's own reminder has
+    /// none, and says so rather than printing a blank line.</summary>
+    private static string UpcomingContext(MentorCalendarEvent e)
+    {
+        if (!string.IsNullOrWhiteSpace(e.TeamName))     return e.TeamName;
+        if (!string.IsNullOrWhiteSpace(e.ProjectTitle)) return e.ProjectTitle;
+        return "תזכורת אישית";
+    }
+
+    /// <summary>
+    /// How far off it is, in words — "היום", "מחר", "בעוד 5 ימים".
+    ///
+    /// <para>The hour rides along when there IS one.
+    /// <c>MentorCalendarEvent.HasTime</c> is true for exactly one thing — a
+    /// mentor personal task whose owner filled in שעת התחלה — so a real slot is
+    /// never dropped and one is never invented.</para></summary>
+    private static string UpcomingRelative(MentorCalendarEvent e)
+    {
+        var days = (e.Date.Date - DateTime.Today).Days;
+
+        var when = days switch
+        {
+            0 => "היום",
+            1 => "מחר",
+            2 => "בעוד יומיים",
+            _ => $"בעוד {days} ימים",
+        };
+
+        return e.HasTime ? $"{when} · {e.Date:HH:mm}" : when;
+    }
+
+    // ── 4. משימות אישיות ─────────────────────────────────────────────────────
+
+    /// <summary>ACTIVE reminders, soonest first. <c>IsDone</c> is the existing
+    /// completion flag and a ticked reminder is finished work, so it simply
+    /// leaves this list. The order is the lecturer card's: by due date
+    /// ascending with undated tasks last, which is what
+    /// <c>DateTime.MaxValue</c> buys.</summary>
+    private IReadOnlyList<PersonalTaskDto> ActiveTasks =>
+        _ws.PersonalTasks
+            .Where(t => !t.IsDone)
+            .OrderBy(t => t.DueDate ?? DateTime.MaxValue)
+            .ThenByDescending(t => t.CreatedAt)
+            .ToList();
+
+    /// <summary>A reminder's one line: when it is due, and the project it
+    /// belongs to when it has one. "באיחור" is allowed HERE and nowhere else on
+    /// this page — a reminder is the only thing on Home carrying a date its
+    /// owner chose, so it is the only thing that can be late.</summary>
+    private static string DueLabel(PersonalTaskDto t)
+    {
+        var where = OneOf(t.TeamName, t.ProjectTitle);
+        if (t.DueDate is not { } due) return Join("ללא תאריך יעד", where);
+
+        int days = (DateTime.Today - due.Date).Days;
+        var when = days switch
+        {
+            > 1 => $"באיחור {days} ימים",
+            1   => "באיחור יום",
+            0   => "היום",
+            -1  => "מחר",
+            _   => $"עד {due:dd.MM}",
+        };
+        return Join(when, where);
+    }
+
+    // ── Create, complete, edit ───────────────────────────────────────────────
+    //
+    // ALL FOUR OPERATIONS ARE THE EXISTING ONES. IPersonalTasksService and
+    // MentorPersonalTaskModal are what /mentor/tasks, /mentor/calendar and the
+    // lecturer dashboard already use; this page adds no model, no endpoint, no
+    // table and no second editor.
+
+    private void OpenNewTask()
+    {
+        _openTask     = null;
+        _creatingTask = true;
+    }
+
+    /// <summary>The shared personal-task editor.</summary>
+    private void OpenTask(PersonalTaskDto? task)
+    {
+        _creatingTask = false;
+        _openTask     = task;
+    }
+
+    private void CloseTaskEditor()
+    {
+        _openTask     = null;
+        _creatingTask = false;
+    }
+
+    /// <summary>A save or a delete closes the editor and re-reads the snapshot,
+    /// so the queue, the team notes and the task list all move together rather
+    /// than one of them going stale.</summary>
+    private async Task TaskChangedAsync()
+    {
+        CloseTaskEditor();
+        await ReloadAsync();
+    }
+
+    /// <summary>
+    /// Complete one reminder, against the endpoint every other screen calls.
+    ///
+    /// <para>PATCH …/personal-tasks/{id}/toggle, whose UPDATE carries
+    /// <c>AND UserId = @@UserId</c> so ownership is structural rather than a
+    /// check this page could get wrong. The flag is flipped locally afterwards
+    /// rather than refetching the snapshot to learn one bit; the row then fails
+    /// the <c>!IsDone</c> filter and leaves the card on the next
+    /// render.</para></summary>
+    private async Task ToggleTaskAsync(PersonalTaskDto task)
+    {
+        if (_togglingId is not null) return;
+
+        _togglingId = task.Id;
+        var ok = await PersonalTasks.ToggleAsync(task.Id);
+        _togglingId = null;
+
+        if (ok) task.IsDone = !task.IsDone;
     }
 
     // ── Opening an entity, in place ─────────────────────────────────────
@@ -617,26 +978,26 @@
     }
 
     /// <summary>
-    /// One attention row, opened in the popup that owns its kind.
+    /// One queue row, opened in the popup that owns its kind.
     ///
-    /// <para>A request opens the request modal and a personal task opens its
-    /// editor — both the shared components, both already the in-place behaviour
-    /// on המשימות שלי. A submission opens the project's Quick View FOCUSED on
-    /// it: the mentor sees which submission is waiting and how long it has
-    /// waited without leaving the dashboard, and the panel's primary CTA is
-    /// that submission's own review screen. There is no shared review popup to
-    /// mount here — the review drawer belongs to מרחב הפרויקט — and inventing a
-    /// second one is exactly the duplication this pass is avoiding.</para></summary>
+    /// <para>A request opens the shared request modal. A submission opens the
+    /// project's Quick View FOCUSED on it: the mentor sees which submission is
+    /// waiting and how long it has waited without leaving the dashboard, and
+    /// the panel's primary CTA is that submission's own review screen. There is
+    /// no shared review popup to mount here — the review drawer belongs to
+    /// מרחב הפרויקט — and inventing a second one is exactly the duplication
+    /// this pass removes.</para>
+    ///
+    /// <para>NO PERSONAL-TASK CASE, because no personal task can reach this:
+    /// WorkQueue is the only caller and it renders two kinds. Reminders are
+    /// opened from משימות אישיות, which calls <see cref="OpenTask"/>
+    /// directly.</para></summary>
     private void OpenAttentionItem(MentorAttentionItemDto item)
     {
         switch (item.Kind)
         {
             case MentorAttentionKind.Request:
                 _openRequestId = item.EntityId;
-                break;
-
-            case MentorAttentionKind.PersonalTask:
-                OpenTask(_ws.PersonalTasks.FirstOrDefault(t => t.Id == item.EntityId));
                 break;
 
             default:
@@ -646,32 +1007,25 @@
         }
     }
 
-    /// <summary>
-    /// One בקרוב row, opened in place like everything else on this screen.
-    ///
-    /// <para>The three kinds this list carries used to be three different
-    /// navigations: a personal task or a meeting went to /mentor/tasks?editTask=
-    /// and opened its editor there, a review went to the project route with
-    /// ?submissionId= and opened the drawer there, and a milestone or a dated
-    /// deliverable went to the project workspace. Two of the three were the
-    /// navigate-then-popup pattern; all three now open the panel here and offer
-    /// the same destination as a CTA.</para></summary>
+    /// <summary>One מועדים קרובים row, opened in place like everything else on
+    /// this screen. A milestone or a dated deliverable is not an entity a
+    /// mentor opens — it is a date ON a project, so the project is what the
+    /// panel shows.</summary>
     private void OpenEvent(MentorCalendarEvent e)
     {
         switch (e.Type)
         {
             case MentorEventType.PersonalTask:
             case MentorEventType.Meeting:
-                OpenTask(_ws.PersonalTasks.FirstOrDefault(t => t.Id == e.EntityId));
+                var task = _ws.PersonalTasks.FirstOrDefault(t => t.Id == e.EntityId);
+                if (task is null) Nav.NavigateTo(MentorLinks.Calendar);
+                else              OpenTask(task);
                 break;
 
             case MentorEventType.Review when e.ProjectId is int reviewPid:
                 OpenProject(reviewPid, _ws.Reviews.FirstOrDefault(r => r.EntityId == e.EntityId));
                 break;
 
-            // A milestone or a dated deliverable is not an entity a mentor
-            // opens — it is a date ON a project, so the project is what the
-            // panel shows.
             default:
                 if (e.ProjectId is int pid) OpenProject(pid);
                 else                        Nav.NavigateTo(e.Href ?? MentorLinks.Calendar);
@@ -679,537 +1033,31 @@
         }
     }
 
-    /// <summary>The shared personal-task editor. Null — a task the snapshot no
-    /// longer carries — falls back to המשימות שלי rather than opening the
-    /// editor on nothing.</summary>
-    private void OpenTask(PersonalTaskDto? task)
-    {
-        if (task is null) Nav.NavigateTo(MentorLinks.PersonalTasks);
-        else              _openTask = task;
-    }
-
-    /// <summary>A save or a delete closes the editor and re-reads the snapshot,
-    /// so the attention count, the group summaries and the task list all move
-    /// together rather than one of them going stale.</summary>
-    private async Task TaskChangedAsync()
-    {
-        _openTask = null;
-        await ReloadAsync();
-    }
-
-    /// <summary>בקרוב, from the same builder /mentor/calendar renders — so a
-    /// meeting reads identically in both places. Filtered to what is still
-    /// ahead: an undated entry cannot be "coming up", and a past one is not
-    /// either.</summary>
-    private async Task LoadUpcomingAsync()
-    {
-        try
-        {
-            var today = DateTime.Today;
-            var events = await Workspace.BuildCalendarAsync(_ws);
-
-            _upcoming = events
-                .Where(e => e.Date.Date >= today)
-                .OrderBy(e => e.Date)
-                .Take(UpcomingRows)
-                .ToList();
-        }
-        catch
-        {
-            // A failed calendar build empties one card; it must not take the
-            // screen down with it. The empty state below says so honestly.
-            _upcoming = new();
-        }
-        finally
-        {
-            _upcomingLoading = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    // ── Copy ────────────────────────────────────────────────────────────
-
-    private string Greeting
-    {
-        get
-        {
-            var name = _user?.FirstName?.Trim();
-            var hour = DateTime.Now.Hour;
-
-            // Written as conditionals rather than as a `switch { < 12 => … }`
-            // relational pattern on purpose: inside a .razor @code block the
-            // Razor parser reads a leading `<` as the start of a tag and the
-            // whole code block stops compiling.
-            var part = hour < 12 ? "בוקר טוב"
-                     : hour < 17 ? "צהריים טובים"
-                     : hour < 21 ? "ערב טוב"
-                     :             "לילה טוב";
-
-            return string.IsNullOrEmpty(name) ? part : $"{part}, {name}";
-        }
-    }
-
-    // TodayLine — the "5 צוותים בליווי · 3 פריטים ממתינים" sentence that used
-    // to sit on the greeting's baseline — is gone with the reference's own
-    // title row, which now carries the greeting and nothing else. Both of its
-    // numbers survive on the screen: the workload is the two shortcut pills
-    // and the attention card's count, and the team count is the length of
-    // הצוותים שבהנחייתי.
-
-    // ── דורש את תשומת לבך ───────────────────────────────────────────────
-    //
-    // ONE ROW PER TEAM, not one row per item, and that is the whole point of
-    // this pass. A mentor's decision on this screen is "which team do I open
-    // now" — three rows for one team is that decision asked three times, and
-    // it also meant a single noisy team could fill the shortlist and hide
-    // every other team that was waiting.
-    //
-    // The row states four things, in the lecturer home's own order: a colour
-    // bar for how serious it is, the team, a "·"-joined summary of WHAT is
-    // waiting, and how long the worst of it has waited. The items themselves
-    // are one click away in the drawer.
+    // ── Copy ─────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Everything one team is waiting on, as a single row.
+    /// HEBREW COUNTS ONE THING DIFFERENTLY FROM MANY, and these two lines are
+    /// the ones a preview cap can force to "1".
     ///
-    /// <para><paramref name="Items"/> keeps the server's worst-first order, so
-    /// the drawer lists them in the same order the queue would.</para></summary>
-    private sealed record MentorAttentionTeam(
-        int? ProjectId,
-        /// <summary>Stable id for the accordion. The project id, or "personal"
-        /// for the mentor's own group — which is why this is a string: that
-        /// group genuinely has no project.</summary>
-        string Key,
-        string Name,
-        string Context,
-        string Summary,
-        string Urgency,
-        bool IsEscalated,
-        /// <summary>True when the group's worst item has missed a REAL due
-        /// date — the only condition on this card that earns rose.</summary>
-        bool IsOverdue,
-        MStatusBar.BarTone Tone,
-        IReadOnlyList<MentorAttentionItemDto> Items);
+    /// <para>"1 משימות נוספות" and "ועוד 1 צוותים" are the same error the
+    /// overdue badge is not allowed to make — a numeral in front of a plural
+    /// noun. Hebrew puts the number after the singular noun instead
+    /// ("משימה אחת"), and for "one more" it drops the numeral entirely. The
+    /// count is only ever ≥ 1 here: both call sites are guarded by
+    /// <c>Count &gt; Preview</c>.</para></summary>
+    private static string MoreTasksLabel(int n) =>
+        n == 1 ? "+ משימה אחת נוספת" : $"+ {n} משימות נוספות";
 
-    /// <summary>
-    /// Groups the attention list by project, WITHOUT re-sorting it.
-    ///
-    /// <para>Group order is first-appearance order in the server's list, which
-    /// is already worst-first — so the team holding the single most pressing
-    /// item is the first row, exactly as it was when rows were items. Nothing
-    /// here computes an age, a threshold or a priority.</para>
-    ///
-    /// <para>Items with no project (the mentor's own reminders) are a real
-    /// group of their own rather than being dropped: they are things waiting on
-    /// this mentor, they simply have no team. They sort by the same rule as
-    /// every other group.</para></summary>
-    private static List<MentorAttentionTeam> BuildAttentionTeams(
-        IReadOnlyList<MentorAttentionItemDto> items)
-    {
-        // A list of buckets rather than a Dictionary, because the key is int?
-        // and the personal group's key is genuinely null — which a Dictionary
-        // will not accept. The scan is over a handful of projects.
-        var buckets = new List<(int? Id, List<MentorAttentionItemDto> Items)>();
+    private static string MoreTeamsLabel(int n) =>
+        n == 1 ? "ועוד צוות אחד" : $"ועוד {n} צוותים";
 
-        foreach (var i in items)
-        {
-            var slot = buckets.FindIndex(b => b.Id == i.ProjectId);
-            if (slot < 0)
-            {
-                buckets.Add((i.ProjectId, new List<MentorAttentionItemDto> { i }));
-                continue;
-            }
-            buckets[slot].Items.Add(i);
-        }
+    private static string OneOf(string? first, string? second) =>
+        !string.IsNullOrWhiteSpace(first)    ? first!.Trim()
+        : !string.IsNullOrWhiteSpace(second) ? second!.Trim()
+        : "";
 
-        return buckets.Select(b =>
-        {
-            var worst = b.Items[0];   // the list is worst-first, so the head IS the worst
-
-            return new MentorAttentionTeam(
-                ProjectId:    b.Id,
-                Key:          b.Id?.ToString() ?? "personal",
-                // NOT "המשימות שלי" — that is the name of a nav item, and a row
-                // that borrows it reads as a link to that screen.
-                Name:         b.Id is null ? "משימות אישיות" : MentorAttentionRows.Team(worst),
-                Context:      GroupContext(b.Id, b.Items),
-                Summary:      GroupSummary(b.Items),
-                Urgency:      MentorAttentionRows.TimeLabel(worst),
-                IsEscalated:  MentorAttentionRows.IsEscalated(worst),
-                IsOverdue:    worst.IsOverdue,
-                Tone:         GroupTone(b.Items),
-                Items:        b.Items);
-        }).ToList();
-    }
-
-    /// <summary>
-    /// The row's summary — "בקשה ממתינה · משימה באיחור · הגשה לבדיקה".
-    ///
-    /// <para>One phrase per KIND present, counted, in the order those kinds
-    /// first appear in the group's own worst-first list. So the phrase a mentor
-    /// reads first is the phrase for the item the server considered most
-    /// pressing, and the sentence cannot re-order itself between renders.</para>
-    ///
-    /// <para>A personal task is the one kind that may read as באיחור, because it
-    /// is the one kind with a deadline. A submission or a request has a waiting
-    /// age and no deadline to be late for — the same rule
-    /// <see cref="MentorAttentionRows.TimeLabel"/> enforces.</para></summary>
-    private static string GroupSummary(IReadOnlyList<MentorAttentionItemDto> items)
-    {
-        var phrases = new List<string>(3);
-
-        foreach (var kind in items.Select(i => i.Kind).Distinct())
-        {
-            var of = items.Where(i => i.Kind == kind).ToList();
-            var n  = of.Count;
-
-            phrases.Add(kind switch
-            {
-                MentorAttentionKind.Submission => n == 1 ? "הגשה לבדיקה"  : $"{n} הגשות לבדיקה",
-                MentorAttentionKind.Request    => n == 1 ? "בקשה ממתינה"  : $"{n} בקשות ממתינות",
-
-                // Overdue is stated only when it is true of at least one of
-                // them; a task that is merely due is not late.
-                MentorAttentionKind.PersonalTask when of.Any(i => i.IsOverdue)
-                                               => n == 1 ? "משימה באיחור" : $"{n} משימות באיחור",
-                MentorAttentionKind.PersonalTask
-                                               => n == 1 ? "משימה לביצוע" : $"{n} משימות לביצוע",
-                _                              => n == 1 ? "פריט ממתין"   : $"{n} פריטים ממתינים",
-            });
-        }
-
-        return string.Join(" · ", phrases);
-    }
-
-    /// <summary>The drawer's sub-title: the project behind the team name, plus
-    /// the milestone when every waiting item sits under the same one. Two
-    /// different milestones and it says nothing rather than picking one.</summary>
-    private static string GroupContext(int? projectId, IReadOnlyList<MentorAttentionItemDto> items)
-    {
-        if (projectId is null) return "פריטים אישיים — ללא שיוך לצוות";
-
-        var parts = new List<string>(2);
-
-        var project = items.Select(i => i.ProjectTitle).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
-        if (!string.IsNullOrWhiteSpace(project)) parts.Add(project!);
-
-        var stages = items.Select(i => i.MilestoneTitle)
-                          .Where(m => !string.IsNullOrWhiteSpace(m))
-                          .Distinct()
-                          .ToList();
-        if (stages.Count == 1) parts.Add(stages[0]!);
-
-        return string.Join(" · ", parts);
-    }
-
-    /// <summary>
-    /// The leading colour bar — the row's seriousness at a glance.
-    ///
-    /// <para>Rose the moment ANY item in the group has escalated, because that
-    /// is the fact a mentor is scanning for; blue — the finished palette's
-    /// "in progress / waiting" role — otherwise. Two hues, not a type marker:
-    /// the chips inside the group say what kind each item is. המשימות שלי maps
-    /// the same model onto the same two tones, so one item cannot be rose on
-    /// one screen and violet on the other. This never decides what "escalated"
-    /// means — <c>MentorAttentionAge</c> arrives already set by
-    /// GET /api/mentor/attention.</para></summary>
-    /// <summary>
-    /// <b>ROSE ONLY FOR A REAL DEADLINE.</b> This returned Rose for every group
-    /// holding an escalated item, and IsEscalated is true at the shared
-    /// three-day threshold — so on live data every group carried a red bar and
-    /// the page's alarm colour marked the presence of work rather than a
-    /// problem. A submission waiting on this mentor and a request awaiting
-    /// their recommendation have no deadline to be past; they are waiting, not
-    /// late.
-    ///
-    /// <para>So rose is kept for the one condition that IS a deadline —
-    /// <c>IsOverdue</c>, which the server sets from a real due date — and an
-    /// escalated-but-not-overdue group takes Violet, the brand "needs you"
-    /// tone. Nothing about which items are escalated, how they are grouped or
-    /// how they are ordered moved; MentorAttentionAge still arrives set by
-    /// GET /api/mentor/attention.</para></summary>
-    /// <summary>The waiting-age chip's class, on the page's one ladder:
-    /// neutral while an item is simply waiting, the BRAND chip once it has
-    /// escalated, rose only when a real due date has been missed. The
-    /// thresholds are untouched — IsOverdue and MentorAttentionAge are both
-    /// the server's.</summary>
-    private static string AgeChipClass(bool overdue, bool escalated, string baseClass) =>
-        overdue     ? $"{baseClass} mh-attn-time-late"
-        : escalated ? $"{baseClass} mh-attn-time-due"
-        :             baseClass;
-
-    private static MStatusBar.BarTone GroupTone(IReadOnlyList<MentorAttentionItemDto> items) =>
-        items.Any(i => i.IsOverdue)                    ? MStatusBar.BarTone.Rose
-        : items.Any(MentorAttentionRows.IsEscalated)   ? MStatusBar.BarTone.Violet
-        :                                                MStatusBar.BarTone.Neutral;
-
-    /// <summary>Expand a group, or collapse it if it is already the open one.
-    /// One at a time, as the reference does it.</summary>
-    private void ToggleGroup(string key) => _openGroup = _openGroup == key ? null : key;
-
-
-    // ── הצוותים שלי — the quiet half ────────────────────────────────────
-
-    /// <summary>
-    /// Every supervised team, worst-first, four deep.
-    ///
-    /// <para><b>It no longer excludes the teams that are also in דורש את תשומת
-    /// לבך.</b> The previous pass filtered them out so a team could never be
-    /// named twice on one screen. The reference does not: its own list carries
-    /// צוות Motiva and צוות הספרייה הדיגיטלית while both are sitting in the
-    /// attention card above, and its note pill has a tone for exactly that
-    /// state ("הגשה ממתינה לבדיקה") which no team could ever reach under the
-    /// filter. The two cards are answering different questions — WHAT IS
-    /// BLOCKED ON ME versus HOW ARE MY TEAMS — and the same team legitimately
-    /// appears in both answers.</para>
-    ///
-    /// <para>Order is the shared signal priority, then the nearest deadline —
-    /// the same ordering פרויקטים בהנחייתי uses, so the top of this list is the
-    /// top of that screen.</para></summary>
-    private List<MentorProjectSummaryDto> ShortlistTeams() =>
-        _ws.Projects
-           .OrderBy(p => MentorProjectSignals.Priority(SignalOf(p)))
-           .ThenBy(p => p.CurrentMilestoneDueDate ?? DateTime.MaxValue)
-           .Take(TeamRows)
-           .ToList();
-
-    /// <summary>One team row.
-    ///
-    /// <para><paramref name="Tone"/> is one of the reference's FOUR keys —
-    /// alert · request · wait · ok — not MStatusDot's three. The file gives
-    /// each of them a dot hue, an ink and a pill wash, and "הגשה ממתינה
-    /// לבדיקה" (wait) is a state the three-tone triad has nowhere to put. It
-    /// is a plain string because it names a CSS modifier, and because
-    /// MStatusDot must not gain a fourth member to serve one screen.</para></summary>
-    private sealed record TeamOverviewRow(
-        string Name, string Stage, string Note, string Label, string Tone);
-
-    /// <summary>
-    /// The project's signal, from the three real columns.
-    ///
-    /// <para><b>Why this is not Projects.HealthStatus.</b> That column is never
-    /// written by this application, so in practice every project comes back
-    /// OnTrack and the row would draw a calm dot beside a milestone that is
-    /// visibly overdue. The state is read off real columns instead, through the
-    /// shared <see cref="MentorProjectSignal"/> — the same vocabulary
-    /// פרויקטים בהנחייתי filters and colours its rows with, so one team cannot
-    /// read one way here and another way there.
-    /// <see cref="MentorHealthStates"/> is untouched and still owns the health
-    /// column for the day it starts being written.</para></summary>
-    private MentorProjectSignal SignalOf(MentorProjectSummaryDto p) =>
-        MentorProjectSignals.Of(
-            milestoneOverdue: MentorTime.IsOverdue(p.CurrentMilestoneDueDate),
-            pendingReviews:   p.PendingMentorReview,
-            openRequests:     _ws.OpenRequestsFor(p.Id));
-
-    /// <summary>
-    /// One team row: a dot, the name over its current milestone, and the
-    /// state as a filled pill at the row's end.
-    ///
-    /// <para>The pill IS the reference's treatment here — it moved from the
-    /// bright card to this one when the attention rows stopped carrying
-    /// chips. The dot keeps the state as an accessible name, so the colour is
-    /// never the only carrier of it.</para></summary>
-    private TeamOverviewRow TeamRow(MentorProjectSummaryDto p)
-    {
-        var signal = SignalOf(p);
-
-        return new TeamOverviewRow(
-            Name:   TeamLabel(p),
-            Stage:  string.IsNullOrWhiteSpace(p.CurrentMilestoneTitle)
-                        ? "טרם החל" : p.CurrentMilestoneTitle!,
-            Note:   TeamNote(signal, p),
-            Label:  MentorProjectSignals.Label(signal),
-            Tone:   TeamTone(signal));
-    }
-
-    /// <summary>
-    /// The state pill's text.
-    ///
-    /// <para>MentorProjectSignals.Note stays the single source for every
-    /// signal's wording; a late project just loses its "אבן דרך " prefix here.
-    /// The row already names the milestone one line above — "אבן דרך נוכחית:
-    /// ניתוח" — so the pill repeating the words is the same fact stated twice
-    /// in the space of two lines, and what a reader actually needs from the
-    /// pill is the ONE thing the line above does not say: how late it is.</para>
-    ///
-    /// <para>Local to this screen, like TaskDue: פרויקטים בהנחייתי draws the
-    /// same note WITHOUT a milestone line beside it, so there the prefix is
-    /// still carrying its weight.</para></summary>
-    private string TeamNote(MentorProjectSignal signal, MentorProjectSummaryDto p)
-    {
-        var note = MentorProjectSignals.Note(
-            signal, p.CurrentMilestoneDueDate,
-            p.PendingMentorReview, _ws.OpenRequestList(p.Id));
-
-        return signal == MentorProjectSignal.Late && note.StartsWith("אבן דרך ", StringComparison.Ordinal)
-            ? note["אבן דרך ".Length..]
-            : note;
-    }
-
-    /// <summary>
-    /// The four tones, mapped one-to-one onto the four signals this product
-    /// already computes — so the pill's colour is not a second opinion about
-    /// the team, it is the same signal פרויקטים בהנחייתי filters by.
-    ///
-    /// <para>alert = a missed deadline · wait = a submission queued on the
-    /// mentor · request = someone else may still be holding it · ok = nothing
-    /// waiting.</para></summary>
-    private static string TeamTone(MentorProjectSignal s) => s switch
-    {
-        MentorProjectSignal.Late       => "alert",
-        MentorProjectSignal.Submission => "wait",
-        MentorProjectSignal.Request    => "request",
-        _                              => "ok",
-    };
-
-    /// <summary>What the row is called. The reference names every row with a
-    /// team ("צוות אוריון"), but TeamName is optional in this schema and the
-    /// seed carries projects with none — an unnamed row is unclickable in
-    /// practice, so it falls back to the project's own title.</summary>
-    private static string TeamLabel(MentorProjectSummaryDto p) =>
-        string.IsNullOrWhiteSpace(p.TeamName) ? p.Title : p.TeamName;
-
-
-    // ── בקרוב ───────────────────────────────────────────────────────────
-    //
-    // The dashboard reference's rail: a coloured when-cell and a title, four
-    // dated entries deep, closed by a link to the full calendar.
-
-    /// <summary>The team the entry belongs to. A mentor's own reminder has
-    /// none, and says so rather than printing a blank line.</summary>
-    private static string UpcomingContext(MentorCalendarEvent e)
-    {
-        if (!string.IsNullOrWhiteSpace(e.TeamName))     return e.TeamName;
-        if (!string.IsNullOrWhiteSpace(e.ProjectTitle)) return e.ProjectTitle;
-        return "תזכורת אישית";
-    }
-
-    // ── The date block ──────────────────────────────────────────────────
-    //
-    // A 46px tile — day over month — with the entry's KIND carried as an
-    // inset top bar, in the same five hues Motiva Mentor Calendar uses. The
-    // file's own comment says so: "semantic colors mirror Motiva Mentor
-    // Calendar KIND map". The tile itself never changes colour; only the
-    // 2.5px bar across its top does, so a column of tiles stays a column of
-    // dates rather than becoming a column of chips.
-    //
-    // Under the title, "how soon · whose" in one 12.5px line — the file's
-    // `{{ e.rel }} · {{ e.team }}`.
-
-    /// <summary>
-    /// How far off it is, in words — "היום", "מחר", "בעוד 5 ימים".
-    ///
-    /// <para>The hour rides along when there IS one.
-    /// <c>MentorCalendarEvent.HasTime</c> is true for exactly one thing — a
-    /// mentor personal task whose owner filled in שעת התחלה — so a real slot
-    /// is never dropped and one is never invented.</para></summary>
-    private static string UpcomingRelative(MentorCalendarEvent e)
-    {
-        var days = (e.Date.Date - DateTime.Today).Days;
-
-        var when = days switch
-        {
-            0 => "היום",
-            1 => "מחר",
-            2 => "בעוד יומיים",
-            _ => $"בעוד {days} ימים",
-        };
-
-        return e.HasTime ? $"{when} · {e.Date:HH:mm}" : when;
-    }
-
-
-    // ── משימות אישיות ───────────────────────────────────────────────────
-    //
-    // The mentor's own reminders, as a card rather than as a row inside
-    // דורש את תשומת לבך. The two are not the same statement: the attention
-    // model carries the tasks that are WAITING — overdue, or due today — and
-    // this card is the list itself, including the ones that are simply next.
-    // A mentor ticking something off on the dashboard is the reason it has a
-    // checkbox instead of a chevron.
-
-    /// <summary>Overdue count, for the heading's annotation. Personal tasks are
-    /// the one kind on this screen with a real DueDate, so באיחור is a true
-    /// statement about them and about nothing else here — the same rule
-    /// המשימות שלי follows.</summary>
-    private int PersonalOverdue =>
-        _ws.PersonalTasks.Count(t => !t.IsDone && MentorTime.IsOverdue(t.DueDate));
-
-    /// <summary>
-    /// The card's shortlist: open tasks first, soonest deadline first, undated
-    /// last, and completed ones only if there is room left.
-    ///
-    /// <para>Done tasks are not filtered out entirely. A task ticked off on
-    /// this card must not vanish from under the pointer that ticked it — the
-    /// struck-through row IS the confirmation — so they sort to the back
-    /// instead.</para></summary>
-    private static List<PersonalTaskDto> ShortlistTasks(IReadOnlyList<PersonalTaskDto> all) =>
-        all.OrderBy(t => t.IsDone)
-           .ThenBy(t => t.DueDate ?? DateTime.MaxValue)
-           .Take(TaskRows)
-           .ToList();
-
-    /// <summary>
-    /// Tick / untick, against the same endpoint המשימות שלי calls.
-    ///
-    /// <para>The row flips locally rather than reloading the workspace: the
-    /// toggle answers a bool, and re-running the snapshot to learn one bit
-    /// would make a checkbox feel like a page load. The list is NOT re-sorted
-    /// afterwards, so the row a mentor just ticked stays where they ticked
-    /// it.</para></summary>
-    /// <summary>
-    /// The due pill's text — "מחר", "בעוד 4 ימים", "באיחור 3 ימים".
-    ///
-    /// <para>MentorTime.DeadlineLabel is still the source, so a task's deadline
-    /// is computed once for the whole product; this only drops its "יעד "
-    /// prefix. In a pill that is ALREADY the row's deadline column the word is
-    /// a label for the column, not information about the task, and the two
-    /// dated arms are the only ones that carry it — "בעוד 4 ימים" and
-    /// "באיחור 3 ימים" never did. Stripping it is what makes the column read
-    /// as one series instead of two.</para>
-    ///
-    /// <para>Local to this screen ON PURPOSE. המשימות שלי draws the same label
-    /// in a wide Meta cell where "יעד היום" is a sentence rather than a chip,
-    /// and MentorProjectsPage reads it too, so the shared helper is left
-    /// exactly as it was.</para></summary>
-    private static string TaskDue(PersonalTaskDto t)
-    {
-        var label = MentorTime.DeadlineLabel(t.DueDate);
-        if (label is null) return "";
-
-        return label.StartsWith("יעד ", StringComparison.Ordinal)
-            ? label["יעד ".Length..]
-            : label;
-    }
-
-    /// <summary>
-    /// Its three washes, as the reference draws them: grey once the task is
-    /// done, rose while it is late, blue otherwise.
-    ///
-    /// <para>Done wins over late, deliberately — a completed task is not
-    /// still overdue, and leaving it rose would keep alarming about work that
-    /// is finished.</para></summary>
-    private static string TaskDueClass(PersonalTaskDto t) =>
-        string.IsNullOrEmpty(TaskDue(t))         ? "mh-task-due mh-task-due-none"
-        : t.IsDone                                ? "mh-task-due mh-task-due-done"
-        : MentorTime.IsOverdue(t.DueDate)         ? "mh-task-due mh-task-due-late"
-        :                                           "mh-task-due";
-
-    private async Task ToggleTaskAsync(int id)
-    {
-        _togglingId = id;
-        var ok = await PersonalTasks.ToggleAsync(id);
-        _togglingId = null;
-
-        if (!ok) return;
-
-        var hit = _tasks.FirstOrDefault(t => t.Id == id);
-        if (hit is not null) hit.IsDone = !hit.IsDone;
-
-        // The snapshot's own copy, so the heading's overdue count and the
-        // attention model's view of this task cannot disagree with the row.
-        var source = _ws.PersonalTasks.FirstOrDefault(t => t.Id == id);
-        if (source is not null && !ReferenceEquals(source, hit)) source.IsDone = !source.IsDone;
-    }
+    /// <summary>Join the parts that are actually present, so a row missing one
+    /// has a shorter context line rather than a string of separators.</summary>
+    private static string Join(params string?[] parts) =>
+        string.Join(" · ", parts.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!.Trim()));
 }

@@ -117,27 +117,32 @@
            bell stays valid for AppTopBar (Lecturer / Staff / Admin). *@
         <NotificationBell Icon="NotificationBell.BellIcon.Stroked" />
 
-        @* ── The dual-role mode control ───────────────────────────────────
-           THE EXISTING COMPONENT, MOUNTED WHERE THE SHELL CAN STILL SHOW IT.
-           UserModeToggle rendered only inside AppSideNav, so the moment a
-           role moved onto this canvas shell its dual-role users lost both
-           halves of what it does: the visible מרצה/מנחה switch, AND the
-           OnParametersSetAsync block that hydrates the persisted mode out of
-           localStorage and lands them on the matching dashboard after login.
+        @* ── WHAT USED TO BE HERE: the מרצה / מנחה mode control ───────────
+           `<UserModeToggle Variant="UserModeToggle.ToggleVariant.Menu" />`,
+           a chip beside the avatar that let a Staff+Mentor account switch
+           which of two dashboards it considered Home.
 
-           IT SITS BESIDE THE AVATAR, and that is the point of the placement
-           rather than an arbitrary slot in the cluster: "which of my two
-           roles am I acting as" is a fact about WHO IS SIGNED IN, so it
-           belongs with the identity controls at the end of the bar and not
-           beside the calendar and bell, which are destinations. The chip and
-           the avatar read as one unit — the mode, then the person.
+           IT IS REMOVED, not hidden. Asking a person to choose between two
+           products is not a feature when both products are the same
+           dashboard scoped differently — and the choice was sticky, stored
+           in localStorage, so the same account could open to either Home on
+           different machines. Role now decides, once, in
+           NavDefinitions.GetShell and RoleService.GetDefaultLandingRoute:
+           Staff/Admin get the Lecturer experience even when they also
+           mentor. See the note in GetShell for why Staff wins and for why
+           nothing became unreachable.
 
-           It renders NOTHING for a single-role user (`_available.Count >= 2`
-           is its own guard), so a student's bar and a mentor-only user's bar
-           are byte-identical to what they were. No mode logic is duplicated
-           or reimplemented here — this is a mount point, and the variant
-           chooses markup only. *@
-        <UserModeToggle Variant="UserModeToggle.ToggleVariant.Menu" />
+           NO AUTHORIZATION CHANGED. View mode never took part in access
+           control — that is the role claim on the server and the
+           [Authorize] attribute on the page, both untouched. Every
+           /mentor/* route still resolves for a mentor who follows a link
+           to it.
+
+           UserModeToggle.razor, its stylesheet and UserModeService are all
+           left in the tree: the component is still mounted by AppSideNav
+           (the legacy rail, which no role reaches today) and the service is
+           still read by LecturerTasksPage. Deleting them is a separate
+           cleanup with its own blast radius. *@
 
         <a class="stn-avatar @(IsProfileRoute ? "stn-avatar-active" : "")"
            href="/settings"
@@ -196,24 +201,39 @@
     private bool IsMentor   => Shell == NavDefinitions.Shell.Mentor;
     private bool IsLecturer => Shell == NavDefinitions.Shell.Lecturer;
 
-    /// <summary>The role's own home. Taken from the FIRST nav item — every
-    /// role's list opens with בית — so the logo follows NavDefinitions instead
-    /// of a literal that has to be remembered when a route moves.</summary>
+    /// <summary>
+    /// The role's own home. Taken from the FIRST nav item — every role's list
+    /// opens with בית — so the logo follows NavDefinitions instead of a literal
+    /// that has to be remembered when a route moves.
+    ///
+    /// <para>THE FALLBACK IS "/" AND NOT "/dashboard". The list is empty only
+    /// while the cascaded user is still null (see NavDefinitions.GetNavItems),
+    /// and "/dashboard" is one specific role's home — the student's — so the
+    /// logo was a second way to reach the wrong dashboard during exactly the
+    /// window the nav pills had the same bug. "/" is Index.razor, which resolves
+    /// the landing route from <c>RoleService.GetDefaultLandingRoute</c> after
+    /// awaiting the user, so it is right for every role and cannot be early.</para></summary>
     private string HomeHref =>
-        _navMain.Count > 0 ? "/" + _navMain[0].Href.TrimStart('/') : "/dashboard";
+        _navMain.Count > 0 ? "/" + _navMain[0].Href.TrimStart('/') : "/";
 
     /// <summary>The route whose nav pill carries the primary action-count badge.
     ///
-    /// <para>For Mentor this is now "mentor/tasks" (המשימות שלי), not
-    /// "mentor-requests". The design puts the total incoming count (submissions +
-    /// requests) on the tasks pill, not a requests-only count on the requests pill.
-    /// See the design reference: משימות 1.png — badge "7" is on "המשימות שלי".</para>
+    /// <para>THE MENTOR'S BADGE MOVED BACK TO "mentor-requests". It rode
+    /// "mentor/tasks" and carried the TOTAL incoming count (submissions +
+    /// requests), because המשימות שלי was the one pill that covered both.
+    /// That pill has left the rail — Home's דורש פעולה is that queue now — so
+    /// the badge would have had no host, and a total that counts submissions
+    /// cannot honestly sit on a pill labelled בקשות. It counts requests
+    /// awaiting this mentor's recommendation and nothing else, which is what
+    /// the student and lecturer בקשות pills already do: one number, on the
+    /// screen that shows it. The submissions half is not lost — it is a filter
+    /// tab and a count on Home's own queue card.</para>
     ///
     /// <para>Matched against the nav item's Href rather than a literal so the
     /// badge can never point at a different screen than the label.</para></summary>
     private string RequestsRoute => Shell switch
     {
-        NavDefinitions.Shell.Mentor   => "mentor/tasks",
+        NavDefinitions.Shell.Mentor   => "mentor-requests",
         NavDefinitions.Shell.Lecturer => "management/requests",
         _                             => "requests",
     };
@@ -287,10 +307,12 @@
             // Never throws and never returns null — an empty snapshot leaves
             // the badge at 0 rather than blanking the bar.
             var attention = await _Attention.GetAsync();
-            // The badge rides on "המשימות שלי" (mentor/tasks) and shows the TOTAL
-            // incoming count — submissions waiting for review plus requests waiting
-            // for a recommendation — matching the "7" badge in the design reference.
-            count = attention.Counts.PendingSubmissions + attention.Counts.AwaitingRequests;
+            // The badge rides on "בקשות" (mentor-requests) and counts ONLY the
+            // requests awaiting this mentor's recommendation — see RequestsRoute
+            // for why the submissions half left this number. Still the same
+            // single source of truth (GET /api/mentor/attention) the Home queue
+            // and the daily digest read, so the pill cannot disagree with them.
+            count = attention.Counts.AwaitingRequests;
         }
         else if (IsLecturer)
         {

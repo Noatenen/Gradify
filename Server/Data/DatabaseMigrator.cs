@@ -3070,7 +3070,7 @@ public static class DatabaseMigrator
             INSERT OR IGNORE INTO users (Id, Email, PasswordHash, FirstName, LastName, IsVerified, Phone, IsActive, AcademicYear)
             VALUES
                 (63, 'yanai.mentor.demo@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'ינאי', 'כרמי', 1, '054-9876543', 1, '2025-2026'),
-                (3, 'avi.mentor.qa@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'אבי', 'לוי', 1, '052-1234567', 1, '2025-2026')");
+                (3, 'mentor.qa@motiva.local', '$2a$11$qR0eJ0dG3vQ9v2Z5Bv5FDeX9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y9Y', 'אבי', 'לוי', 1, '052-1234567', 1, '2025-2026')");
 
         await connection.ExecuteNonQueryAsync(@"
             INSERT OR IGNORE INTO UserRoles (UserId, Role)

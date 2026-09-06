@@ -55,12 +55,15 @@ public static class RoleService
         // handles the "team-without-project" → catalog redirect internally.
         if (IsStudent(user)) return PageRoutes.Dashboard;
 
-        // Dual-role (Staff + Mentor): honour the currently-active view mode
-        // from UserModeService so the toggle's choice survives a hard reload
-        // / landing-page redirect.
-        if (UserModeService.IsDualRole(user))
-            return UserModeService.DashboardRouteFor(UserModeService.EffectiveMode(user));
-
+        // ONE CANONICAL HOME PER ROLE, and the order of these two lines is
+        // what makes it canonical. This used to ask UserModeService for a
+        // dual-role (Staff + Mentor) user's currently-active view mode, so the
+        // SAME account could land on either dashboard depending on a toggle
+        // stored in localStorage — which is exactly how an overlapping-role
+        // user "randomly" fell into the other experience. Staff/Admin is
+        // tested first and wins outright, matching NavDefinitions.GetShell so
+        // the landing route and the nav rail can never disagree about which
+        // Home a user has. See the long note there for why Staff wins.
         if (IsAdminOrStaff(user)) return "dashboard/lecturer";
         if (IsMentor(user))       return "dashboard/mentor";
         return PageRoutes.Dashboard;
