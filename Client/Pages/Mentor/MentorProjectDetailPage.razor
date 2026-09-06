@@ -331,7 +331,7 @@
 }
 
 
-<div class="mpw-page">
+<div class="mpw-page" dir="rtl">
 
     @* ── Back to פרויקטים בהנחייתי ─────────────────────────────────────── *@
     <a class="mpw-back" href="/mentor/projects">
@@ -395,6 +395,7 @@
            correct for that reader. *@
         <ProjectWorkspace View="@View"
                           Context="PwContext.Mentor"
+                          MembersInSubline="true"
                           OnWorkRowClick="OnWorkKeyAsync"
                           OnActivityClick="OnActivityKeyAsync">
 
@@ -418,7 +419,6 @@
                         </svg>
                         קביעת פגישת הנחיה
                     </button>
-                    <span class="mpw-last-meeting">@LastMeetingLabel</span>
                 }
                 else if (CanUseLecturerWorkspace)
                 {
@@ -690,7 +690,7 @@
 
     private PwIdentity Identity => new(
         Title:         _detail!.Title,
-        TeamName:      _detail.TeamName,
+        TeamName:      string.IsNullOrWhiteSpace(_detail.TeamName) ? $"צוות {_detail.ProjectNumber}" : _detail.TeamName,
         StageName:     StageName,
         // Milestone completion — the headline progress on both workspaces.
         ProgressPct:   _detail.MilestoneProgressPct,
@@ -736,7 +736,7 @@
             int missing        = subs.Count(s => s is { Submitted: false, Overdue: true });
             int submitted      = subs.Count(s => s.Submitted);
             int openRequests   = _requests.Count(r => MentorRequestBuckets.Of(r.Status) != MentorRequestBucket.Closed);
-            int actionable     = _requests.Count(r => PwRequestVocabulary.OwnedByViewer(r.Status, ViewerOf(r)));
+            int actionable     = _requests.Count(r => MentorRequestBuckets.IsActionable(r.Status));
             int overdueTasks   = tasks.Count(t => t.Overdue);
 
             return new[]
@@ -751,8 +751,8 @@
                                     // date that was met is not news, and one that
                                     // has not arrived is why the row is dormant.
                                     Meta:            s.Milestone,
-                                    Trailing:        s.Overdue ? s.Due : null,
-                                    TrailingLate:    s.Overdue,
+                                    Trailing:        null,
+                                    TrailingLate:    false,
                                     State:           s.State,
                                     StateTone:       ToneOf(s.StateClass),
                                     ActionLabel:     s.SubmissionId is not null ? "לבדיקה" : null,
@@ -771,17 +771,13 @@
                     Summary:     pendingReviews > 0
                                      ? PwCount.Phrase(pendingReviews,
                                            "הגשה אחת ממתינה לבדיקתך", "{0} הגשות ממתינות לבדיקתך")
-                                     : missing > 0
-                                         ? PwCount.Phrase(missing, "הגשה אחת חסרה", "{0} הגשות חסרות")
-                                         : $"{submitted} מתוך {subs.Count} הוגשו",
+                                     : null,
                     // Matches the lecturer's הגשות summary exactly: the
                     // reader's own queue is Attention, a missing deliverable is
                     // the genuine negative.
-                    SummaryTone: pendingReviews > 0 ? PwTone.Attention
-                                 : missing > 0      ? PwTone.Late
-                                 :                    PwTone.Quiet,
+                    SummaryTone: pendingReviews > 0 ? PwTone.Attention : PwTone.Quiet,
                     AllHref:     MentorLinks.Reviews,
-                    AllLabel:    "לתור ההגשות",
+                    AllLabel:    "הגשות לבדיקה",
                     MoreLabel:   "לכל ההגשות"),
 
                 new PwSection(SecReqs, "בקשות", "oi-envelope-closed",
@@ -795,6 +791,18 @@
                                    var v   = ViewerOf(r);
                                    var cta = PwRequestVocabulary.ActionLabel(r.Status, v);
 
+                                   // When the next move is this mentor's, show a single
+                                   // "ממתינה לתגובתך" badge next to the date. The shared
+                                   // vocabulary splits this across a status badge
+                                   // ("ממתינה להמלצתך") and a separate CTA ("להמלצה");
+                                   // the reference renders it as one compact pill with no
+                                   // secondary button.
+                                   // OwnedByViewer depends on CanRecommend/CanDecide which
+                                   // ExtensionWorkflow.Resolve sets to false for all non-Extension
+                                   // request types. IsActionable reads the status string directly
+                                   // and is the correct display-routing predicate for this page.
+                                   bool owned = MentorRequestBuckets.IsActionable(r.Status);
+
                                    return new PwWorkRow(
                                        Key:             $"req:{r.Id}",
                                        Title:           r.Title,
@@ -802,12 +810,12 @@
                                        // asked, at the row's end.
                                        Meta:            r.CreatedByName,
                                        Trailing:        r.CreatedAt.ToLocalTime().ToString("dd.MM"),
-                                       // OWNERSHIP, NOT VISIBILITY — the same
-                                       // resolver the lecturer workspace uses.
-                                       State:           PwRequestVocabulary.StatusLabel(r.Status, v),
-                                       StateTone:       PwRequestVocabulary.Tone(r.Status, v),
-                                       ActionLabel:     cta,
-                                       ActionIsPrimary: cta is not null,
+                                       State:           owned ? "ממתינה לתגובתך"
+                                                              : PwRequestVocabulary.StatusLabel(r.Status, v),
+                                       StateTone:       owned ? PwTone.Attention
+                                                              : PwRequestVocabulary.Tone(r.Status, v),
+                                       ActionLabel:     owned ? null : cta,
+                                       ActionIsPrimary: !owned && cta is not null,
                                        IsClickable:     true,
                                        IsOpen:          _openRequestId == r.Id,
                                        Rank:            RequestRank(r));
@@ -872,10 +880,10 @@
     /// ownership answer the row's own status label gives. Anything still open
     /// sits with somebody else and is context; a closed request is history and
     /// waits behind "לכל בקשות הפרויקט".</summary>
-    private PwRowRank RequestRank(ProjectRequestRowDto r) =>
-        PwRequestVocabulary.OwnedByViewer(r.Status, ViewerOf(r))          ? PwRowRank.Waiting
+    private static PwRowRank RequestRank(ProjectRequestRowDto r) =>
+        MentorRequestBuckets.IsActionable(r.Status)                        ? PwRowRank.Waiting
         : MentorRequestBuckets.Of(r.Status) != MentorRequestBucket.Closed ? PwRowRank.Context
-        :                                                                   PwRowRank.Dormant;
+        :                                                                    PwRowRank.Dormant;
 
     /// <summary>Late is the exception, whoever owns it — that is what a
     /// supervisor scans this list for. Work actually under way, and the
@@ -1079,7 +1087,7 @@
                         : t.LatestMentorStatus == "Approved" ? ("נבדק ואושר", "mpw-state-teal")
                         : t.LatestMentorStatus == "Returned" ? ("הוחזר לתיקון", "mpw-state-violet")
                         : t.LatestSubmissionStatus is not null ? ("הוגש", "mpw-state-blue")
-                        : t.IsOverdue                        ? ("טרם הוגש · באיחור", "mpw-late")
+                        : t.IsOverdue                        ? ("באיחור", "mpw-late")
                         :                                      ("טרם הוגש", "mpw-state-quiet");
 
                     return new SubRow(t.Title, x.Milestone.Title, state, cls, id,
