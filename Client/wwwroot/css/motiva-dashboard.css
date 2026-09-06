@@ -1,0 +1,1445 @@
+/* ============================================================
+   THE MOTIVA ROLE DASHBOARD — one layout system, two roles
+   Prefix: mdash-
+
+   USED BY
+     Client/Pages/Dashboard/Overview/OverviewDashboardPage.razor  (Lecturer Home)
+     Client/Pages/Mentor/MentorHomePage.razor                     (Mentor Home)
+
+   Both screens draw the SAME four-card dashboard — a wide column of
+   "דורש פעולה" over the team surface, beside a rail of "מועדים קרובים"
+   over "משימות אישיות" — so they are laid out by one stylesheet rather
+   than by two that happen to agree today. What differs between the two
+   roles is WHICH ITEMS each card selects and what a row opens; none of
+   that is expressed here.
+
+   ── WHY THIS IS GLOBAL AND NOT A .razor.css ──────────────────────
+   Blazor CSS isolation is per COMPONENT: a rule written in
+   OverviewDashboardPage.razor.css compiles to `…[b-hash]` and can only
+   ever match that page's own elements, so the mentor page could not
+   have shared it — it would have needed a second copy, which is exactly
+   the "second parallel layout system" this file removes. Every rule
+   here is a descendant of `.mdash-page`, so nothing leaks past a
+   dashboard.
+
+   ── WHY THE PAGE CLASS IS WRITTEN TWICE ──────────────────────────
+   `.motiva-final .mdash-page.mdash-page .m-card` — the repetition is
+   deliberate and load-bearing, not a typo. It buys back the one class
+   of specificity that `::deep` used to contribute, and REMOVING IT
+   SILENTLY BREAKS THE CARD SURFACE.
+
+   While these rules were scoped, `.motiva-final .mdash-page ::deep
+   .m-card` compiled to `.motiva-final .mdash-page .m-card[b-hash]` —
+   (0,4,0). Un-scoped that is (0,3,0), which is an exact TIE with
+   MCard's own compiled `.motiva-final .m-card[b-hash]`; ties are broken
+   by document order, and AuthWithAdmin.Client.styles.css is linked
+   after this file. Measured in the browser: every card on both
+   dashboards silently rendered at `--motiva-surface-section`
+   (translucent white, which lets the canvas's violet radial through)
+   at `--motiva-radius-lg` instead of solid #FFFFFF at radius-xl.
+
+   So every selector here that reaches an M* primitive doubles the page
+   or column class. A rule that sets properties on `.mdash-page` itself
+   does not, because nothing competes with it.
+
+   The `.motiva-final` prefix is load-bearing for the same reason and
+   must not be dropped either.
+
+   THE VISUAL SOURCE OF TRUTH IS NOT A DESIGN EXPORT.
+   It is the LIVE student dashboard (Client/Pages/Dashboard/Dashboard.razor.css)
+   — its surfaces, type steps, rhythm and semantics — see the block
+   below. What stayed the role dashboards' own is the COMPOSITION: the
+   1.75/1 two-column grid, which the student stack does not have.
+   ============================================================ */
+
+/* ============================================================
+   THE STUDENT DASHBOARD'S VISUAL SYSTEM, APPLIED TO THIS PAGE
+
+   VISUAL SOURCE OF TRUTH: Client/Pages/Dashboard/Dashboard.razor.css
+   (the live student dashboard, not a design export). Every surface,
+   radius, border, shadow, inset, density value, head step, row metric
+   and semantic tone below is transcribed from it, the same way that
+   file documents transcribing MentorHomePage.
+
+   PRESENTATION ONLY. Which items the page selects, what it counts,
+   what a row opens, who may see the page, every endpoint and every
+   string of lecturer copy are exactly what they were. This file
+   changes how the page LOOKS.
+
+   WHAT LEFT, AND WHY
+   The page used to author its own card family (translucent .6 white
+   at radius 26 over a white hairline), its own head steps (22/19 at
+   line-height 1), its own row grammar (an 18px row with a 5px red
+   bar), its own empty state, its own spinner and its own error line —
+   all in hardcoded hex. None of it was WRONG; it was simply a second
+   design of the same objects, which is what made the two roles read
+   as two products. Every one of those is now the shared component the
+   student pages use, so the two dashboards cannot drift again.
+
+   WHAT STAYED THE LECTURER'S
+   The composition. The student's three-band stack is NOT copied: this
+   page's 1.75/1 grid carries the lecturer's own priorities — a wide
+   work column beside a narrow calendar rail — exactly as before.
+   ============================================================ */
+
+/* ── Page shell ──────────────────────────────────────────────
+   The shell already applies --motiva-canvas-padding-inline around the
+   whole viewport, so this page owns only its vertical rhythm.
+
+   THE DENSITY SCALE IS THE STUDENT DASHBOARD'S, by name and by value
+   (Dashboard.razor.css §"THE DENSITY SCALE"). Every vertical inset on
+   this page reads one of these and nothing else does, so the height
+   bands at the foot of this file retune the whole page without
+   touching a single type step — and both dashboards compress
+   identically on a laptop instead of one compacting while the other
+   sprawls. */
+.mdash-page {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+
+    --sd-title-pt:  6px;
+    /* 22 → 16. The greeting is one 38px line over one 15px line; 22px under
+       it was tuned when a row of status pills followed and needed separating
+       from the title. The pills are gone, so this is now the step from the
+       header straight into the first card. */
+    --sd-title-pb: 16px;
+    --sd-row-gap:  20px;
+
+    --sd-card-pt: 22px;
+    --sd-card-pb: 18px;
+    --sd-head-mb: 14px;
+
+    --sd-row-py:  13px;
+
+    gap: var(--sd-row-gap);
+    /* 40 → 20. Forty was the student dashboard's scroll tail, which that page
+       needs because it is long by design. This page is meant to END inside the
+       viewport, and 20px of dead canvas under the last card was pure page
+       height. */
+    padding-block-end: 20px;
+
+    /* ── THE PAGE CLAIMS THE CONTENT VIEWPORT ────────────────────
+       `.app-content` is a flex column that already fills the shell's
+       `min-height: 100vh` box, so one `flex: 1` here hands this page every
+       pixel below the chrome without a single vh calculation of its own.
+       Measured, that chrome is:
+
+         .app-shell-student padding-block-start   20px
+         .stn-bar  2 + 38 (the action circles) + 18   58px
+         .app-shell-student padding-block-end     20px
+
+       — 98px, and none of it is restated here. If the top bar ever changes
+       height this page follows it for free, which is the whole reason for
+       reading the box instead of subtracting a literal. */
+    /* GROW, NEVER SHRINK. `flex-shrink: 0` with `flex-basis: auto` is the
+       whole safety story of this pass: the page is at least its content's
+       height and takes the leftover when there is any. Shrink 1 would let
+       a full queue be squeezed to fit the viewport, which is how a
+       fill-the-screen layout turns into clipped text. */
+    flex: 1 0 auto;
+
+    /* ── ROW RHYTHM CEILINGS ─────────────────────────────────────
+       Rows GROW to spend a card's spare height (see §"FILLING A CARD"),
+       and these are how far. They are ROW metrics — siblings of
+       --sd-row-py, retuned by the same height bands at the foot of this
+       file — not card heights: no card in this file has a height, a
+       min-height or a fixed anything.
+
+       Two values because there are two row shapes. A queue or team row
+       stacks a 15px title over a 13px context line and reads well with
+       real air around it; a checklist row or a date tile is a single line
+       beside a control, and past ~64px it stops looking like a list and
+       starts looking like four separate panels. */
+    --mdash-row-cap:      104px;
+    --mdash-row-cap-tight: 66px;
+}
+
+/* ── Title row ───────────────────────────────────────────────
+   MPageHeader renders the h1; `.motiva-final` already gives it the
+   38/700 page title the student greeting uses. What is set here is the
+   student dashboard's own inset and its 4px optical inline nudge, so the
+   step from "page chrome" to "the dashboard itself" is the same size on
+   both screens. */
+.motiva-final .mdash-page.mdash-page .m-page-header {
+    padding-block: var(--sd-title-pt) var(--sd-title-pb);
+    padding-inline: 4px;
+}
+
+/* ── WHAT USED TO BE HERE ────────────────────────────────────
+   A `flex-direction: row` on `.mdash-header .m-page-header-body`, which put
+   the greeting and its status sentence on ONE line so the sentence cost
+   the fold nothing. The sentence is gone (it restated the work queue's
+   own tab count), so the rule has a single child to lay out and does
+   nothing.
+
+   REMOVED RATHER THAN LEFT, and the header's own inset is deliberately
+   NOT retuned to compensate: the two sat side by side, so dropping one
+   changes the block's height by zero. Nudging --sd-title-pb now would be
+   inventing a gap, not closing one. Measured before and after: 64px
+   either way. */
+
+/* ── WHAT USED TO BE HERE: the status pill row ────────────────
+   `.mdash-pills`, `.mdash-pill`, `.mdash-pill-dot` and the four tone classes.
+   Four counts in a row under the greeting, each of them the size of the
+   collection rendered as rows a few hundred pixels below it — and once
+   the work queue grew its own filter tabs, two of the four were stated
+   twice on the same screen.
+
+   Every count now sits on the thing it counts: the queue's tabs, the
+   supervision head's `.motiva-count`, and the course card's own rows.
+   The header is the greeting and one sentence, which is what "compact"
+   means here.
+   ============================================================ */
+
+/* ── The grid — TWO COLUMNS, TWO CARDS EACH ──────────────────
+   WIDE (1.75fr)   דורש פעולה · תמונת מצב צוותים
+   RAIL (1fr)      מועדים קרובים · המשימות שלי
+
+   The team band spanned the full width while the rail held one short card,
+   which was the only balanced arrangement while the page had three
+   surfaces. It has four now and the fourth is short, so the rail carries a
+   pair and both columns end near the same line — without a single card
+   being stretched to get there.
+
+   ── CONTENT-DRIVEN, ALWAYS ───────────────────────────────────────────
+   `align-items: start` on the grid, `flex: 0 0 auto` on every column
+   child, no `Fill` on any card, and no min-height anywhere in this file.
+   A card holding one line is the height of one line, and the two columns
+   are allowed to end at different heights.
+
+   The three rules that used to break this — `align-items: stretch`,
+   `> *:last-child { flex: 1 }`, and `Fill="true"` compiling to
+   `.m-card-fill { height: 100% }` — are all gone, and the last of them is
+   also neutralised defensively further down. */
+
+.mdash-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+    gap: var(--sd-row-gap);
+    min-width: 0;
+
+    /* Takes what the page has left after the greeting. `stretch` (the
+       default) is what makes both COLUMNS the full height of that area —
+       it is back deliberately, and it is no longer the bug it was: the
+       last pass removed it because the cards inside had no internal layout
+       to spend the height on, so stretching a column stretched a card into
+       a blank slab. The cards fill intentionally now (see below), which is
+       what makes this rule correct rather than merely tall. */
+    flex: 1 0 auto;
+    /* One row, filling the grid, never smaller than what is in it.
+       `minmax(min-content, 1fr)` says both halves of that in one value —
+       `1fr` alone is `minmax(auto, 1fr)` and would allow the row to be
+       squeezed under content pressure. */
+    grid-template-rows: minmax(min-content, 1fr);
+    align-items: stretch;
+}
+
+.mdash-main-col,
+.mdash-side-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sd-row-gap);
+    min-width: 0;
+}
+
+/* ── THE PROPORTIONS ─────────────────────────────────────────
+   Wide:  דורש פעולה 60 · תמונת מצב צוותים 40
+   Rail:  מועדים קרובים 40 · המשימות שלי 60
+
+   Expressed as flex-grow ratios rather than grid rows, because the two
+   columns split DIFFERENTLY and one `grid-template-rows` cannot say two
+   things at once.
+
+   `flex-basis: auto`, and that is the safety rule: a card is never
+   smaller than its own content, so the ratio governs the SPARE height
+   only. When a queue runs past its area the column grows and the page
+   scrolls — the existing preview caps are what keep that rare, and
+   nothing here clips or hides a row to hold a shape. */
+/* AND THE CARD'S OWN CLASS, both load-bearing. These four
+   elements are MCard component ROOTS, and a child component's root does
+   not carry this page's scope attribute — so `.mdash-main-col > :first-child`
+   compiled to `… > :first-child[b-hash]` and matched nothing at all. It
+   failed silently: the cards simply stayed at content height and the
+   columns kept the leftover, which looks exactly like "the fill rule is
+   not written yet". Measured in the browser before it was caught. */
+.motiva-final .mdash-page .m-card.mdash-queue-card { flex: 3 0 auto; }
+.motiva-final .mdash-page .m-card.mdash-teams-card { flex: 2 0 auto; }
+.motiva-final .mdash-page .m-card.mdash-dates-card { flex: 2 0 auto; }
+.motiva-final .mdash-page .m-card.mdash-tasks-card { flex: 3 0 auto; }
+
+/* ============================================================
+   THE CARD — solid white, one lifted, the rest quiet
+
+   Transcribed from Dashboard.razor.css §"THE CARD". Every value is
+   that file's: radius-xl, solid #FFFFFF, the violet-tinted hairline,
+   and the two-layer drop.
+
+   `.motiva-final` prefix, deliberately. Each M* primitive carries a
+   finished-design rule of its own compiled to (0,3,0); a page override
+   written `.mdash-page .m-card` is ALSO (0,3,0), an exact tie that
+   only bundle order settles. The prefix lifts these to (0,4,0). See
+   the repo note on Blazor scoped-CSS specificity.
+   ============================================================ */
+
+.motiva-final .mdash-page.mdash-page .m-card {
+    position: relative;
+    min-width: 0;
+
+    border-radius: var(--motiva-radius-xl);
+    background: #FFFFFF;
+    border: 1px solid rgba(109, 40, 245, 0.08);
+    box-shadow:
+        0 1px 2px rgba(27, 26, 34, 0.04),
+        0 10px 24px -20px rgba(27, 26, 34, 0.22);
+
+    /* NOT `height: 100%`, which is what the student dashboard's card rule
+       carries. Over there every card is the only child of a grid cell, so
+       100% resolves to the row height and the rule means "share the row".
+       Here a card sits inside an intermediate flex COLUMN that can hold
+       two of them, and a percentage height on two siblings of an
+       auto-height column is the circular case: each asked for the whole
+       column, the column grew to hold both, and the page measured 1481px
+       against an 802px viewport with all the slack inside the cards.
+       The grid above stretches the COLUMNS and the rule below hands the
+       remainder to the column's last card, which gets the shared bottom
+       edge without any percentage height in the chain. */
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+}
+
+/* NO CARD ON THIS PAGE FILLS. `Fill="true"` compiles to `.m-card-fill`,
+   whose whole content is `height: 100%` — the single declaration behind
+   the stretched cards this pass removed. The parameter is gone from every
+   card in the markup; this rule is the belt to that braces, so a card that
+   picks the class back up (a shared component, a future edit) still
+   measures itself by its rows.
+
+   `.m-card-fill` is (0,1,0) and this is (0,4,0), so it wins outright. */
+.motiva-final .mdash-page .m-card.m-card-fill { height: auto; }
+
+/* ============================================================
+   FILLING A CARD — the part that makes the grid rule above safe
+
+   A card that occupies more height than its content needs has exactly
+   three jobs, and the failure mode is doing none of them: header at the
+   top, rows at the top, and a hole underneath.
+
+     1. THE HEAD NEVER MOVES.        flex: 0 0 auto
+     2. THE LIST SPENDS THE HEIGHT.  flex: 1, and its ROWS grow — capped by
+        --mdash-row-cap, so a list of three does not become three panels.
+     3. THE FOOT SITS AT THE BOTTOM. margin-block-start: auto
+
+   And the case that is not a list at all: a calm or empty state is a
+   sentence, and a stretched sentence is nonsense. Those get
+   `margin-block: auto` — the text keeps its own size and CENTRES in the
+   space instead, which is what "position it gracefully" has to mean for
+   a single line.
+
+   Nothing below sets a height, a min-height or `height: 100%` on a card,
+   and `Fill` is still not used anywhere in the markup. The grid hands a
+   card an area; the card decides what to do inside it.
+   ============================================================ */
+
+.motiva-final .mdash-page .sd-head { flex: 0 0 auto; }
+
+.motiva-final .mdash-page.mdash-page .m-row-list,
+.mdash-page.mdash-page .mdash-up-list {
+    flex: 1 0 auto;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Rows share the spare height evenly. `1 0 auto` is deliberate in all
+   three numbers: basis auto keeps a row at least its natural height,
+   shrink 0 means it can never be compressed to make a card fit, and grow
+   1 spends whatever is left. So this only ever ADDS air. */
+.motiva-final .mdash-page.mdash-page .mdash-queue-row,
+.motiva-final .mdash-page.mdash-page .mdash-team-row {
+    flex: 1 0 auto;
+    max-height: var(--mdash-row-cap);
+}
+
+.motiva-final .mdash-page.mdash-page .mdash-task-row,
+.mdash-page.mdash-page .mdash-up-row {
+    flex: 1 0 auto;
+    max-height: var(--mdash-row-cap-tight);
+}
+
+/* Whatever the caps leave over collects below the list, which is where
+   the foot is waiting for it. */
+.mdash-card-foot { margin-block-start: auto; }
+
+/* The two "and N more" lines are notes on the list, not part of it. */
+.mdash-teams-more,
+.mdash-tasks-more { flex: 0 0 auto; }
+
+/* ── The calm and empty states centre ────────────────────────
+   A card with nothing to report still occupies its share of the column, so
+   its one sentence has to sit somewhere deliberate. It CENTRES: the block
+   grows to fill the body and centres its own content, so the text keeps
+   its size and the card stops being a heading with a hole under it.
+
+   `margin-block: auto` was the first attempt and it visibly did not work —
+   the foot's own `margin-block-start: auto` competes for the same free
+   space, so the free space was split three ways and the sentence landed a
+   third of the way down instead of halfway. Growing the block and centring
+   INSIDE it has no such interaction, and it is also what makes the foot's
+   auto margin a harmless no-op rather than a rival. Caught by measuring
+   the rendered page, not by reading the rule. */
+.mdash-teams-calm,
+.mdash-tasks-calm {
+    flex: 1 0 auto;
+    align-items: center;
+    justify-content: flex-start;
+}
+
+/* Two stacked lines rather than one, so this one centres its COLUMN and
+   keeps the text at the reading edge. */
+.mdash-dates-empty {
+    flex: 1 0 auto;
+    justify-content: center;
+    align-items: flex-start;
+}
+
+/* The in-card MEmptyState — the work queue's "nothing is waiting". The
+   PAGE-level one (the load error) is a child of .mdash-page, not of a card,
+   so it is untouched and keeps its own 48px block. */
+.motiva-final .mdash-page.mdash-page .m-card .m-empty {
+    flex: 1 0 auto;
+    justify-content: center;
+}
+
+.motiva-final .mdash-page.mdash-page .m-card,
+.motiva-final .mdash-page.mdash-page .m-card.m-card-padding-none,
+.motiva-final .mdash-page.mdash-page .m-card.m-card-padding-small,
+.motiva-final .mdash-page.mdash-page .m-card.m-card-padding-medium,
+.motiva-final .mdash-page.mdash-page .m-card.m-card-padding-large {
+    padding: var(--sd-card-pt) 28px var(--sd-card-pb);
+}
+
+/* The rail's cards take the student's narrow-card inline inset, the same
+   24px its glance row spends. */
+.motiva-final .mdash-side-col.mdash-side-col .m-card {
+    padding-inline: 24px;
+}
+
+/* THE GLOW — the student dashboard's ONE lifted card, given here to the
+   card that answers the same question its focus card does: what needs
+   me now. A hairline drop, then violet off the inline-start side, teal
+   off the inline-end side and blue below, all at -26/-30 spread so none
+   of them reads as a coloured EDGE. Values are Dashboard.razor.css's
+   `.dfc-card`, unchanged. */
+/* SPECIFICITY, and it was silently losing. `.mdash-page .mdash-card-strong`
+   compiles to `.mdash-page[b-…] .mdash-card-strong` — (0,3,0) — while the blanket
+   card rule above is `.motiva-final .mdash-page[b-…] .m-card` — (0,4,0). The
+   blanket therefore won BOTH the border and the box-shadow, and this page's
+   one lifted card rendered byte-identical to its quiet ones: measured, its
+   border-color and box-shadow matched .mdash-teams-card exactly.
+
+   The Mentor dashboard and the Student dashboard each carry exactly one
+   lifted card; this one carried none. Compounding `.m-card` takes the rule to
+   (0,5,0) so it wins outright rather than on file order. */
+.motiva-final .mdash-page.mdash-page .m-card.mdash-card-strong {
+    border-color: rgba(255, 255, 255, 0.9);
+    box-shadow:
+        0 1px 2px rgba(27, 26, 34, 0.04),
+        -14px 14px 44px -26px rgba(109, 40, 245, 0.35),
+        14px -10px 40px -26px rgba(15, 168, 194, 0.32),
+        0 18px 48px -30px rgba(46, 99, 232, 0.28);
+}
+
+/* ============================================================
+   SECTION HEADS — glyph · title · link at the reading end
+   Dashboard.razor.css §"SECTION HEADS". No rule under the heading:
+   the boundary is 8px of air, because a hairline under three headings
+   on one screen reads as three tables.
+   ============================================================ */
+
+.mdash-page.mdash-page .sd-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    margin-block-end: 8px;
+}
+
+/* The glyph ALONE, on nothing — no chip, no tinted square — at its own
+   16px. The stroke is the shared #motivaIconGradient paint server, the
+   same mark the student cards and /lecturer/tasks carry; `color` is
+   only the fallback if the paint server is ever missing. */
+.mdash-page.mdash-page .sd-head-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    color: var(--motiva-color-violet);
+}
+
+/* ── דורש פעולה's glyph — the page's one attention mark ──────
+   Three heads paint their mark with #motivaIconGradient, which says
+   "Motiva". This one says something about its own card instead: it is the
+   only head here whose card is about somebody being blocked on the
+   reader.
+
+   THIS TREATMENT ALREADY EXISTS — see `.orc-head-icon-rose` in
+   OpenRequestsCard.razor.css, the STUDENT dashboard's own attention card,
+   whose note gives the identical reason: "this card's head is itself an
+   alert signal, not a neutral category label". So the value here is that
+   card's value, --motiva-color-rose-ink, and not the brighter
+   --motiva-color-rose a first pass reached for. Two dashboards drawing
+   the same idea in two reds is exactly the drift this file has spent
+   several passes removing.
+
+   THE ACCENT STOPS AT THE GLYPH. The card keeps its white surface and its
+   brand-tinted lift; `.mdash-card-strong` is untouched. A red panel would
+   spend the one alarm colour on the fact that the card exists.
+
+   Compiles to `.mdash-page[b-…] .sd-head-icon.mdash-head-icon-alert` — (0,4,0)
+   against the violet base rule's (0,3,0), and later in the bundle.
+   Verified in the served stylesheet, because a scoped rule that silently
+   matches nothing has already cost this page one pass. */
+.mdash-page.mdash-page .sd-head-icon.mdash-head-icon-alert {
+    color: var(--motiva-color-rose-ink);
+}
+
+.mdash-page.mdash-page .sd-head-title {
+    margin: 0;
+    font-size: 19px;
+    font-weight: var(--motiva-font-weight-bold);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--motiva-text-primary);
+}
+
+/* THE HEAD LADDER — the student's own two steps: 22 on the one lifted
+   card, 19 on every quiet one. */
+.mdash-page .mdash-queue-title { font-size: 22px; }
+
+/* Navigation, so it is the quietest thing in the head and it sits at
+   the head's reading end. */
+.mdash-page.mdash-page .sd-head-link {
+    margin-inline-start: auto;
+    flex: 0 0 auto;
+    font-size: 13px;
+    font-weight: var(--motiva-font-weight-semibold);
+    line-height: 1;
+    color: var(--motiva-text-secondary);
+    text-decoration: none;
+    white-space: nowrap;
+    border-radius: var(--motiva-radius-sm);
+    transition: color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+.mdash-page .sd-head-link:hover { color: var(--motiva-text-primary); }
+
+.mdash-page.mdash-page .sd-head-link:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring);
+    outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mdash-page .sd-head-link { transition: none; }
+}
+
+/* ── The head's middle slot ──────────────────────────────────
+   The team card puts MSummaryTag between its title and its CTA, so the
+   population it is describing is stated on the same line as its name.
+   `margin-inline-end: auto` is what pushes the link to the far end while
+   the tag stays beside the heading; the tag is metadata and never grows.
+
+   It replaces `.mdash-head-count`, a lone `.motiva-count` bubble that
+   counted the rows immediately under it — a number the reader could get
+   by looking down. */
+.mdash-head-summary {
+    margin-inline-end: auto;
+    flex: 0 0 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+}
+
+/* ============================================================
+   ROWS — MRow in the student dashboard's row grammar
+   A hairline floor, none on the last, and a hover that moves the INK
+   instead of painting a wash.
+   ============================================================ */
+
+.motiva-final .mdash-page.mdash-page .m-row {
+    gap: 14px;
+    padding-block: var(--sd-row-py);
+    padding-inline: 2px;
+    margin-inline: 0;
+    border-radius: 0;
+    border-block-end: 1px solid rgba(27, 26, 34, 0.06);
+    color: var(--motiva-text-primary);
+    transition: background-color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+.motiva-final .mdash-page.mdash-page .m-row:last-child,
+.motiva-final .mdash-page .m-row-list.m-row-list-divided .m-row:last-child { border-block-end: 0; }
+
+/* Structural hover only — see the matching block in Dashboard.razor.css.
+   The lecturer's rows are the same object as the student's and must not
+   diverge on something this basic. */
+.motiva-final .mdash-page.mdash-page a.m-row:hover,
+.motiva-final .mdash-page.mdash-page button.m-row:hover {
+    background: rgba(27, 26, 34, 0.025);
+    color: var(--motiva-text-primary);
+}
+
+.motiva-final .mdash-page.mdash-page a.m-row:focus-visible,
+.motiva-final .mdash-page.mdash-page button.m-row:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring);
+    outline-offset: -2px;
+    border-radius: var(--motiva-radius-row);
+}
+
+.motiva-final .mdash-page .m-row-main { gap: 4px; }
+
+.motiva-final .mdash-page.mdash-page .m-row-primary {
+    font-size: 15px;
+    font-weight: var(--motiva-font-weight-bold);
+    line-height: 1.3;
+    color: inherit;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.motiva-final .mdash-page.mdash-page .m-row-secondary {
+    font-size: 13px;
+    font-weight: var(--motiva-font-weight-medium);
+    line-height: 1.3;
+    color: var(--motiva-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── The meta slot ───────────────────────────────────────────
+   Plain metadata stays plain 13px text, tabular so a column lines up.
+   A SEMANTIC meta becomes a filled pill in its own tone. */
+
+.motiva-final .mdash-page.mdash-page .m-row-meta {
+    font-size: 13px;
+    font-weight: var(--motiva-font-weight-semibold);
+    line-height: 1;
+    color: var(--motiva-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.motiva-final .mdash-page.mdash-page .m-row-meta-violet,
+.motiva-final .mdash-page.mdash-page .m-row-meta-teal,
+.motiva-final .mdash-page.mdash-page .m-row-meta-rose {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 6px 12px;
+    border-radius: var(--motiva-radius-full);
+    font-size: 12.5px;
+    font-weight: var(--motiva-font-weight-semibold);
+    line-height: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The brand tone is an EDGE, not a fill — `--motiva-tag-brand-surface`.
+   The 1px border is paid for out of the padding so the pill does not
+   change size. */
+.motiva-final .mdash-page.mdash-page .m-row-meta-violet {
+    padding: 5px 11px;
+    border: 1px solid transparent;
+    background: var(--motiva-tag-brand-surface);
+    color: var(--motiva-text-primary);
+}
+
+.motiva-final .mdash-page .m-row-meta-teal { color: var(--motiva-color-teal-ink); background: var(--motiva-color-success-bg); }
+
+/* ONE ROSE, FROM THE TOKENS. The system was carrying three: the mentor
+   dashboard — the approved reference — renders --motiva-color-rose-ink on
+   --motiva-color-danger-bg, while this pill was a hardcoded #A9506B on a
+   hand-mixed .10 wash and the dot below was a third value again (#D9738F).
+   All three were "softened rose", drifted apart by being retyped.
+
+   The tokens are what the reference reads, so they are what these read now.
+   Nothing else about the pill moves — same size, same padding, same radius,
+   same "a state is a pill, never bare coloured text" rule. */
+.motiva-final .mdash-page .m-row-meta-rose { color: var(--motiva-color-rose-ink); background: var(--motiva-color-danger-bg); }
+
+/* The leading status dot takes the shared rose, at dot weight. */
+.motiva-final .mdash-page .m-dot-rose { --m-dot-color: var(--motiva-color-rose); }
+
+/* NO fixed mentor track. The old row laid four flex columns by hand and
+   gave the mentor a 150px one; MRow stacks Primary over Secondary inside
+   `.m-row-main` and puts Meta at the row's end, which is the student
+   dashboard's team row exactly. A width constraint written for a
+   horizontal track becomes a HEIGHT in that column — measured at 150px
+   of blank between the mentor line and the reason pill — so the mentor
+   name simply reads as the row's second line, as it does everywhere
+   else in the product. */
+
+/* ============================================================
+   EMPTY / LOADING — the shared primitives, compacted
+   MEmptyState's 32px block of centred copy is right for a card that
+   owns a screen and too loud for three cards sharing a viewport, so
+   it is compacted onto the reading edge exactly as on the student
+   dashboard.
+   ============================================================ */
+
+.motiva-final .mdash-page.mdash-page .m-empty {
+    align-items: flex-start;
+    text-align: start;
+    gap: 4px;
+    padding: 8px 0 10px;
+}
+
+.motiva-final .mdash-page.mdash-page .m-empty-title {
+    font-size: var(--motiva-font-size-sm);
+    font-weight: var(--motiva-font-weight-semibold);
+    color: var(--motiva-text-secondary);
+}
+
+.motiva-final .mdash-page.mdash-page .m-empty-text {
+    font-size: 12.5px;
+    color: var(--motiva-text-muted);
+}
+
+/* The page-level load and error states are MLoadingState / MEmptyState
+   and are NOT compacted — they own the whole page at that moment. */
+.motiva-final .mdash-page > .m-empty { padding-block: 48px; }
+
+/* ============================================================
+   SHORTER VIEWPORTS — the student dashboard's density bands
+
+   These move PADDING and nothing else. No font-size, weight or
+   line-height changes at any height, and the 1.75/1 tracks are
+   identical in every band. The breakpoints are Dashboard.razor.css's
+   own, so the two dashboards step down together.
+   ============================================================ */
+
+@media (max-height: 858px) {
+    .mdash-page {
+        --sd-title-pt:  6px; --sd-title-pb: 18px; --sd-row-gap:  20px;
+        --sd-card-pt: 22px;  --sd-card-pb: 18px;  --sd-head-mb: 14px;
+        --sd-row-py:  14px;
+        --mdash-row-cap: 98px; --mdash-row-cap-tight: 64px;
+    }
+}
+@media (max-height: 826px) {
+    .mdash-page {
+        --sd-title-pt:  4px; --sd-title-pb: 16px; --sd-row-gap:  18px;
+        --sd-card-pt: 21px;  --sd-card-pb: 17px;  --sd-head-mb: 13px;
+        --sd-row-py:  13px;
+        --mdash-row-cap: 94px; --mdash-row-cap-tight: 62px;
+    }
+}
+@media (max-height: 802px) {
+    .mdash-page {
+        --sd-title-pt:  3px; --sd-title-pb: 15px; --sd-row-gap:  17px;
+        --sd-card-pt: 20px;  --sd-card-pb: 16px;  --sd-head-mb: 12px;
+        --sd-row-py:  12px;
+        --mdash-row-cap: 90px; --mdash-row-cap-tight: 60px;
+    }
+}
+@media (max-height: 782px) {
+    .mdash-page {
+        --sd-title-pt:  2px; --sd-title-pb: 14px; --sd-row-gap:  16px;
+        --sd-card-pt: 18px;  --sd-card-pb: 14px;  --sd-head-mb: 11px;
+        --sd-row-py:  10px;
+        --mdash-row-cap: 84px; --mdash-row-cap-tight: 56px;
+    }
+}
+@media (max-height: 747px) {
+    .mdash-page {
+        --sd-title-pt:  1px; --sd-title-pb: 12px; --sd-row-gap:  15px;
+        --sd-card-pt: 17px;  --sd-card-pb: 12px;  --sd-head-mb: 10px;
+        --sd-row-py:   9px;
+        --mdash-row-cap: 80px; --mdash-row-cap-tight: 54px;
+    }
+}
+@media (max-height: 724px) {
+    .mdash-page {
+        --sd-title-pt:  0px; --sd-title-pb: 10px; --sd-row-gap:  13px;
+        --sd-card-pt: 15px;  --sd-card-pb: 10px;  --sd-head-mb:  8px;
+        --sd-row-py:   7px;
+        --mdash-row-cap: 74px; --mdash-row-cap-tight: 50px;
+    }
+}
+
+/* ============================================================
+   NARROWER VIEWPORTS — a track is DROPPED, never allowed to overflow.
+   ============================================================ */
+
+/* ── ONE COLUMN, AND THE FILLING STOPS WITH IT ───────────────
+   Below this width the two tracks become one, which means the four cards
+   stack — and a stacked dashboard is taller than any viewport, so making
+   it fill one is meaningless. Everything here is the release of the rules
+   above, in the same order:
+
+     the page and the grid stop claiming the content box
+     the columns stop splitting spare height 3:2 and 2:3
+     rows stop growing and go back to their own height
+     the foot stops being pushed to the bottom of an area that no longer
+       exists, and the calm states stop centring in it
+
+   The single-column page then scrolls normally, which is the right
+   behaviour on a phone and a tablet and was never in question. */
+@media (max-width: 1080px) {
+    .mdash-grid {
+        grid-template-columns: minmax(0, 1fr);
+        flex: 0 0 auto;
+    }
+
+    .mdash-page { flex: 0 0 auto; }
+
+    .motiva-final .mdash-page.mdash-page .m-card.mdash-queue-card,
+    .motiva-final .mdash-page.mdash-page .m-card.mdash-teams-card,
+    .motiva-final .mdash-page.mdash-page .m-card.mdash-dates-card,
+    .motiva-final .mdash-page .m-card.mdash-tasks-card { flex: 0 0 auto; }
+
+    .motiva-final .mdash-page.mdash-page .m-row-list,
+    .mdash-page .mdash-up-list { flex: 0 0 auto; }
+
+    .motiva-final .mdash-page.mdash-page .mdash-queue-row,
+    .motiva-final .mdash-page.mdash-page .mdash-team-row,
+    .motiva-final .mdash-page.mdash-page .mdash-task-row,
+    .mdash-page.mdash-page .mdash-up-row {
+        flex: 0 0 auto;
+        max-height: none;
+    }
+
+    .mdash-card-foot { margin-block-start: 0; }
+
+    .mdash-teams-calm,
+    .mdash-tasks-calm,
+    .mdash-dates-empty,
+    .motiva-final .mdash-page .m-card .m-empty { flex: 0 0 auto; }
+}
+
+@media (max-width: 720px) {
+    .motiva-final .mdash-page.mdash-page .m-card,
+    .motiva-final .mdash-page.mdash-page .m-card.m-card-padding-none,
+    .motiva-final .mdash-side-col .m-card { padding-inline: 18px; }
+
+    .mdash-page .mdash-queue-title { font-size: 19px; }
+}
+
+/* ============================================================
+   THE CARD FOOT — where a preview hands off
+
+   The attention queue previews TWO modules, and a section head can carry
+   one "see all". So the links sit in a ruled foot instead: quiet, at the
+   card's reading edge, and visually below the rows they summarise rather
+   than above them.
+
+   It carried `margin-block-start: auto` to sink to the bottom of a
+   stretched card. Cards are content-height now, so that margin had
+   nothing to push against and only made the rule harder to read.
+   ============================================================ */
+
+.mdash-card-foot {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex: 0 0 auto;
+    padding-block-start: 13px;
+    border-block-start: 1px solid rgba(27, 26, 34, 0.06);
+}
+
+.mdash-foot-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--motiva-font-family);
+    font-size: 13px;
+    font-weight: var(--motiva-font-weight-semibold);
+    line-height: 1;
+    color: var(--motiva-text-secondary);
+    text-decoration: none;
+    white-space: nowrap;
+    border-radius: var(--motiva-radius-sm);
+    transition: color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+.mdash-foot-link:hover { color: var(--motiva-text-primary); }
+
+.mdash-foot-link:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring);
+    outline-offset: 3px;
+}
+
+/* The product-wide count bubble — translucent gradient, dark digits.
+   It is shown only when the queue is deeper than the preview, so the
+   number always means "and this many more", never "this many exist". */
+.mdash-foot-n {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: var(--motiva-radius-full);
+    background: var(--motiva-tag-brand-surface);
+    color: var(--motiva-text-primary);
+    font-size: 11px;
+    font-weight: var(--motiva-font-weight-bold);
+    line-height: 18px;
+    text-align: center;
+    direction: ltr;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mdash-foot-link { transition: none; }
+}
+
+/* ============================================================
+   WHAT USED TO BE HERE: מבט על הקורס
+
+   A fourth card, in the rail, carrying three rows — total teams, teams
+   needing attention, teams with no assigned mentor.
+
+   It is REMOVED, not restyled. Two of its three facts are now the summary
+   line inside תמונת מצב צוותים, where they sit beside the teams they
+   describe instead of in a second card repeating them; the third left the
+   dashboard entirely, because a team with no mentor is a שיבוצים problem
+   and Assignments is the screen that owns it. Nothing was invented to
+   keep a fourth surface alive — the page is three cards because it has
+   three things to say.
+   ============================================================ */
+
+/* ============================================================
+   THE QUEUE'S HEAD AND THE ROWS
+   ============================================================ */
+
+/* The filter sits at the head's reading end, in the slot `.sd-head-link`
+   occupies on every other card — a lens on this card's own rows, never a
+   destination. MFilterTabs owns the pills; this only places them, and lets
+   them wrap under the title on a narrow column instead of squeezing the
+   heading. */
+.mdash-head-tabs {
+    margin-inline-start: auto;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+/* The leading slot never shrinks: the type badge on a queue row and the
+   status dot on a team row are the column the eye scans down, so every
+   row's content has to start at the same edge. */
+.motiva-final .mdash-page.mdash-page .mdash-queue-row .m-row-leading,
+.motiva-final .mdash-page.mdash-page .mdash-team-row .m-row-leading {
+    flex: 0 0 auto;
+    align-self: center;
+}
+
+/* Centre the end block on the row rather than baselining it against a
+   two-line main block. */
+.motiva-final .mdash-page.mdash-page .mdash-queue-row .m-row-end,
+.motiva-final .mdash-page.mdash-page .mdash-team-row .m-row-end {
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+/* ── The destination, said as a verb ─────────────────────────
+   "לבדיקה ←" / "להחלטה ←". It replaced a second status chip, because the
+   row already carries one signal — the kind badge — and the item's waiting
+   age is a FACT that belongs on the context line, not a second coloured
+   pill competing with the first. What the trailing slot is for here is the
+   answer to "and then what": the row is an anchor into the module that can
+   change this item's state, and this names the act performed on arrival.
+
+   It takes the row's ink and moves with it on hover, because it is part of
+   the link rather than a control of its own. */
+.mdash-go {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    font-family: var(--motiva-font-family);
+    font-size: 13px;
+    font-weight: var(--motiva-font-weight-semibold);
+    line-height: 1;
+    color: var(--motiva-text-secondary);
+    white-space: nowrap;
+}
+
+.motiva-final .mdash-page a.m-row:hover .mdash-go { color: var(--motiva-color-violet); }
+
+/* ============================================================
+   המשימות שלי — THE LECTURER'S OWN CARD
+
+   These rows lived inside דורש פעולה for one pass and have their own card
+   now, because they are a different concept: that queue means "the system
+   is waiting on you", and a note you wrote yourself is not that. Mixing
+   them put two kinds of completion in one list — a workflow moving
+   elsewhere, and a person ticking a box — and made the queue's count a
+   number about two unrelated things.
+
+   The row is a <div>: MRow renders one when it is given neither Href nor
+   OnClick, which is what lets it hold two real buttons — the completion
+   circle and the title — without nesting one inside the other. The circle
+   LEADS the row here rather than trailing it, which is what makes the card
+   read as a checklist at a glance instead of as another queue.
+   ============================================================ */
+
+/* No divider between reminders. A checklist is one object; hairlines
+   between four short lines make it look like a table of four records. */
+.motiva-final .mdash-page.mdash-page .mdash-task-row {
+    border-block-end: 0;
+    padding-block: 9px;
+    gap: 10px;
+}
+
+/* The title is the control that opens the shared editor. A button wearing
+   the row's own primary type, not a link: it goes nowhere, it opens a
+   dialog over this page. */
+.mdash-task-title {
+    display: block;
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: start;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-radius: var(--motiva-radius-sm);
+    transition: color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+.mdash-task-title:hover { color: var(--motiva-color-violet); }
+
+.mdash-task-title:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring);
+    outline-offset: 2px;
+}
+
+/* ── The completion control ──────────────────────────────────
+   A bare circle, leading the row. It needed the word "סיום" beside it
+   while these rows sat among workflow items — there, a lone circle would
+   have read as a status dot. On a card titled המשימות שלי, in a column of
+   identical circles, it reads as a checklist and the word became noise. */
+.mdash-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--motiva-radius-full);
+    background: none;
+    cursor: pointer;
+    transition: background-color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+.mdash-check-box {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+    border: 1.6px solid var(--motiva-border-strong, rgba(27, 26, 34, 0.18));
+    border-radius: var(--motiva-radius-full);
+    transition: border-color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+/* Teal, because completing something is the one act on this page that ENDS
+   work — the tone the product gives to done everywhere else. */
+.mdash-check:hover { background: var(--motiva-color-success-bg); }
+.mdash-check:hover .mdash-check-box { border-color: var(--motiva-color-teal); }
+
+.mdash-check:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring);
+    outline-offset: 1px;
+}
+
+.mdash-check:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* ── The calm state ──────────────────────────────────────────
+   One line, and a positive one. An empty checklist is good news, so it
+   gets the teal mark rather than the muted "nothing here" treatment the
+   dates card uses — and it collapses to the height of that line, which is
+   what keeps the rail short when the lecturer has set themselves nothing. */
+.mdash-tasks-calm {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-block: 6px 4px;
+    font-family: var(--motiva-font-family);
+    font-size: var(--motiva-font-size-sm);
+    font-weight: var(--motiva-font-weight-medium);
+    line-height: 1.4;
+    color: var(--motiva-text-secondary);
+}
+
+.mdash-tasks-calm-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    flex: 0 0 17px;
+    border-radius: var(--motiva-radius-full);
+    background: var(--motiva-color-success-bg);
+    color: var(--motiva-color-teal-ink);
+    font-size: 10px;
+    font-weight: var(--motiva-font-weight-bold);
+    line-height: 1;
+}
+
+/* "+ N משימות נוספות" — a FACT, not a link. There is nowhere to send the
+   reader: /lecturer/tasks is deliberately unlinked and is not returning as
+   a destination, so this counts what is held back and stops. */
+.mdash-tasks-more {
+    margin: 0;
+    padding-block-start: 8px;
+    font-family: var(--motiva-font-family);
+    font-size: 12.5px;
+    font-weight: var(--motiva-font-weight-medium);
+    line-height: 1;
+    color: var(--motiva-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mdash-task-title,
+    .mdash-check,
+    .mdash-check-box { transition: none; }
+}
+
+/* ── "+ משימה" ───────────────────────────────────────────────
+   The card's one creating action, alone in its foot. A text button rather
+   than a filled CTA: the dashboard's primary act is dealing with what the
+   system is waiting for, and a gradient pill down here would outrank every
+   row above it.
+
+   It is ALWAYS rendered, including under "הכול בוצע" — adding a reminder is
+   not something you should need an existing list in order to do. */
+.mdash-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    margin-inline-end: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-family: var(--motiva-font-family);
+    font-size: 13px;
+    font-weight: var(--motiva-font-weight-semibold);
+    line-height: 1;
+    color: var(--motiva-text-secondary);
+    cursor: pointer;
+    border-radius: var(--motiva-radius-sm);
+    transition: color var(--motiva-motion-duration-fast) var(--motiva-motion-easing-standard);
+}
+
+.mdash-add:hover { color: var(--motiva-color-violet); }
+
+.mdash-add:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring);
+    outline-offset: 3px;
+}
+
+.mdash-add-glyph {
+    font-size: 15px;
+    font-weight: var(--motiva-font-weight-bold);
+    line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mdash-add { transition: none; }
+}
+
+/* ============================================================
+   THE TWO CALM STATES — a card with nothing to report collapses
+
+   Both are ONE LINE of text and no container. An empty state that fills a
+   card is the dashboard reserving height for information it does not have,
+   which is the thing this page must never do: a course with no team in
+   trouble should make the page SHORTER, not leave a hole the same size as
+   three rows.
+
+   They are deliberately not MEmptyState. That component stacks a title
+   over a description with its own block padding — right for a card that
+   owns a screen, and here it would cost ~70px to say five words. The work
+   queue keeps MEmptyState (compacted, further down) because "nothing is
+   waiting for you" is the answer to the page's main question and deserves
+   two lines; these two are asides.
+   ============================================================ */
+
+/* מועדים קרובים, with nothing scheduled. Two lines, the second muted,
+   at the row rhythm the tiles above it would have used. */
+.mdash-dates-empty {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-block: 6px 4px;
+    font-family: var(--motiva-font-family);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.mdash-dates-empty strong {
+    font-size: var(--motiva-font-size-sm);
+    font-weight: var(--motiva-font-weight-semibold);
+    color: var(--motiva-text-secondary);
+}
+
+.mdash-dates-empty span { color: var(--motiva-text-muted); }
+
+/* תמונת מצב צוותים, with no exceptions. ONE line, and the dot is teal —
+   the product's "on track" tone — so the good news reads as a state and
+   not as an error message about missing data. */
+.mdash-teams-calm {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-block: 8px 4px;
+    font-family: var(--motiva-font-family);
+    font-size: var(--motiva-font-size-sm);
+    font-weight: var(--motiva-font-weight-medium);
+    line-height: 1.4;
+    color: var(--motiva-text-secondary);
+}
+
+.mdash-teams-calm-dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: var(--motiva-radius-full);
+    background: var(--motiva-color-teal);
+}
+
+/* "and N more" — a fact, not a link. The card's own CTA is the way to the
+   full list, and a second navigation affordance at the foot would be the
+   same destination twice. */
+.mdash-teams-more {
+    margin: 0;
+    padding-block-start: 11px;
+    font-family: var(--motiva-font-family);
+    font-size: 12.5px;
+    font-weight: var(--motiva-font-weight-medium);
+    line-height: 1;
+    color: var(--motiva-text-muted);
+}
+
+/* ── The "בהנחייתי" tag ──────────────────────────────────────
+   CONTEXT on a course-wide row, not a filter. `.motiva-tag` owns the look
+   — white paper under a gradient edge — and it appears only on the rows
+   where it is true, so it marks a subset without the card ever narrowing
+   to it. */
+.mdash-page.mdash-page .mdash-mine-tag {
+    line-height: 18px;
+    flex: 0 0 auto;
+}
+
+/* ── מועדים קרובים — tile styles ─────────────────────────────── */
+/* .mdash-head-icon, .mdash-kind-*, .mdash-up-list/row/tile/day/month/
+   body/title/meta are declared in css/lecturer-dashboard.css (global)
+   so they apply unconditionally, outside Blazor CSS isolation. */
+
+/* ============================================================
+   WHAT USED TO BE HERE: ~320 lines of popup.
+
+   `.mdash-overlay`, `.mdash-popup-shell`, `.mdash-popup`, its header, chip,
+   close button, row list, date comparison, note block and footer buttons
+   — a complete second implementation of a dialog the product already had,
+   opened when a row on this page was clicked.
+
+   No row on this page opens a dialog any more. A work-queue row is an
+   anchor into the module that owns the item and can actually change its
+   state, and a team row is an anchor into that team's workspace — so the
+   dashboard needs no detail surface of its own, page-local or shared. The
+   only markup that survived the deletion is the row itself.
+   ============================================================ */
+
+/* ==== folded in from the former global css/lecturer-dashboard.css ==== */
+
+/* ============================================================
+   Lecturer Dashboard — בקרוב tile section
+   Prefix: mdash-up- / mdash-head-icon / mdash-kind-
+
+   Global (not scoped) so the styles are guaranteed to apply
+   regardless of Blazor CSS-isolation build state.
+   Mirrors MentorHomePage's mh-up-* tile pattern in structure
+   and metrics; uses Motiva tokens from motiva-tokens.css.
+
+   SOURCE: MentorHomePage.razor.css §"2. בקרוב"
+   ============================================================ */
+
+/* ── Calendar icon in the בקרוב card header ─────────────────
+   Matches mh-head-icon: brand-violet glyph at its own size,
+   no background or chip container. */
+.mdash-head-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    color: var(--motiva-color-violet, #6D28F5);
+}
+
+/* ── Item type → tile inset bar colour ───────────────────────
+   Each row carries its KindClass (derived from the item's type,
+   not from deadline urgency). The tile reads --mdash-kind via its
+   inset box-shadow.
+
+   Values are the SAME Motiva tokens as MentorHomePage's mh-kind-*
+   classes (MentorHomePage.razor.css §"The calendar's own five hues"):
+     milestone    → --motiva-text-secondary (dark muted gray)
+     submission   → --motiva-color-rose-ink (pink/red)
+     review       → --motiva-color-teal-ink (teal)
+
+   THE MENTOR ADDS TWO KEYS, IT DOES NOT RECOLOUR THREE. Its rail is
+   built by the calendar's own event model, so its class comes from
+   MentorEventTypes.CssSuffix — `meeting` and `personaltask` alongside
+   the three above. Both are transcribed from MentorHomePage's former
+   .mh-kind-* map, which is transcribed in turn from motiva-calendar.css:
+   the same event is the same hue on Home and in the full calendar. */
+.mdash-kind-milestone  { --mdash-kind: var(--motiva-text-secondary,    #4A4657); }
+.mdash-kind-submission { --mdash-kind: var(--motiva-color-rose-ink,   #C42B52); }
+.mdash-kind-review     { --mdash-kind: var(--motiva-color-teal-ink,   #0F8FA6); }
+.mdash-kind-meeting    { --mdash-kind: var(--motiva-color-violet,     #6D28F5); }
+.mdash-kind-personaltask { --mdash-kind: var(--motiva-color-blue,     #2F6BFF); }
+/* Personal tasks / meetings created from the Lecturer Calendar.
+   Violet matches the mcal-dot-personaltask color in motiva-calendar.css,
+   keeping the visual vocabulary consistent across both surfaces. */
+.mdash-kind-personal   { --mdash-kind: var(--motiva-color-violet,     #6D28F5); }
+
+/* ── Date-tile row list ───────────────────────────────────────
+   Identical layout to mh-up-list / mh-up-row in Mentor. */
+
+.mdash-up-list {
+    display: flex;
+    flex-direction: column;
+}
+
+/* The whole 46px tile area is a single keyboard/pointer target.
+   IT IS AN <a> ON ONE ROLE AND A <button> ON THE OTHER, and that is a
+   real product difference rather than an oversight: the lecturer's row
+   NAVIGATES to the team workspace or the calendar, while the mentor's
+   opens the entity's shared popup over the dashboard (the mentor
+   "inspect in place" rule — only a popup's CTA changes the URL). So the
+   selector stays a bare class and the declarations below neutralise the
+   user-agent button box: without `appearance`, `background`, `border`,
+   `font` and `text-align` a <button> here would draw a grey chrome
+   button with centred 13.33px system text inside the card. */
+.mdash-up-row {
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr);
+    align-items: center;
+    gap: 13px;
+    padding: 11px 2px;
+    border-block-end: 1px solid rgba(27, 26, 34, 0.07);
+
+    appearance: none;
+    -webkit-appearance: none;
+    inline-size: 100%;
+    background: none;
+    border-inline: 0;
+    border-block-start: 0;
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+
+    color: var(--motiva-text-primary, #1B1A22);
+    text-decoration: none;
+
+    transition: background-color var(--motiva-motion-duration-fast, 0.15s)
+                                 var(--motiva-motion-easing-standard, ease);
+}
+
+.mdash-up-row:last-child { border-block-end: 0; }
+
+/* Structural hover — the row's box, never its ink. */
+.mdash-up-row:hover {
+    background: rgba(27, 26, 34, 0.025);
+    border-radius: var(--motiva-radius-row, 10px);
+    color: var(--motiva-text-primary);
+}
+
+.mdash-up-row:focus-visible {
+    outline: 2px solid var(--motiva-color-focus-ring, #6D28F5);
+    outline-offset: -2px;
+    border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mdash-up-row { transition: none; }
+}
+
+/* The 46px date block: day number over abbreviated month name.
+   The urgency inset bar sits across the top via box-shadow — the
+   block's fill and corners never change, only the bar colour does.
+   Transcribed from mh-up-tile in MentorHomePage.razor.css. */
+.mdash-up-tile {
+    display: block;
+    overflow: hidden;
+    padding: 6px 0 5px;
+    border-radius: 9px;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(27, 26, 34, 0.10);
+    /* --mdash-kind is inherited from the parent .mdash-up-row via the KindClass */
+    box-shadow: inset 0 2.5px 0 var(--mdash-kind, #9B96A8);
+}
+
+.mdash-up-day {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--motiva-text-primary, #1B1A22);
+    font-variant-numeric: tabular-nums;
+}
+
+.mdash-up-month {
+    display: block;
+    margin-block-start: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--motiva-text-subtle, #9B96A8);
+}
+
+/* Body area: milestone title + relative-date meta. */
+.mdash-up-body { min-width: 0; }
+
+/* Primary text — inherits row colour so it transitions on hover. */
+.mdash-up-title {
+    display: block;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: inherit;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Secondary text — the Hebrew relative label: "היום", "מחר", etc. */
+.mdash-up-meta {
+    display: block;
+    min-width: 0;
+    margin-block-start: 3px;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--motiva-text-subtle, #9B96A8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

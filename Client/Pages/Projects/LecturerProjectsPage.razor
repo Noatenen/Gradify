@@ -315,14 +315,26 @@
     // ── Filter definitions ─────────────────────────────────────────────────
     private record FilterDef(string Id, string Label);
 
+    // ── ORDER ONLY ──────────────────────────────────────────────────────
+    // "צוותים בהנחייתי" now sits second, directly after "הכל". It was last,
+    // which put the reader's OWN teams at the far end of a row whose other
+    // four entries are all states a team can be in — so the one chip that
+    // narrows by WHO rather than by WHAT was the hardest to find and read as
+    // an afterthought.
+    //
+    // Nothing else moved and nothing else changed: the ids are the same, the
+    // labels are the same, MatchesFilter's predicates are untouched, "all" is
+    // still the default in the _filter field, and the ?filter= deep link still
+    // validates against this same array — so a link to any chip keeps working
+    // regardless of position.
     private static readonly FilterDef[] Filters =
     {
         new("all",       "הכל"),
+        new("mine",      "צוותים בהנחייתי"),
         new("attention", "דורש תשומת לב"),
         new("approve",   "ממתין לאישור"),
         new("request",   "בקשה פתוחה"),
         new("ok",        "מתקדם כרגיל"),
-        new("mine",      "צוותים בהנחייתי"),
     };
 
     // ── Query-string deep-link ────────────────────────────────────────────
@@ -331,6 +343,23 @@
     /// automatically on arrival.</summary>
     [Parameter, SupplyParameterFromQuery(Name = "open")]
     public int? OpenProjectId { get; set; }
+
+    /// <summary>
+    /// Which filter chip this screen arrives on — <c>?filter=mine</c> and the
+    /// rest of the ids in <see cref="Filters"/>.
+    ///
+    /// <para>ADDITIVE, AND DEFENSIVE. Every existing link here carries no
+    /// filter and lands on "הכל" exactly as before; an unknown or misspelled
+    /// value falls through to "הכל" rather than showing an empty list under a
+    /// chip nobody selected.</para>
+    ///
+    /// <para>It exists because the lecturer Home's supervision snapshot needs a
+    /// real route to "all the teams I supervise", and that view already exists
+    /// here as the צוותים בהנחייתי chip — it simply had no address. Nothing
+    /// about the page's data, filters or defaults changed to give it one.</para>
+    /// </summary>
+    [Parameter, SupplyParameterFromQuery(Name = "filter")]
+    public string? InitialFilter { get; set; }
 
     // ── State ─────────────────────────────────────────────────────────────
     private List<DashboardProjectRowDto> _all    = new();
@@ -350,6 +379,14 @@
     // ── Lifecycle ─────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
+        // Applied before the fetch so the first paint is already the requested
+        // view; an unrecognised value leaves the default in place.
+        if (!string.IsNullOrWhiteSpace(InitialFilter)
+            && Filters.Any(f => f.Id == InitialFilter))
+        {
+            _filter = InitialFilter!;
+        }
+
         var data = await DashboardService.GetAsync("lecturer");
         _loadError = data is null;
         if (data is not null)
