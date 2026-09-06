@@ -211,6 +211,18 @@ namespace AuthWithAdmin.Server.Controllers
 
             if (affected == 0) return NotFound("המשתמש לא נמצא");
 
+            // ── Is this the approval of a PENDING self-registered account? ──
+            //  Asked BEFORE the delete below, which destroys the evidence.
+            //
+            //  Public signup is approval-gated (UserManagement:NeedApproval),
+            //  so AuthRepository.Signup creates the account and stops: no role
+            //  rows at all. "Zero roles" is that state and nothing else — every
+            //  other path that creates a user gives it a role in the same
+            //  operation, and no account in the deployment database has none.
+            bool wasPending = (await _db.GetRecordsAsync<int>(
+                "SELECT COUNT(*) FROM UserRoles WHERE UserId = @Id",
+                new { Id = id })).FirstOrDefault() == 0;
+
             // Replace primary role (keep "User" approval role if present)
             await _db.SaveDataAsync(
                 "DELETE FROM UserRoles WHERE UserId = @Id AND Role != 'User'",
@@ -219,6 +231,27 @@ namespace AuthWithAdmin.Server.Controllers
             await _db.SaveDataAsync(
                 "INSERT INTO UserRoles (UserId, Role) VALUES (@UserId, @Role)",
                 new { UserId = id, Role = req.Role });
+
+            //  The delete above says "keep User if present" — for a pending
+            //  account there is none to keep, so the approved user came out
+            //  holding an identity role and no approval marker, which is the
+            //  one combination the rest of the system does not produce.
+            //
+            //  ONLY in that case, and deliberately not on every edit: 30 of the
+            //  40 existing accounts hold an identity role WITHOUT "User"
+            //  (students, mentors and two lecturers among them). Adding it
+            //  whenever an admin touches a user would quietly re-approve
+            //  accounts nobody asked about; restricted to wasPending it cannot
+            //  reach a single existing account.
+            //
+            //  INSERT OR IGNORE against ux_userroles_user_role, so this is safe
+            //  to re-run and cannot duplicate a row.
+            if (wasPending)
+            {
+                await _db.SaveDataAsync(
+                    "INSERT OR IGNORE INTO UserRoles (UserId, Role) VALUES (@UserId, @Role)",
+                    new { UserId = id, Role = Roles.User });
+            }
 
             return Ok();
         }

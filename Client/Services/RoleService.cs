@@ -51,6 +51,29 @@ public static class RoleService
     /// </summary>
     public static string GetDefaultLandingRoute(User? user)
     {
+        // AWAITING APPROVAL — signed in, but carrying no role at all.
+        //
+        // Public self-registration is approval-gated (UserManagement:
+        // NeedApproval), so AuthRepository.Signup and RegisterGoogleUser
+        // create the account and stop: no "User" approval row, no identity
+        // role, nothing for any check below to match. Such an account used to
+        // fall through every branch to the /dashboard fallback and render the
+        // STUDENT dashboard, whose API calls then 401 against
+        // [Authorize(Roles = Student)] — a blank, quietly broken screen
+        // instead of an explanation.
+        //
+        // Zero roles means exactly this and nothing else: every account the
+        // system creates through any other path is given at least the "User"
+        // approval role in the same operation (team registration adds User +
+        // Student, AddUserByAdmin approves, admin edit keeps User). Verified
+        // against the deployment database — no existing account has zero roles.
+        //
+        // Checked FIRST so it cannot be shadowed: an empty role set makes
+        // IsStudent() false, but only because every one of its terms is false,
+        // which is indistinguishable from "not a student" further down.
+        if (user is not null && (user.Roles is null || user.Roles.Count == 0))
+            return PageRoutes.Pending;
+
         // Students keep the legacy /dashboard route — that page already
         // handles the "team-without-project" → catalog redirect internally.
         if (IsStudent(user)) return PageRoutes.Dashboard;
