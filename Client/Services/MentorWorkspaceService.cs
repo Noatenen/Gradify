@@ -254,7 +254,7 @@ public class MentorWorkspaceService : IMentorWorkspaceService
                         Date: m.DueDate.Value, Title: m.Title,
                         ProjectId: detail.Id, ProjectTitle: detail.Title, TeamName: team,
                         Detail: $"{m.CompletedTasks}/{m.TotalTasks} משימות הושלמו",
-                        Href: $"/mentor/projects/{detail.Id}"));
+                        Href: $"mentor/projects/{detail.Id}"));
                 }
 
                 // A dated deliverable the team owes. Only IsSubmission tasks —
@@ -267,7 +267,7 @@ public class MentorWorkspaceService : IMentorWorkspaceService
                         Date: t.DueDate!.Value, Title: t.Title,
                         ProjectId: detail.Id, ProjectTitle: detail.Title, TeamName: team,
                         Detail: string.IsNullOrWhiteSpace(m.Title) ? null : $"אבן דרך: {m.Title}",
-                        Href: $"/mentor/projects/{detail.Id}"));
+                        Href: $"mentor/projects/{detail.Id}"));
                 }
             }
         }

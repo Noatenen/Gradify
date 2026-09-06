@@ -130,7 +130,7 @@ public static class ManagementHubDefinitions
         {
             new ManagementEntry("משתמשים", "משתמשים, תפקידים, מחזורים וסטטוסים",
                 IcoUsers, TileAccent.Violet,
-                Route: "/management/users", RequiresFlag: RoleFeatures.CanManageUsers),
+                Route: "management/users", RequiresFlag: RoleFeatures.CanManageUsers),
 
             // THE project-management entry. Catalog is the broader pool /
             // proposal experience; "פרויקטים פעילים" (/management/projects) is a
@@ -146,7 +146,7 @@ public static class ManagementHubDefinitions
             // page's name and the DESCRIPTION carries the consolidation.
             new ManagementEntry("קטלוג פרויקטים", "הצעות פרויקט, זמינות, שיוך למחזור ופרויקטים פעילים",
                 IcoCatalog, TileAccent.Blue,
-                Route: "/management/catalog"),
+                Route: "management/catalog"),
         }),
 
         // ── תוכנית אקדמית ───────────────────────────────────────────────────
@@ -160,15 +160,15 @@ public static class ManagementHubDefinitions
             // page — a shortcut to a screen one click away.
             new ManagementEntry("מחזורים אקדמיים", "מחזורים, תוכנית המחזור ואבני הדרך שלו",
                 IcoCalendar, TileAccent.Violet,
-                Route: "/management/cycles"),
+                Route: "management/cycles"),
 
             new ManagementEntry("תבניות אבני דרך", "ספריית אבני הדרך לתוכניות המחזורים",
                 IcoFlag, TileAccent.Blue,
-                Route: "/management/milestones"),
+                Route: "management/milestones"),
 
             new ManagementEntry("תבניות משימות", "משימות מוכנות לשיבוץ באבני דרך",
                 IcoCheckbox, TileAccent.Teal,
-                Route: "/management/tasks"),
+                Route: "management/tasks"),
         }),
 
         // ── טפסים ותהליכים ──────────────────────────────────────────────────
@@ -180,11 +180,11 @@ public static class ManagementHubDefinitions
         {
             new ManagementEntry("טפסים", "בניית טפסים, סעיפים ושדות למשימות ובקשות",
                 IcoFileText, TileAccent.Violet,
-                Route: "/management/forms"),
+                Route: "management/forms"),
 
             new ManagementEntry("סוגי בקשות", "הגדרת סוגי הבקשות והטפסים המשויכים להן",
                 IcoMessage, TileAccent.Blue,
-                Route: "/management/request-types"),
+                Route: "management/request-types"),
         }),
 
         // ── הגדרות ──────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ public static class ManagementHubDefinitions
         {
             new ManagementEntry("הגדרות אישורים", "ספי תזכורת, ערוצי שליחה, תדירות והרשאת עקיפה",
                 IcoShield, TileAccent.Violet,
-                Route: "/management/pending-approval-settings"),
+                Route: "management/pending-approval-settings"),
 
             // Not drawn by the reference, kept deliberately: permissions are a
             // current, non-superseded management area, and this screen is the
@@ -200,7 +200,7 @@ public static class ManagementHubDefinitions
             // flags THIS file reads in RequiresFlag.
             new ManagementEntry("הרשאות לפי תפקיד", "מה מותר לכל תפקיד במערכת",
                 IcoLock, TileAccent.Blue,
-                Route: "/management/role-settings"),
+                Route: "management/role-settings"),
 
             // Also not drawn by the reference, also kept: the integrations hub
             // is the only entry point to Slack, Airtable, external forms and
@@ -209,7 +209,7 @@ public static class ManagementHubDefinitions
             // straight to it.
             new ManagementEntry("ניהול אינטגרציות", "Slack, Airtable, טפסים חיצוניים ו-webhook החדשנות",
                 IcoLink, TileAccent.Teal,
-                Route: "/management/integrations"),
+                Route: "management/integrations"),
         }),
     };
 
@@ -231,27 +231,27 @@ public static class ManagementHubDefinitions
     /// </summary>
     public static readonly (string Title, string Target, string Reason)[] WithdrawnFromHub =
     {
-        ("פרויקטים פעילים",      "/management/projects",
+        ("פרויקטים פעילים",      "management/projects",
             "A lifecycle view over the same Projects domain as the catalog; active teams are worked in the lecturer's redesigned /projects."),
-        ("שיבוץ צוותים לפרויקטים", "/assignments",
+        ("שיבוץ צוותים לפרויקטים", "assignments",
             "Already a primary nav destination (שיבוצים). The hub was its second entry point."),
         ("שיוך מנחים לצוותים",   "section:teams",
             "Mentor assignment is owned by /management/projects and the shared ProjectMentorsEditor."),
-        ("שלבי תוכנית",          "/management/cycles?focus=stages",
+        ("שלבי תוכנית",          "management/cycles?focus=stages",
             "The cycles screen draws a stages button on every cycle row; this tile only added a banner to that same page."),
         ("עדכון מועדי אבני דרך", "section:milestones",
             "Dates belong to the milestone-template editor, which now owns them in the redesigned /management/milestones."),
-        ("תור הבקשות",           "/management/requests",
+        ("תור הבקשות",           "management/requests",
             "Already a primary nav destination (בקשות), and an operational queue rather than configuration."),
-        ("תור אישורי מנחה",      "/management/pending-mentor-approvals",
+        ("תור אישורי מנחה",      "management/pending-mentor-approvals",
             "An operational queue. Its own settings page names it as such and this hub keeps the settings."),
-        ("חומרי עזר",            "/management/resources",
+        ("חומרי עזר",            "management/resources",
             "The redesigned /resource-files workspace — itself a primary nav item — links straight to it."),
         ("נראות משאבים",         "section:resources",
             "The per-resource visibility flags are edited on /management/resources."),
         ("עריכה מהירה — סטודנט ומנחה", "section:settings",
             "A subset of the role feature-flag matrix the הרשאות לפי תפקיד tile opens."),
-        ("Airtable",             "/management/integrations/airtable",
+        ("Airtable",             "management/integrations/airtable",
             "Listed by the integrations hub, and the catalog's import button navigates straight to it."),
     };
 }

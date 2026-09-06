@@ -1847,7 +1847,12 @@ public class ProjectsController : ControllerBase
                     -- SQLite, so a missing or blank LogoPath falls out as a null
                     -- LogoUrl on its own -- no row and no upload both mean the
                     -- team has no logo.
-                    '/{LogoContainer}/' || NULLIF(TRIM(ptp.LogoPath), '')   AS LogoUrl
+                    --
+                    -- BASE-RELATIVE, with no leading slash: the client renders
+                    -- this straight into <img src>, where a rooted path resolves
+                    -- against the ORIGIN instead of <base href> and would 404
+                    -- under a sub-path deployment.
+                    '{LogoContainer}/' || NULLIF(TRIM(ptp.LogoPath), '')    AS LogoUrl
             FROM    Projects      p
             JOIN    ProjectTypes  pt  ON p.ProjectTypeId  = pt.Id
             JOIN    AcademicYears ay  ON p.AcademicYearId = ay.Id
@@ -1988,7 +1993,8 @@ public class ProjectsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(existing?.LogoPath))
             _files.DeleteFile(existing.LogoPath, LogoContainer);
 
-        return Ok(new { url = $"/{LogoContainer}/{newFileName}" });
+        // Base-relative, matching the LogoUrl the read query above returns.
+        return Ok(new { url = $"{LogoContainer}/{newFileName}" });
     }
 
     // ── DELETE /api/projects/my-project/logo ─────────────────────────────────

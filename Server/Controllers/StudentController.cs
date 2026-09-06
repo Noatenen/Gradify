@@ -204,9 +204,12 @@ public class StudentController : ControllerBase
             Phone           = row.Phone         ?? "",
             AcademicYear    = row.AcademicYear  ?? "",
             IdNumber        = row.IdNumber      ?? "",
+            // BASE-RELATIVE, no leading slash — the client renders this into
+            // <img src>, where a rooted path would resolve against the origin
+            // instead of <base href> and 404 under a sub-path deployment.
             ProfileImageUrl = string.IsNullOrEmpty(row.ProfileImagePath)
                                 ? null
-                                : $"/profile-images/{row.ProfileImagePath}",
+                                : $"profile-images/{row.ProfileImagePath}",
             ProjectTitle    = row.ProjectTitle,
             ProjectNumber   = row.ProjectNumber,
             TeamName        = row.TeamName,
@@ -318,7 +321,7 @@ public class StudentController : ControllerBase
         if (!string.IsNullOrEmpty(existing?.ProfileImagePath))
             _files.DeleteFile(existing.ProfileImagePath, "profile-images");
 
-        return Ok(new { url = $"/profile-images/{newFileName}" });
+        return Ok(new { url = $"profile-images/{newFileName}" });
     }
 
     // DELETE /api/student/me/avatar

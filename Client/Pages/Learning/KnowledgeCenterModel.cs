@@ -301,7 +301,7 @@ public static class KnowledgeCenterModel
 
         // The real, existing download path — same one StudentFilesPage uses.
         if (!string.IsNullOrWhiteSpace(file.StoredFileName))
-            return (KnowledgeResourceAction.Download, $"/resources/{file.StoredFileName}");
+            return (KnowledgeResourceAction.Download, $"resources/{file.StoredFileName}");
 
         // No ResourceFiles row is an external link today. This branch exists so
         // that if one ever arrives (or a File row loses its stored file), the

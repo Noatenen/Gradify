@@ -50,9 +50,14 @@ public class UsersMeController : ControllerBase
             LastName        = row.LastName  ?? "",
             Email           = row.Email     ?? "",
             Phone           = row.Phone     ?? "",
+            // BASE-RELATIVE, no leading slash. The client renders this straight
+            // into <img src>, and a rooted path resolves against the ORIGIN
+            // rather than <base href> — so under a sub-path deployment every
+            // avatar would 404. Relative resolves against the document base,
+            // which is correct both at "/" and under any prefix.
             ProfileImageUrl = string.IsNullOrEmpty(row.ProfileImagePath)
                                 ? null
-                                : $"/profile-images/{row.ProfileImagePath}",
+                                : $"profile-images/{row.ProfileImagePath}",
             Roles           = roles,
         };
 

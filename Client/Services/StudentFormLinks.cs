@@ -27,11 +27,11 @@ public static class StudentFormLinks
     /// <summary>The Project Assignment Form. A system form with its own screen
     /// rather than a row in the generic renderer — it feeds the assignment
     /// algorithm, so it is answered at its own route.</summary>
-    public const string AssignmentForm = "/student/assignment";
+    public const string AssignmentForm = "student/assignment";
 
     /// <summary>Where a student answers <paramref name="formId"/>. The
     /// assignment form has its own screen; every other form is answered by the
     /// generic renderer at <c>/forms/{id}</c>.</summary>
     public static string For(int formId, bool isAssignmentForm) =>
-        isAssignmentForm ? AssignmentForm : $"/forms/{formId}";
+        isAssignmentForm ? AssignmentForm : $"forms/{formId}";
 }

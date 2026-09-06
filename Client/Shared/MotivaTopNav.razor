@@ -57,7 +57,7 @@
        the mark and the first pill can never point at different screens. For
        a student that is /dashboard, exactly as before. *@
     <a class="stn-logo" href="@HomeHref" aria-label="Motiva — לדף הבית">
-        <img src="/images/motiva-logo.png" alt="Motiva" class="stn-logo-img" />
+        <img src="images/motiva-logo.png" alt="Motiva" class="stn-logo-img" />
     </a>
 
     <nav class="stn-nav" aria-label="ניווט ראשי">
@@ -145,7 +145,7 @@
            cleanup with its own blast radius. *@
 
         <a class="stn-avatar @(IsProfileRoute ? "stn-avatar-active" : "")"
-           href="/settings"
+           href="settings"
            title="הפרופיל שלי"
            aria-label="הפרופיל שלי">
             @GetInitials()
@@ -206,15 +206,23 @@
     /// opens with בית — so the logo follows NavDefinitions instead of a literal
     /// that has to be remembered when a route moves.
     ///
-    /// <para>THE FALLBACK IS "/" AND NOT "/dashboard". The list is empty only
-    /// while the cascaded user is still null (see NavDefinitions.GetNavItems),
-    /// and "/dashboard" is one specific role's home — the student's — so the
+    /// <para>THE FALLBACK IS THE APP ROOT AND NOT "dashboard". The list is empty
+    /// only while the cascaded user is still null (see NavDefinitions.GetNavItems),
+    /// and "dashboard" is one specific role's home — the student's — so the
     /// logo was a second way to reach the wrong dashboard during exactly the
-    /// window the nav pills had the same bug. "/" is Index.razor, which resolves
-    /// the landing route from <c>RoleService.GetDefaultLandingRoute</c> after
-    /// awaiting the user, so it is right for every role and cannot be early.</para></summary>
+    /// window the nav pills had the same bug. The root is Index.razor, which
+    /// resolves the landing route from <c>RoleService.GetDefaultLandingRoute</c>
+    /// after awaiting the user, so it is right for every role and cannot be
+    /// early.</para>
+    ///
+    /// <para>BASE-RELATIVE, NOT ROOT-RELATIVE. A leading "/" is resolved against
+    /// the ORIGIN and ignores <c>&lt;base href&gt;</c> entirely, so under a
+    /// sub-path deployment the logo would leave the application. Both arms are
+    /// therefore base-relative: the nav item's own Href (already slash-free in
+    /// NavDefinitions), and "./" — which is the app root under any base, where
+    /// an empty string would mean "the current page".</para></summary>
     private string HomeHref =>
-        _navMain.Count > 0 ? "/" + _navMain[0].Href.TrimStart('/') : "/";
+        _navMain.Count > 0 ? _navMain[0].Href.TrimStart('/') : "./";
 
     /// <summary>The route whose nav pill carries the primary action-count badge.
     ///
@@ -249,13 +257,26 @@
     /// destination that role's own nav already carries.</summary>
     private string CalendarHref => Shell switch
     {
-        NavDefinitions.Shell.Mentor   => "/mentor/calendar",
-        NavDefinitions.Shell.Lecturer => "/milestones-overview",
-        _                             => "/milestones",
+        NavDefinitions.Shell.Mentor   => "mentor/calendar",
+        NavDefinitions.Shell.Lecturer => "milestones-overview",
+        _                             => "milestones",
     };
 
+    /// <summary>Whether הגדרות is the current route.
+    ///
+    /// <para>Read through <see cref="CurrentRoute"/> rather than
+    /// <c>AbsolutePath</c>: the latter carries the deployment's base path, so
+    /// under a sub-path it answers "JsGoogle/settings" and this comparison —
+    /// and the avatar's active state with it — would silently never match.</para></summary>
     private bool IsProfileRoute =>
-        new Uri(Nav.Uri).AbsolutePath.Trim('/').Equals("settings", StringComparison.OrdinalIgnoreCase);
+        CurrentRoute.Equals("settings", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The current location as a route inside the app: base path
+    /// removed, query and fragment dropped, no surrounding slashes. This is the
+    /// only shape that can be compared against a NavDefinitions route under any
+    /// deployment base.</summary>
+    private string CurrentRoute =>
+        Nav.ToBaseRelativePath(Nav.Uri).Split('?')[0].Split('#')[0].Trim('/');
 
     protected override void OnInitialized()
     {
@@ -356,7 +377,10 @@
 
     private async void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
-        var path  = new Uri(Nav.Uri).AbsolutePath.Trim('/');
+        // CurrentRoute, not AbsolutePath: the base path would otherwise prefix
+        // every value here, so under a sub-path deployment no location would
+        // ever match RequestsRoute and the badge would stop refreshing.
+        var path  = CurrentRoute;
         var route = RequestsRoute;
 
         // StartsWith, not Equals: the lecturer's route is a two-segment

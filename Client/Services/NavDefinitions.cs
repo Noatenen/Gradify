@@ -302,18 +302,24 @@ public static class NavDefinitions
     /// caller must compare before navigating rather than assume the answer is
     /// somewhere else; <c>StudentRequestsPage</c> does exactly that and
     /// therefore cannot redirect to itself.</para>
+    ///
+    /// <para>Base-relative, like every NavItem Href in this file. A leading "/"
+    /// is resolved against the ORIGIN and ignores <c>&lt;base href&gt;</c>, so a
+    /// rooted value handed to NavigateTo would leave the application under a
+    /// sub-path deployment. The one comparison against these values
+    /// (StudentRequestsPage) already Trim('/')s both sides, so it is unaffected.</para>
     /// </summary>
     public static string RequestsHomeFor(User? user) => GetShell(user) switch
     {
-        Shell.Mentor   => "/mentor-requests",
-        Shell.Lecturer => "/management/requests",
+        Shell.Mentor   => "mentor-requests",
+        Shell.Lecturer => "management/requests",
         _              => StudentRequestsRoute,
     };
 
     /// <summary>The student queue's own route. Named because
     /// <see cref="RequestsHomeFor"/> returns it as its fallback and the page
     /// that lives at it has to recognise its own address.</summary>
-    public const string StudentRequestsRoute = "/requests";
+    public const string StudentRequestsRoute = "requests";
 
     // ─────────────────────────────────────────────────────────────────
     /// <summary>
