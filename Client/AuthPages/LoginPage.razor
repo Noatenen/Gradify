@@ -7,7 +7,10 @@
 @inject NavigationManager nav
 @inject HttpClient Http
 @inject IRememberedLoginService RememberedLogin
-@inject IStudentStageService StageSvc
+@* IStudentStageService was injected here only for GetRedirectTarget's old
+   student branch. That branch is gone — login resolves Home from the role
+   alone — so the dependency is gone with it. The service itself is untouched
+   and still owns student stage routing everywhere it actually belongs. *@
 
 <PageTitle>Motiva — התחברות</PageTitle>
 
@@ -273,7 +276,7 @@
 
             //  AuthenticationService already dropped the previous identity's
             //  stage; this is the first resolution for the new one.
-            nav.NavigateTo(await GetRedirectTarget(loggedInUser), forceLoad: true, replace: true);
+            nav.NavigateTo(GetRedirectTarget(loggedInUser), forceLoad: true, replace: true);
         }
         else
         {
@@ -289,32 +292,44 @@
     [SupplyParameterFromQuery(Name = ReturnUrlPolicy.QueryKey)]
     public string? ReturnUrl { get; set; }
 
-    private async Task<string> GetRedirectTarget(User? u)
-    {
-        // An intended destination wins over the role default — that is the
-        // entire point of carrying it. It is honoured ONLY after passing both
-        // of ReturnUrlPolicy's gates: it must be a local path (no open
-        // redirect) and it must be reachable by this user's roles, so a stale
-        // link into another shell falls through to the dashboard instead of
-        // dead-ending on PendingPage.
-        //
-        // Checked before the student branch below, because that branch makes a
-        // network call this case does not need.
-        if (ReturnUrlPolicy.Sanitize(ReturnUrl, u) is { } destination)
-            return destination;
-
-        // Non-students go to their role-specific dashboard
-        // (Admin/Staff → /dashboard/lecturer, Mentor → /dashboard/mentor).
-        if (!RoleService.IsStudent(u))
-            return RoleService.GetDefaultLandingRoute(u);
-
-        // Students: one shared resolver decides, so this page, Dashboard and the
-        // student route guards can never disagree about where a student belongs.
-        // Reached only for students — the non-student branch above returns first,
-        // so no lecturer can be routed into a student surface from here.
-        var stage = await StageSvc.ResolveAsync();
-        return StudentStageService.RouteFor(stage);
-    }
+    /// <summary>
+    /// Where a FRESH LOGIN lands. Always the role's own Home — never the page
+    /// the browser happened to be on.
+    ///
+    /// <para><b>THE RETURN URL IS NOT CONSULTED HERE ANY MORE.</b> This used to
+    /// begin by honouring <c>ReturnUrlPolicy.Sanitize(ReturnUrl, u)</c>, so the
+    /// route that triggered the login screen won over the role default: signing
+    /// in after being bounced off /projects landed on /projects, and after
+    /// /mentor/calendar on /mentor/calendar. Signing in is now treated as
+    /// STARTING A SESSION rather than as resuming an interrupted navigation, and
+    /// a session starts at Home — one predictable first screen per role, whatever
+    /// the browser was doing beforehand.</para>
+    ///
+    /// <para>Scope is exactly one moment: this method has a single caller, the
+    /// success branch of <see cref="login"/>. Ordinary in-app navigation is
+    /// untouched, and so is the separate <c>OnInitializedAsync</c> case above —
+    /// an ALREADY-authenticated visitor who arrives here carrying a ReturnUrl is
+    /// being bounced back to what they were doing, which is not a login.</para>
+    ///
+    /// <para><b>THE STUDENT STAGE IS NOT CONSULTED HERE EITHER.</b> This used to
+    /// branch: non-students took the role default, students took
+    /// <c>StudentStageService.ResolveAsync()</c> and could therefore be dropped
+    /// on <c>create-team</c> or the catalogue instead of a dashboard, because
+    /// their workflow state outranked their role. Login now answers ONE question
+    /// — "what is this person's Home?" — and workflow state answers none of it.
+    ///
+    /// <para>Nothing about the student journey was weakened. StudentStageService
+    /// is untouched, and <c>/dashboard</c> (Dashboard.razor) still owns the
+    /// team-without-project redirect it has always owned, so a student who
+    /// genuinely needs create-team or the catalogue is still sent there — by the
+    /// dashboard, one step later, instead of by the login screen.</para>
+    ///
+    /// <para>One resolver for every role now: <see cref="RoleService.GetDefaultLandingRoute"/>,
+    /// which is what makes Staff/Admin beat Mentor on an overlapping-role
+    /// account and what maps a student to <c>PageRoutes.Dashboard</c>. No second
+    /// routing implementation exists in this file at all.</para></summary>
+    private static string GetRedirectTarget(User? u) =>
+        RoleService.GetDefaultLandingRoute(u);
 
 
 }

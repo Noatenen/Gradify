@@ -30,27 +30,45 @@
     Nothing decorative replaced them. The card is shorter, which is the honest
     result of a smaller responsibility.
 
-    ── דורש פעולה IS THE MENTOR'S OWN WORK QUEUE ────────────────────────────
+    ── דורש פעולה IS A SYSTEM WORK QUEUE, NOT A TODO LIST ───────────────────
     Same card, same lift, same filter tabs, same row density as the lecturer's
-    — different rows. Two kinds only, and both are ENTITIES whose current
-    workflow state requires this mentor:
+    — different rows. TWO KINDS, and both are ENTITIES whose current workflow
+    state requires this mentor:
 
-      הגשה   MentorAttentionKind.Submission — a TaskSubmission waiting on this
-             mentor's review
-      בקשה   MentorAttentionKind.Request — a ProjectRequest awaiting this
-             mentor's recommendation
+      הגשה   MentorAttentionKind.Submission — a TaskSubmission with
+             MentorStatus = 'Pending', waiting on this mentor's review
+      בקשה   MentorAttentionKind.Request — a ProjectRequest with Status =
+             'PendingMentorRecommendation', awaiting their recommendation
 
-    Both come from GET /api/mentor/attention, which is the product's single
-    source of truth for "what is waiting on this mentor" — this page does not
-    filter by status, compute an age or compare against a threshold, and the
-    daily digest reads the very same model. An item leaves the queue when the
-    underlying entity moves; nothing here is marked done.
+    Both come from GET /api/mentor/attention, the product's single source of
+    truth for what is waiting on a mentor. This page adds no status filter, no
+    age computation and no threshold comparison, and it does not re-sort: the
+    server's list is already worst-first and filtering preserves that order.
+    The daily digest reads the very same model. An item leaves the queue when
+    the underlying entity moves; nothing here is marked done.
 
-    PERSONAL TASKS ARE NOT IN IT. The attention model does carry the mentor's
-    overdue reminders, and they are filtered out here for the reason the
-    lecturer's queue gives: a note you wrote yourself is not the system waiting
-    on you, and mixing the two puts two kinds of completion in one list. They
-    have their own card, with a checkbox.
+    ── PERSONAL TASKS ARE NOT IN IT, ON EITHER ROLE ─────────────────────────
+    The attention endpoint DOES return a third kind — the mentor's own
+    reminders that are overdue or due today — and this page deliberately does
+    not render them, which is the one place it narrows what the server sends.
+
+    The rule is a product rule and it is the same for the lecturer:
+
+      דורש פעולה     THE SYSTEM IS WAITING ON YOU. Completion comes from the
+                     WORKFLOW — no checkbox, ever. The row is an anchor into
+                     the thing that owns the entity, and it disappears when
+                     that entity's own state moves.
+      משימות אישיות   YOU ARE WAITING ON YOURSELF. Completion comes from the
+                     PERSON, through PATCH …/personal-tasks/{id}/toggle.
+
+    Mixing them puts two kinds of completion in one list and makes the queue's
+    count a number about two unrelated things. So משימות אישיות is the ONLY
+    Home surface for a mentor's reminders, and this queue has no "משימות" tab
+    for a kind it cannot contain.
+
+    THE SHARED VISUAL LANGUAGE IS NOT SHARED BUSINESS MEANING. This card and
+    the lecturer's are the same object with the same rule; הצוותים שלי below
+    and the lecturer's תמונת מצב צוותים are deliberately NOT — see its note.
 
     ── ROWS INSPECT, THEY DO NOT NAVIGATE ───────────────────────────────────
     The one deliberate behavioural difference from the lecturer's queue, and it
@@ -143,7 +161,7 @@
                 @if (WorkQueue.Count == 0)
                 {
                     <MEmptyState Title="אין פריטים שממתינים לפעולה שלך."
-                                 Description="הגשות לבדיקה ובקשות שממתינות להמלצתך יופיעו כאן מעצמן." />
+                                 Description="הגשות לבדיקה ובקשות שממתינות להמלצתך יופיעו כאן מעצמן. משימות אישיות מנוהלות בכרטיס שלהן." />
                 }
                 else if (VisibleQueue.Count == 0)
                 {
@@ -160,12 +178,22 @@
                                   Primary="@it.Title"
                                   Secondary="@it.Context"
                                   OnClick="@(_ => OpenAttentionItem(it.Source))"
-                                  AriaLabel="@($"{it.TypeLabel}: {it.Title}. {it.Context}. {it.ActionLabel}")">
+                                  AriaLabel="@($"{it.TypeLabel}: {it.Title}. {it.Context}. {it.Wait}. {it.ActionLabel}")">
                                 <Leading>
                                     <MStatusBadge Size="MStatusBadge.BadgeSize.Small"
                                                   Variant="@it.TypeVariant"
                                                   Text="@it.TypeLabel" />
                                 </Leading>
+                                <Status>
+                                    @* The waiting age, as a tag — the same
+                                       object, class and position the lecturer's
+                                       queue uses. See the note at its call
+                                       site: state belongs in the row's end
+                                       block, ownership on the context line, and
+                                       a long wait is never rose because neither
+                                       kind here has a deadline to miss. *@
+                                    <span class="motiva-tag mdash-wait-tag">@it.Wait</span>
+                                </Status>
                                 <Trailing>
                                     <span class="mdash-go">
                                         @it.ActionLabel
@@ -615,12 +643,20 @@
     /// to keep in sync and nothing to mark done. <c>Source</c> is the attention
     /// item itself, because the row INSPECTS rather than navigates and the
     /// popups need the item, not a URL.</summary>
+    /// <summary>One row of the queue.
+    ///
+    /// <para><c>Context</c> is OWNERSHIP — team, milestone — and <c>Wait</c> is
+    /// STATE. Two fields because they render in two places: the context line
+    /// under the title, and a tag in the row's end block. Neither repeats the
+    /// other, which is the whole reason the wait left the sentence.</para>
+    /// </summary>
     private sealed record WorkItem(
         MentorAttentionKind       Kind,
         string                    TypeLabel,
         MStatusBadge.BadgeVariant TypeVariant,
         string                    Title,
         string                    Context,
+        string                    Wait,
         string                    ActionLabel,
         MentorAttentionItemDto    Source);
 
@@ -635,22 +671,27 @@
     ///
     /// <para>No .Where on status, no .OrderBy on a timestamp and no threshold
     /// comparison: GET /api/mentor/attention already returns worst-first
-    /// (NeedsAttention → Waiting → New, oldest first inside each) and this only
-    /// drops the kind that belongs on another card. That is what keeps this
-    /// screen, the mentor request queue and the daily digest agreeing about
-    /// which item is most pressing.</para>
+    /// (NeedsAttention → Waiting → New, oldest first inside each) and filtering
+    /// preserves that order. That is what keeps this screen, the mentor request
+    /// queue and the daily digest agreeing about which item is most
+    /// pressing.</para>
     ///
-    /// <para>PERSONAL TASKS ARE DROPPED HERE, and only here — the model still
-    /// carries them and משימות אישיות still lists them. A reminder is not the
-    /// system waiting on the mentor; it is the mentor waiting on themselves,
-    /// and it is completed by a person ticking a box rather than by a workflow
-    /// moving somewhere else.</para></summary>
+    /// <para><b>The one thing this narrows is KIND.</b> The endpoint also
+    /// returns the mentor's own reminders that are overdue or due today, and
+    /// they are dropped here because a note you wrote yourself is not the
+    /// system waiting on you — see the header note. They are not lost: משימות
+    /// אישיות is the card that owns them, and it reads the full
+    /// <c>PersonalTasks</c> list rather than this filtered one.</para>
+    ///
+    /// <para>So this count is <c>PendingSubmissions + AwaitingRequests</c>, and
+    /// deliberately NOT <c>Counts.Total</c> — that figure includes the personal
+    /// kind this card cannot contain.</para></summary>
     private IReadOnlyList<WorkItem> WorkQueue =>
         _ws.Attention.Items
             .Where(i => i.Kind is MentorAttentionKind.Submission or MentorAttentionKind.Request)
             .Select(i => new WorkItem(
                 Kind:        i.Kind,
-                // The lecturer queue's two words, not MentorAttentionRows'
+                // The lecturer queue's short words, not MentorAttentionRows'
                 // longer "הגשה לבדיקה": the badge names the KIND and the
                 // trailing verb says what is done about it, so repeating
                 // "לבדיקה" in both would be the same word twice on one row.
@@ -658,6 +699,11 @@
                 TypeVariant: MentorAttentionRows.TypeVariant(i),
                 Title:       i.Title,
                 Context:     QueueContext(i),
+                // The compact form, for the tag — not i.WaitingLabel, which is
+                // the server's full sentence ("ממתינה לבדיקה כבר 5 ימים") and
+                // is right for the digest and the detail panel. Same helper the
+                // lecturer's queue calls, so a wait reads identically on both.
+                Wait:        MentorAging.ShortLabel(i.WaitingDays),
                 // A mentor RECOMMENDS on a request; only a lecturer decides
                 // one. The verb is the difference between the two queues, and
                 // it is the mentor's own vocabulary — MentorProjectSignals
@@ -674,7 +720,9 @@
     };
 
     /// <summary>The lens, carrying each kind's size. A zero renders no bubble,
-    /// which is MFilterTabs' own rule.</summary>
+    /// which is MFilterTabs' own rule. THREE TABS, matching the lecturer's
+    /// exactly: there is no "משימות" tab, because a filter for a kind this card
+    /// cannot contain is a promise it cannot keep.</summary>
     private IReadOnlyList<MFilterTabs.Tab> FilterTabs => new[]
     {
         new MFilterTabs.Tab("",            "הכל",   WorkQueue.Count),
@@ -682,18 +730,24 @@
         new MFilterTabs.Tab("submissions", "הגשות", SubmissionItems.Count),
     };
 
-    /// <summary>The row's context line: whose it is, how long it has waited,
-    /// and the milestone when the item has one.
+    /// <summary>
+    /// The row's context line: WHOSE the item is, and where in the programme.
     ///
-    /// <para>A WAIT, never "באיחור" — neither a submission nor a request has a
-    /// deadline it could be late for, which is the rule
-    /// <see cref="MentorAttentionRows.TimeLabel"/> exists to enforce. The
-    /// waiting phrase is the server's own pre-rendered
-    /// <c>WaitingLabel</c>.</para></summary>
+    /// <para><b>THE WAIT IS NO LONGER IN THIS SENTENCE.</b> It sat between the
+    /// team and the milestone as the server's full phrase — "צוות ברוש ·
+    /// ממתינה לתגובתך כבר 22 ימים · אפיון" — which put the row's most scannable
+    /// fact in its least scannable position and made ownership and state read
+    /// as one run-on line. It is a tag in the row's end block now
+    /// (<c>WorkItem.Wait</c>), and it appears in exactly one of the two
+    /// places.</para>
+    ///
+    /// <para>Only Submission and Request reach this — WorkQueue drops the
+    /// personal kind before building a row — so <c>Team</c> always has a real
+    /// project behind it.</para></summary>
     private static string QueueContext(MentorAttentionItemDto i)
     {
         var stage = string.IsNullOrWhiteSpace(i.MilestoneTitle) ? null : i.MilestoneTitle;
-        return Join(MentorAttentionRows.Team(i), i.WaitingLabel, stage);
+        return Join(MentorAttentionRows.Team(i), stage);
     }
 
     // ── 2. הצוותים שלי ───────────────────────────────────────────────────────
@@ -932,7 +986,12 @@
     /// the panel's primary CTA is that submission's own review screen. There is
     /// no shared review popup to mount here — the review drawer belongs to
     /// מרחב הפרויקט — and inventing a second one is exactly the duplication
-    /// this pass removes.</para></summary>
+    /// this pass removes.</para>
+    ///
+    /// <para>NO PERSONAL-TASK CASE, because no personal task can reach this:
+    /// WorkQueue is the only caller and it renders two kinds. Reminders are
+    /// opened from משימות אישיות, which calls <see cref="OpenTask"/>
+    /// directly.</para></summary>
     private void OpenAttentionItem(MentorAttentionItemDto item)
     {
         switch (item.Kind)
