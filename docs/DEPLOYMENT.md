@@ -118,6 +118,57 @@ to the server out-of-band, or supply every value as an environment variable.
 `appsettings.Production.json` on the server (that filename is git-ignored) or
 use it as the checklist for environment variables.
 
+> **This step is the one that fails silently.** The published package ships no
+> configuration of its own, so if `appsettings.Production.json` is not created
+> and no environment variables are supplied, the app starts and then dies with
+> an opaque HTTP 500 — the first missing value it hits is the Google
+> `ClientId`, which surfaces as:
+>
+> ```
+> System.ArgumentNullException: Value cannot be null. (Parameter 'ClientId')
+>   at Microsoft.AspNetCore.Authentication.OAuth.OAuthOptions.Validate()
+> ```
+>
+> **Do not rely on remembering this. Run the validation script below** — it
+> lists every required key, reports which are still missing, and fails with a
+> non-zero exit code until they are supplied.
+
+### Pre-deployment validation (run before the first IIS start)
+
+`scripts/validate-production-config.ps1` is the gate. It reads configuration
+only, never prints a secret value, and changes nothing. Run it **on the server,
+after publish, before starting IIS**, pointed at the deployed folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\validate-production-config.ps1 `
+    -PublishDir C:\inetpub\wwwroot\FinalProject_NoaOfir
+```
+
+It does two things and exits non-zero if either fails:
+
+1. **Configuration completeness** — checks every required key in
+   `appsettings.Production.json` (or as an environment variable), and reports
+   required vs recommended vs optional so optional integrations are never forced
+   on. Required keys — the ones whose absence stops startup or breaks auth — are
+   `Authentication:Google:ClientId`, `Authentication:Google:ClientSecret`,
+   `JWTSettings:securityKey` and `JWTSettings:validIssuer`.
+2. **Publish-output safety** — confirms `appsettings.json` and
+   `appsettings.Development.json` are **not** in the package, that
+   `appsettings.Production.template.json` **is**, and that the template still
+   contains placeholders only (a filled-in value would mean a real secret was
+   committed and must be rotated).
+
+`RESULT: PASS` means the required configuration is present and the package is
+safe to upload. `RESULT: FAIL` names exactly what to fix.
+
+### Which keys are required vs optional
+
+| Bucket | Keys | Behaviour if unset |
+|---|---|---|
+| **Required** | `Authentication:Google:ClientId`, `Authentication:Google:ClientSecret`, `JWTSettings:securityKey`, `JWTSettings:validIssuer` | App fails to start (`OAuthOptions.Validate`, `SymmetricSecurityKey`) or no token ever validates. |
+| **Recommended** | `ConnectionStrings:DefaultConnection`, `DataProtection:KeysDirectory`, `App:BaseUrl` | Safe default exists (§2, §5, §4), but review for production. The DB **file** itself is still required (§2). |
+| **Optional** | `Email:UserName`/`Password`, `Airtable:Token`/`BaseId`, `Slack:*`, `OpenAI:Key`, `ExternalApi:ApiKey` | The corresponding feature is simply disabled. Not an error — do not configure integrations you are not using. |
+
 ### Sensitive keys
 
 Prefer environment variables for everything marked *secret*.
@@ -275,6 +326,11 @@ every previous build's hashed `.wasm`/`.pdb` behind, which is the stale-asset
 5. Set `App:BaseUrl` (§4) if email links are wanted.
 6. Set `ForwardedHeaders:KnownProxies` / `KnownNetworks` if a non-loopback
    proxy terminates TLS (§6).
+7. **Validate before starting IIS** — run
+   `scripts/validate-production-config.ps1 -PublishDir <deployed folder>` (§3).
+   It fails with a non-zero exit code until every required key is present and
+   confirms the package carries no secrets. Do not start the site until it
+   reports `RESULT: PASS`.
 
 ---
 
