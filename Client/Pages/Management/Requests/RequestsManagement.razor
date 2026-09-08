@@ -54,9 +54,13 @@
 <div class="lrq-page rqw-page" dir="rtl">
 
     <!-- ══════════════════════════════════════════════════════════════
-         PAGE HEADER  (approved white Core surface, above the split)
+         PAGE HEADER  (full-width, above split)
          ══════════════════════════════════════════════════════════════ -->
-    <MPageHeaderCard Title="בקשות" Scale="MPageHeaderCard.HeaderScale.Core" />
+    <div class="rqw-header">
+
+        <h1 class="rqw-title">בקשות</h1>
+
+    </div>
 
     @if (_loading)
     {
@@ -664,17 +668,6 @@
     [Parameter, SupplyParameterFromQuery(Name = "open")]
     public int? OpenRequestId { get; set; }
 
-    /// <summary>The notification bell deep-links here with ?requestId=N (the
-    /// convention the Student and Mentor request pages already use). Accepted
-    /// alongside ?open= so a request notification opens the request in the left
-    /// detail pane; the two are equivalent and only one is ever supplied.</summary>
-    [Parameter, SupplyParameterFromQuery(Name = "requestId")]
-    public int? DeepLinkRequestId { get; set; }
-
-    /// <summary>The effective deep-link target — either query name resolves to
-    /// the same request.</summary>
-    private int? DeepLinkTargetId => OpenRequestId ?? DeepLinkRequestId;
-
     // ── State ─────────────────────────────────────────────────────────────────
 
     private List<ProjectRequestRowDto> _all = new();
@@ -727,52 +720,24 @@
 
         _loading = false;
 
+        // Handle deep-link (?open=N): find the request, switch to its tab, select it.
+        if (OpenRequestId is int reqId && _all.Any(r => r.Id == reqId))
+        {
+            var targetRow = _all.First(r => r.Id == reqId);
+            _activeTab = BucketOf(targetRow.Status);
+
+            await SelectRequest(reqId);
+            _scrollPending = true;
+        }
+
         // NO auto-selection on a plain page load. The queue opens with nothing
-        // chosen and the workspace shows its empty state; only an explicit click
-        // — or a ?requestId= / ?open= deep link — selects a request. The deep
-        // link is applied in OnParametersSetAsync (see there), not here, so it
-        // also fires when a second notification changes the query string while
-        // this page is already open.
-    }
-
-    /// <summary>The deep-link id already opened, so a repeated parameter set or a
-    /// re-render neither toggles it back off nor overrides a later manual
-    /// selection.</summary>
-    private int? _appliedDeepLinkId;
-
-    /// <summary>
-    /// Apply a ?requestId= / ?open= deep link — AFTER the list has loaded, and
-    /// once per id. It lives here rather than in OnInitializedAsync so it fires
-    /// in BOTH cases: a fresh navigation (OnParametersSetAsync runs right after
-    /// OnInitializedAsync, with the list already loaded), and a second request
-    /// notification clicked while this page is already open (the router reuses
-    /// the component instance and changes only the query string, which raises
-    /// OnParametersSetAsync but not OnInitializedAsync).
-    /// </summary>
-    protected override async Task OnParametersSetAsync()
-    {
-        if (_loading) return;                          // list not ready yet; re-runs after load
-        if (DeepLinkTargetId is not int reqId) return; // no deep link on the URL
-        if (reqId == _appliedDeepLinkId) return;       // already handled this id
-
-        _appliedDeepLinkId = reqId;
-
-        // GetAll is unscoped for Admin/Staff, so _all holds every request the
-        // lecturer can open. An id that is not here refers to a request that was
-        // deleted (a stale notification) or is not visible to this user — fail
-        // GRACEFULLY to the normal list rather than firing a doomed
-        // /api/project-requests/{id} that would 404.
-        var targetRow = _all.FirstOrDefault(r => r.Id == reqId);
-        if (targetRow is null) return;
-
-        _activeTab = BucketOf(targetRow.Status);
-        await SelectRequest(reqId);   // loads the detail into the left workspace pane
-        _scrollPending = true;
+        // chosen and the workspace shows its empty state; only an explicit
+        // click (or the ?open=N deep-link above) selects a request.
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_scrollPending && DeepLinkTargetId is int reqId)
+        if (_scrollPending && OpenRequestId is int reqId)
         {
             _scrollPending = false;
             await JS.InvokeVoidAsync("gradify.scrollToAnchor", $"request-{reqId}");
