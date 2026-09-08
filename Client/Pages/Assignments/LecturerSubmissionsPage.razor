@@ -38,13 +38,9 @@
 <div class="lsb-page rqw-page" dir="rtl">
 
     <!-- ══════════════════════════════════════════════════════════════
-         PAGE HEADER
+         PAGE HEADER — approved white Core surface, above the split
          ══════════════════════════════════════════════════════════════ -->
-    <div class="lsb-header rqw-header">
-
-        <h1 class="lsb-h1 rqw-title">הגשות</h1>
-
-    </div>
+    <MPageHeaderCard Title="הגשות" Scale="MPageHeaderCard.HeaderScale.Core" />
 
     @if (_loading)
     {
@@ -642,6 +638,19 @@
     [Parameter, SupplyParameterFromQuery(Name = "open")]
     public int? OpenSubmissionId { get; set; }
 
+    /// <summary>
+    /// The notification bell deep-links here with ?taskId=N. A submission
+    /// notification carries the TASK id as its RelatedEntityId (the server writes
+    /// it that way so every role's surface can resolve the submission from the
+    /// task), and both queue rows here carry TaskId, so this page resolves the
+    /// task to its submission and opens it in the detail pane — checking the
+    /// pending (לבדיקה) bucket first, then the approved (טופלו) one, switching to
+    /// whichever holds it. Additive and defensive: a task with no submission on
+    /// this queue simply leaves the page in its default state.
+    /// </summary>
+    [Parameter, SupplyParameterFromQuery(Name = "taskId")]
+    public int? OpenTaskId { get; set; }
+
     // ── State ─────────────────────────────────────────────────────────────────
 
     private string _activeTab    = "review";  // "review" | "returned" | "done"
@@ -915,12 +924,58 @@
         _approved = approved ?? new();
         _loading  = false;
 
-        // Runs after _pending is populated, so the guard can actually check.
-        // "review" is already the default tab and is the only one a pending
-        // submission lives on, so nothing needs to switch.
-        if (OpenSubmissionId is int sid && _pending.Any(r => r.SubmissionId == sid))
+        // Deep-link selection is applied in OnParametersSetAsync (see there), so
+        // it fires on a fresh navigation AND when a second notification changes
+        // the query string while this page is already open.
+    }
+
+    /// <summary>Deep-link ids already opened, so a repeated parameter set does
+    /// not toggle the selection back off.</summary>
+    private int? _appliedOpenSubId;
+    private int? _appliedTaskDeepLink;
+
+    /// <summary>
+    /// Apply the ?open= / ?taskId= deep link — after the queues have loaded and
+    /// once per id. HERE rather than in OnInitializedAsync so a second
+    /// notification clicked while this page is already open still selects its
+    /// item (the component instance is reused; only the query string changes,
+    /// which raises OnParametersSetAsync but not OnInitializedAsync).
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loading) return;
+
+        // ?open=SubmissionId — a direct submission deep link (the default
+        // "review" tab is the only bucket a pending submission lives on).
+        if (OpenSubmissionId is int sid && sid != _appliedOpenSubId
+            && _pending.Any(r => r.SubmissionId == sid))
         {
+            _appliedOpenSubId = sid;
+            _activeTab = "review";
             await SelectSubmission(sid);
+            return;
+        }
+
+        // ?taskId=TaskId — a submission notification carries the TASK id; resolve
+        // it to the submission and open it, switching to the bucket that holds it.
+        if (OpenTaskId is int tid && tid != _appliedTaskDeepLink)
+        {
+            var pendingHit = _pending.FirstOrDefault(r => r.TaskId == tid);
+            if (pendingHit is not null)
+            {
+                _appliedTaskDeepLink = tid;
+                _activeTab = "review";
+                await SelectSubmission(pendingHit.SubmissionId);
+                return;
+            }
+
+            var approvedHit = _approved.FirstOrDefault(r => r.TaskId == tid);
+            if (approvedHit is not null)
+            {
+                _appliedTaskDeepLink = tid;
+                _activeTab = "done";
+                await SelectSubmission(approvedHit.SubmissionId);
+            }
         }
     }
 

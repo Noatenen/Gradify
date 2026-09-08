@@ -164,71 +164,91 @@
     private string? GetTargetUrl(NotificationDto n)
     {
         // The daily digest is a summary of the whole queue, so it opens the
-        // queue. Added in the same change that introduced the digest — a
-        // notification type with no arm here renders with a generic icon and
-        // navigates nowhere.
+        // queue. A notification type with no arm here renders with a generic
+        // icon and navigates nowhere.
         if (n.Type == NotificationTypes.MentorDailyDigest) return "mentor/tasks";
 
-        // A new submission arriving for a mentor.
-        //
-        //   "SubmissionReceived"  legacy rows already in the database, written
-        //                         before the type was corrected.
-        //   SubmissionSubmitted   what the server writes now — the canonical
-        //                         type, so the mentor's "הגשה חדשה" preference
-        //                         actually applies.
-        //
-        // Both land on the mentor's review queue. The old target,
-        // /mentor/submissions, is the legacy page and is no longer in the mentor
-        // nav; ?focus=reviews is where the approved Home tile and nav send a
-        // review today. Non-mentors fall through to the generic mapping below,
-        // since Staff and Admin also receive SubmissionSubmitted.
-        if (n.Type == "SubmissionReceived"
-            || (n.Type == NotificationTypes.SubmissionSubmitted && RoleService.IsMentor(_user)))
-            return "mentor/tasks?focus=reviews";
-
-        if (n.Type == "SubmissionReturned")
-            return n.RelatedEntityId.HasValue
-                ? $"tasks?taskId={n.RelatedEntityId}"
-                : "tasks";
-
-        // Request notifications — pick the page that matches the viewer's role.
-        bool isProjectRequest =
+        // ── Requests (RelatedEntityId = ProjectRequest.Id) ──
+        // Every request type carries the request id, so all three role surfaces
+        // can deep-link straight to the request and open its detail pane.
+        bool isRequest =
             n.RelatedEntityType == "ProjectRequest"
             || n.Type == "RequestReturned"
             || n.Type == NotificationTypes.RequestCreated
             || n.Type == NotificationTypes.RequestStatusChanged
             || n.Type == NotificationTypes.RequestCommentAdded;
+        if (isRequest) return BuildRequestUrl(n.RelatedEntityId);
 
-        if (isProjectRequest)
-            return BuildRequestUrl(n.RelatedEntityId);
+        // ── Submissions (RelatedEntityType = TaskSubmission) ──
+        // The server writes the TASK id as RelatedEntityId for every submission
+        // notification (TaskSubmissionsController), because each role's review
+        // surface can resolve the submission from its task.
+        //
+        //   "SubmissionReceived" / "SubmissionReturned"  legacy rows.
+        //   SubmissionSubmitted        a new submission for a mentor / staff.
+        //   SubmissionFeedbackReceived feedback for the student who submitted.
+        bool isSubmission =
+            n.RelatedEntityType == "TaskSubmission"
+            || n.Type == "SubmissionReceived"
+            || n.Type == "SubmissionReturned"
+            || n.Type == NotificationTypes.SubmissionSubmitted
+            || n.Type == NotificationTypes.SubmissionFeedbackReceived;
+        if (isSubmission) return BuildSubmissionUrl(n.RelatedEntityId);
 
-        // Fallback: a few legacy types still rely on RelatedEntityType.
-        return n.RelatedEntityType switch
-        {
-            "TaskSubmission" => "submissions",
-            "ProjectRequest" => BuildRequestUrl(n.RelatedEntityId),
-            _ => null,
-        };
+        // ── Tasks (RelatedEntityId = TaskId) ──
+        // Defensive: these types are defined but not emitted by the server today.
+        // Routed anyway so they deep-link correctly the moment they are.
+        if (n.Type == NotificationTypes.TaskAssigned
+            || n.Type == NotificationTypes.TaskDueSoon
+            || n.Type == NotificationTypes.TaskOverdue)
+            return BuildTaskUrl(n.RelatedEntityId);
+
+        return null;
     }
 
     private string BuildRequestUrl(int? requestId)
     {
         // Choose the right list page per role. Admin/Staff and Mentor get the
-        // review surfaces; Student keeps "הבקשות שלי". When the id is missing
-        // we still take the user to the right list (per spec).
-
-        string basePath;
-
-        if (RoleService.IsAdminOrStaff(_user))
-            basePath = "management/requests";
-        else if (RoleService.IsMentor(_user))
-            basePath = "mentor-requests";
-        else
-            basePath = "requests";
+        // review surfaces; Student keeps "הבקשות שלי". Each page reads
+        // ?requestId= and opens the request in its own detail pane. When the id
+        // is missing we still take the user to the right list.
+        string basePath =
+            RoleService.IsAdminOrStaff(_user) ? "management/requests"
+            : RoleService.IsMentor(_user)     ? "mentor-requests"
+            :                                    "requests";
 
         return requestId.HasValue
             ? $"{basePath}?requestId={requestId.Value}"
             : basePath;
+    }
+
+    private string BuildSubmissionUrl(int? taskId)
+    {
+        // RelatedEntityId is the TASK id. Each role opens its own review surface
+        // and resolves/opens the submission from that task.
+        if (RoleService.IsMentor(_user))
+            // The mentor review queue's "הגשות לבדיקה" tab.
+            return "mentor/tasks?focus=reviews";
+
+        if (RoleService.IsAdminOrStaff(_user))
+            // The lecturer/staff review workspace resolves the submission from
+            // the task id and opens it in its left detail pane.
+            return taskId.HasValue
+                ? $"lecturer/submissions?taskId={taskId.Value}"
+                : "lecturer/submissions";
+
+        // Student — their own submission is a task on /tasks, which opens the
+        // task detail (TaskDetailModal) from ?taskId=.
+        return taskId.HasValue ? $"tasks?taskId={taskId.Value}" : "tasks";
+    }
+
+    private string BuildTaskUrl(int? taskId)
+    {
+        // Role-aware task destination. Only the student tasks page reads a
+        // ?taskId= deep link today; the others land on their task surface.
+        if (RoleService.IsMentor(_user))       return "mentor/tasks";
+        if (RoleService.IsAdminOrStaff(_user)) return "lecturer/tasks";
+        return taskId.HasValue ? $"tasks?taskId={taskId.Value}" : "tasks";
     }
 
     private async Task MarkAllRead()
