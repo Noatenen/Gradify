@@ -48,6 +48,15 @@ public class MentorProjectDetailDto
     public string? Description   { get; set; }
     public string? Organization  { get; set; }
 
+    /// <summary>The team's uploaded project logo, base-relative
+    /// ("project-logos/{file}"), or null. Same source and URL shape the
+    /// lecturer overview and the student's own project page read
+    /// (ProjectTeamProfile.LogoPath, served from wwwroot/project-logos) — the
+    /// mentor header shows the existing mark, it does not upload or edit it.
+    /// Null both when no ProjectTeamProfile row exists and when its LogoPath is
+    /// blank, so the header falls back to no image without a broken tile.</summary>
+    public string? LogoUrl       { get; set; }
+
     // Team
     public string                      TeamName    { get; set; } = "";
     public List<MentorTeamMemberDto>   TeamMembers { get; set; } = new();

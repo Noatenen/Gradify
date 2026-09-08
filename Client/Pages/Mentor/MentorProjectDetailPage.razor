@@ -35,8 +35,10 @@
                         milestone list when a cycle has no stages configured
       attention         the shared mentor snapshot, filtered to this project
       requests          the same snapshot's request list, filtered likewise
-      last meeting      the project's own past personal tasks that carry an
-                        hour — see LastMeetingLabel. The dated view that
+      past meetings     the project's own past personal tasks that carry an
+                        hour — surfaced as פעילות אחרונה rows ("פגישת הנחיה
+                        התקיימה — …"). The header no longer summarises a "last
+                        meeting" line. The dated view that
                         MentorWorkspaceService.BuildCalendarAsync composed is
                         gone with the מועדים קרובים card: every date this page
                         still shows is on the row it belongs to (a milestone
@@ -333,21 +335,19 @@
 
 <div class="mpw-page">
 
-    @* ── Back to פרויקטים בהנחייתי ─────────────────────────────────────── *@
-    <a class="mpw-back" href="mentor/projects">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 6l6 6-6 6"></path>
-        </svg>
-        פרויקטים בהנחייתי
-    </a>
-
+    @*  Back to פרויקטים בהנחייתי. During loading / not-found it sits on its own
+        row above the state message; once the workspace loads it leads the
+        project title on the header's top row (passed via HeaderLeading below),
+        the same place the lecturer review puts its own back control. Same link,
+        same destination either way. *@
     @if (_isLoading)
     {
+        <div class="mpw-back-row">@BackLink</div>
         <MLoadingState Label="טוענת את מרחב הפרויקט…" />
     }
     else if (_detail is null)
     {
+        <div class="mpw-back-row">@BackLink</div>
         <MEmptyState Live="true"
                      Title="הפרויקט לא נמצא או שאינך מנחה שלו"
                      Description="מרחב הפרויקט נפתח רק למנחה שמשויך אליו בפועל.">
@@ -398,6 +398,10 @@
                           OnWorkRowClick="OnWorkKeyAsync"
                           OnActivityClick="OnActivityKeyAsync">
 
+            <HeaderLeading>
+                @BackLink
+            </HeaderLeading>
+
             <IdentityActions>
                 @* The mentor's own project control, in the identity area.
 
@@ -411,6 +415,10 @@
                    exactly the account this dead control was shown to. *@
                 @if (IsProjectMentor)
                 {
+                    @*  The scheduler stays; the "last meeting" caption that sat
+                        beside it is gone — that fact is already stated on its own
+                        row in פעילות אחרונה ("פגישת הנחיה התקיימה — …"), so the
+                        header no longer duplicates it. *@
                     <button type="button" class="mpw-schedule motiva-cta" @onclick="OpenScheduler">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                              stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -418,7 +426,6 @@
                         </svg>
                         קביעת פגישת הנחיה
                     </button>
-                    <span class="mpw-last-meeting">@LastMeetingLabel</span>
                 }
                 else if (CanUseLecturerWorkspace)
                 {
@@ -682,7 +689,10 @@
     {
         get
         {
-            var stages = PwStages.Build(_roadmap, MilestonesLite);
+            // compact: the finished roadmap draws the date above the track and a
+            // checkmark for a completed stage — the same strip the lecturer
+            // review uses. Display only; the stage/milestone logic is unchanged.
+            var stages = PwStages.Build(_roadmap, MilestonesLite, compact: true);
 
             return new ProjectWorkspaceView(
                 Identity:           Identity,
@@ -707,9 +717,16 @@
         StatusText:    MentorProjectSignals.HealthLabel(Signal),
         StatusVariant: MentorProjectSignals.HealthVariant(Signal),
         Members:       _detail.TeamMembers.Select(m => $"{m.FullName} · {m.Email}").ToList(),
-        Meta:          Array.Empty<PwMeta>(),
+        // The project field, for the info popover (team · סוג פרויקט · students).
+        // The mentor already has this on the payload; it is NOT lecturer-only
+        // metadata. No "מנחים" row — the reader IS the mentor.
+        Meta:          new PwMeta[] { new($"סוג פרויקט: {TypeLabel(_detail.ProjectType)}") },
         // The team's own ProjectResources, read-only — see PwMaterials.
-        Materials:     PwMaterials.From(_detail.Resources));
+        Materials:     PwMaterials.From(_detail.Resources),
+        // The team's uploaded mark, shown as a compact thumbnail beside the
+        // title. Null when the team never uploaded one → no image, no broken
+        // tile. Same source the lecturer/student read (ProjectTeamProfile).
+        LogoUrl:       _detail.LogoUrl);
 
     /// <summary>The project's milestones in the shape the shared stage builder
     /// reads, for the cycles that configure no roadmap stages.</summary>
@@ -755,12 +772,14 @@
                     Rows:      subs.Select((s, i) => new PwWorkRow(
                                     Key:             s.SubmissionId is int id ? $"review:{id}" : $"subrow:{i}",
                                     Title:           s.Title,
-                                    // The context line — which milestone this
-                                    // deliverable belongs to. The deadline still
-                                    // reaches the row only when it was MISSED: a
-                                    // date that was met is not news, and one that
-                                    // has not arrived is why the row is dormant.
-                                    Meta:            s.Milestone,
+                                    // No secondary line under a submission title —
+                                    // it carried the milestone this deliverable
+                                    // belongs to ("הערכה", "אפיון ועיצוב", …),
+                                    // contextual category text that restated the
+                                    // grouping without adding submission state.
+                                    // Matches the lecturer הגשות treatment. The
+                                    // deadline still reaches the row when MISSED.
+                                    Meta:            null,
                                     Trailing:        s.Overdue ? s.Due : null,
                                     TrailingLate:    s.Overdue,
                                     State:           s.State,
@@ -808,9 +827,12 @@
                                    return new PwWorkRow(
                                        Key:             $"req:{r.Id}",
                                        Title:           r.Title,
-                                       // Who asked, on the context line; when they
-                                       // asked, at the row's end.
-                                       Meta:            r.CreatedByName,
+                                       // No requester name under the request title
+                                       // (display-only cleanup, matched on the
+                                       // lecturer review). When it was filed still
+                                       // reaches the row's end; the requester is on
+                                       // the request's own detail surface.
+                                       Meta:            null,
                                        Trailing:        r.CreatedAt.ToLocalTime().ToString("dd.MM"),
                                        // OWNERSHIP, NOT VISIBILITY — the same
                                        // resolver the lecturer workspace uses.
@@ -1213,32 +1235,12 @@
         };
     }
 
-    // ── Dates and meetings ──────────────────────────────────────────────────
-
-    /// <summary>
-    /// The last guidance meeting that actually happened.
-    ///
-    /// <para>Read straight from the project's personal tasks rather than from
-    /// the composed calendar, because that composer deliberately drops COMPLETED
-    /// entries — right for a planner, wrong for "when did we last meet". Same
-    /// definition of a meeting either way: a project entry with an hour someone
-    /// chose.</para>
-    /// </summary>
-    private string LastMeetingLabel
-    {
-        get
-        {
-            var last = _personal
-                .Where(t => t.DueDate is DateTime d && d.Date < DateTime.Today
-                            && MotivaDates.ParseWallClock(t.StartTime) is not null)
-                .OrderByDescending(t => t.DueDate!.Value)
-                .FirstOrDefault();
-
-            return last is null
-                ? "טרם התקיימה פגישת הנחיה"
-                : $"פגישה אחרונה: {last.DueDate!.Value:dd.MM} · {last.Title}";
-        }
-    }
+    // ── Meetings ─────────────────────────────────────────────────────────────
+    //
+    // The "last meeting" is no longer summarised in the header; the past
+    // guidance meetings still surface as their own rows in פעילות אחרונה
+    // ("פגישת הנחיה התקיימה — …", built from _personal in Activity), so nothing
+    // about the meeting data or the scheduler flow changed.
 
     private void OpenScheduler() => _scheduleOpen = true;
 
@@ -1574,4 +1576,25 @@
         if (bytes < 1024 * 1024)    return $"{bytes / 1024.0:F1} KB";
         return $"{bytes / (1024.0 * 1024):F1} MB";
     }
+
+    /// <summary>The project field in Hebrew, for the info popover. The payload
+    /// carries the ProjectTypes.Name key (English); this maps it the same way
+    /// the lecturer review does, so one project reads the same field on both.</summary>
+    private static string TypeLabel(string t) => t switch
+    {
+        "Technological"  => "טכנולוגי",
+        "Methodological" => "מתודולוגי",
+        _                => t,
+    };
+
+    /// <summary>The back control to פרויקטים בהנחייתי. The same icon-only circular
+    /// arrow the lecturer review uses (MAdminBack) — the "פרויקטים בהנחייתי" text
+    /// beside it is gone, so it reads as a clean navigation control rather than a
+    /// breadcrumb. Destination and click behaviour are unchanged (Href navigates
+    /// to mentor/projects); the accessible name carries the label a screen reader
+    /// announces. Written once because it is drawn in two places: the header's
+    /// leading slot once the workspace is up, and its own row above the
+    /// loading / not-found state.</summary>
+    private RenderFragment BackLink =>@<MAdminBack Href="mentor/projects"
+                                                   AriaLabel="חזרה לפרויקטים בהנחייתי" />;
 }
