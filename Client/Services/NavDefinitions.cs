@@ -164,25 +164,22 @@ public static class NavDefinitions
         // MentorHomePage as of Phase A; OverviewDashboardPage kept
         // /dashboard/lecturer and is no longer reachable from this rail.
         new NavItem("בית",            "dashboard/mentor", "oi-home",            NavLinkMatch.Prefix, NavIcons.Home),
-        // ── המשימות שלי IS GONE FROM THIS RAIL, exactly as it is gone from
-        // the lecturer's, and for the same reason: Home's דורש פעולה now IS
-        // that queue. It carries the two system feeds that page showed — the
-        // submissions awaiting this mentor's review and the requests awaiting
-        // their recommendation, both straight off GET /api/mentor/attention —
-        // and Home's משימות אישיות card carries the mentor's own reminders,
-        // with creation, completion, editing and deletion all running through
-        // the same IPersonalTasksService and the same MentorPersonalTaskModal
-        // that page used.
+        // ── המשימות שלי — RESTORED to the mentor rail ──────────────────
+        // The mentor's own tasks surface at /mentor/tasks (MentorTasksPage):
+        // the submissions awaiting this mentor's review and the requests
+        // awaiting their recommendation (both off GET /api/mentor/attention),
+        // plus the mentor's personal reminders through IPersonalTasksService /
+        // MentorPersonalTaskModal. It had been withdrawn from this list in an
+        // earlier pass while the route was left alive and unlinked; it is now
+        // linked again — no new page and no new route, the existing one.
         //
-        // THE ROUTE ITSELF IS DELIBERATELY LEFT ALIVE at /mentor/tasks,
-        // unlinked. MentorLinks.Reviews / .Requests / .PersonalTasks are
-        // ?focus= deep links into it, the daily digest and several popups still
-        // hand them out, and a bookmark or a stale ?returnUrl= would start
-        // 404ing if the page went. It is now unreachable by NAVIGATION, which
-        // is what was asked for, and it can be removed in its own commit once
-        // nothing looks for it. ReturnUrlPolicy still resolves it through
-        // Shell("mentor"), so a captured link keeps working rather than
-        // dead-ending on PendingPage.
+        // PLACEMENT is position 2, matching the mentor design reference rail
+        // (בית · המשימות שלי · פרויקטים בהנחייתי · בקשות · יומן ותכנון · משאבים).
+        // Same NavItem shape as its siblings — the "oi-task" open-iconic
+        // fallback plus the stroked NavIcons.Tasks the Motiva rail draws, and
+        // Match.Prefix so its own ?focus= / ?editTask= deep links keep it lit
+        // (the convention every /mentor/* item here uses).
+        new NavItem("המשימות שלי",     "mentor/tasks",    "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
         new NavItem("פרויקטים בהנחייתי", "mentor/projects", "oi-folder",         NavLinkMatch.Prefix, NavIcons.Projects),
         new NavItem("בקשות",          "mentor-requests",  "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
         new NavItem("יומן ותכנון",    "mentor/calendar",  "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),
