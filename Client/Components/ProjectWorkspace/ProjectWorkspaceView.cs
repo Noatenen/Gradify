@@ -381,7 +381,13 @@ public sealed record PwIdentity(
     MStatusBadge.BadgeVariant StatusVariant,
     IReadOnlyList<string> Members,
     IReadOnlyList<PwMeta> Meta,
-    IReadOnlyList<PwMaterial> Materials)
+    IReadOnlyList<PwMaterial> Materials,
+    /// <summary>The team's uploaded project logo, base-relative
+    /// ("project-logos/{file}"), or null. The lecturer header shows it as a
+    /// compact thumbnail beside the title; a null (or a src that fails to load)
+    /// falls back to no image rather than a broken tile. Optional and defaulted
+    /// so the mentor host, which supplies no logo, is unaffected.</summary>
+    string? LogoUrl = null)
 {
     public static readonly PwIdentity Empty = new(
         "", null, "", 0, "", MStatusBadge.BadgeVariant.Neutral,
@@ -595,9 +601,17 @@ public static class PwStages
     /// cannot drift from the mentor's: same precedence, same fallback date,
     /// same "הושלם carries no date" rule.</para>
     /// </summary>
+    /// <param name="compact">The lecturer review's shorter roadmap. It draws the
+    /// date ABOVE the track and marks a completed stage with a checkmark rather
+    /// than a word, so a stage's <see cref="PwStage.Date"/> becomes the bare
+    /// "dd.MM" with no "עד"/"באיחור מ־" lead-in and an empty string for a done or
+    /// undated stage. The mentor roadmap keeps the worded form (compact:false).
+    /// The STATE is identical either way, so late is still rose and current still
+    /// violet — only the wording of the date cell changes.</param>
     public static IReadOnlyList<PwStage> Build(
         ProjectRoadmapProgressDto? roadmap,
-        IReadOnlyList<PwMilestoneLite> milestones)
+        IReadOnlyList<PwMilestoneLite> milestones,
+        bool compact = false)
     {
         var today = DateTime.Today;
 
@@ -620,7 +634,7 @@ public static class PwStages
 
                     bool late = current && end is DateTime d && d.Date < today;
 
-                    return new PwStage(s.Name, DateText(done, end, late), State(done, current, late));
+                    return new PwStage(s.Name, DateText(done, end, late, compact), State(done, current, late));
                 })
                 .ToList();
         }
@@ -635,7 +649,7 @@ public static class PwStages
                 bool current = !done && m.Id == firstOpen?.Id;
                 bool late    = !done && m.DueDate is DateTime d && d.Date < today;
 
-                return new PwStage(m.Title, DateText(done, m.DueDate, late), State(done, current, late));
+                return new PwStage(m.Title, DateText(done, m.DueDate, late, compact), State(done, current, late));
             })
             .ToList();
     }
@@ -662,11 +676,22 @@ public static class PwStages
 
     // "הושלם" carries no date: nothing stores the day a stage was actually
     // finished, and dating it with the plan would state something untrue.
-    private static string DateText(bool done, DateTime? end, bool late) =>
-        done                          ? "הושלם"
-        : end is not DateTime endDate ? "—"
-        : late                        ? $"באיחור מ־{endDate:dd.MM}"
-        :                               $"עד {endDate:dd.MM}";
+    //
+    // COMPACT (lecturer): the date cell is the bare "dd.MM" and nothing else — a
+    // done stage shows a checkmark (rendered in the markup, so here it is empty)
+    // and an undated stage shows nothing rather than an em-dash. The "עד" /
+    // "באיחור מ־" wording is dropped because the strip's own state colour already
+    // says whether the date is a plan or a miss.
+    private static string DateText(bool done, DateTime? end, bool late, bool compact = false)
+    {
+        if (compact)
+            return done || end is not DateTime cd ? "" : $"{cd:dd.MM}";
+
+        return done                          ? "הושלם"
+             : end is not DateTime endDate    ? "—"
+             : late                           ? $"באיחור מ־{endDate:dd.MM}"
+             :                                  $"עד {endDate:dd.MM}";
+    }
 }
 
 /// <summary>
