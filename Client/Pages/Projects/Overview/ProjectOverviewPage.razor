@@ -70,26 +70,30 @@
 
 <div class="lpw-page" dir="rtl">
 
-    <a class="lpw-back" href="/projects">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 6l6 6-6 6"></path>
-        </svg>
-        הצוותים שלי
-    </a>
-
+    @*  Item 1: the Management area's shared back control (MAdminBack) — the
+        same 34px circular arrow every Management detail screen uses (see
+        CycleDetailPage). When the workspace is loaded it leads the project
+        title on the header's top row (passed via HeaderLeading below); during
+        loading / not-found it sits on its own row above the state message.
+        Navigation is unchanged: it still points at הצוותים שלי. *@
     @if (_loading)
     {
+        <div class="lpw-back-row">
+            <MAdminBack Href="projects" AriaLabel="חזרה לצוותים שלי" />
+        </div>
         <MLoadingState Label="טוענת את מרחב הפרויקט…" />
     }
     else if (_data is null)
     {
+        <div class="lpw-back-row">
+            <MAdminBack Href="projects" AriaLabel="חזרה לצוותים שלי" />
+        </div>
         <MEmptyState Live="true"
                      Title="הפרויקט לא נמצא או אינו פעיל"
                      Description="ייתכן שהפרויקט הועבר לארכיון, טרם שויך לצוות, או שאין לך הרשאה אליו.">
             <Action>
                 <MButton Variant="MButton.ButtonVariant.Secondary"
-                         OnClick="@(() => Nav.NavigateTo("/projects"))">
+                         OnClick="@(() => Nav.NavigateTo("projects"))">
                     חזרה לצוותים שלי
                 </MButton>
             </Action>
@@ -104,12 +108,11 @@
            RoleService.IsMentor would also answer true for them. *@
         <ProjectWorkspace View="@View"
                           Context="PwContext.Lecturer"
-                          MembersInSubline="true"
-                          OnWorkRowClick="OpenKey"
-                          OnActivityClick="OpenKey">
+                          OnWorkRowClick="OpenKey">
 
-            <IdentityActions>
-            </IdentityActions>
+            <HeaderLeading>
+                <MAdminBack Href="projects" AriaLabel="חזרה לצוותים שלי" />
+            </HeaderLeading>
         </ProjectWorkspace>
     }
 </div>
@@ -234,7 +237,7 @@
                                     <span class="pwd-file-size">@FormatSize(f.SizeBytes)</span>
                                 </span>
                                 <a class="pwd-file-go"
-                                   href="/submissions/@f.StoredFileName"
+                                   href="submissions/@f.StoredFileName"
                                    download="@f.OriginalFileName"
                                    title="הורדה">
                                     <span class="oi oi-cloud-download" aria-hidden="true"></span>
@@ -437,7 +440,9 @@
         {
             if (_data is null) return EmptyView;
 
-            var stages = PwStages.Build(_roadmap, MilestonesLite);
+            // compact: the lecturer roadmap draws the date above the track and a
+            // checkmark for a completed stage — see PwStages.Build.
+            var stages = PwStages.Build(_roadmap, MilestonesLite, compact: true);
 
             return new ProjectWorkspaceView(
                 Identity:           Identity,
@@ -445,7 +450,10 @@
                 StagesSummary:      PwStages.Summary(stages),
                 StagesEmptyText:    "לא הוגדרו אבני דרך לפרויקט זה.",
                 Sections:           Sections,
-                Activity:           Activity);
+                // No פעילות אחרונה on the lecturer review — its content repeated
+                // the הגשות/בקשות rows already on the page (item 6). The section
+                // that took its place, בקשות, is now in the rail beside משימות.
+                Activity:           Array.Empty<PwActivityRow>());
         }
     }
 
@@ -469,9 +477,18 @@
         {
             var h = _data!.Header;
 
-            var meta = new List<PwMeta> { new(TypeLabel(h.ProjectType)) };
+            // Item 3: the lecturer header's project/team metadata now lives in a
+            // popover opened from beside the title — not in a facts line. The two
+            // rows the popover labels are built here, in the order it draws them
+            // after the team name: the project field ("סוג פרויקט: …") first, the
+            // mentors ("מנחים: …") after. ProjectWorkspace's info popover reads
+            // Meta[0] as the field and the rest as the trailing rows, and slots
+            // the students line (from Identity.Members) between them — so this
+            // order is load-bearing. The team name stays on Identity.TeamName and
+            // heads the popover; it is not duplicated into Meta.
+            var meta = new List<PwMeta> { new($"סוג פרויקט: {TypeLabel(h.ProjectType)}") };
             if (!string.IsNullOrWhiteSpace(h.MentorNames))
-                meta.Add(new PwMeta(h.MentorNames!, "oi-person"));
+                meta.Add(new PwMeta($"מנחים: {h.MentorNames}"));
 
             return new PwIdentity(
                 Title:         h.ProjectTitle,
@@ -489,7 +506,12 @@
                                    .ToList(),
                 Meta:          meta,
                 // The team's own ProjectResources, read-only — see PwMaterials.
-                Materials:     PwMaterials.From(_data.Header.Resources));
+                Materials:     PwMaterials.From(_data.Header.Resources),
+                // Item 2: the team's uploaded mark, shown as a compact thumbnail
+                // beside the title. Null when the team never uploaded one, in
+                // which case the header shows no image (no broken tile, no
+                // reserved placeholder).
+                LogoUrl:       _data.Header.LogoUrl);
         }
     }
 
@@ -545,25 +567,32 @@
 
             int overdue  = _data.Summary.OverdueTaskCount;
 
+            // Item 6: הגשות is the wide main column; משימות and בקשות share the
+            // rail beside it (Tasks first, then Requests). The order in THIS
+            // array is main-first, then rail in reading order — ProjectWorkspace
+            // gives the lecturer the first section the main column and the rest
+            // the rail. בקשות took the rail slot פעילות אחרונה used to hold.
             return new[]
             {
                 new PwSection(SecSubs, "הגשות", "oi-inbox",
                     Rows:        subs,
                     EmptyText:   "אין משימות הגשה בפרויקט זה",
-                    AllHref:     CanManageMentors ? "/lecturer/submissions" : null,
+                    AllHref:     CanManageMentors ? "lecturer/submissions" : null,
                     AllLabel:    CanManageMentors ? "להגשות ובקרה" : null,
                     MoreLabel:   "לכל ההגשות"),
 
-                new PwSection(SecReqs, "בקשות", "oi-envelope-closed",
-                    Rows:        reqs,
-                    EmptyText:   "אין בקשות פתוחות בפרויקט זה",
-                    AllHref:     "/management/requests",
-                    AllLabel:    "לכל הבקשות",
-                    MoreLabel:   "לכל בקשות הפרויקט"),
-
                 new PwSection(SecTasks, "משימות", "oi-task",
                     Rows:        tasks,
-                    EmptyText:   "אין משימות פתוחות בפרויקט זה",
+                    // Item 6: "כרגע" reconciles this empty state with the foot
+                    // note "{completed} מתוך {total} משימות הושלמו". The two
+                    // count DIFFERENT populations and both are correct: the
+                    // note's total (server: every task on the project, INCLUDING
+                    // submission-deliverables, which are surfaced under הגשות)
+                    // versus this list (open, NON-submission tasks only). When
+                    // the only incomplete items are deliverables, "no open tasks
+                    // right now" and "7 of 9 done" are both true — the old
+                    // wording just made them look contradictory.
+                    EmptyText:   "אין משימות פתוחות כרגע",
                     Summary:     overdue > 0
                                      ? PwCount.Phrase(overdue, "משימה אחת באיחור", "{0} משימות באיחור")
                                      : PwCount.Phrase(tasks.Count, "משימה אחת פתוחה", "{0} משימות פתוחות"),
@@ -571,7 +600,19 @@
                     MoreLabel:   "לכל המשימות",
                     // Task completion, displaced from the top of the page by
                     // milestone progress and kept where it means something.
-                    Note:        $"{_data.Summary.TasksCompleted} מתוך {_data.Summary.TasksTotal} משימות הושלמו"),
+                    // "משימות הפרויקט" (the PROJECT's tasks) makes explicit that
+                    // this total is the whole project population — every task
+                    // including submission-deliverables — not the open,
+                    // non-submission list drawn in this card. It reconciles with
+                    // the "אין משימות פתוחות כרגע" empty state above it.
+                    Note:        $"{_data.Summary.TasksCompleted} מתוך {_data.Summary.TasksTotal} משימות הפרויקט הושלמו"),
+
+                new PwSection(SecReqs, "בקשות", "oi-envelope-closed",
+                    Rows:        reqs,
+                    EmptyText:   "אין בקשות פתוחות בפרויקט זה",
+                    AllHref:     "management/requests",
+                    AllLabel:    "לכל הבקשות",
+                    MoreLabel:   "לכל בקשות הפרויקט"),
             };
         }
     }
@@ -644,10 +685,14 @@
                     return new PwWorkRow(
                         Key:             submissionId is int id ? $"submission:{id}" : $"task:{t.TaskId}",
                         Title:           t.Title,
-                        // The context line — which milestone this deliverable
-                        // belongs to. The deadline still reaches the row only
-                        // when it was missed.
-                        Meta:            string.IsNullOrWhiteSpace(t.MilestoneTitle) ? null : t.MilestoneTitle,
+                        // Item 5: no secondary line under a submission title. It
+                        // carried the milestone this deliverable belongs to
+                        // ("הערכה", "אפיון ועיצוב", …) — contextual category text
+                        // that restated the grouping and added a row of height
+                        // without telling the lecturer anything about the
+                        // submission's state. The title, its status pill and (when
+                        // missed) its date are what remain.
+                        Meta:            null,
                         Trailing:        null,
                         TrailingLate:    false,
                         State:           state,
@@ -672,8 +717,10 @@
                 return new PwWorkRow(
                 Key:         $"request:{r.RequestId}",
                 Title:       r.Title,
-                // Who asked, on the context line; when they asked, at the end.
-                Meta:        string.IsNullOrWhiteSpace(r.CreatedByName) ? null : r.CreatedByName,
+                // No requester name under the request title (display-only cleanup,
+                // matched on the mentor detail). When it was filed still reaches
+                // the row's end; the requester is on the request's detail surface.
+                Meta:        null,
                 Trailing:    r.CreatedAt.ToLocalTime().ToString("dd.MM"),
                 // OWNERSHIP, NOT VISIBILITY. The label is second-person only
                 // when the next move on this request is actually this
@@ -735,42 +782,14 @@
                               :                            PwRowRank.Dormant))
             .ToList();
 
-    // ── 4. פעילות אחרונה ────────────────────────────────────────────────────
+    // ── 4. NO פעילות אחרונה ──────────────────────────────────────────────────
     //
-    // "בקשה נפתחה — X" IS GONE. Every one of those lines named a request that
-    // is a row in the בקשות section a few hundred pixels up the same page,
-    // carrying its own status and its own filing date — the feed was reading
-    // the page back to the reader.
-    //
-    // A submission ARRIVING stays, because it is the one thing here nothing
-    // else on this page says: the הגשות section states a deliverable's state,
-    // never who handed it in, when, or what the reviewer wrote about it. That
-    // published feedback was already the only unique fact this block carried.
-    //
-    // Milestone completion and task creation are still not stored anywhere at
-    // project scope, so they are absent rather than guessed — and when there
-    // is nothing left to say, the block does not render at all.
-
-    private IReadOnlyList<PwActivityRow> Activity =>
-        _data!.RecentSubmissions
-            .OrderByDescending(s => s.SubmittedAt)
-            .Take(5)
-            .Select(s => new PwActivityRow(
-                Key:  $"submission:{s.SubmissionId}",
-                Text: $"הגשה התקבלה — {s.TaskTitle}",
-                // The reviewer's own words when they have been published — the
-                // one fact the old submissions table carried that nothing else
-                // on this page does.
-                Meta: string.IsNullOrWhiteSpace(s.LatestFeedback)
-                          ? $"{s.SubmittedByName} · {s.SubmittedAt.ToLocalTime():dd.MM}"
-                          : $"{s.SubmittedByName} · {Truncate(s.LatestFeedback!, 60)}",
-                // An activity log reports what happened; it does not ask the
-                // reader for anything, so it is quiet. It was Blue, which in
-                // the Motiva scope resolves to violet — brand colour spent on
-                // "an event exists".
-                Tone: PwTone.Quiet,
-                IsClickable: CanManageMentors))
-            .ToList();
+    // The lecturer review no longer carries a Recent-Activity block (item 6).
+    // Its lines were a second copy of rows already on the page — a submission's
+    // arrival is stated on its הגשות row, a request's move on its בקשות row —
+    // so it was reading the page back to the reader and cost a rail card of
+    // height. The View is built with an empty Activity list, so ProjectWorkspace
+    // draws nothing here, and בקשות now occupies the rail slot it vacated.
 
     // ── Opening a row ───────────────────────────────────────────────────────
     //
@@ -998,9 +1017,6 @@
             _                     => t.Status,
         };
     }
-
-    private static string Truncate(string s, int max) =>
-        s.Length <= max ? s : s[..max] + "…";
 
     /// <summary>The mentor's decision, in the same three words the mentor's own
     /// review surface uses for it.</summary>

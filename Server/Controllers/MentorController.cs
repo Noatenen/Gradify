@@ -217,7 +217,14 @@ public class MentorController : ControllerBase
                     p.Description,
                     p.OrganizationName  AS Organization,
                     t.TeamName,
-                    t.Id                AS TeamId
+                    t.Id                AS TeamId,
+                    -- The team's own uploaded logo, read-only. Byte-for-byte the
+                    -- base-relative URL ProjectOverviewController returns: a blank
+                    -- LogoPath (or no ProjectTeamProfile row) concatenates to NULL,
+                    -- so both 'no logo' cases fall out as a null LogoUrl.
+                    (SELECT 'project-logos/' || NULLIF(TRIM(ptp.LogoPath), '')
+                     FROM   ProjectTeamProfile ptp
+                     WHERE  ptp.ProjectId = p.Id) AS LogoUrl
             FROM    Projects     p
             JOIN    Teams        t   ON p.TeamId        = t.Id
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
@@ -397,6 +404,7 @@ public class MentorController : ControllerBase
             ProjectType          = projectRow.ProjectType,
             Description          = projectRow.Description,
             Organization         = projectRow.Organization,
+            LogoUrl              = string.IsNullOrWhiteSpace(projectRow.LogoUrl) ? null : projectRow.LogoUrl,
             TeamName             = projectRow.TeamName,
             TeamMembers          = teamMembers,
             MilestoneProgressPct = totalMs > 0 ? completedMs * 100 / totalMs : 0,
@@ -697,6 +705,7 @@ public class MentorController : ControllerBase
         public string  ProjectType  { get; set; } = "";
         public string? Description  { get; set; }
         public string? Organization { get; set; }
+        public string? LogoUrl      { get; set; }
         public string  TeamName     { get; set; } = "";
         /// <summary>Needed for the effective-due-date override chain below.</summary>
         public int     TeamId       { get; set; }

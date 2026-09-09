@@ -53,7 +53,16 @@ public class ProjectOverviewController : ControllerBase
                     (SELECT GROUP_CONCAT(u.FirstName || ' ' || u.LastName, ', ')
                      FROM   ProjectMentors pmm
                      JOIN   users          u ON u.Id = pmm.UserId
-                     WHERE  pmm.ProjectId = p.Id) AS MentorNames
+                     WHERE  pmm.ProjectId = p.Id) AS MentorNames,
+                    -- The team's own uploaded logo, read-only. Base-relative and
+                    -- byte-for-byte the URL ProjectsController's my-project-details
+                    -- returns: 'project-logos/' || the stored file name. A blank
+                    -- LogoPath concatenates to NULL (SQLite), and a project with no
+                    -- ProjectTeamProfile row yields NULL too — so both 'no logo' cases
+                    -- fall out as a null LogoUrl and the header shows no image.
+                    (SELECT 'project-logos/' || NULLIF(TRIM(ptp.LogoPath), '')
+                     FROM   ProjectTeamProfile ptp
+                     WHERE  ptp.ProjectId = p.Id) AS LogoUrl
             FROM    Projects     p
             LEFT JOIN Teams       t  ON t.Id = p.TeamId
             JOIN    ProjectTypes pt  ON pt.Id = p.ProjectTypeId
@@ -136,6 +145,7 @@ public class ProjectOverviewController : ControllerBase
                     t.ProjectMilestoneId AS ProjectMilestoneId,
                     COALESCE(mt.Title, '') AS MilestoneTitle,
                     t.Status,
+                    t.TaskType,
                     t.IsSubmission,
                     t.ClosedAt,
                     COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
@@ -252,6 +262,7 @@ public class ProjectOverviewController : ControllerBase
             return new TaskWithMs
             {
                 ProjectMilestoneId = r.ProjectMilestoneId,
+                TaskType           = r.TaskType,
                 Dto = new ProjectOverviewTaskDto
                 {
                     TaskId         = r.TaskId,
@@ -296,14 +307,38 @@ public class ProjectOverviewController : ControllerBase
         }).ToList();
 
         // ── 8. Summary aggregation ─────────────────────────────────────────
-        int totalTasks     = taskDtos.Count;
-        int completedTasks = taskDtos.Count(t => t.Dto.Status is "Done" or "Completed" or "SubmittedToMentor"
+        //
+        // THE PROJECT-LEVEL TASK SUMMARY COUNTS FRAMEWORK TASKS ONLY —
+        // Tasks.TaskType = 'System'. The Tasks table also carries legacy rows
+        // with TaskType 'Mentor'/'Personal' (no current flow creates them; the
+        // three instantiation flows all write 'System'), and those are not
+        // project-framework work the lecturer supervises. Team-created work
+        // lives in TeamTasks and personal guidance in PersonalTasks — separate
+        // tables this query never reads — so the only origin filter needed here
+        // is TaskType. IsSystemTask is uniformly 0 in the data and is NOT used.
+        //
+        // Scope: ONLY these two summary figures (the "N מתוך M" note) change.
+        // The visible משימות rows are built client-side from the full task list
+        // and are unaffected (the legacy rows are Done/Completed, so they were
+        // never drawn as open rows anyway); the per-milestone counts above keep
+        // their own logic; the completion SEMANTICS for a System task are
+        // unchanged.
+        var frameworkTasks = taskDtos.Where(t => t.TaskType == "System").ToList();
+        int totalTasks     = frameworkTasks.Count;
+        int completedTasks = frameworkTasks.Count(t => t.Dto.Status is "Done" or "Completed" or "SubmittedToMentor"
                                               || t.Dto.HasSubmission);
         int overdueTasks   = taskDtos.Count(t => t.Dto.IsOverdue);
         int missingSubs    = taskDtos.Count(t => t.Dto.IsSubmission && !t.Dto.HasSubmission && t.Dto.IsOverdue);
         int msTotal        = milestoneDtos.Count;
         int msCompleted    = milestoneDtos.Count(m => m.Status == "Completed");
-        int progressPct    = totalTasks == 0 ? 0 : (int)Math.Round(completedTasks * 100.0 / totalTasks);
+        // OverallProgressPercent stays TASK-WIDE (all tasks), deliberately not
+        // re-derived from the framework subset above: it is consumed by the
+        // הצוותים שלי list panel (LecturerProjectsPage), a different screen that
+        // this pass must not change. Only the two framework counters moved.
+        int allTasks       = taskDtos.Count;
+        int allCompleted   = taskDtos.Count(t => t.Dto.Status is "Done" or "Completed" or "SubmittedToMentor"
+                                              || t.Dto.HasSubmission);
+        int progressPct    = allTasks == 0 ? 0 : (int)Math.Round(allCompleted * 100.0 / allTasks);
 
         // Milestone completion is the project's HEADLINE progress on both
         // workspaces; the task figure above stays as the secondary number the
@@ -340,6 +375,7 @@ public class ProjectOverviewController : ControllerBase
             ProjectType   = head.ProjectType,
             MentorNames   = string.IsNullOrWhiteSpace(head.MentorNames) ? null : head.MentorNames,
             HealthStatus  = head.HealthStatus,
+            LogoUrl       = string.IsNullOrWhiteSpace(head.LogoUrl) ? null : head.LogoUrl,
             TeamMembers   = members,
             Resources     = resources,
             // Their real relationship to this project, for the attention feed.
@@ -383,6 +419,7 @@ public class ProjectOverviewController : ControllerBase
         public int      AcademicYearId    { get; set; }
         public int      AssignmentIsDraft { get; set; }
         public string?  MentorNames       { get; set; }
+        public string?  LogoUrl           { get; set; }
     }
 
     private sealed class MilestoneRow
@@ -401,6 +438,7 @@ public class ProjectOverviewController : ControllerBase
         public int?      ProjectMilestoneId { get; set; }
         public string    MilestoneTitle     { get; set; } = "";
         public string?   Status             { get; set; }
+        public string    TaskType           { get; set; } = "";
         public int       IsSubmission       { get; set; }
         public DateTime? ClosedAt           { get; set; }
         public DateTime? DueDate            { get; set; }
@@ -410,6 +448,11 @@ public class ProjectOverviewController : ControllerBase
     private sealed class TaskWithMs
     {
         public int? ProjectMilestoneId { get; set; }
+        /// <summary>The task's origin, from Tasks.TaskType. Kept on the
+        /// server-side wrapper (not the client DTO) purely so the project-level
+        /// summary can count framework ('System') tasks and exclude legacy
+        /// Mentor/Personal rows — team/personal work lives in other tables.</summary>
+        public string TaskType { get; set; } = "";
         public ProjectOverviewTaskDto Dto { get; set; } = new();
     }
 }

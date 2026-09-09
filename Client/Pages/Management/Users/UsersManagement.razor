@@ -175,8 +175,11 @@
                 </div>
                 <div class="um-form-field">
                     <label class="um-form-label">תפקיד</label>
+                    @* Placeholder, not a default. It is what a pending account
+                       shows until an admin makes the choice deliberately. *@
                     <MSelectField Options="@RoleSelectOptions"
                                   @bind-Value="@_editRole"
+                                  Placeholder="בחר תפקיד"
                                   Class="um-form-select" />
                 </div>
 
@@ -279,28 +282,26 @@
 <div class="um-page" dir="rtl" @onclick="CloseAllMenus">
 
     @* ══ Header — identity, then the two page-level actions ═══════════════ *@
-    <header class="um-head">
-        <div class="um-head-main">
+    <MPageHeaderCard Title="ניהול משתמשים">
+        <Leading>
             <MAdminBack />
-
-            <div class="um-head-title">
-                <h1 class="um-h1">ניהול משתמשים</h1>
-                <MInfoTip Text="משתמשי המערכת, התפקידים שלהם וייבוא משתמשים" />
-                @if (!_loading)
-                {
-                    <MSummaryTag Metrics="SummaryMetrics" />
-                }
-            </div>
-        </div>
-
-        <div class="um-head-actions" @onclick:stopPropagation="true">
+        </Leading>
+        <TitleTrailing>
+            <MInfoTip Text="משתמשי המערכת, התפקידים שלהם וייבוא משתמשים" />
+            @if (!_loading)
+            {
+                <MSummaryTag Metrics="SummaryMetrics" />
+            }
+        </TitleTrailing>
+        <Actions>
             @* Secondary. Opens the import wizard in place — the admin never
                leaves the table. The old CSV / XLSX / Moodle / Airtable menu is
                gone: two of its entries were no-ops and two were disabled
                placeholders, and the wizard now detects the format from the file
                itself, so a menu that asks the format up front has nothing to
                decide. *@
-            <button type="button" class="um-btn-secondary" @onclick="OpenImport">
+            <button type="button" class="um-btn-secondary"
+                    @onclick="OpenImport" @onclick:stopPropagation="true">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -312,15 +313,16 @@
 
             @* The one primary on the page — gradient, per the shared
                .motiva-cta treatment. Geometry only lives in the stylesheet. *@
-            <button type="button" class="um-btn-primary um-btn-primary--lg motiva-cta" @onclick="OpenCreate">
+            <button type="button" class="um-btn-primary um-btn-primary--lg motiva-cta"
+                    @onclick="OpenCreate" @onclick:stopPropagation="true">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
                     <path d="M12 5v14M5 12h14" />
                 </svg>
                 הוספת משתמש
             </button>
-        </div>
-    </header>
+        </Actions>
+    </MPageHeaderCard>
 
     @* ══ Toolbar — one search, three filters, a conditional clear, a count ══ *@
     <div class="um-toolbar" @onclick:stopPropagation="true">
@@ -911,7 +913,15 @@
         _editLastName   = user.LastName  ?? "";
         _editPhone      = user.Phone     ?? "";
         _editYear       = user.AcademicYear ?? "2025-2026";
-        _editRole       = user.Roles.FirstOrDefault(r => r != Roles.User) ?? Roles.Student;
+        // NOT "?? Roles.Student". A pending self-registered account holds no
+        // roles at all, and defaulting the dropdown to Student meant an admin
+        // who opened this dialog to fix a phone number and pressed שמירה
+        // silently approved a lecturer AS A STUDENT. Empty here shows the
+        // select's placeholder ("בחר תפקיד") and SaveEdit refuses to submit
+        // until a role is actually chosen. PrimaryRole is the same expression
+        // this line used, and is already the canonical "role a row is labelled
+        // by" — the two can no longer drift.
+        _editRole       = PrimaryRole(user);
         _editError      = "";
         _editSaving     = false;
     }
@@ -928,6 +938,16 @@
         if (string.IsNullOrWhiteSpace(_editFirstName) || string.IsNullOrWhiteSpace(_editLastName))
         {
             _editError = "שם פרטי ושם משפחה הם שדות חובה";
+            return;
+        }
+
+        // Only reachable for an account that had no role to begin with — every
+        // other user opens this dialog with their own role already selected.
+        // The server rejects an empty Role too ("תפקיד לא תקין"); this is the
+        // half that can say WHY, before a request is sent.
+        if (string.IsNullOrWhiteSpace(_editRole))
+        {
+            _editError = "החשבון ממתין לאישור — יש לבחור תפקיד לפני השמירה";
             return;
         }
 
@@ -1037,7 +1057,7 @@
         Roles.Staff   => "מרצה",
         "Lecturer"    => "מרצה",
         Roles.Admin   => "מנהל מערכת",
-        ""            => "—",
+        ""            => "ממתין לאישור",   // zero roles — a pending self-registration
         _             => role
     };
 

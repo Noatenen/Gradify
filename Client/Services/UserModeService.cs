@@ -125,8 +125,8 @@ public static class UserModeService
     public static string DashboardRouteFor(string mode) =>
         mode switch
         {
-            UserModes.Mentor => "/dashboard/mentor",
-            _                => "/dashboard/lecturer",
+            UserModes.Mentor => "dashboard/mentor",
+            _                => "dashboard/lecturer",
         };
 
     // ── internals ─────────────────────────────────────────────────────────

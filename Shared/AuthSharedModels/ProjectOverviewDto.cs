@@ -33,6 +33,15 @@ public class ProjectOverviewHeaderDto
     public string? MentorNames    { get; set; }
     public string? HealthStatus   { get; set; }
 
+    /// <summary>The team's uploaded project logo, base-relative
+    /// ("project-logos/{file}"), or null when the team has never uploaded one.
+    /// Same source and same URL shape the student's own project page reads
+    /// (ProjectTeamProfile.LogoPath, served out of wwwroot/project-logos) — the
+    /// lecturer review shows the existing mark, it does not upload or edit it.
+    /// Null both when no ProjectTeamProfile row exists and when its LogoPath is
+    /// blank, so the header can fall back to no image without a broken tile.</summary>
+    public string? LogoUrl        { get; set; }
+
     /// <summary>The team, by name. Added so the shared Project Workspace can
     /// draw the same identity block for a lecturer that it draws for a mentor —
     /// the mentor payload has carried this since it existed, and the lecturer's

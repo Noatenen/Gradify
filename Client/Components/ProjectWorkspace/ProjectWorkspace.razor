@@ -84,7 +84,35 @@
     <header class="pw-head">
 
         <div class="pw-head-top">
+            @*  Optional leading control on the title's own row — each host passes
+                its OWN back control here: the lecturer its Management back arrow,
+                the mentor its "פרויקטים בהנחייתי" link. The navigation control and
+                the project title share the top row and the title anchors it. *@
+            @HeaderLeading
+
+            @*  The team's OWN uploaded mark, a compact thumbnail leading the
+                title. Drawn only when a logo exists AND it loads — a src that
+                404s flips _logoFailed and the tile is dropped on the next render,
+                so an absent or dead logo leaves no broken image and reserves no
+                empty slot. Same source the student's project page reads
+                (ProjectTeamProfile.LogoPath); both finished workspaces show it. *@
+            @if (HasLogo)
+            {
+                <span class="pw-logo">
+                    <img class="pw-logo-img" src="@View.Identity.LogoUrl" alt=""
+                         loading="lazy" @onerror="HandleLogoError" />
+                </span>
+            }
+
             <h1 class="pw-title">@View.Identity.Title</h1>
+
+            @*  The project/team metadata popover trigger, beside the title — team,
+                field and students moved off the header into here. Then the
+                attention/health badge, kept next to the title. The Drive/materials
+                control and the role's own action are NOT here; they sit in the
+                summary row below, so the top row stays a clean identity line. *@
+            @InfoControl()
+
             @if (!string.IsNullOrWhiteSpace(View.Identity.StatusText))
             {
                 <MStatusBadge Variant="@View.Identity.StatusVariant"
@@ -92,144 +120,28 @@
             }
         </div>
 
-        @if (MembersInSubline)
-        {
-            <div class="pw-sub pw-sub-members">
-                @if (!string.IsNullOrWhiteSpace(View.Identity.TeamName))
-                {
-                    <span class="pw-sub-team">@View.Identity.TeamName ·</span>
-                }
-
-                @*  The chips that follow are the team's members, and until now
-                    nothing said so — the line read "צוות אלפא ·" and then a run
-                    of avatars whose relationship to the team name the reader had
-                    to infer. Naming them is the whole change.
-
-                    Guarded on Members rather than rendered unconditionally, for
-                    the same reason the team name above is guarded: a label with
-                    nothing after it is worse than no label, and this subtitle's
-                    own rule is that either half is omitted rather than left
-                    dangling beside a separator.
-
-                    ONLY THE LECTURER SEES THIS. The `MembersInSubline` branch it
-                    sits in is entered by exactly one call site —
-                    ProjectOverviewPage passes MembersInSubline="true" — while
-                    MentorProjectDetailPage takes the `else` branch and keeps its
-                    "צוות X · שלב נוכחי: Y" line untouched.  *@
-                @if (View.Identity.Members.Count > 0)
-                {
-                    <span class="pw-sub-members-label">חברות הצוות</span>
-                }
-
-                @foreach (var m in View.Identity.Members)
-                {
-                    <span class="pw-member" title="@m">
-                        <span class="pw-member-initials" aria-hidden="true">@Initials(m)</span>
-                        @ShortName(m)
-                    </span>
-                }
-            </div>
-        }
-        else
-        {
-            <p class="pw-sub">@IdentityLine</p>
-        }
-
-        <div class="pw-head-facts">
-
-            @* Metadata and the role's own actions — one group. *@
-            @if (View.Identity.Meta.Count > 0 || IdentityActions is not null)
+        @*  THE SUMMARY ROW — the header's second line, drawn for both finished
+            workspaces. Milestone progress sits at the reading edge (physical
+            RIGHT in RTL); on the physical LEFT a cluster carries the
+            Drive/materials control and the role's own project action(s). For the
+            mentor that action is the guidance-meeting scheduler and its
+            last-meeting caption (IdentityActions); the lecturer passes none, so
+            its cluster is the materials control alone — exactly as before. Both
+            progress and materials are the shared fragments; only their placement
+            is the finished header's, and the members/metadata the mentor used to
+            spread across a facts line now live in the info popover above. *@
+        <div class="pw-head-summary">
+            @ProgressInline()
+            @if (View.Identity.Materials.Count > 0 || IdentityActions is not null)
             {
-                <div class="pw-meta">
-                    @foreach (var chip in View.Identity.Meta)
+                <div class="pw-head-actions">
+                    @if (View.Identity.Materials.Count > 0)
                     {
-                        <span class="pw-chip">
-                            @if (!string.IsNullOrWhiteSpace(chip.Icon))
-                            {
-                                <span class="oi @chip.Icon" aria-hidden="true"></span>
-                            }
-                            @chip.Text
-                        </span>
+                        @MaterialsControl()
                     }
                     @IdentityActions
                 </div>
             }
-
-            @* ── חומרי הפרויקט ────────────────────────────────────────────
-                PROJECT-LEVEL materials, and only those: the team's own
-                working links (ProjectResources) — the shared folder, the
-                spec, the design file, the repository. They are deliberately
-                NOT mixed with a submission's files or a request's
-                attachments, which belong to one item each and live inside
-                that item's own detail surface. Three different things, three
-                different homes; this one is the project's, so it lives on
-                the project's header and stays there while any item is open.
-
-                Nothing is stored or edited from here — the team owns these
-                on their own workspace, and this is a read-only way in. *@
-            @if (View.Identity.Materials.Count > 0)
-            {
-                <div class="pw-materials">
-                    <span class="pw-materials-icon" aria-hidden="true">
-                        <span class="oi oi-folder"></span>
-                    </span>
-
-                    @if (View.Identity.Materials.FirstOrDefault(m => m.IsPrimary) is { } folder)
-                    {
-                        <a class="pw-material-primary" href="@folder.Url"
-                           target="_blank" rel="noopener noreferrer">@folder.Label</a>
-                        <span class="pw-materials-sep" aria-hidden="true"></span>
-                    }
-
-                    <button type="button" class="pw-materials-toggle"
-                            aria-expanded="@(_materialsOpen ? "true" : "false")"
-                            @onclick="ToggleMaterials">
-                        חומרי הפרויקט
-                        <span class="pw-materials-count">@View.Identity.Materials.Count</span>
-                    </button>
-
-                    @if (_materialsOpen)
-                    {
-                        <div class="pw-materials-pop" role="group" aria-label="חומרי הפרויקט">
-                            @foreach (var m in View.Identity.Materials)
-                            {
-                                <a class="pw-material" href="@m.Url"
-                                   target="_blank" rel="noopener noreferrer" title="@m.Url">
-                                    <span class="pw-material-label">@m.Label</span>
-                                    <span class="pw-material-host">@HostOf(m.Url)</span>
-                                </a>
-                            }
-                        </div>
-                    }
-                </div>
-            }
-
-            @* The team — a second group on the same line. Hidden when member
-               names are already shown in the subtitle (MembersInSubline). *@
-            @if (!MembersInSubline && View.Identity.Members.Count > 0)
-            {
-                <div class="pw-members">
-                    @foreach (var m in View.Identity.Members)
-                    {
-                        <span class="pw-member" title="@m">
-                            <span class="pw-member-initials" aria-hidden="true">@Initials(m)</span>
-                            @ShortName(m)
-                        </span>
-                    }
-                </div>
-            }
-
-            @* Progress, inline — the same figure and the same bar, laid on
-               the header's line rather than stacked off the end of it. *@
-            <div class="pw-progress">
-                <span class="pw-progress-pct">@View.Identity.ProgressPct%</span>
-                <span class="pw-progress-label">התקדמות אבני הדרך</span>
-                <span class="pw-progress-bar">
-                    <MProgressBar Value="@View.Identity.ProgressPct"
-                                  Size="MProgressBar.ProgressSize.Small"
-                                  AccessibleLabel="@($"התקדמות אבני הדרך: {View.Identity.ProgressPct}%")" />
-                </span>
-            </div>
         </div>
     </header>
 
@@ -238,18 +150,16 @@
         <section class="pw-pane" aria-labelledby="pw-roadmap-h">
             <MCard Padding="MCard.CardPadding.None" Fill="true">
                 <div class="pw-card">
-                    <div class="pw-card-head">
-                        @*  The same heading anatomy every card on this page
-                            uses: title, then a quiet count/summary in the
-                            trailing slot. It carried its own `.pw-card-note`
-                            here — a second class for the object the section
-                            cards call `.pw-sec-summary`. *@
-                        <MSectionHeading Text="מסלול אבני הדרך" LabelId="pw-roadmap-h">
-                            <Trailing>
-                                <span class="pw-sec-summary pw-tone-quiet">@View.StagesSummary</span>
-                            </Trailing>
-                        </MSectionHeading>
-                    </div>
+                    @*  NO "מסלול אבני הדרך" heading on either finished workspace —
+                        the strip is self-evidently the roadmap, and the h2 heading
+                        plus its padding was pure height. What is kept is the one
+                        fact the strip cannot show on its own — where the project
+                        stands and whether anything is late — as a single quiet
+                        line ("שלב 3 מתוך 7 · אבן דרך באיחור"). *@
+                    @if (View.Stages.Count > 0 && !string.IsNullOrWhiteSpace(View.StagesSummary))
+                    {
+                        <p class="pw-roadmap-summary pw-sec-summary pw-tone-quiet">@View.StagesSummary</p>
+                    }
 
                     @if (View.Stages.Count == 0)
                     {
@@ -261,13 +171,36 @@
                             @foreach (var stage in View.Stages)
                             {
                                 var c = stage;
+                                @*  The date sits ABOVE the track, and a completed
+                                    stage shows a checkmark instead of the word
+                                    "הושלם" (c.Date is empty for a done or undated
+                                    stage in compact mode — see PwStages). The CSS
+                                    reorders these three spans; the markup order
+                                    stays date → track → name so the date leads for
+                                    a screen reader too. Both finished workspaces
+                                    draw this compact strip. *@
                                 <li class="pw-stage @StageClass(c.State)">
+                                    <span class="pw-stage-date">
+                                        @if (c.State == PwStageState.Done)
+                                        {
+                                            <span class="pw-stage-check" title="הושלם" aria-label="הושלם">
+                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                                     stroke="currentColor" stroke-width="3"
+                                                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                    <polyline points="20 6 9 17 4 12" />
+                                                </svg>
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            @c.Date
+                                        }
+                                    </span>
                                     <span class="pw-stage-track" aria-hidden="true"></span>
                                     <span class="pw-stage-name">
                                         <span class="pw-stage-dot" aria-hidden="true"></span>
                                         <span class="pw-stage-text" title="@c.Name">@c.Name</span>
                                     </span>
-                                    <span class="pw-stage-date">@c.Date</span>
                                 </li>
                             }
                         </ol>
@@ -388,16 +321,90 @@
     /// Moodle control for a lecturer, the meeting scheduler for a mentor.</summary>
     [Parameter] public RenderFragment? IdentityActions { get; set; }
 
-    /// <summary>When true, the subtitle line shows member names instead of the
-    /// team-and-stage text, and the member chips in the facts row are hidden.
-    /// Used by the lecturer Project Review page.</summary>
-    [Parameter] public bool MembersInSubline { get; set; }
+    /// <summary>An optional leading control on the title's own row, before the
+    /// title. The lecturer review passes its back arrow here so the navigation
+    /// control and the title share the top row; hosts that pass nothing keep the
+    /// title as the first element exactly as before.</summary>
+    [Parameter] public RenderFragment? HeaderLeading { get; set; }
 
     /// <summary>A work row was activated. The host decides what that opens —
     /// every one of them now opens a detail surface OVER this page rather than
     /// expanding inside the list.</summary>
     [Parameter] public EventCallback<string> OnWorkRowClick { get; set; }
     [Parameter] public EventCallback<string> OnActivityClick { get; set; }
+
+    // ── Header: the project logo (lecturer, item 2) ─────────────────────────
+
+    /// <summary>Set when the browser fails to load a logo that WAS supplied, so a
+    /// dead URL falls back to no image exactly as an absent one does — the header
+    /// never shows a broken tile. The student's own project card takes the same
+    /// precaution (ProjectIdentityCard).</summary>
+    private bool _logoFailed;
+
+    private bool HasLogo =>
+        !_logoFailed && !string.IsNullOrWhiteSpace(View.Identity.LogoUrl);
+
+    private void HandleLogoError() => _logoFailed = true;
+
+    // ── Header: the project-info popover (lecturer, item 3) ──────────────────
+
+    private bool _infoOpen;
+
+    private void ToggleInfo() => _infoOpen = !_infoOpen;
+
+    /// <summary>The students named on the info popover — the member display
+    /// strings reduced to names (a lecturer's carry "name · email"; only the
+    /// name belongs in a comma-separated line).</summary>
+    private string StudentsLine =>
+        string.Join(", ", View.Identity.Members.Select(ShortName));
+
+    /// <summary>Item 3: the project/team metadata as a popover opened from beside
+    /// the title — team, field, students and mentors, in that order. It reuses the
+    /// materials popover's surface (a small in-place card, not a hover tooltip) so
+    /// the amount of information here has room to be read. The rows are built from
+    /// the same Identity the header already holds: TeamName heads it, Meta[0] is
+    /// the field ("סוג פרויקט: …"), the students line comes from Members, and the
+    /// remaining Meta rows (מנחים) close it — see ProjectOverviewPage for why that
+    /// Meta order is load-bearing.</summary>
+    private RenderFragment InfoControl() =>@<text>
+        <div class="pw-info">
+            <button type="button" class="pw-info-trigger"
+                    aria-expanded="@(_infoOpen ? "true" : "false")"
+                    aria-label="פרטי הפרויקט"
+                    title="פרטי הפרויקט"
+                    @onclick="ToggleInfo">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="16" x2="12" y2="12" />
+                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
+            </button>
+
+            @if (_infoOpen)
+            {
+                <div class="pw-info-pop" role="group" aria-label="פרטי הפרויקט">
+                    @if (!string.IsNullOrWhiteSpace(View.Identity.TeamName))
+                    {
+                        <p class="pw-info-row pw-info-team">@View.Identity.TeamName</p>
+                    }
+                    @if (View.Identity.Meta.Count > 0)
+                    {
+                        <p class="pw-info-row">@View.Identity.Meta[0].Text</p>
+                    }
+                    @if (View.Identity.Members.Count > 0)
+                    {
+                        <p class="pw-info-row">סטודנטים: @StudentsLine</p>
+                    }
+                    @foreach (var chip in View.Identity.Meta.Skip(1))
+                    {
+                        <p class="pw-info-row">@chip.Text</p>
+                    }
+                </div>
+            }
+        </div>
+    </text>;
 
     // ── חומרי הפרויקט ───────────────────────────────────────────────────────
 
@@ -413,15 +420,80 @@
             ? u.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? u.Host[4..] : u.Host
             : "";
 
+    /// <summary>חומרי הפרויקט — the project's own working links, written once as
+    /// a fragment because the lecturer renders it at the header's upper-left and
+    /// the mentor on the facts line (item 3). Same markup, same _materialsOpen
+    /// state, one source of truth.</summary>
+    private RenderFragment MaterialsControl() =>@<text>
+        <div class="pw-materials">
+            <span class="pw-materials-icon" aria-hidden="true">
+                <span class="oi oi-folder"></span>
+            </span>
+
+            @if (View.Identity.Materials.FirstOrDefault(m => m.IsPrimary) is { } folder)
+            {
+                <a class="pw-material-primary" href="@folder.Url"
+                   target="_blank" rel="noopener noreferrer">@folder.Label</a>
+                <span class="pw-materials-sep" aria-hidden="true"></span>
+            }
+
+            <button type="button" class="pw-materials-toggle"
+                    aria-expanded="@(_materialsOpen ? "true" : "false")"
+                    @onclick="ToggleMaterials">
+                חומרי הפרויקט
+                <span class="pw-materials-count">@View.Identity.Materials.Count</span>
+            </button>
+
+            @if (_materialsOpen)
+            {
+                <div class="pw-materials-pop" role="group" aria-label="חומרי הפרויקט">
+                    @foreach (var m in View.Identity.Materials)
+                    {
+                        <a class="pw-material" href="@m.Url"
+                           target="_blank" rel="noopener noreferrer" title="@m.Url">
+                            <span class="pw-material-label">@m.Label</span>
+                            <span class="pw-material-host">@HostOf(m.Url)</span>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </text>;
+
+    /// <summary>The project's milestone-progress figure and bar, written once as
+    /// a fragment because both finished workspaces render it on the summary row —
+    /// one markup, one source of truth.
+    ///
+    /// <para>Reading order is LABEL → NUMBER → BAR. In the RTL flow the label is
+    /// first in the DOM so it sits at the reading start (right), the percentage
+    /// follows, and the bar ends the group — "התקדמות אבני הדרך 42% ▬" — rather
+    /// than leading with the bare number.</para></summary>
+    private RenderFragment ProgressInline() =>@<text>
+        <div class="pw-progress">
+            <span class="pw-progress-label">התקדמות אבני הדרך</span>
+            <span class="pw-progress-pct">@View.Identity.ProgressPct%</span>
+            <span class="pw-progress-bar">
+                <MProgressBar Value="@View.Identity.ProgressPct"
+                              Size="MProgressBar.ProgressSize.Small"
+                              AccessibleLabel="@($"התקדמות אבני הדרך: {View.Identity.ProgressPct}%")" />
+            </span>
+        </div>
+    </text>;
+
     // ── Sections ────────────────────────────────────────────────────────────
 
-    /// <summary>The wide column — the categories a reader acts on. Written as
-    /// "the first two" rather than as "הגשות and בקשות" so this component still
-    /// knows nothing about what a host chose to put where.</summary>
-    private IReadOnlyList<PwSection> MainSections => View.Sections.Take(2).ToList();
+    /// <summary>The wide main column, at the reading edge; the rest go to the
+    /// rail. The mentor keeps the two-then-rest split it always had. The lecturer
+    /// gives the main column its FIRST section only — הגשות, the richest and
+    /// widest — and the rail takes the other two (item 6: משימות then בקשות),
+    /// which is what puts the lecturer's supporting work in one narrow column
+    /// beside the submissions it supports.</summary>
+    private int MainCount => Context == PwContext.Lecturer ? 1 : 2;
+
+    private IReadOnlyList<PwSection> MainSections => View.Sections.Take(MainCount).ToList();
 
     /// <summary>The rail — supporting sections, at the narrower measure.</summary>
-    private IReadOnlyList<PwSection> RailSections => View.Sections.Skip(2).ToList();
+    private IReadOnlyList<PwSection> RailSections => View.Sections.Skip(MainCount).ToList();
 
     /// <summary>Which sections have been asked to show everything they hold.
     /// Local, and deliberately not a parameter: it is a reading preference on
@@ -435,6 +507,7 @@
 
     private RenderFragment SectionCard(PwSection sec, bool isPrimary) =>@<text>
         <section class="pw-pane @(isPrimary ? "pw-pane-primary" : "") @(sec.WaitingCount > 0 ? "pw-pane-live" : "")"
+                 data-pw-section="@sec.Key"
                  aria-labelledby="@($"pw-sec-{sec.Key}")">
             <MCard Padding="MCard.CardPadding.None" Fill="true">
                 <div class="pw-card @(sec.ActiveCount == 0 ? "pw-card-calm" : "")">
@@ -448,8 +521,9 @@
                                 @*  A shape before the word. Both reference
                                     screens introduce every section with one,
                                     and it is what lets a reader find הגשות on
-                                    the page before reading anything. *@
-                                @if (Context == PwContext.Lecturer && GradientSvgIcon(sec.Icon) is { } svg)
+                                    the page before reading anything. Both finished
+                                    workspaces use the gradient glyph. *@
+                                @if (GradientSvgIcon(sec.Icon) is { } svg)
                                 {
                                     <span class="pw-sec-icon pw-sec-icon-gradient" aria-hidden="true">@svg</span>
                                 }
@@ -598,21 +672,6 @@
 
     // ── Display helpers ─────────────────────────────────────────────────────
 
-    /// <summary>"צוות אלפא · שלב נוכחי: אפיון" — team and stage on one quiet
-    /// line, with either half omitted rather than left dangling beside a
-    /// separator.</summary>
-    private string IdentityLine
-    {
-        get
-        {
-            var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(View.Identity.TeamName)) parts.Add(View.Identity.TeamName!);
-            if (!string.IsNullOrWhiteSpace(View.Identity.StageName))
-                parts.Add($"שלב נוכחי: {View.Identity.StageName}");
-            return string.Join(" · ", parts);
-        }
-    }
-
     /// <summary>Returns gradient SVG markup for the three known lecturer
     /// section icons. Returns null for any other icon key so the caller falls
     /// back to the standard .oi font glyph.</summary>
@@ -644,16 +703,10 @@
         _             => "pw-tone-quiet",
     };
 
-    private static string Initials(string? text)
-    {
-        var parts = (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return "?";
-        return parts.Length == 1 ? parts[0][..1] : $"{parts[0][..1]}{parts[1][..1]}";
-    }
-
     /// <summary>Members are handed over as a full display string (name, and for
-    /// a mentor the contact details in the tooltip). The chip shows the name
-    /// only; everything else stays in the title attribute.</summary>
+    /// a mentor the contact details in the tooltip). The info popover's students
+    /// line shows the name only; everything else stays available in the source
+    /// string.</summary>
     private static string ShortName(string text)
     {
         var cut = text.IndexOf(" · ", StringComparison.Ordinal);

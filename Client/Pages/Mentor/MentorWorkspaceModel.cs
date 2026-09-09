@@ -626,25 +626,25 @@ public static class MentorLinks
     // ── Collections ─────────────────────────────────────────────────────────
 
     /// <summary>המשימות שלי, unfiltered.</summary>
-    public const string Tasks = "/mentor/tasks";
+    public const string Tasks = "mentor/tasks";
 
     /// <summary>המשימות שלי, scoped to הגשות לבדיקה.</summary>
-    public const string Reviews = "/mentor/tasks?focus=reviews";
+    public const string Reviews = "mentor/tasks?focus=reviews";
 
     /// <summary>המשימות שלי, scoped to בקשות הדורשות פעולה.</summary>
-    public const string Requests = "/mentor/tasks?focus=requests";
+    public const string Requests = "mentor/tasks?focus=requests";
 
     /// <summary>המשימות שלי, scoped to משימות אישיות.</summary>
-    public const string PersonalTasks = "/mentor/tasks?focus=personal";
+    public const string PersonalTasks = "mentor/tasks?focus=personal";
 
     /// <summary>בקשות — every request on the mentor's projects, not only the
     /// ones awaiting them.</summary>
-    public const string RequestsInbox = "/mentor-requests";
+    public const string RequestsInbox = "mentor-requests";
 
     /// <summary>יומן ותכנון. Named here for the same reason as the rest: Home's
     /// "בקרוב" block and the top bar's calendar shortcut both point at it, and
     /// a literal in each would be two places to miss if the route moved.</summary>
-    public const string Calendar = "/mentor/calendar";
+    public const string Calendar = "mentor/calendar";
 
     /// <summary>פרויקטים בהנחייתי, optionally scoped to one attention state.
     ///
@@ -655,14 +655,14 @@ public static class MentorLinks
     /// selected there cannot drift.</para></summary>
     public static string Projects(MentorProjectSignal? signal = null) =>
         signal is null
-            ? "/mentor/projects"
-            : $"/mentor/projects?filter={MentorProjectSignals.Slug(signal.Value)}";
+            ? "mentor/projects"
+            : $"mentor/projects?filter={MentorProjectSignals.Slug(signal.Value)}";
 
     // ── Single items ────────────────────────────────────────────────────────
 
     /// <summary>One personal task's editor. Same link the calendar and the
     /// attention model already use, so all three open the same modal.</summary>
-    public static string PersonalTask(int taskId) => $"/mentor/tasks?editTask={taskId}";
+    public static string PersonalTask(int taskId) => $"mentor/tasks?editTask={taskId}";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -707,7 +707,7 @@ public sealed record MentorProjectCard(
     string                                SearchText)
 {
     /// <summary>מרחב הפרויקט — the existing per-project route, unchanged.</summary>
-    public string ProjectHref => $"/mentor/projects/{Project.Id}";
+    public string ProjectHref => $"mentor/projects/{Project.Id}";
 
     /// <summary>Builds the card from the shared snapshot and, when the caller
     /// has it, the roadmap progress that owns the stage and the next
