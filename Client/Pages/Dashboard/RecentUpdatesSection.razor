@@ -1,6 +1,7 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @inject INotificationService NotificationService
+@inject IProjectRequestsService RequestsService
 @inject NavigationManager Nav
 
 @* ─────────────────────────────────────────────────────────────
@@ -95,9 +96,33 @@
     {
         var all = await NotificationService.GetRecentAsync();
 
+        // ── Drop stale REQUEST updates ────────────────────────────────────────
+        // GET /api/notifications is a pure history read: a request notification
+        // survives after its ProjectRequest is deleted, reassigned to another
+        // team, or the student leaves the team, so the feed shows updates for
+        // requests that appear NOWHERE on the Requests page and cannot be opened.
+        //
+        // The authoritative "current requests" set is the very same
+        // GET /api/project-requests/my the Requests page renders — joined to the
+        // live ProjectRequests table and scoped to the student's active team. A
+        // request notification is kept only when its RelatedEntityId is still in
+        // that set; every other kind of notification is untouched.
+        //
+        // Scoped to the student (this is the student dashboard's card) and only
+        // applied when the set actually loaded — a failed load must not silently
+        // hide real request updates, so it falls back to the unfiltered feed.
+        HashSet<int>? validRequestIds = RoleService.IsStudent(_user)
+            ? (await RequestsService.GetMyRequestsAsync())?.Select(r => r.Id).ToHashSet()
+            : null;
+
+        var visible = validRequestIds is null
+            ? all
+            : all.Where(n => !IsRequestNotification(n)
+                             || (n.RelatedEntityId is int id && validRequestIds.Contains(id)));
+
         // Unread first, then newest — the dashboard's three slots should go to
         // what the student has not seen, not merely to what is newest.
-        _items = all
+        _items = visible
             .OrderBy(n => n.IsRead)
             .ThenByDescending(n => n.CreatedAt)
             .Take(MaxItems)
@@ -105,6 +130,17 @@
 
         _loading = false;
     }
+
+    // A notification about a ProjectRequest, in any of the shapes the server
+    // writes them — some carry RelatedEntityType, others only a request Type.
+    // Shared by the stale-request filter above and TargetUrl below so the two
+    // cannot disagree about what counts as a request update.
+    private static bool IsRequestNotification(NotificationDto n) =>
+        n.RelatedEntityType == "ProjectRequest"
+        || n.Type == "RequestReturned"
+        || n.Type == NotificationTypes.RequestCreated
+        || n.Type == NotificationTypes.RequestStatusChanged
+        || n.Type == NotificationTypes.RequestCommentAdded;
 
     private async Task OpenAsync(NotificationDto n)
     {
@@ -129,14 +165,7 @@
         if (n.Type == "SubmissionReturned")
             return n.RelatedEntityId.HasValue ? $"tasks?taskId={n.RelatedEntityId}" : "tasks";
 
-        bool isProjectRequest =
-            n.RelatedEntityType == "ProjectRequest"
-            || n.Type == "RequestReturned"
-            || n.Type == NotificationTypes.RequestCreated
-            || n.Type == NotificationTypes.RequestStatusChanged
-            || n.Type == NotificationTypes.RequestCommentAdded;
-
-        if (isProjectRequest) return RequestUrl(n.RelatedEntityId);
+        if (IsRequestNotification(n)) return RequestUrl(n.RelatedEntityId);
 
         return n.RelatedEntityType switch
         {
