@@ -51,6 +51,11 @@ builder.Services.AddScoped<IUserProfileService, UserProfileService>();
 // Lecturer/admin "משימות ממתינות לאישור מנחה" inbox + reminder/override actions
 builder.Services.AddScoped<IPendingMentorApprovalsService, PendingMentorApprovalsService>();
 
+// "אודות" — the switch both entry points (the profile menu and the footer
+// line) flip so AppLayout's single AboutModal opens. No HTTP, no state
+// beyond the event.
+builder.Services.AddScoped<AboutDialogService>();
+
 // Internal Project Health (traffic-light) — Admin/Staff/Mentor only
 builder.Services.AddScoped<IProjectHealthService, ProjectHealthService>();
 

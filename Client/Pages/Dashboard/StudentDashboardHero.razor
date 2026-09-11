@@ -86,7 +86,37 @@
                 </svg>
             </span>
             <h2 class="sd-head-title">מסע הפרויקט</h2>
-            <span class="sdh-journey-count">@_completedCount מתוך @Milestones.Count אבני דרך הושלמו</span>
+
+            @*
+                THE COMPACT SUMMARY, AND THE WAY IN to the journey.
+
+                It carried two lines — "3 מתוך 7 אבני דרך הושלמו" over
+                "42% מהמסע" — which is more arithmetic than a dashboard head
+                should ask anyone to read, and the second line restated the
+                first in another unit. The percentage is not deleted from the
+                product: it moved to /project's own journey card, where the
+                per-milestone detail already lives. This head keeps the fact
+                that fits a glance.
+
+                A PILL, not a sentence: "3/7 הושלמו" at caption size beside
+                the title, secondary to it and nowhere near a KPI. The chevron
+                still says the whole thing opens MilestoneJourneyModal — the
+                one the page already mounts, not a second dialog.
+            *@
+            <button type="button"
+                    class="sdh-journey-count motiva-journey-open"
+                    @onclick="OpenJourney"
+                    aria-label="@($"{_completedCount} מתוך {Milestones.Count} אבני דרך הושלמו. פתיחת מסע הפרויקט המלא")">
+                <span class="motiva-journey-pill">
+                    <bdi class="motiva-journey-frac">@_completedCount/@Milestones.Count</bdi>
+                    <span>הושלמו</span>
+                </span>
+                <svg class="motiva-journey-open-chev" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                    <path d="m15 18-6-6 6-6"></path>
+                </svg>
+            </button>
         </div>
 
         @*
@@ -148,7 +178,20 @@
                             aria-label="@($"פתיחת אבן הדרך {m.Title}")">
                         <span class="@($"sdh-ms-dot sdh-ms-dot-{ToneOf(m)}")" aria-hidden="true"></span>
                         <span class="sdh-ms-title" title="@m.Title">@m.Title</span>
-                        <span class="@(IsPast(m) ? "sdh-ms-due sdh-ms-due-past" : "sdh-ms-due")">@DueText(m)</span>
+                        <span class="@($"sdh-ms-due sdh-ms-due-{DueTone(m)}")">@DueText(m)</span>
+
+                        @* THE ROW SAYS IT OPENS SOMETHING. The whole row has
+                           always been the button; nothing on it said so, so a
+                           student had no reason to try. The chevron is the
+                           affordance, the row is still the hit area. Drawn
+                           pointing along the reading direction — this app sets
+                           CSS `direction`, so in RTL the glyph as-drawn already
+                           points to the reading edge. *@
+                        <svg class="sdh-ms-chev" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                             stroke-linejoin="round" aria-hidden="true">
+                            <path d="m15 18-6-6 6-6"></path>
+                        </svg>
                     </button>
                 }
             </div>
@@ -162,6 +205,11 @@
     [Parameter, EditorRequired] public List<MilestoneSummaryDto>          Milestones      { get; set; } = new();
     [Parameter]                 public string?                            FirstName       { get; set; }
     [Parameter]                 public EventCallback<MilestoneSummaryDto> OnOpenMilestone { get; set; }
+
+    /// <summary>Raised by the milestone count. The host owns the journey view
+    /// so it sits at the page's dialog layer beside the milestone and task
+    /// modals, rather than inside this card's stacking context.</summary>
+    [Parameter]                 public EventCallback                      OnOpenJourney   { get; set; }
 
     /// <summary>The expanded band's key, or null. ONE AT A TIME — a second
     /// click closes the first, which is what keeps the card's height from
@@ -184,6 +232,8 @@
     }
 
     private void TogglePhase(string key) => _openPhase = _openPhase == key ? null : key;
+
+    private Task OpenJourney() => OnOpenJourney.InvokeAsync();
 
     private List<MilestoneSummaryDto> _openMilestones =>
         _phases.FirstOrDefault(p => p.Key == _openPhase)?.Items ?? new();
@@ -230,34 +280,31 @@
     /// </summary>
     private List<Phase> BuildPhases()
     {
-        // The dashboard's canonical "where you are". Reading it here is what
-        // guarantees the strip and the focus card under it cannot disagree.
-        var anchor = StudentDashboardModel.CurrentMilestone(Milestones);
+        // The four-way split now lives in StudentDashboardModel, so this strip
+        // and the journey view opened from its count read ONE rule. The
+        // grouping itself is unchanged: the model carries the same
+        // done / in-work / first-ahead / rest logic this method held inline,
+        // including "next is first in PROJECT ORDER, never earliest by date".
+        var positions = StudentDashboardModel.JourneyPositions(Milestones);
 
-        var done  = new List<MilestoneSummaryDto>();
-        var now   = new List<MilestoneSummaryDto>();
-        var ahead = new List<MilestoneSummaryDto>();
+        List<MilestoneSummaryDto> At(StudentDashboardModel.JourneyPosition p) =>
+            Milestones.Where(m => positions.TryGetValue(m.ProjectMilestoneId, out var q) && q == p)
+                      .ToList();
 
-        foreach (var m in Milestones)
-        {
-            if (m.Status == "Completed")      done.Add(m);
-            else if (IsInWork(m, anchor))     now.Add(m);
-            else                              ahead.Add(m);
-        }
-
-        // "הבא בתור" is the first one still ahead in the PROJECT'S OWN ORDER,
-        // not the earliest by date. The two genuinely differ in live data — a
-        // late אפיון milestone can fall due after an early פיתוח one — and the
-        // sequence is what /project's stepper draws, so picking by date here
-        // would have the two screens disagree about what comes next.
-        var next  = ahead.FirstOrDefault();
-        var later = ahead.Skip(1).ToList();
+        var done  = At(StudentDashboardModel.JourneyPosition.Completed);
+        var now   = At(StudentDashboardModel.JourneyPosition.InWork);
+        var next  = At(StudentDashboardModel.JourneyPosition.Next).FirstOrDefault();
+        var later = At(StudentDashboardModel.JourneyPosition.Later);
 
         var phases = new List<Phase>();
 
+        @* The percentage moved up to the journey summary, where the count it
+           belongs to lives. This band now names its own most recent finish
+           instead — the same grammar the other three bands use, each naming a
+           milestone rather than restating a statistic. *@
         if (done.Count > 0)
             phases.Add(new Phase("done", "הושלמו", done.Count,
-                                 $"{StudentDashboardModel.OverallPercent(Milestones)}% מהמסע", done));
+                                 DoneDetail(done), done));
 
         if (now.Count > 0)
             phases.Add(new Phase("now", "בעבודה עכשיו", now.Count,
@@ -275,18 +322,6 @@
         return phases;
     }
 
-    /// <summary>Whether a milestone is genuinely being worked on: the one the
-    /// dashboard calls current, one the data says is InProgress/Delayed, or one
-    /// that already has finished tasks in it.
-    ///
-    /// <para>Deliberately NOT IsCurrentlyOpen — see the header note. Being
-    /// inside a visibility window says a milestone CAN be worked on, not that
-    /// it is, and six of them are open at once on real data.</para></summary>
-    private static bool IsInWork(MilestoneSummaryDto m, MilestoneSummaryDto? anchor) =>
-        m.ProjectMilestoneId == anchor?.ProjectMilestoneId
-        || m.Status is "InProgress" or "Delayed"
-        || (m.Tasks.Count > 0 && m.Tasks.Any(StudentDashboardModel.IsComplete));
-
     /// <summary>The active band names the milestone the rest of the dashboard
     /// is already built around — StudentDashboardModel.CurrentMilestone, the
     /// same pick the focus card and the tasks page read — so the strip cannot
@@ -298,6 +333,18 @@
                       ?? now[0];
 
         return now.Count == 1 ? lead.Title : $"{lead.Title} · ועוד {now.Count - 1}";
+    }
+
+    /// <summary>The band's own last finish: the completed milestone furthest
+    /// along the project's order, which is the one the student most recently
+    /// closed. Falls back to the count's own phrasing when a completed
+    /// milestone somehow has no title.</summary>
+    private static string DoneDetail(List<MilestoneSummaryDto> done)
+    {
+        var last = done.LastOrDefault();
+        return string.IsNullOrWhiteSpace(last?.Title)
+            ? (done.Count == 1 ? "אבן דרך אחת" : $"{done.Count} אבני דרך")
+            : (done.Count == 1 ? last!.Title : $"{last!.Title} · ועוד {done.Count - 1}");
     }
 
     private static string NextDetail(MilestoneSummaryDto m) =>
@@ -314,18 +361,40 @@
     /// <summary>A row's dot, in its own band's colour, so an expanded band
     /// reads as part of the band that opened it.</summary>
     private string ToneOf(MilestoneSummaryDto m) =>
-        m.Status == "Completed"                                           ? "done"
-        : IsInWork(m, StudentDashboardModel.CurrentMilestone(Milestones)) ? "now"
-        :                                                                   "later";
+        m.Status == "Completed" ? "done"
+        : StudentDashboardModel.IsInWork(m, StudentDashboardModel.CurrentMilestone(Milestones)) ? "now"
+        : "later";
 
-    /// <summary>Whether the milestone's own due date has already passed.
+    /// <summary>
+    /// The TONE of a row's date. Three states, and only one of them is rose.
     ///
-    /// <para>This decides the TONE of a date the row prints either way. It
-    /// adds no label, no status and no claim the product does not already
-    /// make — it is the same soft rose every other passed date on this
-    /// dashboard wears.</para></summary>
-    private static bool IsPast(MilestoneSummaryDto m) =>
-        m.Status != "Completed" && m.DueDate is DateTime d && d.Date < DateTime.Today;
+    /// <para><b>done</b> — completed. Teal, the product's finished colour,
+    /// rather than the grey it used to share with "no date".</para>
+    ///
+    /// <para><b>late</b> — genuinely overdue: the due date has passed AND the
+    /// milestone's window is still open, so the student can still act and the
+    /// lateness is theirs to fix. This is the only rose.</para>
+    ///
+    /// <para><b>quiet</b> — everything else, including a milestone whose
+    /// CloseDate has passed. THAT IS THE FIX: a shut window was being painted
+    /// the same rose as a live deadline, so three rows on this dashboard read
+    /// as errors when nothing was wrong and nothing could be done — the whole
+    /// demo cycle's windows have closed. A date that can no longer be acted on
+    /// is history, not a warning.</para>
+    ///
+    /// <para>CloseDate is the same field MilestoneJourneyModal already reads to
+    /// decide whether to promise "הפעולות ייפתחו" or state "חלון אבן הדרך
+    /// נסגר" — one rule about a shut window, used in both places.</para>
+    /// </summary>
+    private static string DueTone(MilestoneSummaryDto m)
+    {
+        if (m.Status == "Completed") return "done";
+
+        var windowShut = m.CloseDate is DateTime c && c.Date < DateTime.Today;
+        var pastDue    = m.DueDate   is DateTime d && d.Date < DateTime.Today;
+
+        return pastDue && !windowShut ? "late" : "quiet";
+    }
 
     private static string DueText(MilestoneSummaryDto m) =>
         m.Status == "Completed"   ? "הושלם"

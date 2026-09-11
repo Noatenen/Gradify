@@ -110,15 +110,44 @@
 
                                     <div class="tsk-qitem @(isExpanded ? "tsk-qitem-open" : "")">
 
-                                        <!-- Collapsed row -->
+                                        @*
+                                            THE WHOLE HEADER IS THE CONTROL — badge, countdown,
+                                            title and context line are all inside this one button,
+                                            so anywhere in the summary toggles the card and the
+                                            chevron is left to do what it looks like it does:
+                                            indicate the state. It is a real <button>, so Enter and
+                                            Space work and the row is reachable by Tab.
+
+                                            The label follows the state. It read "פתיחת …" even
+                                            while open, which told a screen-reader user the
+                                            opposite of what the control would do.
+                                        *@
                                         <button type="button"
                                                 class="tsk-qitem-row"
                                                 @onclick="() => ToggleTask(captured)"
                                                 aria-expanded="@(isExpanded ? "true" : "false")"
-                                                aria-label="@($"פתיחת {task.Title}")">
+                                                aria-label="@($"{(isExpanded ? "סגירת" : "פתיחת")} {task.Title}")">
 
                                             <span class="tsk-qitem-top">
-                                                <span class="tsk-qbadge @BadgeClass(task)">@BadgeLabel(task)</span>
+                                                <span class="tsk-qitem-top-lead">
+                                                    <span class="tsk-qbadge @BadgeClass(task)">@BadgeLabel(task)</span>
+
+                                                    @* Type and obligation, RAISED OUT OF THE BODY into
+                                                       the header. They are scan-level facts — whether
+                                                       this is a submission, whether it is compulsory —
+                                                       and they were only visible after expanding,
+                                                       which is the one moment the student no longer
+                                                       needs them to triage. *@
+                                                    @if (task.IsSubmission)
+                                                    {
+                                                        <span class="tsk-qitem-tag">הגשה</span>
+                                                    }
+                                                    @if (task.IsMandatory)
+                                                    {
+                                                        <span class="tsk-qitem-tag tsk-qitem-tag-req">חובה</span>
+                                                    }
+                                                </span>
+
                                                 <span class="tsk-qitem-top-trail">
                                                     @{ var countdown = CountdownLabel(task); }
                                                     @if (!string.IsNullOrEmpty(countdown))
@@ -137,57 +166,122 @@
 
                                             <strong class="tsk-qitem-title">@task.Title</strong>
 
-                                            <span class="tsk-qitem-ctx">
-                                                @{
-                                                    _taskMilestoneMap.TryGetValue(task.Id, out var milestoneTitle);
-                                                }
-                                                @if (!string.IsNullOrWhiteSpace(milestoneTitle))
-                                                {
-                                                    <span>@milestoneTitle</span>
-                                                }
-                                                @if (!string.IsNullOrWhiteSpace(_data?.ProjectTitle))
-                                                {
-                                                    @if (!string.IsNullOrWhiteSpace(milestoneTitle))
-                                                    {
-                                                        <span class="tsk-qitem-ctx-sep"> · </span>
-                                                    }
-                                                    <span>@_data!.ProjectTitle</span>
-                                                }
-                                            </span>
+                                            @*
+                                                THE MILESTONE, AND ONLY THE MILESTONE.
+
+                                                The project title used to follow it on every single
+                                                row. The student is already inside their one
+                                                project — the page header names it — so repeating
+                                                it on every task cost a line of ink per row and
+                                                distinguished nothing from anything.
+
+                                                Rendered only when the task actually has a
+                                                milestone, so the line disappears instead of
+                                                leaving an empty slot.
+                                            *@
+                                            @{
+                                                _taskMilestoneMap.TryGetValue(task.Id, out var milestoneTitle);
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(milestoneTitle))
+                                            {
+                                                <span class="tsk-qitem-ctx">@milestoneTitle</span>
+                                            }
                                         </button>
 
-                                        <!-- Inline expansion -->
+                                        @*
+                                            INLINE EXPANSION — the task's real detail.
+
+                                            The chevron used to open a strip holding two tags, a
+                                            date and a "פרטי המשימה" button: it promised the
+                                            details and delivered a second click. The detail the
+                                            button led to is now HERE, read from the same
+                                            TaskDetailDto the dialog loads
+                                            (ITasksService.GetTaskDetailAsync — no new endpoint,
+                                            no second derivation), so opening a card is the only
+                                            thing needed to read a task.
+
+                                            What stays behind a button is only what a card cannot
+                                            hold: ACTING on the task, plus the submission history
+                                            and sub-tasks that come with it. That button is now
+                                            named for what it does rather than for what it shows.
+                                        *@
                                         @if (isExpanded)
                                         {
-                                            <div class="tsk-qitem-body">
-                                                @* Type tags *@
-                                                @if (task.IsSubmission || task.IsMandatory)
-                                                {
-                                                    <div class="tsk-qitem-tags">
-                                                        @if (task.IsSubmission)
-                                                        {
-                                                            <span class="tsk-qitem-tag">הגשה</span>
-                                                        }
-                                                        @if (task.IsMandatory)
-                                                        {
-                                                            <span class="tsk-qitem-tag tsk-qitem-tag-req">חובה</span>
-                                                        }
-                                                    </div>
-                                                }
+                                            var detail  = _detailCache.GetValueOrDefault(captured.Id);
+                                            var loading = _detailLoading.Contains(captured.Id);
+                                            var failed  = !loading && _detailCache.ContainsKey(captured.Id) && detail is null;
 
-                                                @* Submission context *@
-                                                @if (task.LatestSubmittedAt.HasValue)
+                                            <div class="tsk-qitem-body">
+                                                @*
+                                                    NO TAG ROW HERE ANY MORE. Type, obligation and
+                                                    the deadline all moved UP into the header, where
+                                                    they are readable without expanding anything and
+                                                    where the overdue badge already lived. Repeating
+                                                    the due date here was the last duplicate left in
+                                                    the card.
+
+                                                    What remains below is the task itself and
+                                                    nothing else.
+                                                *@
+                                                @*
+                                                    ── THE DETAIL, IN SECTIONS ──────────────────
+                                                    Each block is a labelled section rather than
+                                                    another paragraph in a stack: a quiet key names
+                                                    what follows, the prose under it carries the
+                                                    modal's own reading size, and the facts collapse
+                                                    into ONE row at the end. That is the
+                                                    summary → details → metadata → action order.
+
+                                                    A section is rendered only when its field has
+                                                    content, so a task with no description shows no
+                                                    empty "תיאור המשימה" heading.
+                                                *@
+                                                @if (loading)
                                                 {
-                                                    <p class="tsk-qitem-notes">
-                                                        הוגש לאחרונה: @task.LatestSubmittedAt.Value.ToLocalTime().ToString("dd.MM · HH:mm")
+                                                    <p class="tsk-qitem-notes" role="status" aria-live="polite">
+                                                        טוען את פרטי המשימה…
                                                     </p>
                                                 }
+                                                else if (failed)
+                                                {
+                                                    @* The card still opens and still acts — only the
+                                                       extra detail is missing, and it says so. *@
+                                                    <p class="tsk-qitem-notes">
+                                                        לא ניתן לטעון כעת את פרטי המשימה.
+                                                    </p>
+                                                }
+                                                else if (detail is not null)
+                                                {
+                                                    @if (!string.IsNullOrWhiteSpace(detail.Description))
+                                                    {
+                                                        <section class="tsk-qsec">
+                                                            <h4 class="tsk-qsec-label">תיאור המשימה</h4>
+                                                            <p class="tsk-qsec-text">@detail.Description</p>
+                                                        </section>
+                                                    }
 
+                                                    @if (detail.IsSubmission
+                                                         && !string.IsNullOrWhiteSpace(detail.SubmissionInstructions))
+                                                    {
+                                                        <section class="tsk-qsec">
+                                                            <h4 class="tsk-qsec-label">הנחיות הגשה</h4>
+                                                            <p class="tsk-qsec-text">@detail.SubmissionInstructions</p>
+                                                        </section>
+                                                    }
+
+                                                }
+
+                                                @* Separated by SPACE, not a rule or a box — see the
+                                                   margin on .tsk-qitem-actions. *@
                                                 <div class="tsk-qitem-actions">
+                                                    @* NOT "פרטי המשימה" any more — those are above.
+                                                       This opens the place where the task is acted on:
+                                                       submit / resubmit or mark complete, the submission
+                                                       history and its feedback, and the sub-tasks. *@
                                                     <button type="button"
                                                             class="motiva-cta tsk-qitem-review"
                                                             @onclick="() => OpenDetail(captured.Id)">
-                                                        פרטי המשימה
+                                                        @(captured.IsSubmission ? "הגשה ומשוב" : "פעולות המשימה")
                                                     </button>
                                                 </div>
                                             </div>
@@ -247,46 +341,151 @@
     private string _deleteError = "";
 
     // ── Queue filter ─────────────────────────────────────────────────────────
-    private string _queueTab = "";
+    // Defaults to פתוחות, not כל המשימות. Opening /tasks used to present
+    // finished work mixed in with outstanding work, which is the opposite of
+    // what the page is for; completed tasks are one tab away.
+    private string _queueTab = QueueOpen;
 
     // ── Inline expansion ──────────────────────────────────────────────────────
     private int _expandedTaskId = 0;
 
-    // Filter tabs: כל המשימות / לא הוגש / הוגש / אושר
+    /// <summary>
+    /// The expanded card's real detail, keyed by task id.
+    ///
+    /// <para>The list DTO (TaskItemDto) carries no Description and no
+    /// submission instructions — it never did — so the card reads the SAME
+    /// TaskDetailDto the dialog reads, through the SAME service call
+    /// (ITasksService.GetTaskDetailAsync → GET api/projects/tasks/{id}/detail).
+    /// No new endpoint, no widened list payload, and no second copy of the
+    /// task's detail rules.</para>
+    ///
+    /// <para>Fetched lazily, on the first expand of a given card, and cached
+    /// for the life of the loaded list: reopening a card costs nothing, and a
+    /// student who never expands anything makes no extra request. A null VALUE
+    /// records a failed load, which is what lets the card say so instead of
+    /// spinning forever — hence the distinction between "key absent" (never
+    /// asked) and "key present, value null" (asked, failed).</para>
+    /// </summary>
+    private readonly Dictionary<int, TaskDetailDto?> _detailCache = new();
+
+    /// <summary>Ids currently in flight, so a second click while loading does
+    /// not fire a second request.</summary>
+    private readonly HashSet<int> _detailLoading = new();
+
+    /// <summary>
+    /// The queue's filters, ordered for the everyday workflow: what still needs
+    /// doing first, what is finished near the end, everything last.
+    ///
+    /// <para><b>They read TaskStatusHelpers.GetCategory, not raw Status.</b>
+    /// That class documents itself as the single grouping axis for this
+    /// experience, and its four categories already carry these exact Hebrew
+    /// names (פתוחות / הוחזרו לתיקון / מאושרות להגשה / הושלמו). Nothing new is
+    /// defined here.</para>
+    ///
+    /// <para>The previous tabs tested <c>t.Status</c> directly, and that is why
+    /// they could not be reused as-is for a default: raw Status does not carry
+    /// the resolved state. A task the MENTOR returned still reads
+    /// "SubmittedToMentor" in Status while GetCategory correctly calls it
+    /// Returned, so it matched neither "טרם הוגש" nor "הוגש" and would have
+    /// been missing from the very view meant to show outstanding work.
+    /// Resolving through GetCategory fixes that without touching any
+    /// status rule.</para>
+    /// </summary>
     private IReadOnlyList<MFilterTabs.Tab> QueueFilterTabs => new[]
     {
-        new MFilterTabs.Tab("",             "כל המשימות",  0),
-        new MFilterTabs.Tab("notsubmitted", "טרם הוגש",    NotSubmittedCount),
-        new MFilterTabs.Tab("submitted",    "הוגש",        SubmittedCount),
-        new MFilterTabs.Tab("approved",     "אושר",        0),
+        new MFilterTabs.Tab(QueueOpen,      "פתוחות",          OpenCount),
+        new MFilterTabs.Tab("returned",     "הוחזרו לתיקון",   ReturnedCount),
+        new MFilterTabs.Tab("approved",     "מאושרות להגשה",   ApprovedCount),
+        new MFilterTabs.Tab("completed",    "הושלמו",          CompletedCount),
+        new MFilterTabs.Tab("all",          "כל המשימות",      AllTasks.Count),
     };
 
     private IReadOnlyList<TaskItemDto> FilteredTasks => _queueTab switch
     {
-        "notsubmitted" => AllTasks.Where(IsNotSubmitted).OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
-        "submitted"    => AllTasks.Where(IsSubmittedTask).OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
-        "approved"     => AllTasks.Where(IsApproved).OrderBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
-        _              => AllTasks.OrderBy(t => IsAttentionTask(t) ? 0 : 1).ThenBy(t => t.DueDate ?? DateTime.MaxValue).ToList(),
+        "returned"  => ByCategory(TaskStatusHelpers.TaskCategory.Returned),
+        "approved"  => ByCategory(TaskStatusHelpers.TaskCategory.ApprovedForSubmission),
+        "completed" => ByCategory(TaskStatusHelpers.TaskCategory.Completed),
+
+        // Everything, attention first — the old default, kept intact and moved
+        // to the end of the row rather than deleted.
+        "all" => AllTasks.OrderBy(t => IsAttentionTask(t) ? 0 : 1)
+                         .ThenBy(t => t.DueDate ?? DateTime.MaxValue)
+                         .ToList(),
+
+        // פתוחות — the default. Everything the student still has to deal with:
+        // open, returned for fixing, and approved-but-not-yet-confirmed. Defined
+        // as "not Completed" so a new category could never silently fall out of
+        // the student's main view.
+        _ => AllTasks.Where(IsOutstanding)
+                     .OrderBy(t => IsAttentionTask(t) ? 0 : 1)
+                     .ThenBy(t => t.DueDate ?? DateTime.MaxValue)
+                     .ToList(),
     };
 
-    // "לא הוגש": Open/InProgress/ReturnedForRevision — not yet submitted or needs resubmission
-    private static bool IsNotSubmitted(TaskItemDto t) =>
-        t.Status is "Open" or "InProgress" or "ReturnedForRevision";
+    /// <summary>The default tab's key. Named rather than repeated as a literal
+    /// because the field initialiser and the tab list must not drift.</summary>
+    private const string QueueOpen = "open";
 
-    // "הוגש": submitted to mentor, pending review
-    private static bool IsSubmittedTask(TaskItemDto t) =>
-        t.Status is "SubmittedToMentor" or "RevisionSubmitted";
+    /// <summary>Still on the student's plate. The complement of Completed, by
+    /// the product's own category rule.</summary>
+    private static bool IsOutstanding(TaskItemDto t) =>
+        TaskStatusHelpers.GetCategory(t) != TaskStatusHelpers.TaskCategory.Completed;
 
-    // "אושר": approved by mentor or fully done
-    private static bool IsApproved(TaskItemDto t) =>
-        t.Status is "ApprovedForSubmission" or "Done";
+    private List<TaskItemDto> ByCategory(TaskStatusHelpers.TaskCategory c) =>
+        AllTasks.Where(t => TaskStatusHelpers.GetCategory(t) == c)
+                .OrderBy(t => t.DueDate ?? DateTime.MaxValue)
+                .ToList();
 
-    private int NotSubmittedCount => AllTasks.Count(IsNotSubmitted);
-    private int SubmittedCount    => AllTasks.Count(IsSubmittedTask);
-    private int ApprovedCount     => AllTasks.Count(IsApproved);
+    private int OpenCount      => AllTasks.Count(IsOutstanding);
+    private int ReturnedCount  => AllTasks.Count(t => TaskStatusHelpers.GetCategory(t) == TaskStatusHelpers.TaskCategory.Returned);
+    private int ApprovedCount  => AllTasks.Count(t => TaskStatusHelpers.GetCategory(t) == TaskStatusHelpers.TaskCategory.ApprovedForSubmission);
+    private int CompletedCount => AllTasks.Count(t => TaskStatusHelpers.GetCategory(t) == TaskStatusHelpers.TaskCategory.Completed);
 
-    private void ToggleTask(TaskItemDto task) =>
-        _expandedTaskId = _expandedTaskId == task.Id ? 0 : task.Id;
+    /// <summary>
+    /// Open this card, or close it if it is already the open one. Opening also
+    /// loads the task's detail the first time, so the chevron alone answers
+    /// "what is this task" — which is what it has always looked like it did.
+    ///
+    /// <para>The expansion is rendered before the fetch resolves (the card
+    /// shows its tags and a loading line immediately), so a slow request
+    /// delays the description, never the open.</para>
+    /// </summary>
+    private async Task ToggleTask(TaskItemDto task)
+    {
+        if (_expandedTaskId == task.Id)
+        {
+            _expandedTaskId = 0;
+            return;
+        }
+
+        _expandedTaskId = task.Id;
+        await EnsureDetailAsync(task.Id);
+    }
+
+    /// <summary>Loads one card's detail unless it is already loaded, already
+    /// known to have failed, or already in flight.</summary>
+    private async Task EnsureDetailAsync(int taskId)
+    {
+        if (_detailCache.ContainsKey(taskId) || _detailLoading.Contains(taskId))
+            return;
+
+        _detailLoading.Add(taskId);
+        try
+        {
+            _detailCache[taskId] = await TasksService.GetTaskDetailAsync(taskId);
+        }
+        catch
+        {
+            // Recorded as a failed load rather than rethrown: one task's detail
+            // failing must not take down the whole queue the student is reading.
+            _detailCache[taskId] = null;
+        }
+        finally
+        {
+            _detailLoading.Remove(taskId);
+            StateHasChanged();
+        }
+    }
 
     // Status badge label for each task row
     private static string BadgeLabel(TaskItemDto t) =>
@@ -312,13 +511,27 @@
 
     // Countdown label: "נותרו X ימים", "היום", or "" if no due date.
     // Completed tasks never show an overdue label even if the date has passed.
+    /// <summary>
+    /// The header's timing pill.
+    ///
+    /// <para>OVERDUE IS NOT HANDLED HERE and must not be: the status badge
+    /// beside it already reads "באיחור N ימים" (see BadgeLabel), so this pill
+    /// stays empty rather than stating lateness twice in one row.</para>
+    ///
+    /// <para>For everything else it now names the DATE — "הגשה עד 15.09.26" —
+    /// rather than a countdown. The date is what the student needs in order to
+    /// plan, it is stable enough to remember, and it is the one piece of
+    /// timing the expanded body no longer repeats. The two genuinely urgent
+    /// cases keep their words, because "היום" says something a date cannot.</para>
+    /// </summary>
     private static string CountdownLabel(TaskItemDto t)
     {
         if (!t.DueDate.HasValue) return "";
         var days = (t.DueDate.Value.Date - DateTime.Today).Days;
-        if (days < 0) return ""; // overdue: pill suppressed — text is in the badge instead
+        if (days < 0)  return ""; // overdue: pill suppressed — text is in the badge instead
         if (days == 0) return "היום";
-        return $"נותרו {days} ימים";
+        if (days == 1) return "מחר";
+        return $"הגשה עד {t.DueDate.Value:dd.MM.yy}";
     }
 
     private static string CountdownClass(TaskItemDto t)
@@ -330,10 +543,13 @@
 
     private string QueueEmptyMessage => _queueTab switch
     {
-        "notsubmitted" => "אין משימות שממתינות להגשה",
-        "submitted"    => "אין משימות שהוגשו וממתינות לבדיקה",
-        "approved"     => "אין משימות שאושרו",
-        _              => "אין משימות בפרויקט",
+        "returned"  => "אין משימות שהוחזרו לתיקון",
+        "approved"  => "אין משימות שמאושרות להגשה",
+        "completed" => "אין משימות שהושלמו",
+        "all"       => "אין משימות בפרויקט",
+        // The default view. An empty פתוחות is GOOD NEWS, not a missing list,
+        // and says so — it is the one empty state here a student wants to see.
+        _           => "אין משימות פתוחות — הכול מטופל",
     };
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -367,6 +583,20 @@
 
         _loadError = _data is null;
         _isLoading = false;
+
+        // The cached card details describe the list that was just replaced — a
+        // submission made through the dialog is exactly when both change, and
+        // this is the one path every mutation already routes through
+        // (OnTaskChanged / OnChanged). Dropping them stops a card showing
+        // pre-submission detail beside a post-submission badge.
+        //
+        // A card left OPEN across the reload is re-read immediately rather than
+        // waiting for the student to collapse and reopen it, which would look
+        // like the detail had simply vanished.
+        _detailCache.Clear();
+        if (_expandedTaskId != 0)
+            await EnsureDetailAsync(_expandedTaskId);
+
         BuildMilestoneMap();
     }
 

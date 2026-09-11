@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @using AuthWithAdmin.Client.Services
+@inject AboutDialogService About
 @implements IDisposable
 
 @*
@@ -98,6 +99,19 @@
         <div class="app-content">
             @Body
         </div>
+        @*
+            "MOTIVA · אודות" — the credits entry point, and the reason it is
+            HERE: this one branch serves Student, Mentor AND Lecturer, so
+            mounting it once covers all three finished experiences without a
+            per-role copy.
+
+            A SIBLING AFTER .app-content, not a child of it. .app-content is
+            `flex: 1`, so the footer is pushed to the bottom of a short page
+            and simply follows the content on a long one — and a page that
+            fills the viewport with `contain: size` (see /tasks) keeps its own
+            box untouched either way.
+        *@
+        <AppFooter />
     </div>
 }
 else
@@ -135,12 +149,47 @@ else
             <div class="app-content">
                 @Body
             </div>
+            @* The same entry point on the legacy rail shell, so a Staff /
+               Admin session reaches the credits exactly as every other role
+               does. Inside .app-main, under the content column — not beside
+               the sidebar, which is a separate flex child. *@
+            <AppFooter />
         </div>
     </div>
 }
 
+@*
+    THE ONE "אודות" DIALOG, for every role and every entry point.
+
+    Mounted here rather than beside either trigger: the profile menu lives
+    inside the nav and the credits line lives in the footer, neither is an
+    ancestor of the other, and two mounted copies would be two dialogs with
+    two pieces of open-state. AboutDialogService is the switch; this is the
+    only subscriber.
+
+    THE WRAPPER CARRIES @ShellClasses, AND IT IS LOAD-BEARING. Every Motiva
+    token — radii, type scale, control heights and the modal's own width
+    ladder — is declared on `.motiva` / `.motiva-final`, which live on the
+    shell root. Mounted bare at the layout root, outside both shell branches,
+    this dialog inherited none of them and fell back to the :root scale:
+    `.m-modal-large` resolved to --motiva-container-lg = 1200px instead of
+    the finished design's 720px, and the whole dialog rendered at the wrong
+    size with the wrong geometry. The wrapper re-establishes the scope
+    without putting the dialog back inside either branch.
+
+    It is inert when closed — MModal renders nothing at all — so an empty
+    div at the end of the layout costs no layout and no paint.
+*@
+<div class="@ShellClasses">
+    <AboutModal IsOpen="@_aboutOpen" OnClose="@(() => _aboutOpen = false)" />
+</div>
+
 @code {
     [CascadingParameter] private User? _user { get; set; }
+
+    /// <summary>Whether the credits dialog is showing. Pure view state — not
+    /// persisted, not routed, not sent anywhere.</summary>
+    private bool _aboutOpen;
 
     // Single attachment point for the Motiva System Master foundations.
     //
@@ -229,10 +278,25 @@ else
     // would keep whatever it resolved to at first render until a full reload.
     // AppSideNav already subscribes for the same reason.
     protected override void OnInitialized()
-        => UserModeService.CurrentModeChanged += OnModeChanged;
+    {
+        UserModeService.CurrentModeChanged += OnModeChanged;
+        About.OpenRequested += OnAboutRequested;
+    }
 
     private void OnModeChanged() => InvokeAsync(StateHasChanged);
 
+    /// <summary>A trigger anywhere in the tree asked for the credits. Marshalled
+    /// through InvokeAsync like the mode change above — the event is raised from
+    /// a component's own handler, and the render has to happen on the dispatcher.</summary>
+    private void OnAboutRequested() => InvokeAsync(() =>
+    {
+        _aboutOpen = true;
+        StateHasChanged();
+    });
+
     public void Dispose()
-        => UserModeService.CurrentModeChanged -= OnModeChanged;
+    {
+        UserModeService.CurrentModeChanged -= OnModeChanged;
+        About.OpenRequested -= OnAboutRequested;
+    }
 }

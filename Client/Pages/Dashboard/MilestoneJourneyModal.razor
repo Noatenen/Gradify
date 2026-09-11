@@ -1,0 +1,402 @@
+@using AuthWithAdmin.Shared.AuthSharedModels
+
+@* ═══════════════════════════════════════════════════════════════════════════
+   MilestoneJourneyModal — the whole journey, opened from the dashboard's
+   "3 מתוך 7 אבני דרך הושלמו".
+
+   ── WHY THIS EXISTS ──────────────────────────────────────────
+   The count stated a fact the student could not inspect: seven milestones,
+   three done, and no way from the dashboard to see what the seven ARE. The
+   hero's bands answer "how many" per group; this answers "which ones, in
+   what order, and what is coming".
+
+   It is deliberately NOT a page. /project already owns the stage-by-stage
+   reading with the full stepper; this is the contextual view over the same
+   list, one click from where the question is asked.
+
+   ── VISIBILITY IS NOT AVAILABILITY ───────────────────────────
+   Two different facts about a milestone, and this view keeps them apart
+   because conflating them is exactly what made future work invisible:
+
+     POSITION    — where it sits on the journey. הושלמה · בתהליך · הבאה ·
+                   עתידית, from StudentDashboardModel.JourneyPositions —
+                   the SAME four-way split the hero's bands draw, so the
+                   strip and this list can never disagree about what is next.
+                   Drives ordering and emphasis. Nothing else.
+
+     AVAILABILITY — whether the student may act on it TODAY, from
+                   StudentDashboardModel.HasOpened: the product's own
+                   "this milestone has opened" test (IsCurrentlyOpen, or an
+                   InProgress/Delayed status, or real progress inside it),
+                   the same phrase MilestoneDetailModal and the project
+                   workspace already use. Drives whether a row leads
+                   anywhere.
+
+   A milestone can be positioned "הבאה" and still be OPEN — a second
+   milestone inside its date window that nobody has started yet lands there.
+   Reading the lock off POSITION would tell that student their actions are
+   closed when they are not, so the lock reads off AVAILABILITY only.
+
+   ── TWO HOSTS, ONE COMPONENT ─────────────────────────────────
+   Mounted by the student dashboard (from the hero's milestone count) and
+   by /project (from its journey card's identical count). Both hand it the
+   SAME List<MilestoneSummaryDto> from IDashboardService, so the order and
+   every state are the same list read twice, never two derivations.
+
+   The one difference is what a row can lead to, and it is declared by the
+   host rather than known here: the dashboard binds OnOpenMilestone and
+   mounts MilestoneDetailModal, /project binds neither. See `interactive`
+   below.
+
+   ── WHAT THIS VIEW CAN AND CANNOT DO ─────────────────────────
+   An OPEN milestone's row leads to MilestoneDetailModal, exactly as the
+   hero's band rows already do — same callback, same dialog, same rules —
+   wherever the host binds OnOpenMilestone.
+
+   An UNOPENED milestone's row leads NOWHERE. Its upcoming tasks and
+   submissions render as inert text: no button, no link, no status control,
+   no submit affordance, nothing bound to a handler. The preview adds
+   READING, and adds no way to act that did not already exist.
+   ═══════════════════════════════════════════════════════════════════════════ *@
+
+<MModal IsOpen="@IsOpen"
+        Size="MModal.ModalSize.Large"
+        AriaLabelledBy="@_titleId"
+        OnClose="Close">
+
+    <HeaderContent>
+        <div class="mjm-head">
+            <span class="mjm-head-icon motiva-ico-gradient" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="url(#motivaIconGradient)"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="6" cy="19" r="3"></circle>
+                    <circle cx="18" cy="5" r="3"></circle>
+                    <path d="M9 19h4a5 5 0 0 0 0-10H9"></path>
+                </svg>
+            </span>
+            <h2 class="mjm-title" id="@_titleId">מסע הפרויקט</h2>
+        </div>
+    </HeaderContent>
+
+    <ChildContent>
+        @*
+            THE SUMMARY — the same sentence the student clicked, restated at
+            the top so the view opens by confirming what was asked, then one
+            segment per milestone in its own state colour. The segments are
+            the hero strip's 5px tracks, one per milestone rather than one
+            per band: the whole journey at a glance, above the list of it.
+        *@
+        <div class="mjm-summary">
+            <p class="mjm-summary-line">
+                <strong class="mjm-summary-count">@_completed מתוך @Milestones.Count</strong>
+                אבני דרך הושלמו
+            </p>
+
+            <div class="mjm-summary-track" role="img" aria-label="@($"התקדמות: {_completed} מתוך {Milestones.Count} אבני דרך הושלמו")">
+                @foreach (var m in Milestones)
+                {
+                    <span class="@($"mjm-seg mjm-seg-{ToneKey(PositionOf(m))}")"></span>
+                }
+            </div>
+        </div>
+
+        @if (Milestones.Count == 0)
+        {
+            <p class="mjm-empty">לא הוגדרו אבני דרך לפרויקט זה.</p>
+        }
+        else
+        {
+            <MScrollArea MaxHeight="min(52vh, 460px)" AriaLabel="רשימת אבני הדרך">
+                <ol class="mjm-list">
+                    @foreach (var ms in Milestones)
+                    {
+                        var m        = ms;
+                        var pos      = PositionOf(m);
+                        var tone     = ToneKey(pos);
+                        var opened   = StudentDashboardModel.HasOpened(m);
+                        var expanded = _expandedId == m.ProjectMilestoneId;
+
+                        // A row leads to the milestone dialog only when the
+                        // milestone has actually opened AND the host actually
+                        // mounts that dialog. /project shows this journey
+                        // without one, and a button wired to an unbound
+                        // callback is a dead click — so there it renders inert
+                        // instead, the same convention MJourneyStepper already
+                        // follows for its own OnStageClick.
+                        var interactive = opened && OnOpenMilestone.HasDelegate;
+
+                        <li class="@RowClass(pos, expanded)">
+
+                            @if (interactive)
+                            {
+                                <button type="button"
+                                        class="mjm-row-main mjm-row-btn"
+                                        @onclick="@(() => OpenMilestone(m))"
+                                        aria-label="@($"{m.Title} — {StateLabel(pos)}. פתיחת פרטי אבן הדרך")">
+                                    @RowFace(m, pos, tone, opened)
+                                </button>
+                            }
+                            else if (pos == StudentDashboardModel.JourneyPosition.Next)
+                            {
+                                @* The next milestone is the one worth planning
+                                   against, so its row toggles the read-only
+                                   preview below. The button opens TEXT — it is
+                                   not a route into the task dialog. *@
+                                <button type="button"
+                                        class="mjm-row-main mjm-row-btn"
+                                        @onclick="@(() => TogglePreview(m.ProjectMilestoneId))"
+                                        aria-expanded="@expanded"
+                                        aria-controls="@($"mjm-prev-{m.ProjectMilestoneId}")"
+                                        aria-label="@($"{m.Title} — {StateLabel(pos)}. הצגת מה שמחכה באבן דרך זו")">
+                                    @RowFace(m, pos, tone, opened)
+                                </button>
+                            }
+                            else
+                            {
+                                @* Later milestones: visible, ordered, dated —
+                                   and inert. Basic information is enough this
+                                   far out, and there is nothing to act on. *@
+                                <div class="mjm-row-main">
+                                    @RowFace(m, pos, tone, opened)
+                                </div>
+                            }
+
+                            @if (expanded && pos == StudentDashboardModel.JourneyPosition.Next)
+                            {
+                                <div class="mjm-preview" id="@($"mjm-prev-{m.ProjectMilestoneId}")">
+
+                                    @if (m.Tasks.Count == 0)
+                                    {
+                                        <p class="mjm-preview-empty">טרם הוגדרו משימות לאבן דרך זו.</p>
+                                    }
+                                    else
+                                    {
+                                        @*
+                                            READ-ONLY BY CONSTRUCTION. Every row
+                                            here is a <div>. No @onclick, no
+                                            handler, no control — the student
+                                            reads what is coming and can do
+                                            nothing to it from this surface.
+                                        *@
+                                        <ul class="mjm-preview-list">
+                                            @foreach (var t in m.Tasks)
+                                            {
+                                                <li class="mjm-preview-item">
+                                                    <span class="@($"mjm-prev-kind mjm-prev-kind-{(t.IsSubmission ? "sub" : "task")}")">
+                                                        @(t.IsSubmission ? "הגשה" : "משימה")
+                                                    </span>
+                                                    <span class="mjm-prev-title">@t.Title</span>
+                                                    @if (t.DueDate.HasValue)
+                                                    {
+                                                        <span class="mjm-prev-due">@t.DueDate.Value.ToString("dd/MM/yy")</span>
+                                                    }
+                                                </li>
+                                            }
+                                        </ul>
+                                    }
+
+                                    @*
+                                        The honest reason the rows are inert.
+                                        Stated once, under the list, as
+                                        information rather than as a warning —
+                                        nothing has gone wrong here.
+                                    *@
+                                    <p class="mjm-locked">
+                                        <span class="mjm-locked-ico" aria-hidden="true">
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                 stroke="currentColor" stroke-width="2.2"
+                                                 stroke-linecap="round" stroke-linejoin="round">
+                                                <rect x="3" y="11" width="18" height="11" rx="2"></rect>
+                                                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                                            </svg>
+                                        </span>
+                                        @LockedText(m)
+                                    </p>
+                                </div>
+                            }
+                        </li>
+                    }
+                </ol>
+            </MScrollArea>
+        }
+    </ChildContent>
+</MModal>
+
+@code {
+    private readonly string _titleId = $"mjm-title-{Guid.NewGuid():N}";
+
+    [Parameter] public bool                                IsOpen          { get; set; }
+    [Parameter] public List<MilestoneSummaryDto>           Milestones      { get; set; } = new();
+    [Parameter] public EventCallback                       OnClose         { get; set; }
+
+    /// <summary>Raised for a milestone that HAS opened. The host routes it to
+    /// the existing MilestoneDetailModal — the same callback the hero's band
+    /// rows already use, so this view introduces no second way in.</summary>
+    [Parameter] public EventCallback<MilestoneSummaryDto>  OnOpenMilestone { get; set; }
+
+    /// <summary>The expanded next-milestone preview, or null. Pure view state:
+    /// nothing is persisted and nothing is sent.</summary>
+    private int? _expandedId;
+
+    /// <summary>Positions, rebuilt when the milestone list changes rather than
+    /// per row — the summary track and every row read it.</summary>
+    private IReadOnlyDictionary<int, StudentDashboardModel.JourneyPosition> _positions =
+        new Dictionary<int, StudentDashboardModel.JourneyPosition>();
+
+    protected override void OnParametersSet()
+    {
+        _positions = StudentDashboardModel.JourneyPositions(Milestones);
+
+        // A milestone the new data no longer carries cannot stay expanded.
+        if (_expandedId is int id && Milestones.All(m => m.ProjectMilestoneId != id))
+            _expandedId = null;
+
+        // Closing the dialog resets it, so reopening never restores a stale
+        // expansion the student did not ask for again.
+        if (!IsOpen) _expandedId = null;
+    }
+
+    private int _completed => Milestones.Count(m => m.Status == "Completed");
+
+    private StudentDashboardModel.JourneyPosition PositionOf(MilestoneSummaryDto m) =>
+        _positions.TryGetValue(m.ProjectMilestoneId, out var p)
+            ? p
+            : StudentDashboardModel.JourneyPosition.Later;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private Task OpenMilestone(MilestoneSummaryDto m) => OnOpenMilestone.InvokeAsync(m);
+
+    private void TogglePreview(int id) => _expandedId = _expandedId == id ? null : id;
+
+    // ── One row's face, shared by the three row shells above ────────────────
+
+    /// <summary>The row's contents. Factored out because the same face is worn
+    /// by a button (opened milestone), a toggle (the next one) and a plain div
+    /// (later ones) — the shell differs, what it says never does.</summary>
+    private RenderFragment RowFace(
+        MilestoneSummaryDto m,
+        StudentDashboardModel.JourneyPosition pos,
+        string tone,
+        bool opened) => __builder =>
+    {
+        <span class="mjm-row-rail" aria-hidden="true">
+            <span class="@($"mjm-dot mjm-dot-{tone}")">
+                @if (pos == StudentDashboardModel.JourneyPosition.Completed)
+                {
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m5 12.5 4.5 4.5L19 7"></path>
+                    </svg>
+                }
+            </span>
+        </span>
+
+        <span class="mjm-row-body">
+            <span class="mjm-row-top">
+                <span class="mjm-row-title" title="@m.Title">@m.Title</span>
+                <span class="@($"mjm-pill mjm-pill-{tone}")">@StateLabel(pos)</span>
+            </span>
+
+            @if (DatesText(m) is { Length: > 0 } dates)
+            {
+                <span class="mjm-row-dates">@dates</span>
+            }
+
+            @if (CountsText(m) is { Length: > 0 } counts)
+            {
+                <span class="mjm-row-counts">
+                    @counts
+                    @if (!opened && pos == StudentDashboardModel.JourneyPosition.Next)
+                    {
+                        <span class="mjm-row-hint">· מה מחכה</span>
+                    }
+                </span>
+            }
+        </span>
+    };
+
+    // ── Copy ────────────────────────────────────────────────────────────────
+
+    private static string StateLabel(StudentDashboardModel.JourneyPosition p) => p switch
+    {
+        StudentDashboardModel.JourneyPosition.Completed => "הושלמה",
+        StudentDashboardModel.JourneyPosition.InWork    => "בתהליך",
+        StudentDashboardModel.JourneyPosition.Next      => "הבאה",
+        _                                               => "עתידית",
+    };
+
+    private static string ToneKey(StudentDashboardModel.JourneyPosition p) => p switch
+    {
+        StudentDashboardModel.JourneyPosition.Completed => "done",
+        StudentDashboardModel.JourneyPosition.InWork    => "now",
+        StudentDashboardModel.JourneyPosition.Next      => "next",
+        _                                               => "later",
+    };
+
+    /// <summary>
+    /// The milestone's dates, in the labelled form MilestoneDetailModal already
+    /// uses. Labelled rather than a "15.09 – 30.09" range on purpose: a bare
+    /// numeric range inside an RTL line is exactly the shape that reorders on
+    /// its own, and each key here isolates its own value.
+    ///
+    /// <para><b>The opening verb follows the calendar, not the journey
+    /// position.</b> A milestone can sit at "הבאה" — first in order among those
+    /// not finished and not started — while its window has already come and
+    /// gone: live data has one whose 01.06–05.07 window closed months ago and
+    /// which nobody ever started. Printing "נפתחת ב־01.06.26" there states a
+    /// future for a date in the past.</para>
+    /// </summary>
+    private static string DatesText(MilestoneSummaryDto m)
+    {
+        var parts = new List<string>(3);
+
+        if (m.OpenDate is DateTime o)
+            parts.Add(o.Date > DateTime.Today
+                ? $"נפתחת ב־{o:dd/MM/yy}"
+                : $"נפתחה ב־{o:dd/MM/yy}");
+
+        if (m.DueDate is DateTime d)
+            parts.Add($"מועד הגשה {d:dd/MM/yy}");
+
+        // Only worth saying once it is a fact rather than a plan.
+        if (m.CloseDate is DateTime c && c.Date < DateTime.Today)
+            parts.Add($"נסגרה ב־{c:dd/MM/yy}");
+
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>
+    /// Why this milestone's items cannot be acted on, stated as what is
+    /// actually true of it.
+    ///
+    /// <para>"ייפתחו עם תחילת אבן הדרך" is a PROMISE, and it is only honest
+    /// while there is still an opening to wait for. For a milestone whose
+    /// window has closed, waiting changes nothing — so that row says what
+    /// happened instead of promising something that will not.</para>
+    /// </summary>
+    private static string LockedText(MilestoneSummaryDto m) =>
+        m.CloseDate is DateTime c && c.Date < DateTime.Today
+            ? "חלון אבן הדרך נסגר · הפעולות אינן זמינות"
+            : "הפעולות ייפתחו עם תחילת אבן הדרך";
+
+    /// <summary>Plain tasks and submissions counted SEPARATELY, so the two
+    /// numbers never double-count the same row.</summary>
+    private static string CountsText(MilestoneSummaryDto m)
+    {
+        if (m.Tasks.Count == 0) return "";
+
+        var subs  = m.Tasks.Count(t => t.IsSubmission);
+        var plain = m.Tasks.Count - subs;
+
+        var parts = new List<string>(2);
+        if (plain > 0) parts.Add(plain == 1 ? "משימה אחת" : $"{plain} משימות");
+        if (subs  > 0) parts.Add(subs  == 1 ? "הגשה אחת"  : $"{subs} הגשות");
+        return string.Join(" · ", parts);
+    }
+
+    private static string RowClass(StudentDashboardModel.JourneyPosition pos, bool expanded) =>
+        $"mjm-row mjm-row-{ToneKey(pos)}"
+        + (pos == StudentDashboardModel.JourneyPosition.InWork ? " mjm-row-emphasis" : "")
+        + (expanded ? " mjm-row-expanded" : "");
+}

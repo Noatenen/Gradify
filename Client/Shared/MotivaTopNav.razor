@@ -8,6 +8,7 @@
 @inject IDashboardOverviewService _Overview
 @inject IPendingMentorApprovalsService _PendingApprovals
 @inject ITaskSubmissionsService _SubmissionsService
+@inject AboutDialogService _About
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -144,24 +145,85 @@
            still read by LecturerTasksPage. Deleting them is a separate
            cleanup with its own blast radius. *@
 
-        <a class="stn-avatar @(IsProfileRoute ? "stn-avatar-active" : "")"
-           href="settings"
-           title="הפרופיל שלי"
-           aria-label="הפרופיל שלי">
-            @GetInitials()
-        </a>
+        @*
+            ── THE PROFILE MENU ─────────────────────────────────────────
+            The avatar was a bare link to /settings and logout was a second
+            icon button beside it. "אודות" had nowhere to live that was not
+            a THIRD control in the same cluster, so the two existing ones
+            folded into one menu instead: the cluster loses a button rather
+            than gaining one.
 
-        <button type="button"
-                class="stn-icon-btn stn-logout"
-                @onclick="HandleLogout"
-                title="התנתקות"
-                aria-label="התנתקות">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3"></path>
-                <path d="M16 17l5-5-5-5M21 12H9"></path>
-            </svg>
-        </button>
+            NOTHING NEW IS REACHABLE and nothing became unreachable —
+            /settings is the same route and logout is the same handler, one
+            click deeper. Rendered for Student, Mentor and Lecturer alike,
+            because this component is the chrome for all three.
+
+            The backdrop is a sibling covering the viewport: it closes the
+            menu on any outside click with no document listener and no JS
+            interop — the pattern NotificationBell already uses here.
+        *@
+        <div class="stn-profile">
+            @if (_menuOpen)
+            {
+                <div class="stn-menu-backdrop" @onclick="CloseMenu"></div>
+            }
+
+            <button type="button"
+                    class="stn-avatar @(IsProfileRoute ? "stn-avatar-active" : "") @(_menuOpen ? "stn-avatar-open" : "")"
+                    @onclick="ToggleMenu"
+                    @onkeydown="OnMenuKeyDown"
+                    aria-haspopup="menu"
+                    aria-expanded="@(_menuOpen ? "true" : "false")"
+                    title="@FullName"
+                    aria-label="@($"{FullName} — תפריט המשתמש")">
+                @GetInitials()
+            </button>
+
+            @if (_menuOpen)
+            {
+                <div class="stn-menu" role="menu" aria-label="תפריט המשתמש" @onkeydown="OnMenuKeyDown">
+                    @* Identity first — a profile menu should say whose it is. *@
+                    <div class="stn-menu-id">
+                        <span class="stn-menu-name">@FullName</span>
+                        <span class="stn-menu-role">@RoleService.GetRoleLabel(_user)</span>
+                    </div>
+
+                    <a class="stn-menu-item" role="menuitem" href="settings" @onclick="CloseMenu">
+                        <svg class="stn-menu-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="8" r="4"></circle>
+                            <path d="M4 21a8 8 0 0 1 16 0"></path>
+                        </svg>
+                        <span>הפרופיל שלי</span>
+                    </a>
+
+                    @* The discoverable entry point. It flips the shared
+                       service; the dialog itself is mounted once, by
+                       AppLayout, so there is still exactly one of it. *@
+                    <button type="button" class="stn-menu-item" role="menuitem" @onclick="OpenAbout">
+                        <svg class="stn-menu-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="9"></circle>
+                            <path d="M12 16v-4"></path>
+                            <path d="M12 8h.01"></path>
+                        </svg>
+                        <span>אודות</span>
+                    </button>
+
+                    <div class="stn-menu-rule" role="separator"></div>
+
+                    <button type="button" class="stn-menu-item stn-menu-item-exit" role="menuitem"
+                            @onclick="HandleLogoutFromMenu">
+                        <svg class="stn-menu-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3"></path>
+                            <path d="M16 17l5-5-5-5M21 12H9"></path>
+                        </svg>
+                        <span>התנתקות</span>
+                    </button>
+                </div>
+            }
+        </div>
     </div>
 </header>
 
@@ -439,6 +501,38 @@
         var a = first.Length > 0 ? first[..1] : "";
         var b = last.Length  > 0 ? last[..1]  : "";
         return (a + b) is { Length: > 0 } s ? s : "?";
+    }
+
+    // ── Profile menu ─────────────────────────────────────────────────────
+    // Pure view state: which of the cluster's popovers is showing. Nothing
+    // persisted, nothing routed.
+    private bool _menuOpen;
+
+    private string FullName => $"{_user?.FirstName} {_user?.LastName}".Trim();
+
+    private void ToggleMenu() => _menuOpen = !_menuOpen;
+    private void CloseMenu()  => _menuOpen = false;
+
+    /// <summary>Escape closes the menu from either the trigger or the list —
+    /// the same key that closes every dialog in this product.</summary>
+    private void OnMenuKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") _menuOpen = false;
+    }
+
+    /// <summary>Close first, then open the dialog: leaving the menu mounted
+    /// under a modal would put two overlapping popovers on screen and leave
+    /// the menu behind the backdrop when the dialog closes.</summary>
+    private void OpenAbout()
+    {
+        _menuOpen = false;
+        _About.Open();
+    }
+
+    private async Task HandleLogoutFromMenu()
+    {
+        _menuOpen = false;
+        await HandleLogout();
     }
 
     private async Task HandleLogout()

@@ -5,6 +5,12 @@
 @using AuthWithAdmin.Shared.AuthSharedModels
 @using AuthWithAdmin.Client.Services
 @using AuthWithAdmin.Client.Components
+@* MilestoneJourneyModal lives beside the student dashboard's other
+   milestone views. Imported page-locally rather than added to
+   _Imports.razor: this is the one page outside /dashboard that needs
+   the namespace, and the page's existing code deliberately
+   fully-qualifies StudentDashboardModel for the same reason. *@
+@using AuthWithAdmin.Client.Pages.Dashboard
 @inject IProjectWorkspaceService Workspace
 @inject IProjectContextService ProjectContext
 @inject IDashboardService DashboardService
@@ -71,7 +77,39 @@
     false `@if` still counts as supplied, and would leave an empty div holding
     the old spacing open.
 *@
-<MPageHeaderCard Title="הפרויקט שלי" Scale="MPageHeaderCard.HeaderScale.Core" />
+@*
+    THE OVERALL PROJECT PROGRESS, beside the page title.
+
+    It used to sit inside מסע הפרויקט as "· 42% מהמסע", welded to the
+    milestone count. The two are different measures — how many milestones are
+    done, versus how far the whole project has come — and reading them as one
+    sentence made the percentage look like a restatement of the fraction.
+
+    TitleTrailing, not a KPI card and not the Subtitle slot: a small badge on
+    the title's own line states "this page is about a project that is 42%
+    done" without becoming the thing the page is about. Wording is the
+    product's own — "התקדמות" is what ProjectWorkspace, the planning popover
+    and the overview page all call this measure.
+
+    It renders only once milestones have loaded, so the header never shows a
+    confident 0% while the payload is still in flight.
+*@
+<MPageHeaderCard Title="הפרויקט שלי" Scale="MPageHeaderCard.HeaderScale.Core">
+    <TitleTrailing>
+        @* THE GUARD LIVES INSIDE THE SLOT, not around it. A named slot has to
+           be a direct child of its component — wrapping <TitleTrailing> in an
+           @if makes Razor read the block as unrecognised child content and the
+           build fails with RZ9996. *@
+        @if (!_loading && _milestones.Count > 0)
+        {
+            <span class="pw-progress-badge"
+                  title="@($"{_overallPercent}% מאבני הדרך של הפרויקט הושלמו")">
+                <bdi class="pw-progress-num">@_overallPercent%</bdi>
+                <span class="pw-progress-word">התקדמות</span>
+            </span>
+        }
+    </TitleTrailing>
+</MPageHeaderCard>
 
 <div class="pw-body">
 
@@ -113,7 +151,35 @@
             <MCard Padding="MCard.CardPadding.Large" Class="pw-journey">
                 <MSectionHeading Text="מסע הפרויקט">
                     <Trailing>
-                        <span class="pw-journey-count">@_completedMilestones מתוך @_milestones.Count אבני דרך הושלמו</span>
+                        @*
+                            THE MILESTONE COUNT, as the pill the dashboard's
+                            journey head uses — `.motiva-journey-pill` inside
+                            `.motiva-journey-open`, both shared, so the two
+                            journey heads are the same control drawn once.
+
+                            THE OVERALL PERCENTAGE IS NOT HERE ANY MORE. It sat
+                            on this line as "· 42% מהמסע" and made one sentence
+                            out of two different measures: how many milestones
+                            are finished, and how far the project has come.
+                            They answer different questions, so they are two
+                            indicators now — this one stays with the journey it
+                            counts, and the project total moved up beside the
+                            page title. Same value, same source, one place each.
+                        *@
+                        <button type="button"
+                                class="motiva-journey-open"
+                                @onclick="OpenJourney"
+                                aria-label="@($"{_completedMilestones} מתוך {_milestones.Count} אבני דרך הושלמו. פתיחת מסע הפרויקט המלא")">
+                            <span class="motiva-journey-pill">
+                                <bdi class="motiva-journey-frac">@_completedMilestones/@_milestones.Count</bdi>
+                                <span>הושלמו</span>
+                            </span>
+                            <svg class="motiva-journey-open-chev" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                                 aria-hidden="true">
+                                <path d="m15 18-6-6 6-6"></path>
+                            </svg>
+                        </button>
                     </Trailing>
                 </MSectionHeading>
 
@@ -199,6 +265,23 @@
 
 </div>
 
+@*
+    מסע הפרויקט — THE SAME COMPONENT THE DASHBOARD OPENS, not a copy.
+    It is handed this page's own _milestones, which came from the same
+    IDashboardService call the dashboard uses, so the ordering
+    (OrderIndex, as configured) and all four states are one derivation
+    read on two screens.
+
+    OnOpenMilestone is deliberately NOT bound: this page mounts no
+    MilestoneDetailModal, and the journey renders its rows inert rather
+    than as buttons that would go nowhere. The read-only preview of the
+    next milestone works identically either way — it is internal to the
+    component.
+*@
+<MilestoneJourneyModal IsOpen="@_journeyOpen"
+                       Milestones="@_milestones"
+                       OnClose="CloseJourney" />
+
 @code {
     private StudentProjectDetailsDto? _project;
     private ProjectContextDto?        _context;
@@ -222,6 +305,20 @@
     private bool             _loading = true;
 
     private int _completedMilestones => _milestones.Count(m => m.Status == "Completed");
+
+    /// <summary>Completed milestones as a percentage of all of them — the
+    /// shared StudentDashboardModel rule, the same one the dashboard used to
+    /// print. It is stated on THIS page now; see the note at its markup.</summary>
+    private int _overallPercent =>
+        AuthWithAdmin.Client.Pages.Dashboard.StudentDashboardModel.OverallPercent(_milestones);
+
+    /// <summary>Whether the shared journey dialog is open. Pure view state —
+    /// nothing is persisted, fetched or sent when it opens; the component
+    /// renders from _milestones, which this page already holds.</summary>
+    private bool _journeyOpen;
+
+    private void OpenJourney()  => _journeyOpen = true;
+    private void CloseJourney() => _journeyOpen = false;
 
     /// <summary>Identical mapping to StudentDashboardHero's — one Current
     /// stage, chosen by the shared StudentDashboardModel, so the two steppers

@@ -46,6 +46,110 @@ public static class StudentDashboardModel
             ? 0
             : milestones.Count(m => m.Status == "Completed") * 100 / milestones.Count;
 
+    // ── Journey position ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Where a milestone sits on the journey: the four-way split the dashboard
+    /// already draws as its bands — הושלמו · בעבודה עכשיו · הבא בתור · בהמשך.
+    ///
+    /// <para>This is NOT a second milestone-state system. It is the grouping
+    /// StudentDashboardHero.BuildPhases has always computed inline, lifted here
+    /// verbatim so the hero's strip and the journey view opened from it cannot
+    /// disagree about which milestone is "next". The underlying facts —
+    /// Status, IsCurrentlyOpen, task completion — are still the server's and
+    /// are not recomputed.</para>
+    /// </summary>
+    public enum JourneyPosition { Completed, InWork, Next, Later }
+
+    /// <summary>Whether a milestone is genuinely being worked on: the one the
+    /// dashboard calls current, one the data says is InProgress/Delayed, or one
+    /// that already has finished tasks in it.
+    ///
+    /// <para>Deliberately NOT IsCurrentlyOpen. Being inside a visibility window
+    /// says a milestone CAN be worked on, not that it is — on live data six of
+    /// this project's milestones are inside their window at once, which is what
+    /// collapsed the strip to two bands before this rule replaced it.</para></summary>
+    public static bool IsInWork(MilestoneSummaryDto m, MilestoneSummaryDto? anchor) =>
+        m.ProjectMilestoneId == anchor?.ProjectMilestoneId
+        || m.Status is "InProgress" or "Delayed"
+        || (m.Tasks.Count > 0 && m.Tasks.Any(IsComplete));
+
+    /// <summary>
+    /// Every milestone's position, keyed by ProjectMilestoneId.
+    ///
+    /// <para>"Next" is the first milestone still ahead in the PROJECT'S OWN
+    /// ORDER, not the earliest by date. The two genuinely differ in live data —
+    /// a late אפיון milestone can fall due after an early פיתוח one — and the
+    /// sequence is what /project's stepper draws, so picking by date here would
+    /// have the two screens disagree about what comes next.</para>
+    /// </summary>
+    public static IReadOnlyDictionary<int, JourneyPosition> JourneyPositions(
+        IReadOnlyList<MilestoneSummaryDto> milestones)
+    {
+        var anchor = CurrentMilestone(milestones);
+        var map    = new Dictionary<int, JourneyPosition>();
+        var nextTaken = false;
+
+        foreach (var m in milestones)
+        {
+            JourneyPosition pos;
+
+            if (m.Status == "Completed")
+            {
+                pos = JourneyPosition.Completed;
+            }
+            else if (IsInWork(m, anchor))
+            {
+                pos = JourneyPosition.InWork;
+            }
+            else if (!nextTaken)
+            {
+                pos = JourneyPosition.Next;
+                nextTaken = true;
+            }
+            else
+            {
+                pos = JourneyPosition.Later;
+            }
+
+            map[m.ProjectMilestoneId] = pos;
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// Whether a milestone has actually OPENED — the availability fact, as
+    /// opposed to <see cref="JourneyPositions"/>'s ordering fact.
+    ///
+    /// <para>This is the phrase the product already uses in two places for
+    /// exactly this question — MilestoneDetailModal's progress stage and the
+    /// project workspace's stage test: open by date, or carrying an
+    /// InProgress/Delayed status, or holding real completed work. Completed is
+    /// added because a finished milestone is obviously reviewable.</para>
+    ///
+    /// <para><b>Read this, never the journey position, to decide whether a
+    /// student may act.</b> A milestone can be positioned "הבאה" and still be
+    /// open — a second milestone inside its date window that nobody has started
+    /// yet lands there — so gating actions on position would close a milestone
+    /// the rules actually leave open.</para>
+    /// </summary>
+    public static bool HasOpened(MilestoneSummaryDto m) =>
+        m.Status == "Completed"
+        || m.IsCurrentlyOpen
+        || m.Status is "InProgress" or "Delayed"
+        || m.Tasks.Any(IsComplete);
+
+    /// <summary>The single milestone the journey calls "הבאה", or null when the
+    /// project has nothing still ahead of it.</summary>
+    public static MilestoneSummaryDto? NextMilestone(IReadOnlyList<MilestoneSummaryDto> milestones)
+    {
+        var positions = JourneyPositions(milestones);
+        return milestones.FirstOrDefault(
+            m => positions.TryGetValue(m.ProjectMilestoneId, out var p)
+                 && p == JourneyPosition.Next);
+    }
+
     // ── Exceptions ("דורש התייחסות") ─────────────────────────────────────────
 
     /// <summary>Task-level exception kinds, in the order they are surfaced.</summary>
