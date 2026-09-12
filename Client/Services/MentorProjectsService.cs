@@ -8,6 +8,13 @@ public interface IMentorProjectsService
     Task<List<MentorProjectSummaryDto>>   GetProjectsAsync();
     Task<MentorProjectDetailDto?>         GetProjectDetailAsync(int projectId);
     Task<List<MentorPendingSubmissionDto>> GetPendingSubmissionsAsync();
+
+    /// <summary>Submissions on this mentor's projects that they have already
+    /// approved — <c>MentorStatus = 'Approved'</c>, newest decision first. Same
+    /// endpoint, same DTO and same mentor scoping as
+    /// <see cref="GetPendingSubmissionsAsync"/>; only the status filter
+    /// differs.</summary>
+    Task<List<MentorPendingSubmissionDto>> GetApprovedSubmissionsAsync();
     Task<MentorSubmissionContextDto?>     GetSubmissionContextAsync(int submissionId);
     Task<bool>                            ReviewSubmissionAsync(int submissionId, string mentorStatus, string? feedback);
 }
@@ -37,12 +44,27 @@ public class MentorProjectsService : IMentorProjectsService
         catch { return null; }
     }
 
-    public async Task<List<MentorPendingSubmissionDto>> GetPendingSubmissionsAsync()
+    public Task<List<MentorPendingSubmissionDto>> GetPendingSubmissionsAsync() =>
+        FetchSubmissionsAsync(null);
+
+    public Task<List<MentorPendingSubmissionDto>> GetApprovedSubmissionsAsync() =>
+        FetchSubmissionsAsync("Approved");
+
+    /// <summary>The one call behind both submission lists. GET
+    /// /api/mentor/submissions is already scoped to the caller's own projects
+    /// server-side; <paramref name="mentorStatus"/> omitted is the endpoint's
+    /// default — the pending queue — so the existing caller is byte-identical.
+    /// Swallows transport errors into an empty list, like every other method
+    /// here, so one failing section degrades rather than blanking a page.</summary>
+    private async Task<List<MentorPendingSubmissionDto>> FetchSubmissionsAsync(string? mentorStatus)
     {
+        var url = mentorStatus is null
+            ? "api/mentor/submissions"
+            : $"api/mentor/submissions?mentorStatus={Uri.EscapeDataString(mentorStatus)}";
+
         try
         {
-            return await _http.GetFromJsonAsync<List<MentorPendingSubmissionDto>>(
-                "api/mentor/submissions") ?? new();
+            return await _http.GetFromJsonAsync<List<MentorPendingSubmissionDto>>(url) ?? new();
         }
         catch { return new(); }
     }

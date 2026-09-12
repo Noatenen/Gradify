@@ -24,13 +24,25 @@ public sealed record MentorWorkspace(
     MentorAttentionDto                      Attention,
     IReadOnlyList<MentorProjectSummaryDto>  Projects,
     IReadOnlyList<ProjectRequestRowDto>     Requests,
-    IReadOnlyList<PersonalTaskDto>          PersonalTasks)
+    IReadOnlyList<PersonalTaskDto>          PersonalTasks,
+    bool                                    AttentionLoaded = true)
 {
+    // AttentionLoaded is LAST and DEFAULTED so every existing construction and
+    // `with` expression compiles and behaves exactly as before. It answers one
+    // question the snapshot could not: did GET /api/mentor/attention actually
+    // succeed? An empty Items list otherwise means "nothing is waiting on you"
+    // AND "we could not ask", and a screen whose whole subject is that queue
+    // must not render the second as the first. Screens for which an empty
+    // section is an acceptable answer simply ignore it.
     public static readonly MentorWorkspace Empty =
         new(new MentorAttentionDto(),
             Array.Empty<MentorProjectSummaryDto>(),
             Array.Empty<ProjectRequestRowDto>(),
-            Array.Empty<PersonalTaskDto>());
+            Array.Empty<PersonalTaskDto>(),
+            // Empty is the PRE-LOAD placeholder, not a loaded-and-failed
+            // snapshot: a page holding it has not asked yet, so it must not
+            // render an error.
+            AttentionLoaded: true);
 
     // ── Attention views ─────────────────────────────────────────────────────
     // Items arrives already in canonical worst-first order (NeedsAttention →
@@ -131,22 +143,28 @@ public class MentorWorkspaceService : IMentorWorkspaceService
     {
         // Concurrent, not sequential: four independent GETs, and the mentor
         // shell should not pay for them one after another.
-        var attentionTask = _attention.GetAsync();
+        var attentionTask = _attention.TryGetAsync();
         var projectsTask  = _projects.GetProjectsAsync();
         var requestsTask  = _requests.GetAllAsync();
         var personalTask  = _personal.GetAsync();
 
         await Task.WhenAll(attentionTask, projectsTask, requestsTask, personalTask);
 
+        // TryGetAsync rather than GetAsync so the failure survives as a fact
+        // instead of being flattened into an empty snapshot here. Callers that
+        // do not read AttentionLoaded see exactly what they saw before.
+        var attention = await attentionTask;
+
         return new MentorWorkspace(
-            await attentionTask,
+            attention ?? new MentorAttentionDto(),
             await projectsTask,
             // GetAllAsync is the only one that can answer null (it returns null
             // on a non-success response rather than an empty list). Server-side
             // this endpoint is already scoped to the caller's own projects for a
             // mentor-only user, so no client-side filter is needed or wanted.
             await requestsTask ?? new List<ProjectRequestRowDto>(),
-            await personalTask);
+            await personalTask,
+            AttentionLoaded: attention is not null);
     }
 
     public async Task<IReadOnlyList<MentorCalendarEvent>> BuildCalendarAsync(

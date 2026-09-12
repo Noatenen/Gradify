@@ -42,6 +42,29 @@ DELETE FROM ProjectMentors WHERE ProjectId = 133 AND UserId <> 69;
 INSERT INTO ProjectMentors (ProjectId, UserId)
   SELECT 133, 69 WHERE NOT EXISTS (SELECT 1 FROM ProjectMentors WHERE ProjectId = 133 AND UserId = 69);
 
+-- ── B2. אבי לוי (3) supervises EXACTLY ONE project in the final demo ──
+--
+-- §B above fixes the four demo projects, but it says nothing about the legacy
+-- QA projects — 1 "Gradify Platform" and 7 "עמותת בוגרי יהלם" — which אבי לוי
+-- picked up through the UI in April and June. They are real rows, not seed
+-- artefacts, and they were leaking into every mentor surface: בית, משימות
+-- לבדיקה and פרויקטים בהנחייתי all listed work on projects that are not part
+-- of the demo story.
+--
+-- Stated declaratively rather than as "delete 1 and 7", so the rule survives
+-- any project added later: in the final demo, אבי לוי mentors 130 and nothing
+-- else. Idempotent, and re-running it after §B is a no-op.
+--
+-- SAFE — this orphans nothing. Every project he is being detached from keeps
+-- another mentor: 1 -> admin admin (12), 7 -> ינאי זגורי (4), 129 -> (12),
+-- 131 -> נטע סורק (7), 133 -> מירב שגיא (69). Only the ProjectMentors link is
+-- touched; no user, team, project, task or submission is deleted, so the
+-- "real/QA data is never touched" contract at the top of this file still holds
+-- for every row that represents actual work.
+DELETE FROM ProjectMentors WHERE UserId = 3 AND ProjectId <> 130;
+INSERT INTO ProjectMentors (ProjectId, UserId)
+  SELECT 130, 3 WHERE NOT EXISTS (SELECT 1 FROM ProjectMentors WHERE ProjectId = 130 AND UserId = 3);
+
 -- ── C. Membership repair: user 73 (אביגיל נוי) owns a task + a request on
 --        project 133 but was not a member of team 133 -> add her (no orphan). ──
 INSERT INTO TeamMembers (TeamId, UserId, IsActive, MemberRole)

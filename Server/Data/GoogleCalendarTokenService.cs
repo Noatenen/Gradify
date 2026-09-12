@@ -77,6 +77,19 @@ public class GoogleCalendarTokenService
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(ClientId) && !string.IsNullOrWhiteSpace(ClientSecret);
 
+    /// <summary>Whether this deployment offers the Calendar integration at all
+    /// (<c>GoogleCalendar:Enabled</c>). Kept separate from
+    /// <see cref="IsConfigured"/> on purpose: the credentials it checks are
+    /// SHARED with Google login, so "the calendar is switched off" and "there is
+    /// no OAuth client" are two different facts and must not collapse into
+    /// one.</summary>
+    public bool IsEnabled => _options.Enabled;
+
+    /// <summary>The one gate every Calendar entry point tests. Off means no
+    /// consent URL is ever built and no authorization code is ever exchanged, so
+    /// the sensitive calendar.events scope is never requested.</summary>
+    public bool IsAvailable => IsEnabled && IsConfigured;
+
     public string Scopes =>
         string.IsNullOrWhiteSpace(_options.Scopes)
             ? GoogleCalendarOptions.DefaultScopes
@@ -113,6 +126,15 @@ public class GoogleCalendarTokenService
     /// </summary>
     public async Task<GoogleCalendarStatusDto> GetStatusAsync(int userId)
     {
+        // Switched off for this deployment: answer "unavailable, not connected"
+        // without touching the database. IsConnected is reported false even for a
+        // user whose stored grant is still perfectly good, because every caller
+        // reads it as "can I schedule right now" — and right now they cannot. The
+        // row itself is left untouched, so turning the flag back on restores the
+        // connection exactly as it was.
+        if (!IsAvailable)
+            return new GoogleCalendarStatusDto { Available = false, IsConnected = false };
+
         var row = await GetRowAsync(userId);
 
         if (row is null || row.IsActive != 1 || string.IsNullOrEmpty(row.RefreshTokenProtected))
@@ -143,7 +165,10 @@ public class GoogleCalendarTokenService
     /// </summary>
     public async Task<ConnectOutcome> CompleteConnectionAsync(int userId, string code, string redirectUri)
     {
-        if (!IsConfigured) return ConnectOutcome.NotConfigured;
+        // IsAvailable, not IsConfigured: a disabled integration must not exchange
+        // a code even if one somehow reaches this method, so the sensitive scope
+        // can never be turned into a stored grant while the flag is off.
+        if (!IsAvailable) return ConnectOutcome.NotConfigured;
 
         var token = await PostTokenRequestAsync(new Dictionary<string, string>
         {

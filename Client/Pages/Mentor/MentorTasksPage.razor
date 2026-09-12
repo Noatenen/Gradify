@@ -14,30 +14,41 @@
 @implements IAsyncDisposable
 
 @*
-    ── המשימות שלי — the mentor's unified work queue ────────────────────────
+    ── משימות לבדיקה — the mentor's REVIEW queue ────────────────────────────
     Visual source:   משימות 1/2/3.png in design/design-system/MotivaLecturerDesign.
 
+    ONE SUBJECT: SUBMISSIONS THIS MENTOR OWES A DECISION ON, OR HAS MADE ONE ON.
+    בקשות used to be the third filter tab here, which made the screen answer two
+    unrelated questions with one list. Requests have their own workspace — בקשות
+    in the rail (MentorLinks.RequestsInbox), with the full recommendation form —
+    so this page keeps only the axis it is named after. Nothing about the request
+    flow changed; this page simply stopped duplicating it.
+
+    THE THREE FILTERS ARE ONE COLUMN OF ONE TABLE.
+    TaskSubmissions.MentorStatus is the only status consulted, and it is the
+    column PATCH /api/task-submissions/{id}/mentor-review already writes:
+
+      לבדיקה  → MentorStatus = 'Pending'   (GET /api/mentor/attention, Kind = Submission)
+      אושרו   → MentorStatus = 'Approved'  (GET /api/mentor/submissions?mentorStatus=Approved)
+      הכל     → both, pending first
+
+    'Returned' rows appear in neither, deliberately: a returned round is back
+    with the team, and it re-enters לבדיקה as a new pending round the moment they
+    resubmit. Calling it אושרו would be false and calling it לבדיקה would promise
+    a decision the API refuses.
+
     TWO-SURFACE LAYOUT
-    RIGHT (wider, 1.85fr in RTL): work queue — flat scrollable list of all
-    submissions and requests waiting on this mentor, with a segmented filter
-    tab group (הכל / הגשות לבדיקה / בקשות) at the top of the panel.
-    LEFT (narrower, 1fr in RTL): personal tasks — always visible, never
-    filtered by the queue tabs.
+    RIGHT (wider, 1.85fr in RTL): the review queue.
+    LEFT (narrower, 1fr in RTL): the mentor's own משימות אישיות — always visible,
+    never filtered by the queue tabs, and titled in its own panel head.
 
     THREE STATES
-    1. Default: flat queue list (type badge · timing · title · team context)
-       plus personal tasks rail.
-    2. Inline expansion: clicking a submission row expands it to show the
-       student notes, the drive link, and two CTAs.
-    3. Review modal: "לבדיקת ההגשה" from an expanded row opens a centred modal
-       over a dimmed backdrop — the same approve/return flow as MentorSubmissionsPage.
+    1. Default: flat queue list (state badge · title · team chip · review time).
+    2. Inline expansion: the submission's own details and, on the LEFT of the
+       expanded block, the mentor actions.
+    3. Review modal: "לבדיקת ההגשה" from an expanded pending row opens a centred
+       modal — the same approve/return flow as MentorSubmissionsPage.
 
-    Request rows open MentorRequestModal directly on click (no inline expansion).
-
-    DATA SOURCES (unchanged)
-    הגשות לבדיקה  → _reviews    (IMentorWorkspaceService, Kind = Submission)
-    בקשות          → _awaitingMe (IMentorWorkspaceService, Kind = Request)
-    משימות אישיות  → _openPersonal / _donePersonal (IPersonalTasksService)
     Review context → IMentorProjectsService.GetSubmissionContextAsync (lazy, on expand)
 *@
 
@@ -68,23 +79,21 @@
             }
         </h2>
 
+        @* Submitter · team · how long it has waited. The PROJECT title is
+           deliberately not repeated here: the row's team chip already carries
+           the project identity, and it is the same project for every round. *@
         <p class="mt-modal-ctx">
             @if (!string.IsNullOrWhiteSpace(_reviewModalCtx.SubmittedBy))
             {
                 <span>@_reviewModalCtx.SubmittedBy</span>
                 <span class="mt-modal-ctx-sep"> · </span>
             }
-            @if (!string.IsNullOrWhiteSpace(_expandedItem?.TeamName))
+            @if (!string.IsNullOrWhiteSpace(_expandedRow?.TeamLabel))
             {
-                <span>@_expandedItem!.TeamName</span>
+                <span>@_expandedRow!.TeamLabel</span>
                 <span class="mt-modal-ctx-sep"> · </span>
             }
-            @if (!string.IsNullOrWhiteSpace(_expandedItem?.ProjectTitle))
-            {
-                <span>@_expandedItem!.ProjectTitle</span>
-                <span class="mt-modal-ctx-sep"> · </span>
-            }
-            <span>@(_expandedItem?.WaitingLabel ?? "")</span>
+            <span>@(_expandedRow?.TimeLabel ?? "")</span>
         </p>
 
         @* Metadata row: version · submit date · previous round date *@
@@ -187,7 +196,20 @@
     </div>
 }
 
-<MPageHeaderCard Title="המשימות שלי"
+@*
+    THE TITLE IS ROLE-SPECIFIC AND SET HERE, NOT IN A SHARED COMPONENT.
+    "המשימות שלי" read as a personal to-do list — which is what the student's
+    and the lecturer's screens of that name actually are. For a mentor this page
+    is a review queue, so it is named for that, and the mentor rail's own nav
+    item was renamed to match (NavDefinitions). Nothing else in the product is
+    renamed: /lecturer/tasks and the student task screens keep their own titles,
+    and the rail's personal-task panel below still says משימות אישיות.
+
+    MPageHeaderCard — the finalized shared page header every mentor screen
+    draws. It carries its own white surface, block padding and title scale, so
+    this page has no header shell or ::deep compact-header overrides of its own.
+*@
+<MPageHeaderCard Title="משימות לבדיקה"
                  Scale="MPageHeaderCard.HeaderScale.Core" />
 
 <div class="mt-body">
@@ -201,61 +223,98 @@
         @*
             ── THE WORKSPACE ────────────────────────────────────────────────
             Two columns, always both visible. In RTL the first column (1.85fr)
-            is the WIDER one on the visual RIGHT — the work queue. The second
+            is the WIDER one on the visual RIGHT — the review queue. The second
             (1fr) is the narrower rail on the LEFT — personal tasks.
         *@
         <div id="task-sections" class="mt-workspace">
 
-            @* ── RIGHT / WIDER: Work queue with segmented filter ─── *@
+            @* ── RIGHT / WIDER: Review queue with segmented filter ─── *@
             <div class="mt-primary">
                 <MCard Padding="MCard.CardPadding.None" Fill="true">
                     <div class="mt-panel">
 
-                        @* Segmented filter tabs — uses the shared MFilterTabs component
-                           so the gray pill-track container and white raised pill are
-                           identical to "פרויקטים שבהנחייתי". *@
+                        @* Segmented filter tabs — the shared MFilterTabs component,
+                           so the tinted pill-track and raised white pill are
+                           identical to "פרויקטים בהנחייתי". Every badge below is a
+                           real row count of the list the tab shows. *@
                         <div class="mt-panel-head">
                             <MFilterTabs Tabs="@QueueFilterTabs"
                                          ActiveKey="@_queueTab"
-                                         OnSelect="@(key => _queueTab = key)"
-                                         AriaLabel="סינון תור העבודה" />
+                                         OnSelect="@SelectQueueTab"
+                                         AriaLabel="סינון משימות לבדיקה" />
                         </div>
 
                         <MScrollArea Tabbable="false">
-                            @if (FilteredQueue.Count == 0)
+                            @* Resolved ONCE per render: FilteredQueue projects both feeds
+                               into QueueRow, and reading it for the emptiness test and
+                               again for the loop would run that projection twice. *@
+                            @{ var queue = FilteredQueue; }
+
+                            @* A FAILED LOAD IS NOT AN EMPTY QUEUE. Saying
+                               "אין הגשות שממתינות לבדיקתך" when the request
+                               never succeeded is a false statement about the
+                               mentor's workload, so the failure gets its own
+                               state and a retry. *@
+                            @if (_loadFailed)
                             {
-                                <MEmptyState Title="אין פריטים כרגע."
-                                             Description="הגשות ובקשות שממתינות לפעולתך יופיעו כאן."
+                                <div class="mt-qerror" role="alert">
+                                    <p class="mt-qerror-title">לא הצלחנו לטעון את המשימות.</p>
+                                    <p class="mt-qerror-body">
+                                        זו שגיאת טעינה — היא לא אומרת שאין הגשות שממתינות לבדיקתך.
+                                    </p>
+                                    <button type="button" class="motiva-cta mt-qerror-retry"
+                                            @onclick="RetryAsync">
+                                        נסה שוב
+                                    </button>
+                                </div>
+                            }
+                            else if (queue.Count == 0)
+                            {
+                                <MEmptyState Title="@EmptyTitle"
+                                             Description="@EmptyDescription"
                                              Live="true" />
                             }
                             else
                             {
-                                @foreach (var item in FilteredQueue)
+                                @foreach (var row in queue)
                                 {
-                                    var isSubmission = item.Kind == MentorAttentionKind.Submission;
-                                    var isRequest    = item.Kind == MentorAttentionKind.Request;
-                                    var isExpanded   = _expandedItemId == item.EntityId;
+                                    var isExpanded = _expandedRowId == row.SubmissionId;
 
                                     <div class="mt-qitem @(isExpanded ? "mt-qitem-open" : "")">
 
-                                        @* Collapsed row — always visible.
-                                           Both submissions AND requests now expand inline;
-                                           the row is always an accordion trigger. *@
-                                        <button type="button"
-                                                class="mt-qitem-row"
-                                                @onclick="() => ToggleQueueItem(item)"
-                                                aria-expanded="@(isExpanded ? "true" : "false")"
-                                                aria-label="@RowAriaLabel(item, item.Title)">
+                                        @*
+                                            ── Collapsed header ───────────────────────
+                                            The accordion trigger is a real <button>
+                                            STRETCHED OVER the header (inset:0) rather
+                                            than one WRAPPING it, because the team chip
+                                            is a link: an <a> inside a <button> is
+                                            invalid markup and unclickable in every
+                                            browser. The overlay keeps the native button
+                                            affordances — pointer, Enter/Space, focus
+                                            ring, aria-expanded — and leaves the chip a
+                                            separately focusable link stacked above it.
+                                            Everything else in the header is inert text,
+                                            so the whole row area toggles.
+                                        *@
+                                        <div class="mt-qitem-head">
+                                            <button type="button"
+                                                    class="mt-qitem-trigger"
+                                                    aria-expanded="@(isExpanded ? "true" : "false")"
+                                                    aria-label="@RowAriaLabel(row)"
+                                                    @onclick="() => ToggleRow(row)"></button>
 
-                                            <span class="mt-qitem-top">
-                                                <span class="mt-qbadge @(isSubmission ? "mt-qbadge-sub" : "mt-qbadge-req")">
-                                                    @(isSubmission ? "הגשה לבדיקה" : "בקשה")
+                                            @* Line 1: state/type at the reading edge,
+                                               review time + chevron at the far edge. *@
+                                            <div class="mt-qitem-top">
+                                                <span class="mt-qbadge @(row.IsPending ? "mt-qbadge-sub" : "mt-qbadge-done")">
+                                                    @row.TypeLabel
                                                 </span>
 
-                                                @* Timing badge + chevron grouped so they sit on the same line.
-                                                   Both item kinds get a chevron — both expand inline. *@
                                                 <span class="mt-qitem-top-trail">
-                                                    <span class="mt-qitem-timing @AgeClass(item)">@StateLabel(item)</span>
+                                                    @if (!string.IsNullOrEmpty(row.TimeLabel))
+                                                    {
+                                                        <span class="mt-qitem-timing @TimeClass(row)">@row.TimeLabel</span>
+                                                    }
                                                     <span class="mt-qitem-chevron @(isExpanded ? "mt-qitem-chevron-open" : "")"
                                                           aria-hidden="true">
                                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -264,45 +323,148 @@
                                                         </svg>
                                                     </span>
                                                 </span>
-                                            </span>
+                                            </div>
 
-                                            <strong class="mt-qitem-title">@item.Title</strong>
+                                            @*
+                                                Line 2: the task title, then the team as a
+                                                CHIP THAT NAVIGATES. It replaces the
+                                                "למרחב הפרויקט" button the expansion used
+                                                to carry and goes to the identical route —
+                                                mentor/projects/{id} — so the destination
+                                                is unchanged and the team identity is the
+                                                entry point to it. The long project-title
+                                                subtitle this row used to print under every
+                                                title is gone with it: it was the same
+                                                sentence on every row of a team.
+                                            *@
+                                            <div class="mt-qitem-main">
+                                                <strong class="mt-qitem-title">@row.Title</strong>
 
-                                            <span class="mt-qitem-ctx">
-                                                @if (!string.IsNullOrWhiteSpace(item.TeamName))
+                                                @if (!string.IsNullOrWhiteSpace(row.TeamLabel))
                                                 {
-                                                    <span>צוות: @item.TeamName</span>
-                                                    @if (!string.IsNullOrWhiteSpace(item.ProjectTitle))
+                                                    @if (row.ProjectId is int projectId)
                                                     {
-                                                        <span class="mt-qitem-ctx-sep"> · </span>
-                                                        <span>@item.ProjectTitle</span>
+                                                        <a class="mt-qitem-team"
+                                                           href="mentor/projects/@projectId"
+                                                           title="@($"מרחב הפרויקט של {row.TeamLabel}")">
+                                                            <span class="mt-qitem-team-name">@row.TeamLabel</span>
+                                                            <svg class="mt-qitem-team-go" viewBox="0 0 24 24"
+                                                                 fill="none" stroke="currentColor" stroke-width="2.2"
+                                                                 stroke-linecap="round" stroke-linejoin="round"
+                                                                 aria-hidden="true">
+                                                                <path d="M7 17 17 7"></path>
+                                                                <path d="M8 7h9v9"></path>
+                                                            </svg>
+                                                        </a>
+                                                    }
+                                                    else
+                                                    {
+                                                        @* No project id — the chip stays a chip
+                                                           rather than becoming a dead link. *@
+                                                        <span class="mt-qitem-team mt-qitem-team-flat">@row.TeamLabel</span>
                                                     }
                                                 }
-                                                else if (!string.IsNullOrWhiteSpace(item.ProjectTitle))
-                                                {
-                                                    <span>@item.ProjectTitle</span>
-                                                }
-                                            </span>
-                                        </button>
+                                            </div>
+                                        </div>
 
-                                        @* Inline expansion (State 2) — submissions AND requests.
-                                           Submissions lazy-load their context; requests preview
-                                           directly from the item DTO and then open the modal. *@
+                                        @*
+                                            ── Inline expansion (State 2) ─────────────
+                                            CONTENT at the reading edge (right in RTL),
+                                            ACTIONS at the far edge (left in RTL) — the
+                                            wrapper is a plain flex row, so on a narrow
+                                            viewport it wraps and the actions stack under
+                                            the content by themselves.
+                                        *@
                                         @if (isExpanded)
                                         {
                                             <div class="mt-qitem-body">
-                                                @if (isSubmission)
+                                                @if (_loadingExpansion)
                                                 {
-                                                    @* ── Submission expansion ─────────────────────── *@
-                                                    @if (_loadingExpansion)
-                                                    {
-                                                        <span class="mt-qitem-loading">טוען פרטי הגשה…</span>
-                                                    }
-                                                    else if (_expandedCtx is not null)
-                                                    {
+                                                    <span class="mt-qitem-loading">טוען פרטי הגשה…</span>
+                                                }
+                                                else if (_expandedCtx is null)
+                                                {
+                                                    <span class="mt-qitem-loading">לא הצלחנו לטעון את פרטי ההגשה.</span>
+                                                }
+                                                else
+                                                {
+                                                    <div class="mt-qitem-detail">
+
+                                                        @*
+                                                            SUBMISSION CONTEXT — "לבדיקה" ONLY.
+                                                            A pending round is a decision the
+                                                            mentor has to make, so it gets the
+                                                            three facts that decision needs:
+                                                            which milestone, which round, when it
+                                                            arrived. An approved round is a
+                                                            record, and repeating the same three
+                                                            lines on every one of them is clutter
+                                                            — so the whole block is skipped there
+                                                            and those rows stay compact.
+
+                                                            NO SUBMITTER NAME. It used to print
+                                                            _expandedCtx.SubmittedBy, which named
+                                                            whichever team member happened to press
+                                                            the button — misleading on work the
+                                                            team owns jointly, and already answered
+                                                            by the team chip on the row above. The
+                                                            field is untouched on the DTO and the
+                                                            review modal still shows it where one
+                                                            person's act genuinely matters.
+                                                        *@
+                                                        @if (row.IsPending)
+                                                        {
+                                                            <p class="mt-qitem-facts">
+                                                                @if (!string.IsNullOrWhiteSpace(_expandedCtx.MilestoneTitle))
+                                                                {
+                                                                    <span><span class="mt-qitem-facts-key">אבן דרך:</span> @_expandedCtx.MilestoneTitle</span>
+                                                                    <span class="mt-qitem-ctx-sep"> · </span>
+                                                                }
+                                                                @if (_expandedCtx.History.Count > 0)
+                                                                {
+                                                                    <span><span class="mt-qitem-facts-key">גרסה:</span> @_expandedCtx.History[0].RoundNumber</span>
+                                                                    <span class="mt-qitem-ctx-sep"> · </span>
+                                                                }
+                                                                <span><span class="mt-qitem-facts-key">הוגש:</span> @_expandedCtx.SubmittedAt.ToLocalTime().ToString("dd.MM.yyyy")</span>
+                                                            </p>
+                                                        }
+
+                                                        @*
+                                                            THE TEAM'S OWN MESSAGE, labelled as
+                                                            theirs. This is TaskSubmissions.Notes
+                                                            — the note the team types when they
+                                                            submit — and it used to render as an
+                                                            unlabelled paragraph among the system
+                                                            metadata, so there was nothing to tell
+                                                            the mentor a human had written it.
+
+                                                            Omitted entirely when the team wrote
+                                                            nothing: an empty labelled block would
+                                                            be a worse answer than no block.
+                                                        *@
+                                                        @*  WHAT THE TEAM WAS ASKED FOR — read-only.
+                                                            Tasks.SubmissionInstructions, authored by
+                                                            Lecturer/Admin on the project task and read
+                                                            by the student as "הנחיות הגשה". Shown
+                                                            BEFORE the team's own message so the
+                                                            requirement is read before the answer to
+                                                            it. Neutral surface, not the brand-tinted
+                                                            one: this is the assignment, not something
+                                                            a person wrote to this mentor. *@
+                                                        @if (!string.IsNullOrWhiteSpace(_expandedCtx.SubmissionInstructions))
+                                                        {
+                                                            <div class="mt-qitem-brief">
+                                                                <span class="mt-qitem-brief-label">הנחיות הגשה</span>
+                                                                <p class="mt-qitem-message-body">@_expandedCtx.SubmissionInstructions</p>
+                                                            </div>
+                                                        }
+
                                                         @if (!string.IsNullOrWhiteSpace(_expandedCtx.Notes))
                                                         {
-                                                            <p class="mt-qitem-notes">@_expandedCtx.Notes</p>
+                                                            <div class="mt-qitem-message">
+                                                                <span class="mt-qitem-message-label">הודעת הצוות</span>
+                                                                <p class="mt-qitem-message-body">@_expandedCtx.Notes</p>
+                                                            </div>
                                                         }
 
                                                         @if (!string.IsNullOrWhiteSpace(_expandedCtx.DriveUrl))
@@ -324,62 +486,35 @@
                                                             </a>
                                                         }
 
+                                                        @* An already-approved round shows the
+                                                           decision that closed it — the review
+                                                           information the אושרו bucket exists
+                                                           to answer. *@
+                                                        @if (!row.IsPending && !string.IsNullOrWhiteSpace(_expandedCtx.MentorFeedback))
+                                                        {
+                                                            <div class="mt-qitem-verdict">
+                                                                <span class="mt-qitem-verdict-label">המשוב שלך</span>
+                                                                <p class="mt-qitem-message-body">@_expandedCtx.MentorFeedback</p>
+                                                            </div>
+                                                        }
+                                                    </div>
+
+                                                    @* Actions, grouped, at the inline end =
+                                                       the visual LEFT in RTL. Only a pending
+                                                       round has one: the review endpoint is
+                                                       gated on MentorStatus = 'Pending', so a
+                                                       decide button on an approved row would
+                                                       promise a call the server refuses. *@
+                                                    @if (row.IsPending)
+                                                    {
                                                         <div class="mt-qitem-actions">
                                                             <button type="button"
                                                                     class="motiva-cta mt-qitem-review"
                                                                     @onclick="OpenReviewModal">
                                                                 לבדיקת ההגשה
                                                             </button>
-                                                            @if (item.ProjectId.HasValue)
-                                                            {
-                                                                <a class="mt-qitem-project"
-                                                                   href="mentor/projects/@item.ProjectId">
-                                                                    למרחב הפרויקט
-                                                                </a>
-                                                            }
                                                         </div>
                                                     }
-                                                }
-                                                else if (isRequest)
-                                                {
-                                                    @* ── Request inline preview ───────────────────
-                                                       Shows the key facts from the attention item DTO
-                                                       (type, requester, waiting phrase). The full
-                                                       detail/recommendation form opens in the existing
-                                                       MentorRequestModal via "לטיפול בבקשה". *@
-
-                                                    <div class="mt-qitem-req-meta">
-                                                        @if (!string.IsNullOrWhiteSpace(item.RequestType))
-                                                        {
-                                                            <span class="mt-qitem-req-type">
-                                                                @RequestTypes.Label(item.RequestType)
-                                                            </span>
-                                                        }
-                                                        @if (!string.IsNullOrWhiteSpace(item.ActorName))
-                                                        {
-                                                            <span class="mt-qitem-req-by">@item.ActorName</span>
-                                                        }
-                                                    </div>
-
-                                                    @if (!string.IsNullOrWhiteSpace(item.WaitingLabel))
-                                                    {
-                                                        <p class="mt-qitem-notes">@item.WaitingLabel</p>
-                                                    }
-
-                                                    <div class="mt-qitem-actions">
-                                                        <button type="button"
-                                                                class="motiva-cta mt-qitem-review"
-                                                                @onclick="() => _openRequestId = item.EntityId">
-                                                            לטיפול בבקשה
-                                                        </button>
-                                                        @if (item.ProjectId.HasValue)
-                                                        {
-                                                            <a class="mt-qitem-project"
-                                                               href="mentor/projects/@item.ProjectId">
-                                                                למרחב הפרויקט
-                                                            </a>
-                                                        }
-                                                    </div>
                                                 }
                                             </div>
                                         }
@@ -437,11 +572,11 @@
 
                                         <span class="mt-row-title">@t.Title</span>
 
-                                        @if (!string.IsNullOrWhiteSpace(PersonalTeamLabel(t)))
-                                        {
-                                            <span class="mt-row-meta">@PersonalTeamLabel(t)</span>
-                                        }
-
+                                        @* NO PROJECT NAME HERE. It was the same string on every
+                                           row of a project and it competed with the due date for
+                                           the only trailing slot the row has. The association is
+                                           untouched in the data and still shown — and editable —
+                                           in MentorPersonalTaskModal, which this row opens. *@
                                         @if (MentorTime.DeadlineLabel(t.DueDate) is { Length: > 0 } due)
                                         {
                                             <span class="mt-row-due @(!t.IsDone && MentorTime.IsOverdue(t.DueDate) ? "mt-row-due-late" : "")">@due</span>
@@ -468,13 +603,10 @@
     }
 </div>
 
-@* ── Request details modal ── *@
-<MentorRequestModal RequestId="@_openRequestId"
-                    WaitingLabel="@OpenRequestWaitingLabel"
-                    OnClose="@(() => _openRequestId = null)"
-                    OnChanged="ReloadAsync" />
-
 @* ── New / edit personal task ── *@
+@* MentorRequestModal is gone from this page WITH the בקשות tab, not instead of
+   it: requests are handled in בקשות (/mentor-requests) and on בית, both of
+   which still render that same component with the same behaviour. *@
 <MentorPersonalTaskModal IsOpen="@_taskModalOpen"
                          EditingTask="@_editingTask"
                          Projects="@_ws.Projects"
@@ -485,45 +617,154 @@
 @code {
     private const int PersonalCollapsedCount = 6;
 
+    // ── Filter keys ─────────────────────────────────────────────────────────
+    // "" is MFilterTabs' conventional "show everything" key. "reviews" is kept
+    // rather than renamed to something like "pending" because it is already the
+    // ?focus= vocabulary of every inbound deep link — MentorLinks.Reviews, the
+    // notification bell's submission rows and the daily digest all write
+    // ?focus=reviews, and renaming the key would silently break all three.
+    private const string TabAll      = "";
+    private const string TabPending  = "reviews";
+    private const string TabApproved = "approved";
+
     // ── Data ────────────────────────────────────────────────────────────────
     private MentorWorkspace _ws = MentorWorkspace.Empty;
     private bool _loading = true;
 
-    private IReadOnlyList<MentorAttentionItemDto> _reviews    = Array.Empty<MentorAttentionItemDto>();
-    private IReadOnlyList<MentorAttentionItemDto> _awaitingMe = Array.Empty<MentorAttentionItemDto>();
-    private List<PersonalTaskDto>            _openPersonal    = new();
-    private List<PersonalTaskDto>            _donePersonal    = new();
-    private List<PersonalTaskDto>            _visiblePersonal = new();
+    /// <summary>True when GET /api/mentor/attention did not succeed. Distinct
+    /// from "loaded and empty", which is what it used to be indistinguishable
+    /// from — see ReloadAsync.</summary>
+    private bool _loadFailed;
 
-    private MentorAttentionCountsDto Counts => _ws.Attention.Counts;
+    /// <summary>Submissions still waiting on this mentor — MentorStatus =
+    /// 'Pending', straight off the attention model, already worst-first.</summary>
+    private IReadOnlyList<MentorAttentionItemDto> _reviews = Array.Empty<MentorAttentionItemDto>();
+
+    /// <summary>Submissions on this mentor's projects already approved —
+    /// MentorStatus = 'Approved', newest decision first.</summary>
+    private IReadOnlyList<MentorPendingSubmissionDto> _approved = Array.Empty<MentorPendingSubmissionDto>();
+
+    private List<PersonalTaskDto> _openPersonal    = new();
+    private List<PersonalTaskDto> _donePersonal    = new();
+    private List<PersonalTaskDto> _visiblePersonal = new();
+
+    // ── One row of the review queue ─────────────────────────────────────────
+
+    /// <summary>
+    /// A submission as this screen draws it, from either of its two sources.
+    ///
+    /// <para>The two feeds carry different DTOs for the same object — an
+    /// attention item for a pending round, a submission row for an approved one —
+    /// and the row markup must not have to know which. Resolving both into one
+    /// shape here is what keeps a single list, a single expansion and a single
+    /// set of helpers; it introduces no state of its own, every field being
+    /// copied or worded from data the caller already holds.</para>
+    /// </summary>
+    private sealed record QueueRow(
+        int      SubmissionId,
+        string   Title,
+        string   TeamLabel,
+        int?     ProjectId,
+        bool     IsPending,
+        string   TimeLabel,
+        bool     NeedsAttention)
+    {
+        /// <summary>The state tag. Reads as the submission's own state rather
+        /// than as an instruction, which is what lets one list hold both.</summary>
+        public string TypeLabel => IsPending ? "הגשה לבדיקה" : "אושרה";
+    }
 
     // ── Queue filter ────────────────────────────────────────────────────────
-    /// <summary>"" = הכל | "reviews" = הגשות לבדיקה | "requests" = בקשות</summary>
-    private string _queueTab = "";
 
-    private int IncomingCount => _reviews.Count + _awaitingMe.Count;
+    /// <summary>THE DEFAULT IS "לבדיקה", NOT "הכל". This page exists to answer
+    /// "what is waiting for my decision", so entering it unfiltered should put
+    /// that queue on screen rather than make the mentor pick it out of a list
+    /// that is mostly finished work. "הכל" is still one click away, and still
+    /// reachable by URL as ?focus=all.</summary>
+    private string _queueTab = TabPending;
 
-    /// <summary>Tab definitions for the shared MFilterTabs component.
-    /// A badge of 0 renders no badge — matches MFilterTabs.Tab's contract.</summary>
+    /// <summary>Tab definitions for the shared MFilterTabs component. Every
+    /// badge is the length of the list its tab renders — there is no count
+    /// computed from anywhere but the rows themselves, so a badge cannot
+    /// disagree with what the mentor sees. A badge of 0 renders no badge,
+    /// per MFilterTabs.Tab's contract.</summary>
     private IReadOnlyList<MFilterTabs.Tab> QueueFilterTabs => new[]
     {
-        new MFilterTabs.Tab("",         "הכל",            IncomingCount),
-        new MFilterTabs.Tab("reviews",  "הגשות לבדיקה",   _reviews.Count),
-        new MFilterTabs.Tab("requests", "בקשות",          _awaitingMe.Count),
+        new MFilterTabs.Tab(TabAll,      "הכל",    _reviews.Count + _approved.Count),
+        new MFilterTabs.Tab(TabPending,  "לבדיקה", _reviews.Count),
+        new MFilterTabs.Tab(TabApproved, "אושרו",  _approved.Count),
     };
 
-    private IReadOnlyList<MentorAttentionItemDto> FilteredQueue =>
-        _queueTab switch
-        {
-            "reviews"  => _reviews,
-            "requests" => _awaitingMe,
-            _          => (IReadOnlyList<MentorAttentionItemDto>)
-                          _reviews.Concat(_awaitingMe).ToList(),
-        };
+    /// <summary>The rows the active tab shows. Pending before approved under
+    /// "הכל": what is owed comes before what is settled.</summary>
+    private IReadOnlyList<QueueRow> FilteredQueue => _queueTab switch
+    {
+        TabPending  => PendingRows,
+        TabApproved => ApprovedRows,
+        _           => PendingRows.Concat(ApprovedRows).ToList(),
+    };
+
+    private IReadOnlyList<QueueRow> PendingRows =>
+        _reviews.Select(PendingRow).ToList();
+
+    private IReadOnlyList<QueueRow> ApprovedRows =>
+        _approved.Select(ApprovedRow).ToList();
+
+    private QueueRow PendingRow(MentorAttentionItemDto i) => new(
+        SubmissionId:   i.EntityId,
+        Title:          i.Title,
+        TeamLabel:      TeamLabel(i.TeamName, i.ProjectId, i.ProjectTitle),
+        ProjectId:      i.ProjectId,
+        IsPending:      true,
+        // The product's one waiting-age wording, unchanged — the age and the
+        // threshold both arrive already decided by GET /api/mentor/attention.
+        TimeLabel:      MentorAging.ShortLabel(i.WaitingDays),
+        NeedsAttention: i.Age == MentorAttentionAge.NeedsAttention);
+
+    private QueueRow ApprovedRow(MentorPendingSubmissionDto s) => new(
+        SubmissionId:   s.SubmissionId,
+        Title:          s.TaskTitle,
+        // TeamName is not on this DTO, but the snapshot already knows it for
+        // every project the mentor guides — and this row carries its own
+        // ProjectNumber, so the number fallback needs no lookup at all.
+        TeamLabel:      TeamLabel(_ws.TeamNameFor(s.ProjectId), s.ProjectId,
+                                  s.ProjectTitle, s.ProjectNumber),
+        ProjectId:      s.ProjectId == 0 ? null : s.ProjectId,
+        IsPending:      false,
+        // WHEN THE DECISION WAS MADE, not a waiting age: an approved round is
+        // not waiting for anyone. Empty when the row predates MentorReviewedAt
+        // being written, so the chip is omitted rather than guessing a date.
+        TimeLabel:      s.MentorReviewedAt is DateTime reviewed
+                            ? $"נבדקה {MentorTime.AgoLabel(reviewed)}"
+                            : "",
+        NeedsAttention: false);
+
+    private string EmptyTitle => _queueTab switch
+    {
+        TabPending  => "אין הגשות שממתינות לבדיקתך.",
+        TabApproved => "עדיין לא אישרת הגשות.",
+        _           => "אין הגשות כרגע.",
+    };
+
+    private string EmptyDescription => _queueTab switch
+    {
+        TabPending  => "הגשות חדשות של הצוותים שלך יופיעו כאן.",
+        TabApproved => "הגשות שתאשר/י יישמרו כאן.",
+        _           => "הגשות שממתינות לבדיקתך ואלה שאישרת יופיעו כאן.",
+    };
+
+    /// <summary>Selecting a tab closes any open row: the expansion belongs to a
+    /// row that the new filter may not show, and leaving the id set would leave
+    /// the loaded context pointing at something off-screen.</summary>
+    private void SelectQueueTab(string key)
+    {
+        _queueTab = key;
+        CollapseRow();
+    }
 
     // ── Inline expansion (State 2) ──────────────────────────────────────────
-    private int?                        _expandedItemId;
-    private MentorAttentionItemDto?     _expandedItem;
+    private int?                        _expandedRowId;
+    private QueueRow?                   _expandedRow;
     private bool                        _loadingExpansion;
     private MentorSubmissionContextDto? _expandedCtx;
 
@@ -536,14 +777,6 @@
     private string                      _reviewModalFeedbackError = "";
     private bool                        _reviewModalScrollLocked;
 
-    // ── Request modal ───────────────────────────────────────────────────────
-    private int? _openRequestId;
-
-    private string? OpenRequestWaitingLabel =>
-        _openRequestId is int id
-            ? _awaitingMe.FirstOrDefault(r => r.EntityId == id)?.WaitingLabel
-            : null;
-
     // ── Personal tasks ──────────────────────────────────────────────────────
     private bool           _personalExpanded;
     private int?           _togglingId;
@@ -552,13 +785,93 @@
 
     // ── Lifecycle ───────────────────────────────────────────────────────────
 
-    protected override async Task OnInitializedAsync()
+    /// <summary>
+    /// The signed-in user, cascaded from App.razor.
+    ///
+    /// <para><b>This page's data load is keyed on it, and that is the fix for
+    /// the refresh bug.</b> See <see cref="OnParametersSetAsync"/>.</para></summary>
+    [CascadingParameter] private User? _user { get; set; }
+
+    /// <summary>Which user's data <see cref="_reviews"/> / <see cref="_approved"/>
+    /// currently hold. Null means "nothing loaded yet"; comparing against it is
+    /// what makes the load run exactly ONCE per identity however many times
+    /// parameters are set.</summary>
+    private int? _loadedForUserId;
+
+    protected override void OnInitialized()
     {
         Nav.LocationChanged += OnLocationChanged;
         ApplyFocusFromQuery();
+    }
+
+    /// <summary>
+    /// THE LOAD HAPPENS HERE, NOT IN OnInitializedAsync, AND THAT IS THE BUG FIX.
+    ///
+    /// <para><b>What was wrong.</b> The load ran in <c>OnInitializedAsync</c>,
+    /// which fires the moment the component mounts — and on a FULL PAGE LOAD
+    /// that is before the cascaded <see cref="User"/> has arrived from
+    /// App.razor, which in turn resolves from the same auth state that attaches
+    /// the bearer token to the shared HttpClient
+    /// (<c>AuthStateProvider.GetAuthenticationStateAsync</c>, which may also
+    /// have to await <c>api/users/refresh</c> first). So the five GETs this page
+    /// makes could go out in a window where the client was not yet
+    /// authenticated. Every one of those services swallows its own failure and
+    /// answers an empty list, so a 401 arrived as "you have nothing to review" —
+    /// and nothing ever asked again. Navigating INTO the page from another
+    /// mentor screen worked because by then auth had long since settled, which
+    /// is exactly the asymmetry that was reported.</para>
+    ///
+    /// <para><b>Why keying on the user fixes it rather than papering over it.</b>
+    /// The page now states its real precondition: it cannot load until it knows
+    /// who it is loading for. OnParametersSetAsync runs again when the cascade
+    /// delivers the user, and the guard below makes that the first and only time
+    /// the fetch happens. Nothing is cached, persisted or carried over from
+    /// another page — the state is rebuilt from the authenticated user plus the
+    /// server on every fresh load, which is also why a remount cannot lose it.</para>
+    ///
+    /// <para>Note this is NOT a retry loop and not a delay. It is an ordering
+    /// constraint, and it is the same one <c>MentorHomePage</c> and
+    /// <c>MentorProjectDetailPage</c> already take the cascade for.</para>
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        // Still waiting for the cascade. _loading stays true, so the screen
+        // reads "loading" rather than "empty" — the honest state for "we do not
+        // know who you are yet".
+        if (_user?.Id is not int userId) return;
+
+        if (userId == _loadedForUserId) return;
+        _loadedForUserId = userId;
+
         await ReloadAsync();
         OpenTaskFromQuery();
         await OpenSubmissionFromQuery();
+    }
+
+    /// <summary>A submission notification deep-links here with
+    /// ?openSubmission={id} — it selects the לבדיקה tab and expands that exact
+    /// submission inline, the same expansion a click on the row performs. The id
+    /// is the TaskSubmission id the server writes as the notification's
+    /// RelatedEntityId, which is also the attention item's EntityId and this
+    /// screen's QueueRow.SubmissionId.
+    ///
+    /// <para>REIMPLEMENTED against the new row model: it used to look up a
+    /// MentorAttentionItemDto in _reviews and call ToggleQueueItem. Rows are now
+    /// QueueRow and the toggle is ToggleRow, so it resolves through PendingRows
+    /// — the same projection the list renders — and a no-match (already
+    /// reviewed, or not this mentor's) simply leaves the list as loaded.</para>
+    ///
+    /// <para>Runs after ReloadAsync so the queue is populated.</para></summary>
+    private async Task OpenSubmissionFromQuery()
+    {
+        if (!int.TryParse(QueryValue("openSubmission"), out var wantedId)) return;
+
+        var row = PendingRows.FirstOrDefault(r => r.SubmissionId == wantedId);
+        if (row is null) return;
+
+        _queueTab = TabPending;
+        if (_expandedRowId != row.SubmissionId)
+            await ToggleRow(row);
     }
 
     public async ValueTask DisposeAsync()
@@ -568,9 +881,9 @@
             try { await JS.InvokeVoidAsync("gradify.scrollLock.unlock"); } catch { }
     }
 
-    /// <summary>בית deep-links here with ?focus= to pre-select a queue tab.
-    /// Blazor reuses this component across navigations, so we re-read on
-    /// LocationChanged as well as on init.</summary>
+    /// <summary>בית and the notification bell deep-link here with ?focus= to
+    /// pre-select a tab. Blazor reuses this component across navigations, so we
+    /// re-read on LocationChanged as well as on init.</summary>
     private void OnLocationChanged(object? sender,
         Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
@@ -591,12 +904,22 @@
         return null;
     }
 
+    /// <summary>
+    /// An explicit, recognised ?focus= wins; everything else lands on the
+    /// screen's own default.
+    ///
+    /// <para>Unrecognised now means "לבדיקה" rather than "הכל" — including a
+    /// bookmarked ?focus=requests from when בקשות was a tab here. A stale link
+    /// must land on a populated screen, and the review queue is the screen this
+    /// page is for. "הכל" keeps a key of its own so a link can still ask for it
+    /// explicitly, which is the only thing the empty-string key used to do.</para></summary>
     private void ApplyFocusFromQuery() =>
         _queueTab = (QueryValue("focus") ?? "").ToLowerInvariant() switch
         {
-            "reviews"  => "reviews",
-            "requests" => "requests",
-            _          => "",
+            "all"      => TabAll,
+            "reviews"  => TabPending,
+            "approved" => TabApproved,
+            _          => TabPending,
         };
 
     /// <summary>Calendar links here with ?editTask={id}.</summary>
@@ -608,68 +931,81 @@
         OpenEditTask(task);
     }
 
-    /// <summary>A submission notification deep-links here with
-    /// ?openSubmission={id} — it selects the reviews tab and expands that exact
-    /// submission inline, the same expansion a click on the row performs. The id
-    /// is the TaskSubmission id the server writes as the notification's
-    /// RelatedEntityId, which is also the review item's EntityId. Runs after
-    /// ReloadAsync so _reviews is populated; a no-match (already resolved, not
-    /// this mentor's) simply leaves the list as loaded.</summary>
-    private async Task OpenSubmissionFromQuery()
-    {
-        if (!int.TryParse(QueryValue("openSubmission"), out var wantedId)) return;
-        var item = _reviews.FirstOrDefault(r => r.EntityId == wantedId);
-        if (item is null) return;
-        _queueTab = "reviews";
-        if (_expandedItemId != item.EntityId)
-            await ToggleQueueItem(item);
-    }
-
     private async Task ReloadAsync()
     {
-        _loading = true;
-        _ws = await Workspace.LoadAsync();
+        _loading   = true;
+        _loadFailed = false;
 
-        _reviews    = _ws.Reviews;
-        _awaitingMe = _ws.AwaitingMe;
+        // Concurrent: the snapshot and the approved list are independent GETs,
+        // and the screen should not pay for them one after another.
+        var wsTask       = Workspace.LoadAsync();
+        var approvedTask = MentorService.GetApprovedSubmissionsAsync();
+        await Task.WhenAll(wsTask, approvedTask);
+
+        _ws       = await wsTask;
+        _reviews  = _ws.Reviews;
+        _approved = await approvedTask;
+
+        // A FAILED CALL MUST NOT RENDER AS AN EMPTY QUEUE. Every mentor service
+        // degrades a transport failure to an empty list by design, which is
+        // right for a section of a dashboard and wrong for the one screen whose
+        // entire subject is this queue: "אין הגשות שממתינות לבדיקתך" would be a
+        // false statement about the mentor's workload. MentorWorkspace carries
+        // the attention call's real outcome so this screen can say so and offer
+        // a retry instead.
+        _loadFailed = !_ws.AttentionLoaded;
 
         SplitPersonal(_ws.PersonalTasks);
         _loading = false;
     }
 
+    /// <summary>Manual retry for the error state. Re-runs the same load; it does
+    /// not reset <see cref="_loadedForUserId"/>, because the user has not
+    /// changed — only the attempt has.</summary>
+    private async Task RetryAsync()
+    {
+        await ReloadAsync();
+    }
+
     // ── Queue interaction ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Both submissions and requests now expand inline.
-    /// Submissions lazy-load their review context; requests preview immediately
-    /// from the item DTO — no extra round-trip needed.
-    /// </summary>
-    private async Task ToggleQueueItem(MentorAttentionItemDto item)
+    private void CollapseRow()
     {
-        // Collapse the item if it is already open.
-        if (_expandedItemId == item.EntityId)
+        _expandedRowId    = null;
+        _expandedRow      = null;
+        _expandedCtx      = null;
+        _loadingExpansion = false;
+    }
+
+    /// <summary>
+    /// Expand or collapse one row. The submission context is loaded lazily, on
+    /// expand, and for approved rows too — it is the same endpoint and the same
+    /// payload, and it is where the notes, the link and the mentor's own verdict
+    /// live.
+    /// </summary>
+    private async Task ToggleRow(QueueRow row)
+    {
+        if (_expandedRowId == row.SubmissionId)
         {
-            _expandedItemId   = null;
-            _expandedItem     = null;
-            _expandedCtx      = null;
-            _loadingExpansion = false;
+            CollapseRow();
             return;
         }
 
-        // Expand. Clear any stale context from a previous expansion.
-        _expandedItemId   = item.EntityId;
-        _expandedItem     = item;
+        // Expand. Clear any stale context from a previous expansion first.
+        _expandedRowId    = row.SubmissionId;
+        _expandedRow      = row;
         _expandedCtx      = null;
-        _loadingExpansion = false;
+        _loadingExpansion = true;
+        StateHasChanged();
 
-        // Submissions need an async context load; requests carry everything in the DTO.
-        if (item.Kind == MentorAttentionKind.Submission)
-        {
-            _loadingExpansion = true;
-            StateHasChanged();
-            _expandedCtx      = await MentorService.GetSubmissionContextAsync(item.EntityId);
-            _loadingExpansion = false;
-        }
+        var ctx = await MentorService.GetSubmissionContextAsync(row.SubmissionId);
+
+        // The mentor may have collapsed this row, or opened another, while the
+        // request was in flight — only apply the answer if it is still wanted.
+        if (_expandedRowId != row.SubmissionId) return;
+
+        _expandedCtx      = ctx;
+        _loadingExpansion = false;
     }
 
     // ── Review modal ─────────────────────────────────────────────────────────
@@ -724,19 +1060,24 @@
         bool ok = await MentorService.ReviewSubmissionAsync(sid, action, _reviewModalFeedback);
         _reviewModalBusy = false;
 
-        if (ok)
-        {
-            // Remove the reviewed item from the queue.
-            _reviews = _reviews.Where(r => r.EntityId != sid).ToList();
-            await CloseReviewModal();
-            _expandedItemId = null;
-            _expandedItem   = null;
-            _expandedCtx    = null;
-        }
-        else
+        if (!ok)
         {
             _reviewModalError = true;
+            return;
         }
+
+        // The row has left לבדיקה either way. An approval also joins אושרו, so
+        // that list is re-fetched rather than having a row synthesised into it:
+        // MentorReviewedAt and the ordering are the server's to state, and a
+        // locally invented row is how a bucket starts disagreeing with the DB.
+        // A return goes to neither bucket — it is back with the team, and it
+        // re-enters לבדיקה as a new round when they resubmit.
+        _reviews = _reviews.Where(r => r.EntityId != sid).ToList();
+        if (action == "Approved")
+            _approved = await MentorService.GetApprovedSubmissionsAsync();
+
+        await CloseReviewModal();
+        CollapseRow();
     }
 
     // ── Personal tasks ────────────────────────────────────────────────────────
@@ -813,27 +1154,63 @@
 
     // ── Row helpers ───────────────────────────────────────────────────────────
 
-    private static string AgeClass(MentorAttentionItemDto i) =>
-        i.Age == MentorAttentionAge.NeedsAttention
-            ? "mt-status-open"
-            : "mt-status-quiet";
+    /// <summary>The review-time chip's tone. Pending reuses the product's own
+    /// waiting ladder; an approved round is settled and takes the quiet tone
+    /// plus a plain hairline instead of the brand outline.</summary>
+    private static string TimeClass(QueueRow row) =>
+        !row.IsPending      ? "mt-status-quiet mt-qitem-timing-done"
+        : row.NeedsAttention ? "mt-status-open"
+        :                      "mt-status-quiet";
 
-    private static string TeamLabel(MentorAttentionItemDto i) =>
-        !string.IsNullOrWhiteSpace(i.TeamName)      ? i.TeamName!
-        : !string.IsNullOrWhiteSpace(i.ProjectTitle) ? i.ProjectTitle!
-        : "";
+    /// <summary>
+    /// What the chip calls the team, from the one source both feeds can offer.
+    ///
+    /// <para><b>"צוות {ProjectNumber}" is not a label invented here.</b> It is
+    /// the fallback מרחב הפרויקט already draws in its own identity line
+    /// (<c>MentorProjectDetailPage.Identity</c>): a project whose Teams row has
+    /// no name — or which has no team row at all — is called by its number,
+    /// "because its number is the name everyone already uses for it". Reusing
+    /// it is what makes the chip and the page it opens agree on what the team is
+    /// called, instead of the row saying one thing and the destination another.
+    /// Most projects in this product reach the client with a blank TeamName, so
+    /// this is the arm that actually renders.</para>
+    ///
+    /// <para>The project TITLE is the last resort, for a row whose project
+    /// number this screen cannot see. It still identifies something real, which
+    /// is the one thing the chip must always do.</para>
+    ///
+    /// <para><paramref name="projectNumber"/> is passed when the caller's own
+    /// row carries it; otherwise it is read off the snapshot's project list, the
+    /// same list every other mentor screen resolves project facts from.</para>
+    /// </summary>
+    private string TeamLabel(string? teamName, int? projectId, string? projectTitle,
+                             int? projectNumber = null)
+    {
+        if (!string.IsNullOrWhiteSpace(teamName)) return teamName!;
+
+        var number = projectNumber
+                     ?? (projectId is int id
+                             ? _ws.Projects.FirstOrDefault(p => p.Id == id)?.ProjectNumber
+                             : null);
+        if (number is > 0) return $"צוות {number}";
+
+        return string.IsNullOrWhiteSpace(projectTitle) ? "" : projectTitle!;
+    }
 
     private static string PersonalTeamLabel(PersonalTaskDto t) =>
         !string.IsNullOrWhiteSpace(t.TeamName)      ? t.TeamName!
         : !string.IsNullOrWhiteSpace(t.ProjectTitle) ? t.ProjectTitle!
         : "";
 
-    private static string StateLabel(MentorAttentionItemDto i) =>
-        MentorAging.ShortLabel(i.WaitingDays);
-
-    private static string RowAriaLabel(MentorAttentionItemDto i, string action)
+    /// <summary>The trigger's accessible name — the state, the task, the team
+    /// and the time in one phrase, because the header's own text is not inside
+    /// the button (see the markup note on the overlay).</summary>
+    private static string RowAriaLabel(QueueRow row)
     {
-        var state = MentorAging.StateLabel(i.Age);
-        return state is null ? action : $"{state} — {action}";
+        var parts = new List<string> { row.TypeLabel, row.Title };
+        if (!string.IsNullOrWhiteSpace(row.TeamLabel)) parts.Add(row.TeamLabel);
+        if (!string.IsNullOrEmpty(row.TimeLabel))      parts.Add(row.TimeLabel);
+        if (row.NeedsAttention)                        parts.Add("דורש תשומת לב");
+        return string.Join(" — ", parts);
     }
 }

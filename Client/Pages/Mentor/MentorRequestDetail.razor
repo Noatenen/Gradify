@@ -953,6 +953,43 @@ else
 
     [Parameter] public DetailLayout Layout { get; set; } = DetailLayout.Record;
 
+    /// <summary>
+    /// WHO IS READING THIS SURFACE — declared by the host, never derived here.
+    ///
+    /// <para>This component draws for three kinds of reader now: the mentor
+    /// inbox, the mentor's project workspace, and the Admin/lecturer project
+    /// review. Only the read-only explanation depends on which
+    /// (<see cref="ReadOnlyExplanation"/>); everything else on the surface is
+    /// the server's Viewer* flags, which are already caller-specific.</para>
+    ///
+    /// <para>A PARAMETER, NOT A ROLE CHECK, for the same reason
+    /// <c>PwContext</c> is one: a dual-role account holds Staff AND Mentor on
+    /// every project in the system, so the reader's role list cannot say which
+    /// workspace they navigated into. The route knows; it passes it.</para>
+    ///
+    /// <para><see cref="DetailAudience.Neutral"/> is the default and words
+    /// everything without naming a role — the safe answer for a host that has
+    /// not declared one.</para>
+    /// </summary>
+    [Parameter] public DetailAudience Audience { get; set; } = DetailAudience.Neutral;
+
+    /// <summary>The reader this surface is wording itself for. See
+    /// <see cref="Audience"/>.</summary>
+    public enum DetailAudience
+    {
+        /// <summary>Role not declared — no sentence names one.</summary>
+        Neutral,
+
+        /// <summary>A mentor's screen: the mentor inbox or /mentor/projects/{id}.
+        /// Sentences may speak about the lecturer in the third person.</summary>
+        Mentor,
+
+        /// <summary>The academic side's screen — /projects/{id}/overview, reached
+        /// by Admin and Staff. Nothing here tells the reader their request is
+        /// "with the lecturer".</summary>
+        Staff,
+    }
+
     /// <summary>The compact identity header — badges, title, context line. The
     /// modal shows it; the accordion row does not, because the row it expands
     /// from already carries every one of those values.</summary>
@@ -1050,16 +1087,38 @@ else
         _detail?.Extension is { } e && (e.TaskId is not null || e.ProjectMilestoneId is not null);
 
     /// <summary>
-    /// Why there is nothing to do here — and it has to agree with the badge
-    /// above it.
+    /// Why there is nothing to do here — and it has to agree both with the
+    /// badge above it and with WHO IS READING IT.
     ///
-    /// <para>The buckets read the STATUS column. A request whose status says
-    /// PendingLecturerDecision but whose mentor stage never completed is not
-    /// with the lecturer, whatever the column says: nobody may decide it until
-    /// a mentor advises, which is exactly what the endpoint answers and what
-    /// the status badge now states. Reading the server's own
-    /// MentorStageComplete first keeps the sentence and the badge from
-    /// describing two different requests.</para>
+    /// <para><b>The bug this replaced.</b> The sentence was built from
+    /// <c>MentorRequestBuckets.Of</c>, whose default arm is
+    /// <c>WithLecturer</c> — a MENTOR'S four-way split, written for the mentor
+    /// inbox. Two things go wrong when the same component draws for an Admin or
+    /// a lecturer on the project workspace, which it has done since both
+    /// project pages started hosting it:</para>
+    ///
+    /// <para>First, the AUDIENCE. "הבקשה נמצאת אצל המרצה" is a sentence
+    /// about somebody else; said to the Admin or the lecturer it names them in
+    /// the third person and tells them their own request is elsewhere.</para>
+    ///
+    /// <para>Second, the CLAIM. WithLecturer is the bucket's fall-through, so
+    /// it swallowed New, InProgress and WaitingForStaff as well — statuses that
+    /// mean "in flight on the academic side", not "a lecturer is holding it".
+    /// Only <see cref="RequestStatuses.PendingLecturerDecision"/> says that, and
+    /// only once a mentor has actually advised.</para>
+    ///
+    /// <para><b>What it reads now.</b> Ownership comes from
+    /// <see cref="RequestOwnership.NextActionOwner"/> — the shared
+    /// whose-court-is-it mapping every attention surface already uses — and the
+    /// wording from that plus <see cref="Audience"/>. NO WORKFLOW, ASSIGNMENT OR
+    /// CAPABILITY IS TOUCHED: this property only words what is already true, and
+    /// whether a decision block is offered at all is still decided upstream by
+    /// the server's Viewer* flags.</para>
+    ///
+    /// <para>The MentorStageComplete guard stays first, and for the same
+    /// reason: a request whose status says PendingLecturerDecision but whose
+    /// mentor stage never completed is not with anyone yet, whatever the column
+    /// says, and the status badge already states that.</para>
     /// </summary>
     private string ReadOnlyExplanation
     {
@@ -1068,12 +1127,32 @@ else
             if (_detail is { Status: RequestStatuses.PendingLecturerDecision, MentorStageComplete: false })
                 return "הבקשה טרם קיבלה המלצת מנחה, ולכן היא אינה פתוחה להחלטה.";
 
-            return Bucket switch
+            var status = _detail?.Status ?? RequestStatuses.New;
+
+            return RequestOwnership.NextActionOwner(status) switch
             {
-                MentorRequestBucket.WithLecturer => "הבקשה נמצאת אצל המרצה. אין פעולה שנדרשת ממך בשלב הזה.",
-                MentorRequestBucket.AwaitingTeam => "הבקשה הוחזרה לצוות והיא ממתינה להשלמת פרטים מהסטודנטים.",
-                MentorRequestBucket.Closed       => "הבקשה טופלה ונסגרה.",
-                _                                => "אין פעולה שנדרשת ממך בבקשה הזו כרגע.",
+                RequestOwnership.Owner.Student =>
+                    "הבקשה הוחזרה לצוות והיא ממתינה להשלמת פרטים מהסטודנטים.",
+
+                RequestOwnership.Owner.None =>
+                    "הבקשה טופלה ונסגרה.",
+
+                // Blocked on a mentor's recommendation. A mentor who could give
+                // it is never here — they get the recommendation block instead.
+                RequestOwnership.Owner.Mentor =>
+                    Audience == DetailAudience.Mentor
+                        ? "הבקשה ממתינה להמלצת מנחה. אין פעולה שנדרשת ממך בשלב הזה."
+                        : "הבקשה ממתינה להמלצת מנחה.",
+
+                // With the academic side. Only one status actually says "a
+                // lecturer is holding this"; the rest say "in flight", and a
+                // reader who IS the academic side gets neutral wording rather
+                // than a sentence about a role they hold themselves.
+                _ => Audience == DetailAudience.Mentor
+                        ? (status == RequestStatuses.PendingLecturerDecision
+                            ? "הבקשה נמצאת אצל המרצה להחלטה. אין פעולה שנדרשת ממך בשלב הזה."
+                            : "הבקשה בטיפול הצוות האקדמי. אין פעולה שנדרשת ממך בשלב הזה.")
+                        : "הבקשה נמצאת בטיפול. אין פעולה שנדרשת ממך בשלב זה.",
             };
         }
     }

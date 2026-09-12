@@ -148,6 +148,11 @@ public class ProjectOverviewController : ControllerBase
                     t.TaskType,
                     t.IsSubmission,
                     t.ClosedAt,
+                    t.Description,
+                    t.SubmissionInstructions,
+                    t.MaxFilesCount,
+                    t.MaxFileSizeMb,
+                    t.AllowedFileTypes,
                     COALESCE(tto.OverrideDueDate, mo.OverrideDueDate, t.DueDate) AS DueDate,
                     EXISTS (SELECT 1 FROM TaskSubmissions s WHERE s.TaskId = t.Id) AS HasSubmission
             FROM    Tasks                    t
@@ -273,6 +278,11 @@ public class ProjectOverviewController : ControllerBase
                     DueDate        = r.DueDate,
                     IsOverdue      = isOverdue,
                     HasSubmission  = r.HasSubmission == 1,
+                    Description            = r.Description,
+                    SubmissionInstructions = r.SubmissionInstructions,
+                    MaxFilesCount          = r.MaxFilesCount,
+                    MaxFileSizeMb          = r.MaxFileSizeMb,
+                    AllowedFileTypes       = r.AllowedFileTypes,
                 },
             };
         }).ToList();
@@ -431,6 +441,91 @@ public class ProjectOverviewController : ControllerBase
         public DateTime? DueDate            { get; set; }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  PATCH /api/projects/{projectId}/tasks/{taskId}/submission-settings
+    //
+    //  THE ONLY WRITE PATH TO Tasks.SubmissionInstructions, and the reason it
+    //  exists: that column is what the STUDENT reads
+    //  (ProjectsController task detail -> TaskDetailDto.SubmissionInstructions)
+    //  and what the MENTOR now reads for review context, but until this endpoint
+    //  it was INSERT-only — written once when a task was instantiated from a
+    //  template and never updatable again. The Lecturer/Admin editor at
+    //  /management/tasks writes TaskTemplates, a DIFFERENT table, and template
+    //  edits deliberately do not propagate to instantiated tasks. So a lecturer
+    //  had no way to author or correct what a real team is asked to submit.
+    //
+    //  OWNERSHIP, restated: TaskTemplates = the default used at creation.
+    //  Tasks = the instantiated requirement, and the source of truth from then
+    //  on. This endpoint edits the second and never touches the first.
+    //
+    //  AUTHORIZATION is Admin/Staff only — deliberately NARROWER than the GET
+    //  above, which also admits Mentor. A mentor may read these requirements as
+    //  review context; they are not the owner and get no write path.
+    //
+    //  WHAT IT CANNOT DO. The request DTO carries five authoring fields and
+    //  nothing else, and the UPDATE below names those five columns explicitly.
+    //  Task status, ClosedAt, DueDate, milestone, project, and every submission
+    //  and mentor-review state are absent from both, so no completion state,
+    //  student submission or review decision can be disturbed by this call.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HttpPatch("{projectId:int}/tasks/{taskId:int}/submission-settings")]
+    [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+    public async Task<IActionResult> UpdateTaskSubmissionSettings(
+        int projectId, int taskId,
+        [FromBody] UpdateProjectTaskSubmissionSettingsRequest req)
+    {
+        // Project must exist.
+        var projectExists = (await _db.GetRecordsAsync<int>(
+            "SELECT 1 FROM Projects WHERE Id = @P LIMIT 1", new { P = projectId }))?.Any() == true;
+        if (!projectExists) return NotFound("הפרויקט לא נמצא");
+
+        // Task must exist AND belong to THIS project — one query, so a task id
+        // from another project cannot be edited through this project's route.
+        var taskRow = (await _db.GetRecordsAsync<TaskOwnershipRow>(
+            "SELECT Id, IsSubmission FROM Tasks WHERE Id = @T AND ProjectId = @P LIMIT 1",
+            new { T = taskId, P = projectId }))?.FirstOrDefault();
+        if (taskRow is null) return NotFound("המשימה לא נמצאה בפרויקט זה");
+
+        bool isSubmission = taskRow.IsSubmission == 1;
+
+        // Blank -> NULL, so clearing a field genuinely clears it: the student
+        // card and the mentor drawer both test IsNullOrWhiteSpace to decide
+        // whether to render the section at all, and an empty string would leave
+        // them drawing a heading over nothing.
+        static string? Clean(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+        // Upload policy belongs to a submission task only. On an ordinary task
+        // the three columns are forced back to NULL rather than trusted from
+        // the payload — same rule TaskTemplatesController applies on write.
+        const string sql = @"
+            UPDATE Tasks
+            SET    Description            = @Description,
+                   SubmissionInstructions = @SubmissionInstructions,
+                   MaxFilesCount          = @MaxFilesCount,
+                   MaxFileSizeMb          = @MaxFileSizeMb,
+                   AllowedFileTypes       = @AllowedFileTypes
+            WHERE  Id = @TaskId AND ProjectId = @ProjectId";
+
+        await _db.SaveDataAsync(sql, new
+        {
+            Description            = Clean(req.Description),
+            SubmissionInstructions = isSubmission ? Clean(req.SubmissionInstructions) : null,
+            MaxFilesCount          = isSubmission ? req.MaxFilesCount : null,
+            MaxFileSizeMb          = isSubmission ? req.MaxFileSizeMb : null,
+            AllowedFileTypes       = isSubmission ? Clean(req.AllowedFileTypes) : null,
+            TaskId                 = taskId,
+            ProjectId              = projectId,
+        });
+
+        return Ok();
+    }
+
+    private sealed class TaskOwnershipRow
+    {
+        public int Id           { get; set; }
+        public int IsSubmission { get; set; }
+    }
+
     private sealed class TaskRow
     {
         public int       TaskId             { get; set; }
@@ -443,6 +538,11 @@ public class ProjectOverviewController : ControllerBase
         public DateTime? ClosedAt           { get; set; }
         public DateTime? DueDate            { get; set; }
         public int       HasSubmission      { get; set; }
+        public string?   Description        { get; set; }
+        public string?   SubmissionInstructions { get; set; }
+        public int?      MaxFilesCount      { get; set; }
+        public int?      MaxFileSizeMb      { get; set; }
+        public string?   AllowedFileTypes   { get; set; }
     }
 
     private sealed class TaskWithMs

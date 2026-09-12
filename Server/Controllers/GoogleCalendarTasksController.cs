@@ -4,6 +4,7 @@ using AuthWithAdmin.Server.Data;
 using AuthWithAdmin.Shared.AuthSharedModels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace AuthWithAdmin.Server.Controllers;
 
@@ -29,19 +30,40 @@ public class GoogleCalendarTasksController : ControllerBase
 {
     private readonly DbRepository               _db;
     private readonly GoogleCalendarEventService _events;
+    private readonly GoogleCalendarOptions      _options;
 
-    public GoogleCalendarTasksController(DbRepository db, GoogleCalendarEventService events)
+    public GoogleCalendarTasksController(
+        DbRepository db,
+        GoogleCalendarEventService events,
+        IOptions<GoogleCalendarOptions> options)
     {
-        _db     = db;
-        _events = events;
+        _db      = db;
+        _events  = events;
+        _options = options.Value;
     }
+
+    /// <summary>503 + a product message when GoogleCalendar:Enabled is false.
+    /// Returned by the two write endpoints, so scheduling cannot be driven from
+    /// outside the UI while the integration is switched off.</summary>
+    private IActionResult Unavailable() =>
+        StatusCode(503, "האינטגרציה עם יומן Google אינה פעילה כרגע");
 
     // ── GET /api/google-calendar/tasks/schedules ──────────────────────────────
     // Every calendar link the caller owns. Personal by definition: a teammate's
     // scheduling of the same task is a different row and is never returned here.
+    //
+    // While the integration is disabled this answers an EMPTY list rather than
+    // 503, and that asymmetry with the write endpoints is deliberate. Four
+    // screens call it on every load purely to decorate rows with a "ביומן
+    // Google" chip; an empty list is both true (there is nothing the user can
+    // act on right now) and exactly what makes those chips disappear, whereas a
+    // 503 would put four failed requests in the console of every page load to
+    // achieve the same thing. The link rows themselves are untouched.
     [HttpGet("schedules")]
     public async Task<IActionResult> GetMySchedules(int authUserId)
-        => Ok(await _events.GetSchedulesForUserAsync(authUserId));
+        => _options.Enabled
+            ? Ok(await _events.GetSchedulesForUserAsync(authUserId))
+            : Ok(Array.Empty<TaskCalendarScheduleDto>());
 
     // ── PUT /api/google-calendar/tasks/{taskId}/schedule ──────────────────────
     // Creates the Google event, or moves the existing one. Idempotent — calling
@@ -50,6 +72,8 @@ public class GoogleCalendarTasksController : ControllerBase
     public async Task<IActionResult> Schedule(
         int taskId, [FromBody] ScheduleTaskInCalendarRequest req, int authUserId)
     {
+        if (!_options.Enabled) return Unavailable();
+
         var task = await GetTeamTaskForUserAsync(taskId, authUserId);
         if (task is null) return NotFound("המשימה לא נמצאה");
 
@@ -79,6 +103,8 @@ public class GoogleCalendarTasksController : ControllerBase
     [HttpDelete("{taskId:int}/schedule")]
     public async Task<IActionResult> Unschedule(int taskId, int authUserId)
     {
+        if (!_options.Enabled) return Unavailable();
+
         // Authorized like the write path — a link is only ever removed by someone
         // who can see the task it belongs to.
         var task = await GetTeamTaskForUserAsync(taskId, authUserId);

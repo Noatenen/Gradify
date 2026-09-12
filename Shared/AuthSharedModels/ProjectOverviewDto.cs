@@ -124,6 +124,39 @@ public class ProjectOverviewMilestoneDto
     public List<ProjectOverviewTaskDto> Tasks { get; set; } = new();
 }
 
+/// <summary>
+/// PATCH api/projects/{projectId}/tasks/{taskId}/submission-settings.
+///
+/// <para>DELIBERATELY NARROW. It carries only the authoring fields a
+/// Lecturer/Admin edits and nothing else, so the endpoint cannot become a
+/// general Task writer: status, closure, dates, milestone, project and every
+/// submission/review state are absent from this shape and therefore cannot be
+/// touched, accidentally or otherwise.</para>
+///
+/// <para>DueDate is deliberately NOT here. Tasks.DueDate is the global date and
+/// per-team changes run through TeamTaskDueDateOverrides / 
+/// TeamMilestoneDueDateOverrides — "Globals (Tasks.DueDate) are never mutated",
+/// as ProjectsController's own task query puts it. Editing it from this form
+/// would bypass that mechanism, which is an unrelated business-rule change.</para>
+/// </summary>
+public class UpdateProjectTaskSubmissionSettingsRequest
+{
+    /// <summary>Task description. Blank is stored as NULL.</summary>
+    public string? Description            { get; set; }
+
+    /// <summary>What the student must submit. Blank is stored as NULL, so an
+    /// emptied field correctly hides the "הנחיות הגשה" section rather than
+    /// rendering an empty heading.</summary>
+    public string? SubmissionInstructions { get; set; }
+
+    /// <summary>Upload policy. Ignored by the server for a non-submission task,
+    /// which is what keeps a stray value from being written to a row that has
+    /// no submission flow.</summary>
+    public int?    MaxFilesCount          { get; set; }
+    public int?    MaxFileSizeMb          { get; set; }
+    public string? AllowedFileTypes       { get; set; }
+}
+
 public class ProjectOverviewTaskDto
 {
     public int       TaskId          { get; set; }
@@ -137,6 +170,29 @@ public class ProjectOverviewTaskDto
     public bool      IsOverdue       { get; set; }
     /// <summary>True for submission tasks that have any submission row.</summary>
     public bool      HasSubmission   { get; set; }
+
+    // ── Authoring fields ────────────────────────────────────────────────────
+    // Added so the Lecturer/Admin task editor can LOAD the values it edits from
+    // the payload the project workspace already fetches, instead of a second
+    // round-trip per task. All read straight off the Tasks row — the same row
+    // the student's TaskDetailDto reads — so what the editor shows is what the
+    // student sees, by construction rather than by synchronisation.
+
+    /// <summary>Tasks.Description — rendered to the student as "תיאור המשימה".</summary>
+    public string?   Description     { get; set; }
+
+    /// <summary>Tasks.SubmissionInstructions — rendered to the student as
+    /// "הנחיות הגשה" on the task card and in the submission form, and shown to
+    /// the mentor read-only while reviewing. THE source of truth for an
+    /// instantiated project task; TaskTemplates only supplies the default at
+    /// creation time and never overwrites this afterwards.</summary>
+    public string?   SubmissionInstructions { get; set; }
+
+    /// <summary>Upload policy, submission tasks only. Null on a non-submission
+    /// task and on rows created before the policy columns existed.</summary>
+    public int?      MaxFilesCount   { get; set; }
+    public int?      MaxFileSizeMb   { get; set; }
+    public string?   AllowedFileTypes { get; set; }
 }
 
 public class ProjectOverviewRequestDto

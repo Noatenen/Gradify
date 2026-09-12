@@ -147,6 +147,7 @@
         <Side>
             <MentorRequestDetail RequestId="@openReqId"
                                  Layout="MentorRequestDetail.DetailLayout.Surface"
+                                 Audience="MentorRequestDetail.DetailAudience.Staff"
                                  Part="MentorRequestDetail.DetailPart.Action"
                                  ShowHeader="false"
                                  OnChanged="OnRequestChangedAsync" />
@@ -155,11 +156,99 @@
         <ChildContent>
             <MentorRequestDetail RequestId="@openReqId"
                                  Layout="MentorRequestDetail.DetailLayout.Surface"
+                                 Audience="MentorRequestDetail.DetailAudience.Staff"
                                  Part="MentorRequestDetail.DetailPart.Content"
                                  ShowHeader="false"
                                  OnChanged="OnRequestChangedAsync" />
         </ChildContent>
     </PwDetail>
+}
+
+@*
+    ── עריכת משימה — the Lecturer/Admin authoring surface ───────────────────
+    THE ONLY PLACE Tasks.SubmissionInstructions CAN BE WRITTEN, and therefore
+    the only place the requirement a real team is asked to meet can be authored
+    or corrected. /management/tasks edits TaskTemplates, which supplies the
+    DEFAULT at task-creation time and never overwrites an instantiated task
+    afterwards — that copy-on-creation rule is unchanged.
+
+    What is typed here is literally the row the student reads: the same
+    Tasks.SubmissionInstructions column reaches StudentTasksPage as
+    "הנחיות הגשה" and the mentor's review drawer as read-only context. No
+    copying, no second field, no synchronisation.
+*@
+@if (_editTask is not null)
+{
+    <MModal IsOpen="true" Title="עריכת משימה" Size="MModal.ModalSize.Medium"
+            OnClose="CloseTaskEditor">
+        <ChildContent>
+            <div class="pov-edit">
+
+                <p class="pov-edit-sec">פרטי המשימה</p>
+
+                <div class="pov-edit-field">
+                    <span class="pov-edit-readonly-label">משימה</span>
+                    <p class="pov-edit-readonly">@_editTask.Title</p>
+                </div>
+
+                <div class="pov-edit-field">
+                    <label class="pov-edit-label" for="pov-desc">תיאור המשימה</label>
+                    <textarea id="pov-desc" class="pov-edit-textarea" rows="3"
+                              placeholder="על מה המשימה"
+                              @bind="_editDescription"></textarea>
+                </div>
+
+                @* Submission settings exist only where a submission flow does.
+                   On an ordinary task the server forces these columns back to
+                   NULL, so showing them here would promise a setting that is
+                   discarded on save. *@
+                @if (_editTask.IsSubmission)
+                {
+                    <p class="pov-edit-sec">הגדרות הגשה</p>
+
+                    <div class="pov-edit-field">
+                        <label class="pov-edit-label" for="pov-inst">הנחיות הגשה</label>
+                        <textarea id="pov-inst" class="pov-edit-textarea" rows="4"
+                                  placeholder="מה על הצוות להגיש ובאיזה פורמט"
+                                  @bind="_editInstructions"></textarea>
+                        <p class="pov-edit-help">המידע יוצג לסטודנטים בפרטי המשימה ובהגשה.</p>
+                    </div>
+
+                    <div class="pov-edit-grid">
+                        <div class="pov-edit-field">
+                            <label class="pov-edit-label" for="pov-maxn">מספר קבצים מקסימלי</label>
+                            <input id="pov-maxn" type="number" min="1" class="pov-edit-input"
+                                   @bind="_editMaxFiles" />
+                        </div>
+                        <div class="pov-edit-field">
+                            <label class="pov-edit-label" for="pov-maxmb">גודל קובץ מרבי (MB)</label>
+                            <input id="pov-maxmb" type="number" min="1" class="pov-edit-input"
+                                   @bind="_editMaxMb" />
+                        </div>
+                    </div>
+
+                    <div class="pov-edit-field">
+                        <label class="pov-edit-label" for="pov-types">סוגי קבצים מותרים</label>
+                        <input id="pov-types" class="pov-edit-input" placeholder="pdf, docx, zip"
+                               @bind="_editFileTypes" />
+                    </div>
+                }
+
+                @if (_editError)
+                {
+                    <p class="pov-edit-error">לא הצלחנו לשמור. נסו שוב.</p>
+                }
+            </div>
+        </ChildContent>
+        <FooterContent>
+            <button type="button" class="motiva-cta pov-edit-save"
+                    @onclick="SaveTaskEditorAsync" disabled="@_editSaving">
+                @(_editSaving ? "שומר…" : "שמירה")
+            </button>
+            <button type="button" class="pov-edit-cancel"
+                    @onclick="CloseTaskEditor" disabled="@_editSaving">ביטול</button>
+        </FooterContent>
+    </MModal>
 }
 
 @if (_openSubmissionId is not null)
@@ -183,6 +272,36 @@
         }
         else if (_subDetail is { } sub)
         {
+            @*  THE REQUIREMENT, and the second way into the editor.
+                A submission row that already HAS a submission opens this drawer
+                rather than the authoring modal — the row is one click target and
+                reviewing is what it is for — so the drawer carries the entry
+                point. It also answers the question a reviewer asks first: what
+                was this team actually told to submit? Read from
+                ProjectOverviewTaskDto, i.e. the same Tasks column the student
+                and the mentor read. *@
+            @if (SubTask is { } st)
+            {
+                <section class="pwd-sec">
+                    <p class="pwd-sec-title">
+                        הנחיות הגשה
+                        @if (CanManageMentors)
+                        {
+                            <button type="button" class="pov-inst-edit"
+                                    @onclick="() => OpenTaskEditor(st.TaskId)">עריכה</button>
+                        }
+                    </p>
+                    @if (string.IsNullOrWhiteSpace(st.SubmissionInstructions))
+                    {
+                        <p class="pwd-empty">לא הוגדרו הנחיות הגשה למשימה זו</p>
+                    }
+                    else
+                    {
+                        <p class="pwd-text">@st.SubmissionInstructions</p>
+                    }
+                </section>
+            }
+
             @if (!string.IsNullOrWhiteSpace(sub.Notes))
             {
                 <section class="pwd-sec">
@@ -685,14 +804,16 @@
                     return new PwWorkRow(
                         Key:             submissionId is int id ? $"submission:{id}" : $"task:{t.TaskId}",
                         Title:           t.Title,
-                        // Item 5: no secondary line under a submission title. It
-                        // carried the milestone this deliverable belongs to
-                        // ("הערכה", "אפיון ועיצוב", …) — contextual category text
-                        // that restated the grouping and added a row of height
-                        // without telling the lecturer anything about the
-                        // submission's state. The title, its status pill and (when
-                        // missed) its date are what remain.
-                        Meta:            null,
+                        // THE DEADLINE, UNDER THE TITLE. Still not the milestone
+                        // — that was contextual category text restating the
+                        // grouping (item 5, and it stays gone). What a deliverable
+                        // row was missing is the one date that belongs to it, and
+                        // the row's far edge is the wrong place for it: there it
+                        // is a column of its own, read apart from the thing it
+                        // dates. PwDates.DueLine words it the same way משימות does
+                        // below, so the two cards cannot disagree.
+                        Meta:            PwDates.DueLine(t.DueDate),
+                        // Nothing at the row's end but the state and the action.
                         Trailing:        null,
                         TrailingLate:    false,
                         State:           state,
@@ -717,20 +838,27 @@
                 return new PwWorkRow(
                 Key:         $"request:{r.RequestId}",
                 Title:       r.Title,
-                // No requester name under the request title (display-only cleanup,
-                // matched on the mentor detail). When it was filed still reaches
-                // the row's end; the requester is on the request's detail surface.
+                // A TITLE AND WHERE IT STANDS, AND NOTHING ELSE.
+                //
+                // The compact row used to carry four things: the title, the
+                // filing date, the state and "להחלטה". The date is not a state
+                // — a request filed on 22.08 is neither late nor urgent for having
+                // been — and the CTA repeated what the state pill beside it had
+                // just said, in the imperative. Both are on the request's own
+                // surface, which is one click away and is where a decision is
+                // actually taken; neither is removed from it, or from the API.
+                //
+                // OWNERSHIP, NOT VISIBILITY, is unchanged: the state is worded in
+                // the second person only when the next move is genuinely this
+                // viewer's, and the same predicate still tones and ranks the row.
+                // RowStatus is StatusLabel with a fallback, because a New request
+                // deliberately has no status label of its own.
                 Meta:        null,
-                Trailing:    r.CreatedAt.ToLocalTime().ToString("dd.MM"),
-                // OWNERSHIP, NOT VISIBILITY. The label is second-person only
-                // when the next move on this request is actually this
-                // viewer's — resolved from the status plus their real
-                // relationship to the project. Violet marks the same thing;
-                // rose stays reserved for something genuinely late.
-                State:       PwRequestVocabulary.StatusLabel(r.Status, v),
+                Trailing:    null,
+                State:       PwRequestVocabulary.RowStatus(r.Status, v),
                 StateTone:   PwRequestVocabulary.Tone(r.Status, v),
-                ActionLabel: PwRequestVocabulary.ActionLabel(r.Status, v),
-                ActionIsPrimary: PwRequestVocabulary.OwnedByViewer(r.Status, v),
+                ActionLabel: null,
+                ActionIsPrimary: false,
                 IsClickable: true,
                 IsOpen:      _openRequestId == r.RequestId,
                 Rank:        PwRequestVocabulary.OwnedByViewer(r.Status, v) ? PwRowRank.Waiting
@@ -758,9 +886,24 @@
             .Select(t => new PwWorkRow(
                 Key:          $"task:{t.TaskId}",
                 Title:        t.Title,
-                Meta:         string.IsNullOrWhiteSpace(t.MilestoneTitle) ? null : t.MilestoneTitle,
-                Trailing:     t.IsOverdue ? PwDates.DueLabel(t.DueDate) : null,
-                TrailingLate: t.IsOverdue,
+                // AUTHORING AFFORDANCE. A task row used to be inert — "neither
+                // has a surface of its own". It does now: for Admin/Staff it
+                // opens the task editor, which is the only place the project's
+                // own submission requirements can be written. Quiet, not a
+                // primary CTA: this is authoring, not work waiting on anyone.
+                ActionLabel:  CanManageMentors ? "עריכה" : null,
+                IsClickable:  CanManageMentors,
+                // THE DEADLINE JOINS THE CONTEXT LINE, under the title, instead
+                // of sitting alone at the row's far edge. It is also drawn for
+                // every task that has one rather than only for a late one: the
+                // date is what a supervisor reads this list against, and showing
+                // it only once it has passed is the one moment it can no longer
+                // be acted on. Lateness is still marked — see .pw-row-meta-late,
+                // the same rose the trailing slot used.
+                Meta:         PwText.MetaLine(t.MilestoneTitle, PwDates.DueLine(t.DueDate)),
+                MetaLate:     t.IsOverdue,
+                Trailing:     null,
+                TrailingLate: false,
                 State:        TaskStatusLabel(t),
                 // In-progress is the team working — with somebody else, and
                 // not a state this reader acts on. Waiting, the same rung
@@ -835,6 +978,81 @@
         StateHasChanged();
     }
 
+    // ── The task authoring surface ──────────────────────────────────────────
+    //
+    // Admin/Staff only, mirroring PATCH .../tasks/{id}/submission-settings. The
+    // form is seeded from the overview payload the page already holds, so
+    // opening it costs no round-trip; saving re-loads the project so the row and
+    // the drawer both show the new values from the server rather than from local
+    // state.
+
+    private ProjectOverviewTaskDto? _editTask;
+    private string  _editDescription  = "";
+    private string  _editInstructions = "";
+    private int?    _editMaxFiles;
+    private int?    _editMaxMb;
+    private string  _editFileTypes    = "";
+    private bool    _editSaving;
+    private bool    _editError;
+
+    /// <summary>The task behind the submission currently open in the drawer, so
+    /// the drawer can show its authored requirement and offer the editor. Read
+    /// off the overview payload the page already holds — no extra call.</summary>
+    private ProjectOverviewTaskDto? SubTask =>
+        _subDetail is null ? null
+        : _data?.Tasks.FirstOrDefault(t => t.TaskId == _subDetail.TaskId);
+
+    private void OpenTaskEditor(int taskId)
+    {
+        var t = _data?.Tasks.FirstOrDefault(x => x.TaskId == taskId);
+        if (t is null) return;
+
+        _editTask         = t;
+        _editDescription  = t.Description ?? "";
+        _editInstructions = t.SubmissionInstructions ?? "";
+        _editMaxFiles     = t.MaxFilesCount;
+        _editMaxMb        = t.MaxFileSizeMb;
+        _editFileTypes    = t.AllowedFileTypes ?? "";
+        _editError        = false;
+        _editSaving       = false;
+    }
+
+    private void CloseTaskEditor()
+    {
+        _editTask   = null;
+        _editSaving = false;
+        _editError  = false;
+    }
+
+    private async Task SaveTaskEditorAsync()
+    {
+        if (_editTask is null || _editSaving) return;
+
+        _editSaving = true;
+        _editError  = false;
+
+        var ok = await ProjectOverview.UpdateTaskSubmissionSettingsAsync(
+            ProjectId, _editTask.TaskId,
+            new UpdateProjectTaskSubmissionSettingsRequest
+            {
+                Description            = _editDescription,
+                SubmissionInstructions = _editInstructions,
+                MaxFilesCount          = _editMaxFiles,
+                MaxFileSizeMb          = _editMaxMb,
+                AllowedFileTypes       = _editFileTypes,
+            });
+
+        _editSaving = false;
+
+        if (!ok) { _editError = true; return; }
+
+        // Re-read rather than patch local state: the server normalises blanks to
+        // NULL and ignores upload policy on a non-submission task, so the only
+        // honest thing to show afterwards is what it actually stored.
+        CloseTaskEditor();
+        await ReloadAsync();
+    }
+
     private async Task OpenKey(string key)
     {
         var kind = key.Split(':')[0];
@@ -852,9 +1070,15 @@
                     await OpenSubmissionAsync(subId);
                 break;
 
-            // "task" — a row that names a deliverable with no submission yet,
-            // or a plain task. Neither has a surface of its own, so it stays
-            // put rather than opening something that cannot show it.
+            // "task" — a plain task, or a deliverable with no submission yet.
+            // It now HAS a surface: the authoring editor for the project task's
+            // own description and submission requirements. Admin/Staff only,
+            // matching the endpoint it saves through.
+            case "task":
+                if (CanManageMentors
+                    && int.TryParse(key.AsSpan("task:".Length), out var editTaskId))
+                    OpenTaskEditor(editTaskId);
+                break;
         }
     }
 

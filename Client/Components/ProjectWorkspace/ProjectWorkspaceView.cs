@@ -254,6 +254,35 @@ public static class PwRequestVocabulary
         // only with IsStaff true, since the arm above claims the other case.
         :                                "להחלטה";
 
+    /// <summary>
+    /// THE STATE A COMPACT ROW SHOWS — one phrase, never a phrase plus a CTA.
+    ///
+    /// <para>The project workspace's בקשות card is a list of what is open, not a
+    /// queue: a row there carries its title and where the request stands, and
+    /// the reader opens it to act. It used to carry the state pill AND
+    /// <see cref="ActionLabel"/>'s "להחלטה" AND the filing date, three slots
+    /// saying two things.</para>
+    ///
+    /// <para>Dropping the action label alone would have left a <c>New</c>
+    /// request with NO state at all, because <see cref="StatusLabel"/> returns
+    /// "" for it on the grounds that the action label already said it. So this
+    /// falls through: the status wording, then the action wording (which is
+    /// "ממתינה לתגובתך" at New — a state, in the second person), then the
+    /// shared neutral label. A row is never stateless.</para>
+    ///
+    /// <para>The queues that genuinely offer an action — the mentor inbox,
+    /// /management/requests — keep calling StatusLabel and ActionLabel
+    /// separately; nothing about ownership, tone or ranking moves here.</para>
+    /// </summary>
+    public static string RowStatus(string status, PwRequestViewer viewer)
+    {
+        var label = StatusLabel(status, viewer);
+        if (!string.IsNullOrWhiteSpace(label)) return label;
+
+        var action = ActionLabel(status, viewer);
+        return !string.IsNullOrWhiteSpace(action) ? action : RequestStatuses.Label(status);
+    }
+
     /// <summary>Row tone from the same predicate, in the shared vocabulary:
     /// Done when the thread is closed, Attention when the next move is THIS
     /// viewer's, and Waiting for everything sitting with somebody else —
@@ -454,6 +483,17 @@ public enum PwRowRank
 /// to an assignee line that already said which — two ownership signals on one
 /// row — and no host had filled it since.</para>
 ///
+/// <para><c>Meta</c> is the quiet SECOND LINE under the title, and it is where
+/// a row's deadline belongs — "הגשה עד 06.07", from
+/// <see cref="PwDates.DueLine"/>. <c>MetaLate</c> colours that line when the
+/// date has passed, which is the signal the trailing slot used to carry: the
+/// state pill on a task reads "פתוח" / "בעבודה" and deliberately never
+/// mentions lateness, so without this a late row would say so nowhere.</para>
+///
+/// <para><c>Trailing</c> is the row's far edge. It survives for hosts that
+/// genuinely have a fifth fact to put there; the project workspace's three
+/// cards do not, and leave it null.</para>
+///
 /// <para><c>ActionLabel</c> is the row's own call to action, null when it has
 /// none; <c>ActionIsPrimary</c> distinguishes a real action (the gradient CTA)
 /// from a quiet affordance. <c>IsClickable</c> means the whole row opens
@@ -469,6 +509,7 @@ public sealed record PwWorkRow(
     string Key,
     string Title,
     string? Meta = null,
+    bool MetaLate = false,
     string? Trailing = null,
     bool TrailingLate = false,
     string? State = null,
@@ -712,6 +753,21 @@ public static class PwCount
         n == 1 ? singular : string.Format(plural, n);
 }
 
+public static class PwText
+{
+    /// <summary>The row's context line, assembled from the facts it actually
+    /// has — "אפיון · הגשה עד 06.07", or just one of the two, or null.
+    ///
+    /// <para>Written once because both workspaces build the same line and a
+    /// row with a blank half is how " · 06.07" reaches the screen.</para>
+    /// </summary>
+    public static string? MetaLine(params string?[] parts)
+    {
+        var line = string.Join(" · ", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
+        return string.IsNullOrWhiteSpace(line) ? null : line;
+    }
+}
+
 public static class PwDates
 {
     /// <summary>היום / מחר / dd.MM — the one deadline wording both workspaces
@@ -728,4 +784,20 @@ public static class PwDates
         if (d == DateTime.Today.AddDays(1)) return "מחר";
         return d.ToString("dd.MM");
     }
+
+    /// <summary>The deadline as a SECOND LINE under a row's title — "הגשה עד
+    /// 06.07" — rather than a bare date at the row's far edge.
+    ///
+    /// <para>A date alone on the opposite edge of a row is a fifth column: the
+    /// eye has to travel the width of the card and then work out what the
+    /// number refers to. Under the title it is read with the thing it belongs
+    /// to, and the row's end is left to the state, which is the one thing on it
+    /// that changes. Same wording for a deliverable and a task, from the same
+    /// <see cref="DueLabel"/>, so the two sections cannot word a deadline
+    /// differently.</para>
+    ///
+    /// <para>Null for a row with no deadline — no placeholder, no "—".</para>
+    /// </summary>
+    public static string? DueLine(DateTime? due) =>
+        due is null ? null : $"הגשה עד {DueLabel(due)}";
 }

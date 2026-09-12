@@ -16,6 +16,19 @@ namespace AuthWithAdmin.Shared.AuthSharedModels;
 /// </summary>
 public class GoogleCalendarStatusDto
 {
+    /// <summary>
+    /// Whether this deployment offers the Google Calendar integration at all
+    /// (server-side <c>GoogleCalendar:Enabled</c>). This is a property of the
+    /// INSTALLATION, not of the user: false means nobody can connect, and every
+    /// Google Calendar affordance must be hidden rather than merely disabled —
+    /// a greyed-out button still advertises a feature that is not coming back
+    /// this deployment.
+    ///
+    /// Defaults to true so a status object the client synthesises after a failed
+    /// request behaves exactly as it did before this flag existed.
+    /// </summary>
+    public bool    Available   { get; set; } = true;
+
     public bool    IsConnected { get; set; }
 
     /// <summary>Google account the grant belongs to. Null when not connected,

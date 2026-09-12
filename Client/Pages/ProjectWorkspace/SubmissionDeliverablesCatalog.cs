@@ -105,88 +105,21 @@ public static class SubmissionDeliverablesCatalog
     /// exactly what the code will keep doing for any category the faculty
     /// document leaves without a document.
     /// </summary>
-    public static readonly IReadOnlyList<SubmissionDeliverable> All = new[]
-    {
-        new SubmissionDeliverable(
-            Key: "disk-on-key",
-            Title: "Disk on Key",
-            IconPath: "M6 3h12v18H6zM9 7h6",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "מה כולל ההתקן",
-            Requirements: PlaceholderRequirements,
-            Notes: PlaceholderNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "telemview",
-            Title: "TelemView",
-            IconPath: "M4 5h16v11H4zM9 20h6M12 16v4",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "מה נדרש למלא במערכת",
-            Requirements: PlaceholderRequirements,
-            Notes: PlaceholderNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "info-sheet",
-            Title: "דף מידע",
-            IconPath: "M7 3h7l5 5v13H7zM10 12h7M10 16h5",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "מה כולל הדף",
-            Requirements: PlaceholderRequirements,
-            Notes: NoNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "booklet",
-            Title: "חוברת",
-            IconPath: "M5 4h6a3 3 0 0 1 3 3v13H8a3 3 0 0 0-3 3zM19 4h-5v16h5z",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "פרקי החוברת",
-            Requirements: PlaceholderRequirements,
-            Notes: PlaceholderNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "video",
-            Title: "סרטון",
-            IconPath: "M4 6h11v12H4zM15 10l5-3v10l-5-3",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "מה מציגים בסרטון",
-            Requirements: PlaceholderRequirements,
-            Notes: NoNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "poster",
-            Title: "פוסטר",
-            IconPath: "M4 4h16v16H4zM8 9h8M8 13h5",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "מה כולל הפוסטר",
-            Requirements: PlaceholderRequirements,
-            Notes: NoNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "model",
-            Title: "מודל",
-            IconPath: "M4 7.5 12 3.5l8 4v9L12 20.5l-8-4zM4 7.5l8 4 8-4M12 11.5v9",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "מה מציגים בהגשה",
-            Requirements: PlaceholderRequirements,
-            Notes: PlaceholderNotes,
-            ResourceTitles: NoResourceLinks),
-
-        new SubmissionDeliverable(
-            Key: "faculty-server",
-            Title: "שרת הפקולטה",
-            IconPath: "M4 5h16v5H4zM4 14h16v5H4zM8 7.5h.01M8 16.5h.01",
-            Intro: PlaceholderIntro,
-            RequirementsLabel: "שלבי ההעלאה",
-            Requirements: PlaceholderRequirements,
-            Notes: NoNotes,
-            ResourceTitles: NoResourceLinks),
-    };
+    // ── THE STATIC CATALOG IS GONE ──────────────────────────────────────────
+    //
+    // `All` used to hold the eight deliverables as C# literals, with the
+    // placeholder Intro / Requirements / Notes above. That content is now
+    // managed data: SubmissionDeliverables + SubmissionDeliverableLines, seeded
+    // once from exactly these values (DatabaseMigrator.SeedSubmissionDeliverablesAsync,
+    // keys verbatim), authored at ניהול → תוצרי הגשה, and read through
+    // IDeliverablesService.
+    //
+    // What REMAINS here is the two things that were never content: the
+    // SubmissionDeliverable record the student components bind to, and MetaLine
+    // below — a pure formatting function with no data of its own.
+    //
+    // The placeholder constants above are kept as the seed's reference copy so
+    // it is obvious what the migration inserted; nothing reads them at runtime.
 
     /// <summary>
     /// The row's meta line — "2 דרישות · חומר עבודה אחד". Counts only the

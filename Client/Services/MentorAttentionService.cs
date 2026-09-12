@@ -18,7 +18,24 @@ namespace AuthWithAdmin.Client.Services;
 /// </summary>
 public interface IMentorAttentionService
 {
+    /// <summary>The snapshot, with a transport failure degraded to an empty
+    /// one. Use this where an empty section is an acceptable answer.</summary>
     Task<MentorAttentionDto> GetAsync();
+
+    /// <summary>
+    /// The same snapshot, but <c>null</c> when the CALL ITSELF failed.
+    ///
+    /// <para><see cref="GetAsync"/> answers an empty snapshot for a 401, a 500
+    /// and a genuinely empty queue alike, so a screen built on it cannot tell
+    /// "you have nothing to review" from "we could not ask". A review queue must
+    /// never tell a mentor their queue is empty because a request failed, so the
+    /// one screen whose entire subject is that queue reads this instead and can
+    /// offer a retry.</para>
+    ///
+    /// <para>Additive: <see cref="GetAsync"/> is implemented in terms of this
+    /// and its behaviour is unchanged, so בית, יומן ותכנון and the project
+    /// workspace are untouched.</para></summary>
+    Task<MentorAttentionDto?> TryGetAsync();
 }
 
 public class MentorAttentionService : IMentorAttentionService
@@ -30,16 +47,22 @@ public class MentorAttentionService : IMentorAttentionService
     /// <summary>Never throws and never returns null — an empty snapshot degrades
     /// one section of a page instead of blanking the screen, matching how every
     /// other mentor service handles a transport failure.</summary>
-    public async Task<MentorAttentionDto> GetAsync()
+    public async Task<MentorAttentionDto> GetAsync() =>
+        await TryGetAsync() ?? new MentorAttentionDto();
+
+    /// <summary>Never throws. Answers null, and only null, when the request did
+    /// not succeed — so a caller that must not mistake a failure for an empty
+    /// queue can tell the two apart.</summary>
+    public async Task<MentorAttentionDto?> TryGetAsync()
     {
         try
         {
-            var dto = await _http.GetFromJsonAsync<MentorAttentionDto>("api/mentor/attention")
-                      ?? new MentorAttentionDto();
+            var dto = await _http.GetFromJsonAsync<MentorAttentionDto>("api/mentor/attention");
+            if (dto is null) return null;
             NormaliseHrefs(dto);
             return dto;
         }
-        catch { return new MentorAttentionDto(); }
+        catch { return null; }
     }
 
     /// <summary>

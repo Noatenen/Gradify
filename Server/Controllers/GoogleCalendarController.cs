@@ -26,6 +26,14 @@ namespace AuthWithAdmin.Server.Controllers;
 ///   5. GET    /api/google-calendar/status     — UI reads the real state.
 ///   6. DELETE /api/google-calendar/disconnect — revokes + retires the grant.
 ///
+/// ── FEATURE FLAG ─────────────────────────────────────────────────────────────
+/// GoogleCalendar:Enabled (default true) switches this whole integration off for
+/// a deployment whose OAuth consent screen does not declare calendar.events. When
+/// it is false, connect-url answers 503 and the callback returns immediately, so
+/// no consent request is ever started and no code is ever exchanged. Disconnect
+/// deliberately keeps working: a user who connected before the switch was thrown
+/// must still be able to revoke.
+///
 /// The callback URI is composed per request from Scheme + Host + PathBase, so
 /// it resolves to https://localhost:7275/api/google-calendar/callback locally
 /// and https://tests.telem-hit.net/JsGoogle/api/google-calendar/callback on the
@@ -45,6 +53,7 @@ public class GoogleCalendarController : ControllerBase
     private const string ErrorToken      = "gcalError=token";        // exchange failed
     private const string ErrorNoRefresh  = "gcalError=norefresh";    // no long-lived credential
     private const string ErrorConfig     = "gcalError=config";       // client id/secret missing
+    private const string ErrorDisabled   = "gcalError=disabled";     // GoogleCalendar:Enabled = false
 
     private readonly GoogleCalendarTokenService _tokens;
     private readonly OAuthStateService          _states;
@@ -71,8 +80,11 @@ public class GoogleCalendarController : ControllerBase
     [ServiceFilter(typeof(AuthCheck))]
     public async Task<IActionResult> GetConnectUrl(int authUserId)
     {
-        if (!_tokens.IsConfigured)
-            return StatusCode(503, "Google Calendar integration is not configured.");
+        // IsAvailable folds in GoogleCalendar:Enabled, so a disabled deployment
+        // never mints a consent URL — the sensitive calendar.events scope is not
+        // requested even by a caller hitting this endpoint directly, with no UI.
+        if (!_tokens.IsAvailable)
+            return StatusCode(503, "Google Calendar integration is not available.");
 
         // The state is minted here, bound to the authenticated caller. The user
         // id itself never leaves the server.
@@ -97,6 +109,13 @@ public class GoogleCalendarController : ControllerBase
         [FromQuery] string? state,
         [FromQuery] string? error)
     {
+        // Switched off for this deployment. Checked FIRST — before the state is
+        // consumed and long before the token endpoint is called — so a callback
+        // arriving from an older consent screen, a bookmark or a replay cannot
+        // turn into a stored calendar.events grant.
+        if (!_tokens.IsEnabled)
+            return ReturnToSettings(ErrorDisabled);
+
         // Consent denied (error=access_denied) or Google sent nothing usable.
         if (!string.IsNullOrEmpty(error) || string.IsNullOrEmpty(code))
             return ReturnToSettings(ErrorDenied);

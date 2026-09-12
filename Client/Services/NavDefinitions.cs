@@ -179,7 +179,13 @@ public static class NavDefinitions
         // fallback plus the stroked NavIcons.Tasks the Motiva rail draws, and
         // Match.Prefix so its own ?focus= / ?editTask= deep links keep it lit
         // (the convention every /mentor/* item here uses).
-        new NavItem("המשימות שלי",     "mentor/tasks",    "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
+        // "משימות לבדיקה", not "המשימות שלי". The label follows the page: for a
+        // mentor this screen is a review queue (submissions awaiting their
+        // decision and the ones they have approved), and the possessive read as
+        // a personal to-do list — which is exactly what the STUDENT and LECTURER
+        // screens of that name are. MENTOR ONLY: _studentMain and the lecturer
+        // list are untouched, and the route is unchanged.
+        new NavItem("משימות לבדיקה",   "mentor/tasks",    "oi-task",            NavLinkMatch.Prefix, NavIcons.Tasks),
         new NavItem("פרויקטים בהנחייתי", "mentor/projects", "oi-folder",         NavLinkMatch.Prefix, NavIcons.Projects),
         new NavItem("בקשות",          "mentor-requests",  "oi-envelope-closed", NavLinkMatch.Prefix, NavIcons.Requests),
         new NavItem("יומן ותכנון",    "mentor/calendar",  "oi-calendar",        NavLinkMatch.Prefix, NavIcons.Calendar),

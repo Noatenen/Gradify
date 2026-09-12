@@ -464,13 +464,55 @@ public static class MentorProjectSignals
         _                              => "מתקדם כרגיל",
     };
 
-    /// <summary>Whether a signal is selected by one of the five tab keys.</summary>
+    /// <summary>
+    /// Whether a signal is selected by one of the five tab keys.
+    ///
+    /// <para><b>Signal-only. Prefer the <see cref="MentorProjectCard"/> overload
+    /// for the two FACT tabs</b> — see it for why. This one remains correct for
+    /// דורש תשומת לב / מתקדם כרגיל / הכל, which really are questions about the
+    /// winning signal, and it is what a caller holding nothing but a signal
+    /// can answer.</para></summary>
     public static bool Matches(MentorProjectSignal s, string? key) => Normalize(key) switch
     {
         FilterAttention => s != MentorProjectSignal.None,
         FilterOk        => s == MentorProjectSignal.None,
         FilterAll       => true,
         var slug        => Slug(s) == slug,
+    };
+
+    /// <summary>
+    /// Whether a project belongs in a tab — decided on the project's FACTS, not
+    /// on which signal happened to win.
+    ///
+    /// <para><b>Why this overload exists.</b> <see cref="Of"/> collapses a
+    /// project to ONE signal, worst-first: an overdue milestone outranks a
+    /// pending submission, which outranks an open request. That is right for the
+    /// row's dot and its one-line note — a project has one headline. It is
+    /// WRONG for a filter: every project carrying a pending submission also
+    /// happened to have an overdue milestone, so all of them resolved to
+    /// <c>Late</c> and "הגשה לבדיקה" listed nothing while בית and משימות לבדיקה
+    /// showed the very same submissions waiting. One screen said a queue was
+    /// empty while two others said it was not.</para>
+    ///
+    /// <para><b>The rule, stated once for the whole mentor experience:</b> a
+    /// project is in הגשה לבדיקה iff it has at least one submission with
+    /// <c>MentorStatus = 'Pending'</c>, and in בקשה פתוחה iff it has at least one
+    /// non-terminal request. Those are the same two facts
+    /// <c>MentorProjectCard.Build</c> already counted to derive the signal, and
+    /// the same <c>PendingReviews</c> collection the dashboard and
+    /// משימות לבדיקה read off <c>GET /api/mentor/attention</c>. Three surfaces,
+    /// one definition.</para>
+    ///
+    /// <para>THE VISUAL SIGNAL IS DELIBERATELY UNTOUCHED. A project may still
+    /// show "אבן דרך באיחור" while appearing under הגשה לבדיקה — the dot reports
+    /// the most serious thing about the project, the filter reports what the
+    /// project contains, and conflating the two is the bug this fixes. Nothing
+    /// here reorders <see cref="Of"/>.</para></summary>
+    public static bool Matches(MentorProjectCard row, string? key) => Normalize(key) switch
+    {
+        "submission" => row.PendingReviews.Count > 0,
+        "request"    => row.OpenRequests.Count   > 0,
+        _            => Matches(row.Signal, key),
     };
 }
 
@@ -625,16 +667,25 @@ public static class MentorLinks
 {
     // ── Collections ─────────────────────────────────────────────────────────
 
-    /// <summary>המשימות שלי, unfiltered.</summary>
+    /// <summary>משימות לבדיקה. NOT "unfiltered" — the screen's own default tab
+    /// is לבדיקה, so this lands on the review queue. Pass <c>?focus=all</c> if a
+    /// caller genuinely wants every row.</summary>
     public const string Tasks = "mentor/tasks";
 
-    /// <summary>המשימות שלי, scoped to הגשות לבדיקה.</summary>
+    /// <summary>משימות לבדיקה, scoped to the submissions still awaiting this
+    /// mentor's decision — the screen's "לבדיקה" tab.</summary>
     public const string Reviews = "mentor/tasks?focus=reviews";
 
-    /// <summary>המשימות שלי, scoped to בקשות הדורשות פעולה.</summary>
-    public const string Requests = "mentor/tasks?focus=requests";
+    // ?focus=requests IS GONE. It selected a בקשות tab on this page, and that
+    // tab was removed when the screen narrowed to its own subject: requests are
+    // handled in בקשות (RequestsInbox below) and on בית, both of which carry
+    // the full recommendation flow. Nothing referenced this constant — every
+    // caller already used RequestsInbox — so it is deleted rather than left
+    // pointing at a selection that no longer exists. A bookmarked
+    // ?focus=requests still opens the page: unrecognised focus values resolve
+    // to the screen's default tab there.
 
-    /// <summary>המשימות שלי, scoped to משימות אישיות.</summary>
+    /// <summary>משימות לבדיקה, scoped to משימות אישיות.</summary>
     public const string PersonalTasks = "mentor/tasks?focus=personal";
 
     /// <summary>בקשות — every request on the mentor's projects, not only the

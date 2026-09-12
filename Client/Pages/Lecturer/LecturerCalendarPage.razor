@@ -332,14 +332,19 @@
                 </span>
             }
 
-            <span class="mcal-legend-sync">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="18" rx="3"></rect>
-                    <path d="M16 2v4M8 2v4M3 10h18"></path>
-                </svg>
-                = מסונכרן ליומן Google
-            </span>
+            @* Only where the integration exists. A legend entry for a state no
+               event can be in explains nothing. *@
+            @if (_gcalAvailable)
+            {
+                <span class="mcal-legend-sync">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="3" y="4" width="18" height="18" rx="3"></rect>
+                        <path d="M16 2v4M8 2v4M3 10h18"></path>
+                    </svg>
+                    = מסונכרן ליומן Google
+                </span>
+            }
         </div>
     }
 </div>
@@ -399,7 +404,10 @@
                 </div>
             }
 
-            @if (sel.IsEditable)
+            @* "לא מסונכרן" on every single event is not information when the
+               integration is switched off for the deployment — it is noise about
+               a feature the user cannot reach. The row goes away with it. *@
+            @if (sel.IsEditable && _gcalAvailable)
             {
                 <div class="mcal-drawer-fact">
                     <span class="mcal-drawer-k">יומן Google</span>
@@ -500,6 +508,15 @@
     private IReadOnlyList<MentorProjectSummaryDto> _projectsForModal = Array.Empty<MentorProjectSummaryDto>();
     private HashSet<int>                           _syncedTaskIds   = new();
 
+    /// <summary>Whether this deployment offers the external Google Calendar
+    /// integration (server-side GoogleCalendar:Enabled). It gates ONLY the Google
+    /// chrome on this page — the legend entry and the drawer's sync row. The
+    /// calendar itself is Motiva's own and renders identically either way.
+    ///
+    /// True until the server explicitly says otherwise, so a failed status call
+    /// never retires a working feature.</summary>
+    private bool _gcalAvailable = true;
+
     private bool _loading = true;
     private bool _failed;
 
@@ -564,7 +581,13 @@
 
             _events = BuildCalendar(data, personalTasks);
 
-            _syncedTaskIds = (await GoogleCalendar.GetPersonalTaskSchedulesAsync())
+            var gcalStatus    = GoogleCalendar.GetStatusAsync();
+            var gcalSchedules = GoogleCalendar.GetPersonalTaskSchedulesAsync();
+            await Task.WhenAll(gcalStatus, gcalSchedules);
+
+            _gcalAvailable = gcalStatus.Result?.Available != false;
+
+            _syncedTaskIds = gcalSchedules.Result
                              .Where(x => x.IsScheduled)
                              .Select(x => x.TaskId)
                              .ToHashSet();

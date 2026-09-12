@@ -1,0 +1,315 @@
+@page "/management/deliverables"
+@layout AppLayout
+@attribute [Authorize(Roles = Roles.Admin + "," + Roles.Staff)]
+@using Microsoft.AspNetCore.Authorization
+@using AuthWithAdmin.Client.Components
+@using AuthWithAdmin.Client.Services
+@using AuthWithAdmin.Shared.AuthSharedModels
+@inject IDeliverablesService Deliverables
+
+@*
+    ── ניהול → תוצרי הגשה ──────────────────────────────────────────────────
+    The faculty's authoring surface for the catalog students read at
+    /project → תוצרי ההגשה.
+
+    A SEPARATE DOMAIN FROM תבניות משימות, and this page must never blur that:
+    a task template is mid-course work in the milestone pipeline; a deliverable
+    is an end-of-project product. They share no table and no key.
+
+    WHAT THIS PAGE DOES NOT SHOW: the deliverable's Key. It is the string
+    ProjectSubmissionStatuses and ProjectResources already join on, so it is an
+    internal identifier — the server derives it once on create and refuses to
+    change it afterwards. A lecturer manages the visible title.
+*@
+
+<div class="dlv-page">
+
+    <MPageHeaderCard Title="תוצרי הגשה"
+                     Scale="MPageHeaderCard.HeaderScale.Core">
+        <Actions>
+            <button type="button" class="motiva-cta dlv-add" @onclick="OpenNew">
+                <span class="dlv-add-glyph" aria-hidden="true">+</span>
+                <span>תוצר הגשה חדש</span>
+            </button>
+        </Actions>
+    </MPageHeaderCard>
+
+    <MCard>
+        @* One line of orientation, because the connection to the student screen
+           is the single thing a lecturer needs to know here. *@
+        <p class="dlv-lede">התוכן שמוגדר כאן מוצג לסטודנטים במרחב הפרויקט, תחת "תוצרי ההגשה".</p>
+
+        @if (_loading)
+        {
+            <MLoadingState Label="טוענת את תוצרי ההגשה…" />
+        }
+        else if (_items.Count == 0)
+        {
+            <MEmptyState Title="עדיין אין תוצרי הגשה."
+                         Description="תוצר שתגדירו כאן יופיע לסטודנטים במרחב הפרויקט." />
+        }
+        else
+        {
+            <table class="dlv-table">
+                <thead>
+                    <tr>
+                        <th class="dlv-th dlv-th-order">סדר</th>
+                        <th class="dlv-th">שם התוצר</th>
+                        <th class="dlv-th dlv-th-num">דרישות</th>
+                        <th class="dlv-th dlv-th-num">הערות</th>
+                        <th class="dlv-th dlv-th-state">סטטוס</th>
+                        <th class="dlv-th dlv-th-act"><span class="dlv-sr">פעולות</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var d in _items)
+                {
+                    var item = d;
+                    <tr class="dlv-row @(item.IsActive ? "" : "dlv-row-off")">
+
+                        @* Order is moved, not typed — a lecturer should never be
+                           asked to keep an index column consistent by hand. *@
+                        <td class="dlv-td dlv-td-order">
+                            <div class="dlv-move">
+                                <button type="button" class="dlv-move-btn"
+                                        disabled="@(_items.IndexOf(item) == 0 || _busy)"
+                                        title="הזזה למעלה" aria-label="@($"הזזת {item.Title} למעלה")"
+                                        @onclick="() => MoveAsync(item, -1)">↑</button>
+                                <span class="dlv-move-idx">@(_items.IndexOf(item) + 1)</span>
+                                <button type="button" class="dlv-move-btn"
+                                        disabled="@(_items.IndexOf(item) == _items.Count - 1 || _busy)"
+                                        title="הזזה למטה" aria-label="@($"הזזת {item.Title} למטה")"
+                                        @onclick="() => MoveAsync(item, 1)">↓</button>
+                            </div>
+                        </td>
+
+                        <td class="dlv-td">
+                            <span class="dlv-name">@item.Title</span>
+                            @if (!string.IsNullOrWhiteSpace(item.Intro))
+                            {
+                                <span class="dlv-intro">@item.Intro</span>
+                            }
+                        </td>
+
+                        <td class="dlv-td dlv-td-num">@item.RequirementCount</td>
+                        <td class="dlv-td dlv-td-num">@item.NoteCount</td>
+
+                        <td class="dlv-td">
+                            <span class="dlv-state @(item.IsActive ? "dlv-state-on" : "dlv-state-off")">
+                                @(item.IsActive ? "פעיל" : "לא פעיל")
+                            </span>
+                        </td>
+
+                        <td class="dlv-td dlv-td-act">
+                            <button type="button" class="dlv-link" @onclick="() => OpenEdit(item)">עריכה</button>
+                            <button type="button" class="dlv-link dlv-link-quiet" disabled="@_busy"
+                                    @onclick="() => ToggleActiveAsync(item)">
+                                @(item.IsActive ? "השבתה" : "הפעלה")
+                            </button>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+
+            @* Deactivation is the safe alternative to deletion, and the reason
+               is worth one line: a team's recorded progress is keyed to the
+               deliverable and outlives it. *@
+            <p class="dlv-foot">תוצר לא פעיל אינו מוצג לסטודנטים, וההתקדמות שכבר נרשמה עליו נשמרת.</p>
+        }
+    </MCard>
+</div>
+
+@* ── Create / edit ───────────────────────────────────────────────────────── *@
+@if (_formOpen)
+{
+    <MModal IsOpen="true"
+            Title="@(_editId is null ? "תוצר הגשה חדש" : "עריכת תוצר הגשה")"
+            Size="MModal.ModalSize.Medium"
+            OnClose="CloseForm">
+        <ChildContent>
+            <div class="dlv-form">
+
+                <p class="dlv-form-sec">פרטי התוצר</p>
+
+                <div class="dlv-field">
+                    <label class="dlv-label" for="dlv-title">שם התוצר</label>
+                    <input id="dlv-title" class="dlv-input" @bind="_fTitle"
+                           placeholder="לדוגמה: חוברת" maxlength="120" />
+                </div>
+
+                <div class="dlv-field">
+                    <label class="dlv-label" for="dlv-intro">הסבר קצר</label>
+                    <textarea id="dlv-intro" class="dlv-textarea" rows="3" @bind="_fIntro"
+                              placeholder="מה התוצר הזה, במשפט או שניים"></textarea>
+                </div>
+
+                <p class="dlv-form-sec">תוכן ודרישות</p>
+
+                <div class="dlv-field">
+                    <label class="dlv-label" for="dlv-reqlabel">כותרת הדרישות</label>
+                    <input id="dlv-reqlabel" class="dlv-input" @bind="_fRequirementsLabel"
+                           placeholder="לדוגמה: מה כולל התוכן" maxlength="80" />
+                    <p class="dlv-hint">הכותרת שמופיעה מעל רשימת הדרישות במסך הסטודנט.</p>
+                </div>
+
+                <DeliverableLineEditor Label="דרישות"
+                                       AddLabel="הוספת דרישה"
+                                       Placeholder="דרישה אחת, בשורה אחת"
+                                       Lines="_fRequirements" />
+
+                <p class="dlv-form-sec">לתשומת לבכם</p>
+
+                <DeliverableLineEditor Label="הערות"
+                                       AddLabel="הוספת הערה"
+                                       Placeholder="הערה לסטודנטים"
+                                       Lines="_fNotes" />
+
+                <p class="dlv-form-sec">הגדרות</p>
+
+                <div class="dlv-switch">
+                    <div class="dlv-switch-copy">
+                        <span class="dlv-switch-title">פעיל</span>
+                        <span class="dlv-switch-note">מוצג לסטודנטים ברשימת תוצרי ההגשה</span>
+                    </div>
+                    <MToggle Checked="_fIsActive" CheckedChanged="@(v => _fIsActive = v)"
+                             AriaLabel="תוצר פעיל" />
+                </div>
+
+                @if (_formError.Length > 0)
+                {
+                    <p class="dlv-error">@_formError</p>
+                }
+            </div>
+        </ChildContent>
+        <FooterContent>
+            <button type="button" class="motiva-cta dlv-save" @onclick="SaveAsync" disabled="@_busy">
+                @(_busy ? "שומר…" : "שמירה")
+            </button>
+            <button type="button" class="dlv-cancel" @onclick="CloseForm" disabled="@_busy">ביטול</button>
+        </FooterContent>
+    </MModal>
+}
+
+@code {
+    private List<DeliverableAdminDto> _items = new();
+    private bool _loading = true;
+    private bool _busy;
+
+    // ── form ────────────────────────────────────────────────────────────────
+    private bool          _formOpen;
+    private int?          _editId;
+    private string        _fTitle             = "";
+    private string        _fIntro             = "";
+    private string        _fRequirementsLabel = "";
+    private bool          _fIsActive          = true;
+    private List<string>  _fRequirements      = new();
+    private List<string>  _fNotes             = new();
+    private string        _formError          = "";
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _items   = await Deliverables.GetForManagementAsync();
+        _loading = false;
+    }
+
+    private void OpenNew()
+    {
+        _editId             = null;
+        _fTitle             = "";
+        _fIntro             = "";
+        _fRequirementsLabel = "";
+        _fIsActive          = true;
+        _fRequirements      = new List<string>();
+        _fNotes             = new List<string>();
+        _formError          = "";
+        _formOpen           = true;
+    }
+
+    private void OpenEdit(DeliverableAdminDto d)
+    {
+        _editId             = d.Id;
+        _fTitle             = d.Title;
+        _fIntro             = d.Intro ?? "";
+        _fRequirementsLabel = d.RequirementsLabel;
+        _fIsActive          = d.IsActive;
+        // Copies, so cancelling leaves the loaded row untouched.
+        _fRequirements      = d.Requirements.ToList();
+        _fNotes             = d.Notes.ToList();
+        _formError          = "";
+        _formOpen           = true;
+    }
+
+    private void CloseForm()
+    {
+        _formOpen = false;
+        _busy     = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_busy) return;
+
+        if (string.IsNullOrWhiteSpace(_fTitle))
+        {
+            _formError = "יש להזין שם לתוצר";
+            return;
+        }
+
+        _busy      = true;
+        _formError = "";
+
+        var req = new SaveDeliverableRequest
+        {
+            Title             = _fTitle,
+            Intro             = _fIntro,
+            RequirementsLabel = _fRequirementsLabel,
+            IsActive          = _fIsActive,
+            // Blank rows are dropped server-side, so an emptied field is a
+            // deletion rather than an empty bullet.
+            Requirements      = _fRequirements.ToList(),
+            Notes             = _fNotes.ToList(),
+        };
+
+        var ok = _editId is int id
+            ? await Deliverables.UpdateAsync(id, req)
+            : await Deliverables.CreateAsync(req);
+
+        _busy = false;
+
+        if (!ok) { _formError = "לא הצלחנו לשמור. נסו שוב."; return; }
+
+        _formOpen = false;
+        await ReloadAsync();
+    }
+
+    private async Task ToggleActiveAsync(DeliverableAdminDto d)
+    {
+        if (_busy) return;
+        _busy = true;
+        await Deliverables.SetActiveAsync(d.Id, !d.IsActive);
+        _busy = false;
+        await ReloadAsync();
+    }
+
+    /// <summary>Moves one row and persists the WHOLE order, so the stored
+    /// indexes can never drift out of step with what the list shows.</summary>
+    private async Task MoveAsync(DeliverableAdminDto d, int delta)
+    {
+        if (_busy) return;
+
+        var i = _items.IndexOf(d);
+        var j = i + delta;
+        if (i < 0 || j < 0 || j >= _items.Count) return;
+
+        (_items[i], _items[j]) = (_items[j], _items[i]);
+
+        _busy = true;
+        await Deliverables.ReorderAsync(_items.Select(x => x.Id));
+        _busy = false;
+        await ReloadAsync();
+    }
+}

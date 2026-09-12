@@ -169,6 +169,21 @@
                 </section>
             }
 
+            @*  WHAT THE TEAM WAS TOLD TO SUBMIT — read-only.
+                Tasks.SubmissionInstructions, the same column the student reads
+                as "הנחיות הגשה" and the Lecturer/Admin authors on the project
+                task. The mentor is not its owner and gets no edit affordance
+                here; this exists so the reviewer can judge the submission
+                against the requirement instead of guessing it. Omitted when
+                nothing was authored, rather than drawing an empty heading. *@
+            @if (!string.IsNullOrWhiteSpace(_reviewCtx.SubmissionInstructions))
+            {
+                <section class="pwd-sec">
+                    <p class="pwd-sec-title">הנחיות הגשה</p>
+                    <p class="pwd-text">@_reviewCtx.SubmissionInstructions</p>
+                </section>
+            }
+
             @if (!string.IsNullOrWhiteSpace(_reviewCtx.Notes))
             {
                 <section class="pwd-sec">
@@ -317,6 +332,7 @@
         <Side>
             <MentorRequestDetail RequestId="@openReqId"
                                  Layout="MentorRequestDetail.DetailLayout.Surface"
+                                 Audience="MentorRequestDetail.DetailAudience.Mentor"
                                  Part="MentorRequestDetail.DetailPart.Action"
                                  ShowHeader="false"
                                  OnChanged="ReloadAsync" />
@@ -325,6 +341,7 @@
         <ChildContent>
             <MentorRequestDetail RequestId="@openReqId"
                                  Layout="MentorRequestDetail.DetailLayout.Surface"
+                                 Audience="MentorRequestDetail.DetailAudience.Mentor"
                                  Part="MentorRequestDetail.DetailPart.Content"
                                  ShowHeader="false"
                                  OnChanged="ReloadAsync" />
@@ -772,16 +789,18 @@
                     Rows:      subs.Select((s, i) => new PwWorkRow(
                                     Key:             s.SubmissionId is int id ? $"review:{id}" : $"subrow:{i}",
                                     Title:           s.Title,
-                                    // No secondary line under a submission title —
-                                    // it carried the milestone this deliverable
-                                    // belongs to ("הערכה", "אפיון ועיצוב", …),
-                                    // contextual category text that restated the
-                                    // grouping without adding submission state.
-                                    // Matches the lecturer הגשות treatment. The
-                                    // deadline still reaches the row when MISSED.
-                                    Meta:            null,
-                                    Trailing:        s.Overdue ? s.Due : null,
-                                    TrailingLate:    s.Overdue,
+                                    // THE DEADLINE, UNDER THE TITLE — the same
+                                    // treatment as the lecturer הגשות card. Still
+                                    // not the milestone: that was contextual
+                                    // category text restating the grouping. The
+                                    // date used to reach the row only once it had
+                                    // been MISSED, and only at the far edge; it is
+                                    // on every deliverable that has one now,
+                                    // beside the title it dates.
+                                    Meta:            DueMeta(s.Due),
+                                    MetaLate:        s.Overdue,
+                                    Trailing:        null,
+                                    TrailingLate:    false,
                                     State:           s.State,
                                     StateTone:       ToneOf(s.StateClass),
                                     ActionLabel:     s.SubmissionId is not null ? "לבדיקה" : null,
@@ -821,25 +840,28 @@
                                    // the capability ExtensionWorkflow.Resolve
                                    // computed for this caller and this request —
                                    // the same one /extension/decision gates on.
-                                   var v   = ViewerOf(r);
-                                   var cta = PwRequestVocabulary.ActionLabel(r.Status, v);
+                                   var v = ViewerOf(r);
 
                                    return new PwWorkRow(
                                        Key:             $"req:{r.Id}",
                                        Title:           r.Title,
-                                       // No requester name under the request title
-                                       // (display-only cleanup, matched on the
-                                       // lecturer review). When it was filed still
-                                       // reaches the row's end; the requester is on
-                                       // the request's own detail surface.
+                                       // A TITLE AND WHERE IT STANDS — matched on
+                                       // the lecturer review. The filing date is
+                                       // not a state, and the CTA repeated in the
+                                       // imperative what the pill beside it had
+                                       // just said. Both are on the request's own
+                                       // surface, which the row still opens.
+                                       // RowStatus is StatusLabel with a fallback,
+                                       // because a New request deliberately has no
+                                       // status label of its own.
                                        Meta:            null,
-                                       Trailing:        r.CreatedAt.ToLocalTime().ToString("dd.MM"),
+                                       Trailing:        null,
                                        // OWNERSHIP, NOT VISIBILITY — the same
                                        // resolver the lecturer workspace uses.
-                                       State:           PwRequestVocabulary.StatusLabel(r.Status, v),
+                                       State:           PwRequestVocabulary.RowStatus(r.Status, v),
                                        StateTone:       PwRequestVocabulary.Tone(r.Status, v),
-                                       ActionLabel:     cta,
-                                       ActionIsPrimary: cta is not null,
+                                       ActionLabel:     null,
+                                       ActionIsPrimary: false,
                                        IsClickable:     true,
                                        IsOpen:          _openRequestId == r.Id,
                                        Rank:            RequestRank(r));
@@ -863,9 +885,17 @@
                                     // said the same thing this line already says —
                                     // a mentor's own row reads "משימה שלך" — so one
                                     // of the two ownership signals went.
-                                    Meta:         k.Assignee,
-                                    Trailing:     k.Overdue ? k.Due : null,
-                                    TrailingLate: k.Overdue,
+                                    // WHO, AND BY WHEN — the deadline joins the
+                                    // context line instead of sitting alone at the
+                                    // row's far edge, and it is drawn for every
+                                    // task that has one rather than only for a
+                                    // late one. Lateness still reads: MetaLate is
+                                    // the rose the trailing slot carried, and the
+                                    // state pill still never mentions it.
+                                    Meta:         PwText.MetaLine(k.Assignee, DueMeta(k.Due)),
+                                    MetaLate:     k.Overdue,
+                                    Trailing:     null,
+                                    TrailingLate: false,
                                     State:        k.State,
                                     StateTone:    ToneOf(k.StateClass),
                                     // Only the mentor's OWN task has an editor here;
@@ -1195,6 +1225,14 @@
                 .ToList();
         }
     }
+
+    /// <summary>This page's rows carry their deadline as an ALREADY-FORMATTED
+    /// label (<see cref="DueLabel"/>), with "—" standing for "no date". This
+    /// words it for the row's context line the way PwDates.DueLine does on the
+    /// lecturer workspace, and returns null for the no-date case rather than
+    /// printing "הגשה עד —".</summary>
+    private static string? DueMeta(string due) =>
+        string.IsNullOrWhiteSpace(due) || due == "—" ? null : $"הגשה עד {due}";
 
     private static string DueLabel(DateTime? due)
     {

@@ -86,8 +86,11 @@ public class MentorController : ControllerBase
                     p.Status,
                     p.HealthStatus,
                     pt.Name                    AS ProjectType,
-                    t.Id                       AS TeamId,
-                    t.TeamName,
+                    -- COALESCEd because the Teams join is now outer and
+                    -- MentorProjectOverviewRow types both as non-nullable. 0 is
+                    -- the no-team sentinel the client already treats as absent.
+                    COALESCE(t.Id, 0)          AS TeamId,
+                    COALESCE(t.TeamName, '')   AS TeamName,
 
                     COALESCE((
                         SELECT GROUP_CONCAT(u2.FirstName || ' ' || u2.LastName, ', ')
@@ -152,7 +155,17 @@ public class MentorController : ControllerBase
                        AND  ts2.MentorStatus = 'Pending')                      AS PendingMentorReview
 
             FROM    Projects       p
-            JOIN    Teams          t   ON p.TeamId        = t.Id
+            -- LEFT JOIN, NOT JOIN. Projects.TeamId is NULLABLE (INTEGER UNIQUE,
+            -- no NOT NULL): a project has no team until its students form one.
+            -- An INNER JOIN here silently discarded every teamless project a
+            -- mentor supervises, so this list disagreed with בית and
+            -- משימות לבדיקה, which read MentorAttentionService — and that has
+            -- always LEFT JOINed Teams. The queues were right; this list was
+            -- wrong.
+            --
+            -- ProjectTypes stays INNER: ProjectTypeId is NOT NULL with an
+            -- enforced foreign key, so it cannot drop a row.
+            LEFT JOIN Teams        t   ON p.TeamId        = t.Id
             JOIN    ProjectTypes   pt  ON p.ProjectTypeId = pt.Id
             JOIN    ProjectMentors pmt ON pmt.ProjectId   = p.Id
             WHERE   pmt.UserId = @MentorId
@@ -194,16 +207,22 @@ public class MentorController : ControllerBase
     [HttpGet("projects/{id:int}")]
     public async Task<IActionResult> GetProjectDetail(int id, int authUserId)
     {
-        // ── 1. Verify mentor access ──────────────────────────────────────────
+        // ── 1. Verify mentor access — ProjectMentors AND NOTHING ELSE ───────
+        //
+        // The `|| isAdminOrStaff` escape hatch that used to be here let a Staff
+        // or Admin account open the mentor workspace for ANY project, on a route
+        // whose every surface is written in the first person ("ממתינה לבדיקתך",
+        // "ממתינה להמלצתך"). Authorization to OPEN a mentor route and the data
+        // scope INSIDE it are different questions: [Authorize] on the controller
+        // answers the first, this answers the second. Staff keep their
+        // all-project view on /projects/{id}/overview, a different page served
+        // by different endpoints.
         var accessRows = await _db.GetRecordsAsync<int>(
             "SELECT COUNT(1) FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId",
             new { ProjectId = id, UserId = authUserId });
         int accessCount = accessRows?.FirstOrDefault() ?? 0;
 
-        var roleClaim = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ?? "";
-        bool isAdminOrStaff = roleClaim == Roles.Admin || roleClaim == Roles.Staff;
-
-        if (accessCount == 0 && !isAdminOrStaff)
+        if (accessCount == 0)
             return Forbid();
 
         // ── 2. Project header ────────────────────────────────────────────────
@@ -216,8 +235,8 @@ public class MentorController : ControllerBase
                     pt.Name             AS ProjectType,
                     p.Description,
                     p.OrganizationName  AS Organization,
-                    t.TeamName,
-                    t.Id                AS TeamId,
+                    COALESCE(t.TeamName, '') AS TeamName,
+                    COALESCE(t.Id, 0)        AS TeamId,
                     -- The team's own uploaded logo, read-only. Byte-for-byte the
                     -- base-relative URL ProjectOverviewController returns: a blank
                     -- LogoPath (or no ProjectTeamProfile row) concatenates to NULL,
@@ -226,7 +245,10 @@ public class MentorController : ControllerBase
                      FROM   ProjectTeamProfile ptp
                      WHERE  ptp.ProjectId = p.Id) AS LogoUrl
             FROM    Projects     p
-            JOIN    Teams        t   ON p.TeamId        = t.Id
+            -- LEFT JOIN for the same reason as the list query: with an INNER
+            -- JOIN this endpoint answered 404 for a teamless project, so a
+            -- mentor clicking into their own project was told it did not exist.
+            LEFT JOIN Teams      t   ON p.TeamId        = t.Id
             JOIN    ProjectTypes pt  ON p.ProjectTypeId = pt.Id
             WHERE   p.Id = @ProjectId";
 
@@ -453,14 +475,56 @@ public class MentorController : ControllerBase
     // ── GET /api/mentor/submissions ──────────────────────────────────────────
     // Returns ALL submissions pending mentor review across every project the
     // mentor is assigned to. Used by the global mentor submissions page.
+    //
+    //   (no query)              -> MentorStatus = 'Pending', oldest first — the
+    //                             historical behaviour, byte for byte.
+    //   ?mentorStatus=Approved  -> MentorStatus = 'Approved', newest decision
+    //                             first. Powers the אושרו bucket.
+    //   ?mentorStatus=Returned  -> the same shape for returned rounds.
+    //
+    // A filter on the existing query rather than a second endpoint: the
+    // projection, the mentor scoping and the DTO are identical, and a copy is a
+    // second place for the scoping rule to drift. No new status vocabulary —
+    // these are the three values TaskSubmissions.MentorStatus already holds.
+    //
+    // ── SCOPE: STRICTLY ProjectMentors, FOR EVERY CALLER ────────────────────
+    // This used to widen for an Admin or Staff caller to every project in the
+    // programme. Wrong, and wrong specifically BECAUSE it lives under
+    // /api/mentor: it made this endpoint disagree with /projects and
+    // MentorAttentionService, which are both plain `UserId = @MentorId`, so one
+    // account saw submissions on משימות לבדיקה for projects that
+    // פרויקטים בהנחייתי and בית both said it did not supervise.
+    //
+    // Staff's all-project view is NOT lost — it was never supposed to be here.
+    // It lives on the lecturer workspace's own [Authorize(Admin, Staff)]
+    // endpoints, /api/task-submissions/pending-mentor-approvals and /approved.
+    // No lecturer screen calls this one.
+    //
+    // The role read that fed the old branch is gone with it, removing a second
+    // latent bug: it read only the FIRST role claim, so for a multi-role user
+    // the widening depended on the order the claims happened to be written in.
     [HttpGet("submissions")]
-    public async Task<IActionResult> GetPendingSubmissions(int authUserId)
+    public async Task<IActionResult> GetPendingSubmissions(
+        int authUserId, [FromQuery] string? mentorStatus = null)
     {
-        var roleClaim      = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ?? "";
-        bool isAdminOrStaff = roleClaim == Roles.Admin || roleClaim == Roles.Staff;
+        // Whitelisted, never interpolated from the caller's string: anything
+        // unrecognised falls back to the pending queue, so a hand-edited URL
+        // degrades to the default view instead of reaching the database.
+        string status = mentorStatus switch
+        {
+            "Approved" => "Approved",
+            "Returned" => "Returned",
+            _          => "Pending",
+        };
 
-        // Admin/Staff can see all projects; mentors only see their own.
-        const string sql = @"
+        // Pending is a QUEUE — oldest first, the longest wait is most urgent.
+        // A decided list is a LOG — newest decision first. COALESCE covers rows
+        // decided before MentorReviewedAt was populated.
+        string orderBy = status == "Pending"
+            ? "ts.SubmittedAt ASC"
+            : "COALESCE(ts.MentorReviewedAt, ts.SubmittedAt) DESC";
+
+        string sql = $@"
             SELECT  ts.Id                              AS SubmissionId,
                     ts.TaskId,
                     t.Title                            AS TaskTitle,
@@ -470,7 +534,8 @@ public class MentorController : ControllerBase
                     COALESCE(mt.Title, '')              AS MilestoneTitle,
                     u.FirstName || ' ' || u.LastName   AS SubmittedBy,
                     ts.SubmittedAt,
-                    ts.MentorStatus
+                    ts.MentorStatus,
+                    ts.MentorReviewedAt
             FROM    TaskSubmissions        ts
             JOIN    Tasks                  t   ON ts.TaskId                  = t.Id
             JOIN    Projects               p   ON t.ProjectId                = p.Id
@@ -479,12 +544,12 @@ public class MentorController : ControllerBase
             JOIN    MilestoneTemplates     mt  ON aym.MilestoneTemplateId    = mt.Id
             JOIN    users                  u   ON ts.SubmittedByUserId       = u.Id
             JOIN    ProjectMentors         pmt ON pmt.ProjectId              = p.Id
-            WHERE   (@IsAdminOrStaff = 1 OR pmt.UserId = @MentorId)
-              AND   ts.MentorStatus = 'Pending'
-            ORDER   BY ts.SubmittedAt ASC";
+                                              AND pmt.UserId                 = @MentorId
+            WHERE   ts.MentorStatus = @MentorStatus
+            ORDER   BY {orderBy}";
 
         var rows = await _db.GetRecordsAsync<MentorPendingSubmissionDto>(
-            sql, new { MentorId = authUserId, IsAdminOrStaff = isAdminOrStaff ? 1 : 0 });
+            sql, new { MentorId = authUserId, MentorStatus = status });
 
         return Ok(rows ?? Enumerable.Empty<MentorPendingSubmissionDto>());
     }
@@ -501,6 +566,10 @@ public class MentorController : ControllerBase
                     ts.TaskId,
                     t.Title                            AS TaskTitle,
                     t.Description                      AS TaskDescription,
+                    -- What the student was TOLD to submit. Read-only context
+                    -- for the reviewing mentor; authored by Lecturer/Admin on
+                    -- the project task and never written from /api/mentor.
+                    t.SubmissionInstructions,
                     COALESCE(mt.Title, '')             AS MilestoneTitle,
                     u.FirstName || ' ' || u.LastName   AS SubmittedBy,
                     ts.SubmittedAt,
@@ -523,16 +592,18 @@ public class MentorController : ControllerBase
         if (subRow is null) return NotFound();
 
         // ── 2. Verify mentor is assigned to the project ───────────────────────
-        var roleClaim = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ?? "";
-        bool isAdminOrStaff = roleClaim == Roles.Admin || roleClaim == Roles.Staff;
-
-        if (!isAdminOrStaff)
-        {
-            var access = (await _db.GetRecordsAsync<int>(
-                "SELECT COUNT(1) FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId",
-                new { ProjectId = subRow.ProjectId, UserId = authUserId }))?.FirstOrDefault() ?? 0;
-            if (access == 0) return Forbid();
-        }
+        // UNCONDITIONAL. The `if (!isAdminOrStaff)` wrapper meant a Staff or
+        // Admin caller skipped the check entirely and could read ANY
+        // submission's full context — student notes, drive link, every round of
+        // history — through a mentor endpoint. Same widening the list query had,
+        // at the level that actually matters, so it goes for the same reason:
+        // /api/mentor/* answers only for the caller's own supervision. The
+        // lecturer's equivalent read is on the [Authorize(Admin, Staff)]
+        // task-submissions endpoints.
+        var access = (await _db.GetRecordsAsync<int>(
+            "SELECT COUNT(1) FROM ProjectMentors WHERE ProjectId = @ProjectId AND UserId = @UserId",
+            new { ProjectId = subRow.ProjectId, UserId = authUserId }))?.FirstOrDefault() ?? 0;
+        if (access == 0) return Forbid();
 
         // ── 3. Files for this submission ──────────────────────────────────────
         const string filesSql = @"
@@ -609,6 +680,7 @@ public class MentorController : ControllerBase
             TaskId          = subRow.TaskId,
             TaskTitle       = subRow.TaskTitle,
             TaskDescription = subRow.TaskDescription,
+            SubmissionInstructions = subRow.SubmissionInstructions,
             MilestoneTitle  = subRow.MilestoneTitle,
             SubmissionId    = subRow.SubmissionId,
             SubmittedBy     = subRow.SubmittedBy,
@@ -746,6 +818,7 @@ public class MentorController : ControllerBase
         public int      TaskId           { get; set; }
         public string   TaskTitle        { get; set; } = "";
         public string?  TaskDescription  { get; set; }
+        public string?  SubmissionInstructions { get; set; }
         public string   MilestoneTitle   { get; set; } = "";
         public string   SubmittedBy      { get; set; } = "";
         public DateTime SubmittedAt      { get; set; }

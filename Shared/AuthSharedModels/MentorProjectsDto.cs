@@ -129,6 +129,14 @@ public class MentorPendingSubmissionDto
     public DateTime SubmittedAt    { get; set; }
     public string   MentorStatus   { get; set; } = "Pending";
 
+    /// <summary>When the mentor recorded their decision — the column
+    /// <c>TaskSubmissions.MentorReviewedAt</c> that the mentor-review endpoint
+    /// already writes. Null while <see cref="MentorStatus"/> is "Pending" (and
+    /// on rows decided before that column was populated), which is why it is
+    /// nullable. Read by משימות לבדיקה to date the אושרו bucket; the pending
+    /// queue ignores it and is unaffected.</summary>
+    public DateTime? MentorReviewedAt { get; set; }
+
     // Populated only by the global /api/mentor/submissions endpoint.
     public int     ProjectId     { get; set; }
     public string  ProjectTitle  { get; set; } = "";
@@ -146,6 +154,14 @@ public class MentorSubmissionContextDto
     public int     TaskId          { get; set; }
     public string  TaskTitle       { get; set; } = "";
     public string? TaskDescription { get; set; }
+
+    /// <summary>Tasks.SubmissionInstructions — what the student was told to
+    /// submit. READ-ONLY context for the reviewing mentor: the mentor is not
+    /// the owner of this text (Lecturer/Admin authors it on the project task)
+    /// and no mentor endpoint writes it. Null when nothing was authored, so the
+    /// review UI omits the section rather than showing an empty heading.</summary>
+    public string? SubmissionInstructions { get; set; }
+
     public string  MilestoneTitle  { get; set; } = "";
 
     // The specific submission being reviewed

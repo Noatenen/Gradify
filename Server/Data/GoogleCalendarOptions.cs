@@ -24,6 +24,34 @@ public class GoogleCalendarOptions
     public const string SectionName = "GoogleCalendar";
 
     /// <summary>
+    /// Master switch for the ENTIRE external Google Calendar integration.
+    ///
+    /// Default true, so development and every existing deployment keep the
+    /// behaviour they have today. Production sets it to false because the
+    /// public deployment's OAuth consent screen no longer declares the
+    /// sensitive scope https://www.googleapis.com/auth/calendar.events, and an
+    /// affordance that can only end on a Google error page is worse than no
+    /// affordance at all.
+    ///
+    /// ── WHAT IT DOES AND DOES NOT TOUCH ──────────────────────────────────────
+    /// It gates ONLY this integration: the consent request, the callback, the
+    /// task-scheduling endpoints and the UI that offers them. It is deliberately
+    /// NOT a credential switch. Google LOGIN reads the very same client from
+    /// Authentication:Google:ClientId/ClientSecret, so disabling the calendar by
+    /// clearing those would take login down with it — which is exactly why this
+    /// flag exists separately from <c>IsConfigured</c>.
+    ///
+    /// Motiva's OWN mentor and lecturer calendars are not affected in any way.
+    /// They are built from Motiva data (dashboard rows + PersonalTasks) and have
+    /// never called Google; Google only ever added a "synced" indicator on top.
+    ///
+    /// Nothing is dropped when it is off. Stored connections, refresh tokens and
+    /// GoogleCalendarEventLinks rows all stay exactly where they are, so flipping
+    /// it back to true restores the feature with no migration and no data loss.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
     /// Default scope set.
     ///
     /// calendar.events is the one that matters and the only one this phase

@@ -3009,6 +3009,57 @@ public static class DatabaseMigrator
                 FOREIGN KEY (UpdatedByUserId) REFERENCES users(Id)
             )");
 
+        // ── SubmissionDeliverables — the faculty's תוצרי הגשה catalog ───────
+        //
+        // The DEFINITION of each graduation deliverable: what it is called, the
+        // heading above its requirement list, and its display order. Until this
+        // table the content lived in a hardcoded client file
+        // (SubmissionDeliverablesCatalog.cs) whose own header called it
+        // placeholder and said the requirements "do not exist anywhere in this
+        // repository". This makes it faculty-managed data.
+        //
+        // A SEPARATE DOMAIN FROM TASKS. Nothing here references Tasks,
+        // TaskTemplates or TaskSubmissions, and none of those were touched:
+        // deliverables are the end-of-project products, the task pipeline is
+        // mid-course milestone work.
+        //
+        // `Key` IS THE CONTRACT. ProjectSubmissionStatuses.DeliverableKey and
+        // ProjectResources.DeliverableKey already store these strings, so the
+        // eight shipped keys migrate verbatim below and the API refuses to
+        // change one. Those two tables are deliberately NOT given a foreign key
+        // to this one: their own comments describe an unmatched key as a
+        // harmless orphan, and a real FK would turn that into a delete failure.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS SubmissionDeliverables (
+                Id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                Key               TEXT    NOT NULL UNIQUE,
+                Title             TEXT    NOT NULL,
+                IconPath          TEXT    NOT NULL DEFAULT '',
+                Intro             TEXT,
+                RequirementsLabel TEXT    NOT NULL DEFAULT '',
+                OrderIndex        INTEGER NOT NULL DEFAULT 0,
+                IsActive          INTEGER NOT NULL DEFAULT 1
+            )");
+
+        // The ordered bullet lists. One table with a discriminator rather than
+        // two near-identical ones: they differ only in which block they render
+        // under (דרישות / לתשומת לבכם) and are always saved together.
+        //
+        // ON DELETE CASCADE is correct HERE and only here — a line has no
+        // meaning without its deliverable, unlike a team's progress row.
+        await connection.ExecuteNonQueryAsync(@"
+            CREATE TABLE IF NOT EXISTS SubmissionDeliverableLines (
+                Id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                DeliverableId INTEGER NOT NULL,
+                LineType      TEXT    NOT NULL,
+                Text          TEXT    NOT NULL,
+                OrderIndex    INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (DeliverableId)
+                    REFERENCES SubmissionDeliverables(Id) ON DELETE CASCADE
+            )");
+
+        await SeedSubmissionDeliverablesAsync(connection);
+
         // ── MentorDigestRuns — one daily digest per mentor per day ──────────
         //
         // The idempotency ledger for MentorDigestBackgroundService. RunDate is
@@ -3045,6 +3096,95 @@ public static class DatabaseMigrator
             "INSERT OR IGNORE INTO ProjectTypes (Id, Name) VALUES (1, 'Technological')");
         await connection.ExecuteNonQueryAsync(
             "INSERT OR IGNORE INTO ProjectTypes (Id, Name) VALUES (2, 'Methodological')");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SeedSubmissionDeliverablesAsync — the eight shipped deliverables
+    //
+    //  SEED-ONCE, NEVER OVERWRITE. This runs on every startup like the rest of
+    //  the migrator, so it must not touch a row a lecturer has since edited.
+    //  Each deliverable is inserted only when its Key is absent
+    //  (INSERT ... WHERE NOT EXISTS), and its lines only when that deliverable
+    //  has none. Deliberately NOT `INSERT OR REPLACE`: SQLite implements REPLACE
+    //  as DELETE + INSERT, which is exactly how the Tasks fixture in this file
+    //  was silently discarding authored columns on every restart.
+    //
+    //  Consequences, stated so they are not surprises:
+    //    · Delete a seeded deliverable in the UI and it comes back on restart.
+    //      Deactivate instead — that is what IsActive is for, and it preserves
+    //      every team's progress row.
+    //    · Delete every line of a seeded deliverable and the placeholders
+    //      return. Leaving one line, or editing them, is stable.
+    //
+    //  KEYS ARE VERBATIM from SubmissionDeliverablesCatalog.cs. They are the
+    //  join ProjectSubmissionStatuses and ProjectResources already use; a typo
+    //  here silently resets a team's progress to "not started".
+    // ─────────────────────────────────────────────────────────────────────────
+    private static async Task SeedSubmissionDeliverablesAsync(SqliteConnection connection)
+    {
+        // Placeholder copy, carried over as-is. It is what the screen shows
+        // today, so migrating it keeps the student view identical until the
+        // faculty text is authored through the new management page.
+        const string intro = "תוכן זמני לפיתוח. כאן יופיע ההסבר של הסגל על התוצר הזה.";
+        const string req1  = "תוכן זמני לפיתוח — כאן תופיע דרישת הסגל הראשונה לתוצר זה.";
+        const string req2  = "תוכן זמני לפיתוח — כאן תופיע דרישת הסגל השנייה לתוצר זה.";
+        const string note1 = "תוכן זמני לפיתוח — כאן תופיע הערה של הסגל לתוצר זה.";
+
+        // key, title, iconPath, requirementsLabel, hasNotes — the catalog's own
+        // order, which becomes OrderIndex.
+        var seeds = new (string Key, string Title, string Icon, string Label, bool Notes)[]
+        {
+            ("disk-on-key",    "Disk on Key",   "M6 3h12v18H6zM9 7h6",                                    "מה כולל ההתקן",        true),
+            ("telemview",      "TelemView",     "M4 5h16v11H4zM9 20h6M12 16v4",                           "מה נדרש למלא במערכת",  true),
+            ("info-sheet",     "דף מידע",        "M7 3h7l5 5v13H7zM10 12h7M10 16h5",                       "מה כולל הדף",          false),
+            ("booklet",        "חוברת",          "M5 4h6a3 3 0 0 1 3 3v13H8a3 3 0 0 0-3 3zM19 4h-5v16h5z", "פרקי החוברת",          true),
+            ("video",          "סרטון",          "M4 6h11v12H4zM15 10l5-3v10l-5-3",                        "מה מציגים בסרטון",     false),
+            ("poster",         "פוסטר",          "M4 4h16v16H4zM8 9h8M8 13h5",                             "מה כולל הפוסטר",       false),
+            ("model",          "מודל",           "M4 7.5 12 3.5l8 4v9L12 20.5l-8-4zM4 7.5l8 4 8-4M12 11.5v9", "מה מציגים בהגשה",   true),
+            ("faculty-server", "שרת הפקולטה",    "M4 5h16v5H4zM4 14h16v5H4zM8 7.5h.01M8 16.5h.01",         "שלבי ההעלאה",          false),
+        };
+
+        for (int i = 0; i < seeds.Length; i++)
+        {
+            var s = seeds[i];
+
+            await connection.ExecuteNonQueryAsync(@"
+                INSERT INTO SubmissionDeliverables
+                    (Key, Title, IconPath, Intro, RequirementsLabel, OrderIndex, IsActive)
+                SELECT @Key, @Title, @Icon, @Intro, @Label, @Order, 1
+                WHERE NOT EXISTS (SELECT 1 FROM SubmissionDeliverables WHERE Key = @Key)",
+                ("Key", s.Key), ("Title", s.Title), ("Icon", s.Icon),
+                ("Intro", intro), ("Label", s.Label), ("Order", i));
+
+            // Lines only for a deliverable that has none at all, so an editor
+            // who removed a placeholder does not get it back next restart.
+            //
+            // THE EMPTINESS TEST RUNS ONCE, BEFORE ANY INSERT. Putting a
+            // NOT EXISTS guard inside each row's statement looks equivalent and
+            // is not: the first insert makes the deliverable non-empty, so every
+            // subsequent row silently skips itself and the deliverable ends up
+            // with exactly one line.
+            var deliverableId = (await ScalarIntAsync(connection,
+                "SELECT Id FROM SubmissionDeliverables WHERE Key = @Key", ("Key", s.Key))) ?? 0;
+            if (deliverableId == 0) continue;
+
+            var existingLines = (await ScalarIntAsync(connection,
+                "SELECT COUNT(*) FROM SubmissionDeliverableLines WHERE DeliverableId = @Id",
+                ("Id", deliverableId))) ?? 0;
+            if (existingLines > 0) continue;
+
+            var lines = new List<(string Type, string Text)> { ("Requirement", req1), ("Requirement", req2) };
+            if (s.Notes) lines.Add(("Note", note1));
+
+            for (int j = 0; j < lines.Count; j++)
+            {
+                await connection.ExecuteNonQueryAsync(@"
+                    INSERT INTO SubmissionDeliverableLines (DeliverableId, LineType, Text, OrderIndex)
+                    VALUES (@Id, @Type, @Text, @Order)",
+                    ("Id", deliverableId), ("Type", lines[j].Type),
+                    ("Text", lines[j].Text), ("Order", j));
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -3131,18 +3271,37 @@ public static class DatabaseMigrator
                 (131, 67, 1), (131, 68, 1),
                 (133, 70, 1), (133, 71, 1), (133, 72, 1)");
 
-        // ── 5. Assign ProjectMentors ─────────────────────────────────────────
-        await connection.ExecuteNonQueryAsync(@"
-            INSERT OR IGNORE INTO ProjectMentors (ProjectId, UserId, AssignedAt)
-            VALUES
-                (129, 63, '2026-04-01 10:00:00'),
-                (130, 63, '2026-04-01 10:00:00'),
-                (131, 63, '2026-04-01 10:00:00'),
-                (133, 63, '2026-04-01 10:00:00'),
-                (129, 3, '2026-04-01 10:00:00'),
-                (130, 3, '2026-04-01 10:00:00'),
-                (131, 3, '2026-04-01 10:00:00'),
-                (133, 3, '2026-04-01 10:00:00')");
+        // ── 5. ProjectMentors — DELIBERATELY NOT SEEDED HERE ─────────────────
+        //
+        // This block used to INSERT OR IGNORE eight rows, putting BOTH mentor
+        // test users on ALL FOUR demo projects:
+        //     (129,63) (130,63) (131,63) (133,63)
+        //     (129,3)  (130,3)  (131,3)  (133,3)
+        //
+        // It was removed because it silently overrode the final demo dataset.
+        // scripts/seed-final-demo-data.sql §B is the SOURCE OF TRUTH for the
+        // mentor distribution — "exactly one supervisor per demo team":
+        //     129 Motiva     -> admin admin (12)
+        //     130 ספרייה      -> אבי לוי (3)
+        //     131 מסחר        -> נטע סורק (7)
+        //     133 אימונים AI  -> מירב שגיא (69)
+        // and it DELETEs every other mentor from those four projects to enforce
+        // it. But this method runs from MigrateAsync on EVERY server start, so
+        // the moment the app restarted these eight rows came back and אבי לוי
+        // re-acquired 129, 131 and 133. The demo then contradicted itself:
+        // בית and משימות לבדיקה showed him submissions on projects the final
+        // dataset had given to somebody else.
+        //
+        // Two writers, one table, opposite intentions — so the one that cannot
+        // be reasoned about (an unconditional migration step) gives way to the
+        // one that is explicit, reviewed and idempotent (the demo seed script).
+        // The rest of this QA fixture — users, teams, projects, tasks,
+        // submissions, requests, personal tasks — is untouched and still seeds,
+        // because none of it contradicts the demo dataset.
+        //
+        // If a mentor assignment is ever needed for a NEW QA scenario, add it to
+        // seed-final-demo-data.sql where the whole distribution is visible in
+        // one place, not here.
 
         // ── 6. Milestones & Due Dates ────────────────────────────────────────
         await connection.ExecuteNonQueryAsync(@"
@@ -3154,7 +3313,23 @@ public static class DatabaseMigrator
 
         // ── 7. Tasks ────────────────────────────────────────────────────────
         await connection.ExecuteNonQueryAsync(@"
-            INSERT OR REPLACE INTO Tasks (Id, ProjectId, ProjectMilestoneId, Title, Description, TaskType, Status, DueDate, CreatedByUserId, AssignedToUserId, IsMandatory, IsSubmission)
+            -- UPSERT, NOT `INSERT OR REPLACE`, AND THE DIFFERENCE IS DESTRUCTIVE.
+            -- SQLite implements REPLACE as DELETE + INSERT, so every column NOT
+            -- in the list below reverted to its default on each server start —
+            -- and this list omits SubmissionInstructions, MaxFilesCount,
+            -- MaxFileSizeMb and AllowedFileTypes. A lecturer who authored the
+            -- submission requirements for one of these eight demo tasks lost
+            -- them the next time the app restarted, silently, because the
+            -- migrator runs unconditionally from MigrateAsync. It also reset
+            -- IsSystemTask, RequiresClosure, ClosedAt, CreatedAt, SubmissionLink,
+            -- SubmittedAt and SubmittedByUserId for the same reason.
+            --
+            -- ON CONFLICT ... DO UPDATE writes ONLY the columns this fixture
+            -- actually owns, so the demo rows still refresh to their intended
+            -- title/status/date on every start while anything authored on top of
+            -- them survives. Nothing about which rows are seeded, or their
+            -- seeded values, changed.
+            INSERT INTO Tasks (Id, ProjectId, ProjectMilestoneId, Title, Description, TaskType, Status, DueDate, CreatedByUserId, AssignedToUserId, IsMandatory, IsSubmission)
             VALUES
                 (614, 129, 796, 'מסמך אפיון UX סופי', 'מסמך אפיון מפורט כולל תרחישי שימוש, פרסונות וסכמת ניווט מלאה', 'MilestoneTask', 'SubmittedToMentor', '2026-08-18 23:59:00', 63, 61, 1, 1),
                 (615, 129, 796, 'סקר טכנולוגיות וכלי פיתוח', 'בחינת ספריות קומפוננטות ותשתיות אחסון בענן', 'ProjectTask', 'InProgress', '2026-08-20 23:59:00', 63, 62, 0, 0),
@@ -3163,7 +3338,19 @@ public static class DatabaseMigrator
                 (618, 130, 804, 'מסמך אפיון ראשוני', 'הגדרת פונקציונליות ודרישות מערכת', 'MilestoneTask', 'Done', '2026-08-01 23:59:00', 63, 66, 1, 1),
                 (619, 131, 808, 'מסמך הגדרת דרישות איקומרס', 'פירוט דרישות מודול עגלת קניות ואינטגרציית סליקה', 'MilestoneTask', 'SubmittedToMentor', '2026-08-31 23:59:00', 63, 68, 1, 1),
                 (620, 133, 817, 'גרסה עובדת ראשונה - אפליקציית כושר AI', 'פרוטוטייפ עובד של מודול אימונים והתאמה אישית', 'MilestoneTask', 'Done', '2026-08-10 23:59:00', 63, 70, 1, 1),
-                (621, 133, 818, 'בניית מערך שאלונים להערכת משתמשים', 'שאלונים ומדדים לבחינת שביעות רצון ודיוק ההמלצות', 'MilestoneTask', 'InProgress', '2026-09-10 23:59:00', 63, 71, 0, 0)");
+                (621, 133, 818, 'בניית מערך שאלונים להערכת משתמשים', 'שאלונים ומדדים לבחינת שביעות רצון ודיוק ההמלצות', 'MilestoneTask', 'InProgress', '2026-09-10 23:59:00', 63, 71, 0, 0)
+            ON CONFLICT(Id) DO UPDATE SET
+                ProjectId          = excluded.ProjectId,
+                ProjectMilestoneId = excluded.ProjectMilestoneId,
+                Title              = excluded.Title,
+                Description        = excluded.Description,
+                TaskType           = excluded.TaskType,
+                Status             = excluded.Status,
+                DueDate            = excluded.DueDate,
+                CreatedByUserId    = excluded.CreatedByUserId,
+                AssignedToUserId   = excluded.AssignedToUserId,
+                IsMandatory        = excluded.IsMandatory,
+                IsSubmission       = excluded.IsSubmission");
 
         // ── 8. Task Submissions & Multi-round History ───────────────────────
         await connection.ExecuteNonQueryAsync(@"
@@ -3290,6 +3477,37 @@ public static class DatabaseMigrator
     {
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Single integer read, for the seed's "does this already exist"
+    /// checks. Returns null when the query yields no row.</summary>
+    private static async Task<int?> ScalarIntAsync(
+        SqliteConnection connection, string sql, params (string Name, object? Value)[] args)
+    {
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+            cmd.Parameters.AddWithValue("@" + name.TrimStart('@'), value ?? DBNull.Value);
+
+        var result = await cmd.ExecuteScalarAsync();
+        return result is null || result is DBNull ? null : Convert.ToInt32(result);
+    }
+
+    /// <summary>
+    /// Parameterised overload, for seed rows whose values are not compile-time
+    /// literals. Everything else in this file inlines its values, which is fine
+    /// for fixed English identifiers and wrong for authored Hebrew prose: a
+    /// single apostrophe in a faculty sentence would break the statement, and
+    /// escaping by hand is how that eventually happens unnoticed.
+    /// </summary>
+    private static async Task ExecuteNonQueryAsync(
+        this SqliteConnection connection, string sql, params (string Name, object? Value)[] args)
+    {
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+            cmd.Parameters.AddWithValue("@" + name.TrimStart('@'), value ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
     }
 }

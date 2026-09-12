@@ -169,6 +169,14 @@ public static class ManagementHubDefinitions
             new ManagementEntry("תבניות משימות", "משימות מוכנות לשיבוץ באבני דרך",
                 IcoCheckbox, TileAccent.Teal,
                 Route: "management/tasks"),
+
+            // תוצרי הגשה is NOT a kind of task template, and the description
+            // says so in the words a lecturer uses: a task template is
+            // mid-course work in the milestone pipeline, a deliverable is an
+            // end-of-project product the faculty expects. They share no table.
+            new ManagementEntry("תוצרי הגשה", "התוצרים שהסטודנטים מגישים בסיום — תוכן, דרישות והערות",
+                IcoFlag, TileAccent.Violet,
+                Route: "management/deliverables"),
         }),
 
         // ── טפסים ותהליכים ──────────────────────────────────────────────────

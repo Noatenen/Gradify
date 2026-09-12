@@ -3,6 +3,7 @@ using AuthWithAdmin.Server.Data;
 using AuthWithAdmin.Shared.AuthSharedModels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace AuthWithAdmin.Server.Controllers;
 
@@ -43,21 +44,40 @@ public class GoogleCalendarPersonalTasksController : ControllerBase
 {
     private readonly DbRepository               _db;
     private readonly GoogleCalendarEventService _events;
+    private readonly GoogleCalendarOptions      _options;
 
-    public GoogleCalendarPersonalTasksController(DbRepository db, GoogleCalendarEventService events)
+    public GoogleCalendarPersonalTasksController(
+        DbRepository db,
+        GoogleCalendarEventService events,
+        IOptions<GoogleCalendarOptions> options)
     {
-        _db     = db;
-        _events = events;
+        _db      = db;
+        _events  = events;
+        _options = options.Value;
     }
+
+    /// <summary>503 + a product message when GoogleCalendar:Enabled is false.
+    /// The sibling of GoogleCalendarTasksController.Unavailable, and for the same
+    /// reason: the write endpoints must refuse from outside the UI too.</summary>
+    private IActionResult Unavailable() =>
+        StatusCode(503, "האינטגרציה עם יומן Google אינה פעילה כרגע");
 
     // ── GET /api/google-calendar/personal-tasks/schedules ─────────────────────
     // Every personal-task calendar link the caller owns. Kept apart from the
     // team-task list because PersonalTasks.Id and TeamTasks.Id are independent
     // sequences — one combined list keyed by TaskId would be ambiguous.
+    //
+    // Empty list rather than 503 while disabled — same reasoning as the team-task
+    // list. /mentor/calendar and /lecturer/calendar read it on every load only to
+    // mark days as synced, and an empty set is what correctly removes those marks
+    // without failing the page. Motiva's own calendars are otherwise untouched:
+    // they are built from PersonalTasks and dashboard rows, not from Google.
     [HttpGet("schedules")]
     public async Task<IActionResult> GetMySchedules(int authUserId)
-        => Ok(await _events.GetSchedulesForUserAsync(
-                  authUserId, GoogleCalendarEventService.PersonalTaskType));
+        => _options.Enabled
+            ? Ok(await _events.GetSchedulesForUserAsync(
+                     authUserId, GoogleCalendarEventService.PersonalTaskType))
+            : Ok(Array.Empty<TaskCalendarScheduleDto>());
 
     // ── PUT /api/google-calendar/personal-tasks/{taskId}/schedule ─────────────
     // Creates the Google event, or moves/retitles the existing one. Idempotent:
@@ -65,6 +85,8 @@ public class GoogleCalendarPersonalTasksController : ControllerBase
     [HttpPut("{taskId:int}/schedule")]
     public async Task<IActionResult> Schedule(int taskId, int authUserId)
     {
+        if (!_options.Enabled) return Unavailable();
+
         var task = await GetOwnTaskAsync(taskId, authUserId);
         if (task is null) return NotFound("המשימה לא נמצאה");
 
@@ -96,6 +118,8 @@ public class GoogleCalendarPersonalTasksController : ControllerBase
     [HttpDelete("{taskId:int}/schedule")]
     public async Task<IActionResult> Unschedule(int taskId, int authUserId)
     {
+        if (!_options.Enabled) return Unavailable();
+
         var task = await GetOwnTaskAsync(taskId, authUserId);
         if (task is null) return NotFound("המשימה לא נמצאה");
 

@@ -75,6 +75,10 @@ builder.Services.AddScoped<IMentorProjectsService, MentorProjectsService>();
 // answer (waiting age, aging bucket, ordering, counts) is computed entirely
 // server-side and shared with the daily digest.
 builder.Services.AddScoped<IMentorAttentionService, MentorAttentionService>();
+// תוצרי הגשה — the faculty deliverable catalog. Scoped so its session cache is
+// shared by the two workspace components that read it and by the management
+// page that invalidates it.
+builder.Services.AddScoped<IDeliverablesService, DeliverablesService>();
 // Cross-project snapshot shared by בית, המשימות שלי and יומן ותכנון. Composes
 // the services around it — it owns no endpoint of its own.
 builder.Services.AddScoped<IMentorWorkspaceService, MentorWorkspaceService>();
